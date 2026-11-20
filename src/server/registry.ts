@@ -617,7 +617,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  * `settings_restored` is deliberately absent: it invalidates browser configuration and
  * catalogs, none of which is a Line fold input.
  */
-// feature_flags is not a Line input: the empty flag registry supplies no stage data.
+// feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",

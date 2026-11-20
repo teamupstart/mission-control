@@ -1,14 +1,14 @@
 # Feature flags
 
-The flag core stores one set of operator choices for this machine. The registry ships empty.
-Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
+The flag core stores one set of operator choices for this machine. Settings > Feature flags
+controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
 searchable list; filter by name, description, keyword or id. Every click applies immediately
 in every open window, with no Save button or restart. A refused write rolls back and shows an
-inline error. The shipped registry is empty, so the panel initially shows its empty state.
+inline error. When the registry declares no preview, the panel shows its empty state instead.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
@@ -113,3 +113,13 @@ restoring one without it leaves current choices alone. Its surface is `settings`
 Do not skip the default-on release: it gives operators a way to disable a problem before the
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
+
+## Shipped flags
+
+| Id | Stage | Gates | Guide |
+| --- | --- | --- | --- |
+| `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, and the shaping engine | [Task shaping](task-shaping.md) |
+
+`test/feature-flags.test.ts` checks every shipped definition against the id rules, and
+`e2e/specs/task-shaping-flag.spec.ts` is the first real flag's browser assertion: its row
+appears and a toggle reaches a second window without a reload.

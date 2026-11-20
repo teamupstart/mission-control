@@ -363,3 +363,56 @@ what that measurement does not cover, are in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
 Control does not claim an operating-system sandbox against a process running as the same user as
 the daemon, which could read an owner-only file before the launcher does.
+
+## Task shaping
+
+[Task shaping](task-shaping.md) is a preview behind the `task-shaping` flag, and with it off
+nothing below runs. Only the operator adds a shaper, through the loopback API, and a registered
+shaper is stored switched off.
+
+**A `command` shaper runs as you.** It is the same trust as an operator-authored Workflow
+command, and Mission Control adds no operating-system sandbox. What it does control: argv is
+spawned without a shell, a gatherer runs in the repository's checkout and a selector in an empty
+directory of its own, stdout is capped at 256 KiB, and the timeout kills the whole process
+group.
+
+The child's environment is built in two steps (`shaperCommandEnv`):
+
+1. **The inherited environment.** It starts from the daemon's own environment, with the
+   daemon's executable search path as `PATH`. Removed from it are:
+   - Mission Control's API token and token-file variables, its scout credential and session
+     locator variables, and its state directory under all three names (`MISSION_HOME`,
+     `FLEET_HOME`, `HARNESS_HOME`);
+   - terminal pane identities, and `make`'s recursion variables;
+   - every variable whose name looks like a credential, meaning a name segment such as
+     `token`, `secret`, `password`, `credential` or `key`;
+   - any variable whose value carries the daemon's token.
+
+   Every other variable is passed through unchanged, such as `HOME`, `LANG`, `TMPDIR` and proxy
+   settings.
+2. **The named variables.** Each variable the shaper names in `env` is then added from the
+   daemon's environment, credential-shaped or not, which is how a shaper receives an API token.
+   Three kinds are never added, even by name: Mission Control's own token, credential and
+   state-directory variables, an empty value, and a value that carries the daemon's token.
+
+Before a failure's stderr is recorded, every value in the
+environment the child was spawned with, inherited or named, is replaced with `[redacted]`:
+anywhere it appears when it is four characters or longer, and as a whole token when it is
+shorter, so `LANG=C` does not blank every "C" in the message.
+
+**What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
+harness, runtime and after-work workflow, the attached repositories' names, roles, branches and
+base commits, the declared caller identity, and the facts and summary a gatherer produced. Local
+worktree paths go only to local shapers (`command`, `builtin`, and an `mcp` server started as a
+local process). A remote shaper never receives a local path.
+
+**What comes back is untrusted.** A shaper's text is validated against one result shape, capped
+per entry, per shaper and in total, and placed in its own labelled section, which states that it
+cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
+or returns something else is recorded as an outcome, never an error reply.
+
+This build only dry-runs shapers through the API: no worker receives their text yet. Calling
+them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
+later phase. The `mcp` and `http` transports, the shapers folder and the built-in gatherer are
+declared but not yet reachable: each answers `unavailable` until its phase lands, and its
+egress and folder ownership rules are documented with it.

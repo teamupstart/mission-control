@@ -1,0 +1,358 @@
+import { createHash } from "node:crypto";
+import {
+  allocateBudget,
+  canonicalJson,
+  composeShapingSection,
+  cutAtLineBoundary,
+  describeInvalidResult,
+  resolveShaperById,
+  resolveShapers,
+  SHAPING_LIMITS,
+  SHAPING_PROTOCOL,
+  SHAPING_SECTION_PREAMBLE,
+  shaperIsLocal,
+  shapingEntryHeading,
+  ShapingResultSchema,
+  summariseShaping,
+  utf8Length,
+  type DiscoveredShaper,
+  type ResolvedShaper,
+  type ShapingCallRecord,
+  type ShapingConfig,
+  type ShapingContext,
+  type ShapingFacts,
+  type ShapingOutcome,
+  type ShapingRequest,
+  type ShapingStage,
+  type TaskShaping,
+} from "@shared/shaping.ts";
+import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { discoverShapers } from "./discovery.ts";
+import { getShapingConfig } from "./index.ts";
+import { callTransport, SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportReply } from "./transports/index.ts";
+
+/**
+ * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
+ * or are on (`resolveShapers` does), and everything about what a call is allowed to come to:
+ * stage order, one call per shaper per repository in parallel, the step deadline, validation
+ * against the one result schema, caps, de-duplication, the outcome and the record. It never
+ * throws, and nothing a shaper does can stop the launch it is shaping.
+ */
+
+/** One attached repository, as dispatch collected it. `path` is the local worktree. */
+export interface ShapeTaskRepository {
+  name: string;
+  role: "primary" | "additional";
+  branch: string | null;
+  baseSha: string | null;
+  path: string | null;
+}
+
+/** Everything Mission Control collected about the task (constraint C2). */
+export interface ShapeTaskInput {
+  /** The operator's prompt, verbatim. */
+  task: string;
+  context: Omit<ShapingContext, "repositories" | "caller"> & { repositories: readonly ShapeTaskRepository[] };
+  /** Aborted when the task is cancelled while it is being shaped. */
+  signal?: AbortSignal;
+}
+
+/** One entry as it would be injected, for the record, the viewer and the dry run. */
+export interface ShapingInjectedEntry {
+  shaperId: string;
+  label: string;
+  stage: string;
+  repo: string;
+  id: string;
+  title: string | null;
+  path: string | null;
+  body: string;
+  truncated: boolean;
+  omittedBytes: number;
+}
+
+export interface ShapingRun {
+  /** Null when no shaper applied. */
+  summary: TaskShaping | null;
+  /** The section for turn one. Empty when nothing was kept. */
+  section: string;
+  entries: ShapingInjectedEntry[];
+}
+
+export interface ShapeTaskDeps {
+  config?: ShapingConfig;
+  discovered?: readonly DiscoveredShaper[];
+  transports?: ShapingTransportCalls;
+  /** Overrides the `task-shaping` flag, for tests. */
+  enabled?: boolean;
+}
+
+const EMPTY_RUN: ShapingRun = Object.freeze({ summary: null, section: "", entries: [] }) as ShapingRun;
+
+/** Shape one task. Resolves to an empty run when the flag is off or no shaper applies. */
+export async function shapeTask(input: ShapeTaskInput, deps: ShapeTaskDeps = {}): Promise<ShapingRun> {
+  try {
+    if (!(deps.enabled ?? featureEnabled("task-shaping"))) return EMPTY_RUN;
+    const config = deps.config ?? getShapingConfig();
+    const discovered = deps.discovered ?? await discoverShapers();
+    const resolved = resolveShapers(config, discovered, {
+      kind: input.context.kind, repositories: input.context.repositories,
+    });
+    if (resolved.length === 0) return EMPTY_RUN;
+    return await runShaping(resolved, input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS);
+  } catch (error) {
+    console.warn("[shaping] the shaping step failed unexpectedly:", error);
+    return EMPTY_RUN;
+  }
+}
+
+export type DryRunResult =
+  | { ok: true; run: ShapingRun }
+  | { ok: false; error: "unknown_shaper" | "unsupported_shaper"; reason: string };
+
+/** Run exactly one shaper, whatever its stored choice and filters, as `shapeTask` would. */
+export async function dryRunShaper(id: string, input: ShapeTaskInput, deps: ShapeTaskDeps = {}): Promise<DryRunResult> {
+  const config = deps.config ?? getShapingConfig();
+  const discovered = deps.discovered ?? await discoverShapers();
+  const found = resolveShaperById(config, discovered, id, {
+    kind: input.context.kind, repositories: input.context.repositories,
+  });
+  if (!found.ok) return found;
+  return { ok: true, run: await runShaping([found.resolved], input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS) };
+}
+
+/** The SHA-256 of the definition that ran: canonical JSON for a registered shaper, the manifest's bytes for a discovered one. */
+export function shaperSha256(resolved: Pick<ResolvedShaper, "stored" | "sha256">): string | null {
+  if (resolved.sha256) return resolved.sha256;
+  return resolved.stored ? createHash("sha256").update(canonicalJson(resolved.stored)).digest("hex") : null;
+}
+
+interface CallResult {
+  record: ShapingCallRecord;
+  entries: Array<{ id: string; title: string | null; path: string | null; body: string; truncated: boolean }>;
+  facts: ShapingFacts | null;
+  summary: string | null;
+  /** The reply said it was truncated as a whole, whether or not any entry says so. */
+  truncated: boolean;
+}
+
+function bounded(reason: string): string {
+  return reason.replace(/\s+/g, " ").trim().slice(0, SHAPING_LIMITS.reasonChars);
+}
+
+/** A reply that states an error instead of a result, such as FR-02's `denied`. */
+function replyError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || !("error" in value)) return null;
+  const error = (value as { error: unknown }).error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    const parts = [code, message].filter((part): part is string => typeof part === "string" && part.length > 0);
+    if (parts.length) return parts.join(": ");
+  }
+  return "The shaper returned an error.";
+}
+
+function orderRepositories(repositories: readonly ShapeTaskRepository[]): ShapeTaskRepository[] {
+  return [...repositories].sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
+}
+
+async function runShaping(
+  resolved: readonly ResolvedShaper[],
+  input: ShapeTaskInput,
+  config: ShapingConfig,
+  transports: ShapingTransportCalls,
+): Promise<ShapingRun> {
+  const startedAt = Date.now();
+  const deadline = startedAt + config.limits.deadlineMs;
+  const run = new AbortController();
+  const deadlineTimer = setTimeout(() => run.abort(), config.limits.deadlineMs);
+  const onCancel = () => run.abort();
+  input.signal?.addEventListener("abort", onCancel, { once: true });
+  if (input.signal?.aborted) run.abort();
+  const cleanups: Array<() => void | Promise<void>> = [];
+  const scope = { shared: new Map<string, unknown>(), defer: (cleanup: () => void | Promise<void>) => { cleanups.push(cleanup); } };
+  const repositories = orderRepositories(input.context.repositories);
+  const multiRepo = repositories.length > 1;
+  const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
+  const facts = repositories.map((): ShapingFacts | null => null);
+  const summaries = repositories.map((): string | null => null);
+  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository; result: CallResult }> = [];
+
+  const contextFor = (local: boolean): ShapingContext => ({
+    ...input.context,
+    repositories: repositories.map((repo) => ({
+      name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
+      ...(local && repo.path ? { path: repo.path } : {}),
+    })),
+    caller: {
+      user: config.caller.user || null,
+      agent: input.context.harness,
+      conversation: input.context.taskId,
+    },
+  });
+
+  const callOne = async (stage: ShapingStage, entry: ResolvedShaper, repoIndex: number): Promise<CallResult> => {
+    const repo = repositories[repoIndex]!;
+    const callStart = Date.now();
+    const record = (outcome: ShapingOutcome, reason: string | null, version: string | null = null): ShapingCallRecord => ({
+      shaper: entry.shaper, origin: entry.origin, sha256: hashes.get(entry.shaper.id) ?? null, repo: repo.name,
+      outcome, reason: reason === null ? null : bounded(reason), durationMs: Date.now() - callStart, version,
+    });
+    const empty = (outcome: ShapingOutcome, reason: string): CallResult => ({ record: record(outcome, reason), entries: [], facts: null, summary: null, truncated: false });
+    const stopped = () => input.signal?.aborted
+      ? empty("failed", "The task was cancelled while it was being shaped.")
+      : empty("timed_out", "The shaping step ran out of time before this call could finish.");
+
+    const left = deadline - callStart;
+    const timeoutMs = Math.min(entry.shaper.timeoutMs ?? config.limits.timeoutMs, left);
+    if (run.signal.aborted || timeoutMs <= 0) return stopped();
+    const local = shaperIsLocal(entry.shaper);
+    const request: ShapingRequest = {
+      protocol: SHAPING_PROTOCOL,
+      stage,
+      task: input.task,
+      repo: {
+        name: repo.name,
+        ...(local && repo.path ? { path: repo.path } : {}),
+        ...(stage !== "gather" && facts[repoIndex] ? { facts: facts[repoIndex]! } : {}),
+        ...(stage !== "gather" && summaries[repoIndex] ? { summary: summaries[repoIndex]! } : {}),
+      },
+      ...(entry.shaper.version ? { version: entry.shaper.version } : {}),
+      context: contextFor(local),
+      limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
+    };
+
+    // The call is abandoned at its own timeout even if its transport ignores the signal.
+    const call = new AbortController();
+    const onRunAbort = () => call.abort();
+    run.signal.addEventListener("abort", onRunAbort, { once: true });
+    let abandon: ReturnType<typeof setTimeout> | undefined;
+    let reply: TransportReply | "abandoned";
+    try {
+      reply = await Promise.race([
+        callTransport(request, entry.shaper, {
+          deadline, timeoutMs, signal: call.signal, scope, root: entry.root,
+        }, transports),
+        new Promise<"abandoned">((done) => {
+          // A little grace so a transport's own timeout reason wins over the generic one.
+          abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
+          call.signal.addEventListener("abort", () => done("abandoned"), { once: true });
+        }),
+      ]);
+    } finally {
+      clearTimeout(abandon);
+      run.signal.removeEventListener("abort", onRunAbort);
+      call.abort();
+    }
+    if (reply === "abandoned") {
+      return run.signal.aborted ? stopped() : empty("timed_out", `Timed out after ${Math.round(timeoutMs / 100) / 10} s.`);
+    }
+    if (reply.kind !== "data") return empty(reply.kind, reply.reason);
+
+    let value = reply.data;
+    if (typeof value === "string") {
+      try { value = JSON.parse(value); }
+      catch { return empty("invalid", "The reply is not JSON."); }
+    }
+    const error = replyError(value);
+    if (error !== null) return empty("failed", error);
+    const parsed = ShapingResultSchema.safeParse(value);
+    if (!parsed.success) return empty("invalid", describeInvalidResult(parsed.error));
+    const result = parsed.data;
+    const notes = result.notes?.filter((note) => note.trim()).join(" ") ?? "";
+    return {
+      record: result.degraded
+        ? record("degraded", notes || "The shaper reported that it is degraded.", result.version ?? null)
+        : record("ok", null, result.version ?? null),
+      entries: result.guidance.map((guidance) => ({
+        id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
+        body: guidance.body, truncated: guidance.truncated === true,
+      })),
+      facts: result.repo?.facts ?? null,
+      truncated: result.truncated === true,
+      summary: result.repo?.summary ?? null,
+    };
+  };
+
+  try {
+    for (const stage of SHAPING_STAGES) {
+      const calls = resolved.filter((entry) => entry.shaper.stage === stage).flatMap((entry) =>
+        repositories.flatMap((repo, index) => entry.repositories.includes(repo.name) ? [{ entry, index }] : []));
+      if (calls.length === 0) continue;
+      const settled = await Promise.all(calls.map(({ entry, index }) => callOne(stage, entry, index)));
+      settled.forEach((result, at) => {
+        const { entry, index } = calls[at]!;
+        results.push({ resolved: entry, repo: repositories[index]!, result });
+        if (stage !== "gather") return;
+        // Facts merge by name and the later gatherer wins; the summary is the last one returned.
+        // Kept within the request's own bound, first names first.
+        if (result.facts) {
+          facts[index] = Object.fromEntries(Object.entries({ ...facts[index], ...result.facts }).slice(0, SHAPING_LIMITS.facts));
+        }
+        if (result.summary) summaries[index] = cutAtLineBoundary(result.summary, SHAPING_LIMITS.summaryBytes);
+      });
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    input.signal?.removeEventListener("abort", onCancel);
+    run.abort();
+    // Cleanup never delays the launch, and a failing one is only logged.
+    void Promise.allSettled(cleanups.map((cleanup) => Promise.resolve().then(cleanup))).then((outcomes) => {
+      for (const outcome of outcomes) if (outcome.status === "rejected") console.warn("[shaping] run cleanup failed:", outcome.reason);
+    });
+  }
+
+  // De-duplicate in pipeline order: one entry id per shaper, and one copy of any body.
+  const seenIds = new Set<string>();
+  const seenBodies = new Set<string>();
+  const candidates: Array<{
+    group: string; groupBytes: number; body: string; overhead: number;
+    entry: Omit<ShapingInjectedEntry, "body" | "truncated" | "omittedBytes">; sourceTruncated: boolean;
+  }> = [];
+  for (const { resolved: shaper, repo, result } of results) {
+    for (const item of result.entries) {
+      const idKey = `${shaper.shaper.id}\u0000${item.id}`;
+      if (seenIds.has(idKey) || seenBodies.has(item.body)) continue;
+      seenIds.add(idKey);
+      seenBodies.add(item.body);
+      const entry = {
+        shaperId: shaper.shaper.id, label: shaper.shaper.label, stage: shaper.shaper.stage, repo: repo.name,
+        id: item.id, title: item.title, path: item.path,
+      };
+      const heading = shapingEntryHeading({ label: entry.label, title: entry.title ?? undefined, id: entry.id, repo: entry.repo }, multiRepo);
+      candidates.push({
+        group: shaper.shaper.id,
+        groupBytes: shaper.shaper.maxBytes ?? config.limits.maxBytes,
+        body: item.body,
+        // "\n\n" before the heading and "\n" after it, as `composeShapingSection` joins them.
+        overhead: utf8Length(heading) + 3,
+        entry,
+        sourceTruncated: item.truncated,
+      });
+    }
+  }
+  const allocation = allocateBudget(candidates, config.limits.totalBytes - utf8Length(SHAPING_SECTION_PREAMBLE));
+  const entries: ShapingInjectedEntry[] = allocation.kept.map((slot) => ({
+    ...slot.item.entry, body: slot.body, truncated: slot.truncated || slot.item.sourceTruncated, omittedBytes: slot.omittedBytes,
+  }));
+  const section = composeShapingSection(entries.map((entry) => ({
+    label: entry.label, title: entry.title ?? undefined, id: entry.id, repo: entry.repo, body: entry.body,
+  })), multiRepo);
+  const truncatedShapers = new Set<string>([
+    ...allocation.kept.filter((slot) => slot.truncated || slot.item.sourceTruncated).map((slot) => slot.item.group),
+    ...allocation.dropped.map((drop) => drop.item.group),
+    // A shaper that says its reply was cut supplied incomplete context, entries or not.
+    ...results.filter(({ result }) => result.truncated).map(({ resolved: shaper }) => shaper.shaper.id),
+  ]);
+  const summary = summariseShaping({
+    calls: results.map(({ result }) => result.record),
+    kept: allocation.kept.map((slot) => ({ shaperId: slot.item.group, bytes: slot.bytes, truncated: slot.truncated })),
+    truncatedShapers,
+    at: startedAt,
+    durationMs: Date.now() - startedAt,
+    multiRepo,
+  });
+  return { summary: summary && { ...summary, bytes: utf8Length(section) }, section, entries };
+}

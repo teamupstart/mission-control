@@ -122,6 +122,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "residents.mcpServers",
       "residents.skillSources",
       "setup.banner",
+      // Task shaping's registered shapers and settings. Its domain is `runtime` until the
+      // Settings panel lands.
+      "shaping",
       "shipping",
       "skills",
       // When each storage warning's occurrence began. `operational`, never restored: it dates

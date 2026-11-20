@@ -2,11 +2,12 @@ import { mkdirSync } from "node:fs";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-test("empty panel, live master, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
+test("shipped panel, live master, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const tabs = await page.getByRole("tab").allTextContents();
   expect(tabs.findIndex(text => text.includes("Feature flags"))).toBe(tabs.findIndex(text => text.includes("Setup")) + 1);
-  await expect(page.getByText("No preview features right now. New ones appear here.")).toBeVisible();
+  // The shipped registry's previews, listed off. `task-shaping-flag.spec.ts` drives the row itself.
+  await expect(page.getByRole("button", { name: "Task shaping: off" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
@@ -16,6 +17,7 @@ test("empty panel, live master, reload, search and alpha link", async ({ dashboa
   await expect(master).not.toBeChecked();
   await master.check();
   await expect(peerMaster).toBeChecked();
+  await expect(peer.getByRole("button", { name: "Task shaping: on" })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(master).toBeChecked();
@@ -27,7 +29,7 @@ test("empty panel, live master, reload, search and alpha link", async ({ dashboa
   await expect(page.locator('[data-anchor="feature-flags/enable-all"]')).toHaveClass(/settings-flash/);
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(artifactsDir("feature-flags"), { recursive: true });
-    await page.screenshot({ path: `${artifactsDir("feature-flags")}empty.png` });
+    await page.screenshot({ path: `${artifactsDir("feature-flags")}shipped.png` });
   }
   // The alpha control belongs to the desktop bridge, not to the daemon.
   await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {

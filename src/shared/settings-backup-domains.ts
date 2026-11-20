@@ -45,6 +45,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "storage-limits", surface: "settings" },
   // Operator choices in Settings > Feature flags.
   { id: "feature-flags", surface: "settings" },
+  // Task shaping's registered shapers and settings. `runtime` until its Settings panel lands,
+  // which moves it to `settings`; the id never changes.
+  { id: "shaping", surface: "runtime" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

@@ -2275,7 +2275,9 @@ Pi's isolated extensions directory to the installer's isolated directory, proves
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
 
-`feature-flags.spec.ts` covers the shipped empty registry. `feature-flags-populated.spec.ts`
+`feature-flags.spec.ts` covers the shipped registry, and `task-shaping-flag.spec.ts` is the
+first real flag's assertion that its row appears and a toggle reaches a second window without a
+reload, with the daemon's `/api/shaping` gate following it. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
 `feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.

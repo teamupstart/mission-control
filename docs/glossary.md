@@ -89,6 +89,13 @@ session that Mission Control discovers or a daemon-owned Agent SDK session witho
 A session action is a reusable instruction a workflow sends to its bound conversation;
 unlike a persona, it may change the repository and has a completion condition the daemon proves.
 
+## [Shaper](task-shaping.md)
+
+A shaper is one configured program that task shaping asks for context about a task: a gatherer
+reads the task's repositories, and a selector chooses guidance for the task. A preview behind
+the `task-shaping` flag. [Task shaping](task-shaping.md) says what the current build does with
+what a shaper returns.
+
 ## [Ship log](library-and-line.md#the-ship-log)
 
 The Ship log is the durable record of shipping outcomes, surfaced from the Library's

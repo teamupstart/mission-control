@@ -1,0 +1,434 @@
+// Task shaping's shared contract: registry data, schemas, the enablement and ordering rule,
+// every intent, the stored entries this build does not understand, the budget and the section.
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFileSync } from "node:fs";
+import * as registry from "../src/shared/shaping-registry.ts";
+import {
+  allocateBudget,
+  applyShapingIntent,
+  canonicalJson,
+  classifyShaper,
+  classifyShapers,
+  clipUtf8,
+  composeShapingSection,
+  cutAtLineBoundary,
+  resolveShaperById,
+  resolveShapers,
+  SHAPING_CONFIG_DEFAULTS,
+  SHAPING_DEFINITIONS,
+  SHAPING_LIMITS,
+  SHAPING_SECTION_PREAMBLE,
+  ShaperIdSchema,
+  shaperIsLocal,
+  ShaperManifestSchema,
+  ShaperSchema,
+  shaperSchemaForStages,
+  ShapingConfigSchema,
+  ShapingIntentSchema,
+  ShapingResultSchema,
+  SHAPING_REFERENCE_SPELLINGS,
+  shapingReferences,
+  shapingSummaryLine,
+  StoredShaperSchema,
+  summariseShaping,
+  utf8Length,
+  type DiscoveredShaper,
+  type ShapingConfig,
+  type ShapingIntent,
+  type StoredShaper,
+} from "../src/shared/shaping.ts";
+
+const command = (id: string, stage: "gather" | "select" = "gather", extra: Record<string, unknown> = {}) => ShaperSchema.parse({
+  id, label: id.toUpperCase(), stage, transport: { type: "command", command: "/usr/bin/true" }, ...extra,
+});
+const config = (patch: Partial<ShapingConfig> = {}): ShapingConfig => ShapingConfigSchema.parse({ ...patch });
+const task = { kind: "ship", repositories: [{ name: "billing-api" }, { name: "ledger" }] };
+function discovered(id: string, enabled?: boolean, state: DiscoveredShaper["state"] = "ok"): DiscoveredShaper {
+  return {
+    id, path: `/state/shapers/${id}`, state, problem: state === "ok" ? null : "Refused.", sha256: "a".repeat(64),
+    shaper: ShaperManifestSchema.parse({
+      id, label: id, stage: "select", transport: { type: "http", url: "https://example.test/shape" },
+      ...(enabled === undefined ? {} : { enabled }),
+    }),
+  };
+}
+function apply(base: ShapingConfig, intent: ShapingIntent, found: DiscoveredShaper[] = []) {
+  const result = applyShapingIntent(base, intent, found);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  return (result as { config: ShapingConfig }).config;
+}
+const ids = (resolved: { shaper: { id: string } }[]) => resolved.map((entry) => entry.shaper.id);
+
+/** A shaper written by a later build: a stage and a transport this one has never heard of. */
+const future: StoredShaper = StoredShaperSchema.parse({
+  id: "skill-router", label: "Skill router", stage: "route",
+  transport: { type: "grpc", endpoint: "dns:///router", deadline: { ms: 4000 } },
+  protocol: 1, kinds: [], futureField: { nested: [1, "two", null] },
+});
+
+test("registry data is append-only tuples, unique, and disjoint from its tombstones", () => {
+  assert.deepEqual(Object.keys(registry).sort(), [
+    "RETIRED_SHAPING_BUILTINS", "RETIRED_SHAPING_STAGES", "RETIRED_SHAPING_TRANSPORTS",
+    "SHAPING_BUILTINS", "SHAPING_ORIGINS", "SHAPING_OUTCOMES", "SHAPING_REFERENCE_KINDS",
+    "SHAPING_STAGES", "SHAPING_TRANSPORTS",
+  ]);
+  assert.deepEqual(registry.SHAPING_STAGES, ["gather", "select"]);
+  assert.deepEqual(registry.SHAPING_TRANSPORTS, ["command", "mcp", "http", "builtin"]);
+  assert.deepEqual(registry.SHAPING_BUILTINS, [{ id: "repository-files", stages: ["gather"] }]);
+  assert.deepEqual(registry.SHAPING_OUTCOMES, ["ok", "degraded", "failed", "timed_out", "invalid", "unavailable"]);
+  assert.deepEqual(registry.SHAPING_ORIGINS, ["registered", "discovered"]);
+  for (const [live, retired] of [
+    [registry.SHAPING_STAGES, registry.RETIRED_SHAPING_STAGES],
+    [registry.SHAPING_TRANSPORTS, registry.RETIRED_SHAPING_TRANSPORTS],
+    [registry.SHAPING_BUILTINS.map((builtin) => builtin.id), registry.RETIRED_SHAPING_BUILTINS],
+  ] as const) {
+    assert.equal(new Set(live).size, live.length);
+    assert.ok(live.every((id) => !(retired as readonly string[]).includes(id)));
+  }
+  for (const builtin of registry.SHAPING_BUILTINS) {
+    assert.ok(builtin.stages.every((stage) => (registry.SHAPING_STAGES as readonly string[]).includes(stage)));
+  }
+});
+
+test("the shared modules are browser-safe: no node: imports and no protocol.ts", () => {
+  for (const file of ["src/shared/shaping.ts", "src/shared/shaping-registry.ts"]) {
+    const source = readFileSync(file, "utf8");
+    assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/, file);
+  }
+  assert.doesNotMatch(readFileSync("src/shared/shaping-registry.ts", "utf8"), /^import /m, "the registry is data only");
+});
+
+test("id rules match the feature-flag rule", () => {
+  for (const id of ["acme-guidance", "a", "repo-files-2", "a".repeat(64)]) assert.equal(ShaperIdSchema.safeParse(id).success, true, id);
+  for (const id of ["", "Upper", "has_space", "-leading", "trailing-", "two--dashes", "9lives", "a".repeat(65)]) {
+    assert.equal(ShaperIdSchema.safeParse(id).success, false, id);
+    assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: { ...command("x"), id } }).success, false, id);
+  }
+});
+
+test("the strict definition covers all four transports and fills defaults", () => {
+  const stdio = ShaperSchema.parse({ id: "guide", label: "Guide", stage: "select",
+    transport: { type: "mcp", server: { type: "stdio", command: "guide-server" }, tool: "get_guidance" } });
+  assert.equal(stdio.transport.type === "mcp" && stdio.transport.contextDelivery, "folded");
+  assert.deepEqual({ ...stdio, transport: undefined }, {
+    id: "guide", label: "Guide", stage: "select", protocol: 1, transport: undefined, kinds: [], repositories: [], version: null,
+  });
+  const remote = ShaperSchema.parse({ id: "acme", label: "Acme", stage: "select", transport: { type: "mcp", tool: "get_guidance",
+    contextDelivery: "argument", server: { type: "http", url: "https://context.acme.example/mcp",
+      headers: { "x-acme-user-id": "{caller.user}", authorization: "Bearer {env:ACME_CONTEXT_TOKEN}" } } } });
+  assert.equal(remote.transport.type === "mcp" && remote.transport.contextDelivery, "argument");
+  assert.equal(ShaperSchema.safeParse({ ...remote, transport: { ...remote.transport, contextDelivery: "none" } }).success, false,
+    "no delivery mode withholds the collected input");
+  const http = ShaperSchema.parse({ id: "svc", label: "Svc", stage: "select", transport: { type: "http", url: "http://127.0.0.1:9/shape" } });
+  assert.equal(shaperIsLocal(http), false);
+  const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather",
+    transport: { type: "builtin", builtin: "repository-files", options: { include: [{ path: "AGENTS.md" }], facts: ".facts.json" } } });
+  assert.deepEqual(builtin.transport.type === "builtin" && builtin.transport.options.include, [{ path: "AGENTS.md", maxBytes: 16384 }]);
+  assert.equal(ShaperSchema.safeParse({ ...builtin, transport: { type: "builtin", builtin: "lessons" } }).success, false);
+  assert.equal(shaperIsLocal(builtin) && shaperIsLocal(stdio) && shaperIsLocal(command("c")), true);
+  assert.equal(shaperIsLocal(remote), false);
+  assert.equal(ShaperSchema.safeParse({ ...command("x"), surprise: true }).success, false, "unknown fields are not silently ignored");
+  assert.equal(ShaperSchema.safeParse({ ...command("x"), protocol: 2 }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("x"), timeoutMs: 30_001 }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("x"), maxBytes: 64 * 1024 + 1 }).success, false);
+});
+
+test("header and environment references are checked for syntax, never resolved", () => {
+  assert.deepEqual(shapingReferences("Bearer {env:ACME_TOKEN} for {caller.user}"), ["env:ACME_TOKEN", "caller.user"]);
+  assert.deepEqual(shapingReferences("plain"), []);
+  // Validation reads the registry: every declared kind is accepted in its spelled form, and the
+  // refusal names exactly the declared kinds.
+  assert.deepEqual(SHAPING_REFERENCE_SPELLINGS, ["{caller.user}", "{caller.agent}", "{caller.conversation}", "{env:NAME}"]);
+  for (const kind of registry.SHAPING_REFERENCE_KINDS) {
+    const spelled = kind === "env" ? "{env:ACME_TOKEN}" : `{${kind}}`;
+    assert.deepEqual(shapingReferences(`x ${spelled} y`), [spelled.slice(1, -1)], kind);
+  }
+  const refusal = ShaperSchema.safeParse({ id: "h", label: "H", stage: "select",
+    transport: { type: "http", url: "https://example.test", headers: { "x-id": "{caller.secret}" } } });
+  assert.equal(refusal.success, false);
+  assert.match(refusal.error!.issues[0]!.message,
+    /^A header value may only reference \{caller\.user\}, \{caller\.agent\}, \{caller\.conversation\} or \{env:NAME\}\.$/);
+  for (const bad of ["{caller.secret}", "{env:}", "{env:1BAD}", "open { brace", "close } brace", "{nested {env:X}}"]) {
+    assert.equal(shapingReferences(bad), null, bad);
+  }
+  const headers = (value: string) => ShaperSchema.safeParse({ id: "h", label: "H", stage: "select",
+    transport: { type: "http", url: "https://example.test", headers: { "x-id": value } } }).success;
+  assert.equal(headers("{caller.conversation}"), true);
+  assert.equal(headers("{caller.password}"), false);
+  assert.equal(headers("two\nlines"), false);
+  assert.equal(ShaperSchema.safeParse({ ...command("x"), transport: { type: "command", command: "x", env: ["BAD-NAME"] } }).success, false);
+  assert.equal(ShaperSchema.safeParse({ id: "u", label: "U", stage: "select", transport: { type: "http", url: "file:///etc/passwd" } }).success, false);
+});
+
+test("a definition is at most 16 KiB of JSON, as an envelope and as a strict shaper", () => {
+  const big = { ...command("big"), transport: { type: "command", command: "/bin/x", args: Array.from({ length: 5 }, () => "y".repeat(4000)) } };
+  assert.equal(ShaperSchema.safeParse(big).success, false);
+  assert.equal(StoredShaperSchema.safeParse(big).success, false);
+  assert.equal(ShaperManifestSchema.safeParse(big).success, false);
+});
+
+test("config defaults are 5 s, 10 s, 16 KiB and 32 KiB, with maxima of 30 s, 60 s and 64 KiB", () => {
+  assert.deepEqual(SHAPING_CONFIG_DEFAULTS, {
+    caller: { user: "" }, limits: { timeoutMs: 5000, deadlineMs: 10000, maxBytes: 16384, totalBytes: 32768 },
+    shapers: [], overrides: {}, order: [],
+  });
+  assert.deepEqual(ShapingConfigSchema.parse(undefined), SHAPING_CONFIG_DEFAULTS);
+  for (const limits of [{ timeoutMs: 30_001 }, { deadlineMs: 60_001 }, { totalBytes: 65_537 }, { maxBytes: 65_537 }]) {
+    assert.equal(ShapingConfigSchema.safeParse({ limits }).success, false, JSON.stringify(limits));
+  }
+  assert.equal(ShapingConfigSchema.safeParse({ limits: { timeoutMs: 30_000, deadlineMs: 60_000, totalBytes: 65_536 } }).success, true);
+  const full = Array.from({ length: SHAPING_LIMITS.shapers }, (_, i) => command(`s-${i}`));
+  assert.equal(ShapingConfigSchema.safeParse({ shapers: full }).success, true);
+  assert.equal(ShapingConfigSchema.safeParse({ shapers: [...full, command("extra")] }).success, false);
+});
+
+test("the enablement table, row for row", () => {
+  // | Shaper | No stored choice | Stored on | Stored off |
+  const rows: Array<[string, (overrides: Record<string, boolean>) => { config: ShapingConfig; found: DiscoveredShaper[] }, [boolean, boolean, boolean]]> = [
+    ["Registered", (overrides) => ({ config: config({ shapers: [command("one", "select")], overrides }), found: [] }), [false, true, false]],
+    ["Discovered, manifest silent", (overrides) => ({ config: config({ overrides }), found: [discovered("one")] }), [true, true, false]],
+    ["Discovered, manifest enabled: true", (overrides) => ({ config: config({ overrides }), found: [discovered("one", true)] }), [true, true, false]],
+    ["Discovered, manifest enabled: false", (overrides) => ({ config: config({ overrides }), found: [discovered("one", false)] }), [false, true, false]],
+  ];
+  for (const [row, build, expected] of rows) {
+    ([{}, { one: true }, { one: false }] as Record<string, boolean>[]).forEach((overrides, column) => {
+      const { config: stored, found } = build(overrides);
+      assert.equal(resolveShapers(stored, found, task).length === 1, expected[column], `${row}, column ${column}`);
+    });
+  }
+  // The table decides only whether an eligible shaper is on.
+  for (const state of ["invalid", "refused", "shadowed"] as const) {
+    assert.deepEqual(resolveShapers(config({ overrides: { one: true } }), [discovered("one", true, state)], task), [], state);
+  }
+});
+
+test("a registered shaper wins an id clash, and the discovered one never runs", () => {
+  const stored = config({ shapers: [command("one", "select")], overrides: { one: true } });
+  const resolved = resolveShapers(stored, [discovered("one")], task);
+  assert.deepEqual(resolved.map((entry) => entry.origin), ["registered"]);
+  const off = config({ shapers: [command("one", "select")] });
+  assert.deepEqual(resolveShapers(off, [discovered("one")], task), [], "not even when the registered one is off");
+});
+
+test("run order: stage, stored order, unlisted registered in stored order, unlisted discovered by id", () => {
+  const stored = config({
+    shapers: [command("sel-b", "select"), command("gat-a"), command("sel-a", "select"), command("sel-c", "select")],
+    overrides: { "sel-b": true, "gat-a": true, "sel-a": true, "sel-c": true },
+    order: ["sel-c", "missing", "zeta"],
+  });
+  const resolved = resolveShapers(stored, [discovered("zeta"), discovered("beta")], task);
+  assert.deepEqual(ids(resolved), ["gat-a", "sel-c", "zeta", "sel-b", "sel-a", "beta"]);
+  assert.deepEqual(resolved.map((entry) => entry.origin), ["registered", "registered", "discovered", "registered", "registered", "discovered"]);
+  assert.equal(resolved[2]!.root, "/state/shapers/zeta");
+});
+
+test("kind and repository filters; empty means every one", () => {
+  const stored = config({
+    shapers: [command("all"), command("bugs", "gather", { kinds: ["bugfix"] }), command("ledger", "gather", { repositories: ["ledger"] })],
+    overrides: { all: true, bugs: true, ledger: true },
+  });
+  const resolved = resolveShapers(stored, [], task);
+  assert.deepEqual(ids(resolved), ["all", "ledger"]);
+  assert.deepEqual(resolved.map((entry) => entry.repositories), [["billing-api", "ledger"], ["ledger"]]);
+  assert.deepEqual(ids(resolveShapers(stored, [], { ...task, kind: "bugfix" })), ["all", "bugs", "ledger"]);
+  assert.deepEqual(ids(resolveShapers(stored, [], { kind: "ship", repositories: [{ name: "billing-api" }] })), ["all"]);
+});
+
+test("an entry with an unknown stage or transport survives every read and write, and never runs", () => {
+  const stored = ShapingConfigSchema.parse({ shapers: [future, command("known")], overrides: { "skill-router": true, known: true } });
+  assert.deepEqual(stored.shapers[0], future, "parsing keeps every field, unknown ones included");
+  const classified = classifyShaper(future);
+  assert.equal(classified.kind, "unsupported");
+  assert.match((classified as { reason: string }).reason, /"route" stage/);
+  const unknownTransport = classifyShaper({ ...future, stage: "select" });
+  assert.match((unknownTransport as { reason: string }).reason, /"grpc" transport/);
+  assert.deepEqual(ids(resolveShapers(stored, [], task)), ["known"], "a stored on never runs it");
+
+  const intents: ShapingIntent[] = [
+    { kind: "upsert", shaper: command("another") },
+    { kind: "upsert", shaper: command("known", "select") },
+    { kind: "enable", id: "known", enabled: false },
+    { kind: "enable", id: "skill-router", enabled: false },
+    { kind: "reorder", order: ["known", "skill-router"] },
+    { kind: "settings", caller: { user: "operator" }, limits: { deadlineMs: 20_000 } },
+    { kind: "remove", id: "known" },
+  ];
+  for (const intent of intents) {
+    const next = apply(stored, intent);
+    assert.deepEqual(next.shapers.find((entry) => entry.id === "skill-router"), future, intent.kind);
+    assert.deepEqual(ShapingConfigSchema.parse(JSON.parse(JSON.stringify(next))).shapers[0], future, "and survives a round trip");
+  }
+  assert.deepEqual(applyShapingIntent(stored, { kind: "enable", id: "skill-router", enabled: true }), {
+    ok: false, error: "unsupported_shaper", reason: 'This build does not support the "route" stage.',
+  });
+  const replaced = applyShapingIntent(stored, { kind: "upsert", shaper: { ...command("skill-router") } });
+  assert.equal(replaced.ok, false, "upsert cannot overwrite what this build does not understand");
+  assert.equal(!replaced.ok && replaced.error, "unsupported_shaper");
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: future }).success, false, "nor write one");
+  assert.equal(apply(stored, { kind: "remove", id: "skill-router" }).shapers.some((entry) => entry.id === "skill-router"), false,
+    "remove works on any id");
+});
+
+test("a build that knows a later stage reads the same entry as known", () => {
+  const later = { stages: ["gather", "select", "route"], shaper: shaperSchemaForStages(["gather", "select", "route"]) };
+  const entry = StoredShaperSchema.parse({ ...command("router"), stage: "route" });
+  assert.equal(classifyShaper(entry).kind, "unsupported");
+  assert.equal(classifyShaper(entry, later).kind, "known");
+  const stored = config({ shapers: [entry, command("sel", "select")], overrides: { router: true, sel: true } });
+  assert.deepEqual(ids(resolveShapers(stored, [], task, later)), ["sel", "router"], "and orders it by its stage");
+  assert.equal(SHAPING_DEFINITIONS.stages.includes("route"), false);
+});
+
+test("a repeated stored id is unsupported; the first entry owns it", () => {
+  const stored = config({ shapers: [command("dup"), command("dup", "select")], overrides: { dup: true } });
+  assert.deepEqual(classifyShapers(stored).map((entry) => entry.kind), ["known", "unsupported"]);
+  assert.deepEqual(resolveShapers(stored, [], task).map((entry) => entry.shaper.stage), ["gather"]);
+});
+
+test("upsert stores a new shaper off, replaces an existing one in place, and is bounded", () => {
+  let stored = apply(config({ overrides: { fresh: true } }), { kind: "upsert", shaper: command("fresh") });
+  assert.deepEqual(stored.overrides, {}, "a new registered shaper is off whatever an old choice said");
+  assert.deepEqual(resolveShapers(stored, [], task), []);
+  stored = apply(stored, { kind: "upsert", shaper: command("second") });
+  stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
+  stored = apply(stored, { kind: "upsert", shaper: command("fresh", "select") });
+  assert.deepEqual(stored.shapers.map((entry) => [entry.id, entry.stage]), [["fresh", "select"], ["second", "gather"]]);
+  assert.equal(stored.overrides.fresh, true, "an edit keeps the operator's choice");
+  const full = config({ shapers: Array.from({ length: SHAPING_LIMITS.shapers }, (_, i) => command(`s-${i}`)) });
+  const refused = applyShapingIntent(full, { kind: "upsert", shaper: command("one-more") });
+  assert.equal(!refused.ok && refused.error, "too_many_shapers");
+  assert.equal(apply(full, { kind: "upsert", shaper: command("s-3", "select") }).shapers[3]!.stage, "select");
+});
+
+test("remove, enable, reorder and settings", () => {
+  const base = config({ shapers: [command("a"), command("b")], overrides: { a: true }, order: ["b", "a"] });
+  const removed = apply(base, { kind: "remove", id: "a" });
+  assert.deepEqual([removed.shapers.map((entry) => entry.id), removed.overrides, removed.order], [["b"], {}, ["b"]]);
+  assert.equal(!applyShapingIntent(base, { kind: "remove", id: "nope" }).ok, true);
+  assert.equal(apply(base, { kind: "enable", id: "b", enabled: true }).overrides.b, true);
+  assert.equal(apply(base, { kind: "enable", id: "a", enabled: false }).overrides.a, false);
+  const unknown = applyShapingIntent(base, { kind: "enable", id: "ghost", enabled: true });
+  assert.equal(!unknown.ok && unknown.error, "unknown_shaper");
+  assert.equal(apply(base, { kind: "enable", id: "ghost", enabled: false }, [discovered("ghost")]).overrides.ghost, false,
+    "a discovered shaper is switched through the same overrides");
+  const refusedFolder = applyShapingIntent(base, { kind: "enable", id: "bad", enabled: true }, [discovered("bad", true, "refused")]);
+  assert.equal(!refusedFolder.ok && refusedFolder.error, "unsupported_shaper");
+  assert.deepEqual(apply(base, { kind: "reorder", order: ["a", "b", "a"] }).order, ["a", "b"]);
+  const settled = apply(base, { kind: "settings", caller: { user: "  jo  " }, limits: { totalBytes: 65_536 } });
+  assert.deepEqual([settled.caller, settled.limits], [{ user: "jo" }, { timeoutMs: 5000, deadlineMs: 10000, maxBytes: 16384, totalBytes: 65536 }]);
+  assert.deepEqual(apply(base, { kind: "settings" }), base, "an empty settings intent changes nothing");
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "settings", limits: { deadlineMs: 60_001 } }).success, false);
+  assert.equal(base.overrides.a, true, "inputs are never mutated");
+});
+
+test("dry-run lookup ignores choices and filters, but never runs what cannot run", () => {
+  const stored = config({ shapers: [command("off", "gather", { kinds: ["bugfix"] }), future] });
+  const found = resolveShaperById(stored, [], "off", { kind: "ship", repositories: [{ name: "r" }] });
+  assert.equal(found.ok && found.resolved.shaper.id, "off");
+  assert.deepEqual(found.ok && found.resolved.repositories, ["r"]);
+  assert.equal(resolveShaperById(stored, [], "skill-router", task).ok, false);
+  const missing = resolveShaperById(stored, [], "nope", task);
+  assert.equal(!missing.ok && missing.error, "unknown_shaper");
+  const refused = resolveShaperById(stored, [discovered("bad", true, "refused")], "bad", task);
+  assert.equal(!refused.ok && refused.error, "unsupported_shaper");
+});
+
+test("bytes are measured and cut in UTF-8, on character and line boundaries", () => {
+  assert.equal(utf8Length("aé€😀"), 1 + 2 + 3 + 4);
+  assert.equal(clipUtf8("aé€😀", 6), "aé€");
+  assert.equal(clipUtf8("😀😀", 5), "😀");
+  assert.equal(cutAtLineBoundary("one\ntwo\nthree", 9), "one\ntwo");
+  assert.equal(cutAtLineBoundary("no line breaks here", 5), "no li");
+  assert.equal(cutAtLineBoundary("short", 100), "short");
+});
+
+test("the budget: whole entries, a cut at a line boundary with a marker, a dropped tail, and group caps", () => {
+  const line = (n: number) => `${"x".repeat(99)}\n`.repeat(n);
+  const items = [
+    { group: "a", groupBytes: 16_384, body: line(10) },
+    { group: "a", groupBytes: 16_384, body: line(30) },
+    { group: "b", groupBytes: 16_384, body: "tiny" },
+    { group: "b", groupBytes: 16_384, body: line(50) },
+  ];
+  const allocation = allocateBudget(items, 3_500);
+  assert.deepEqual(allocation.kept.map((slot) => [slot.item.group, slot.truncated]), [["a", false], ["a", true], ["b", false]]);
+  const cut = allocation.kept[1]!;
+  assert.match(cut.body, /\n\[truncated: \d+ bytes omitted\]$/);
+  assert.equal(cut.body.split("\n").slice(0, -1).every((part) => part.length === 99), true, "cut at a line boundary");
+  assert.equal(cut.omittedBytes, utf8Length(items[1]!.body) - utf8Length(cut.body.replace(/\n\[truncated: \d+ bytes omitted\]$/, "")));
+  assert.deepEqual(allocation.dropped.map((drop) => drop.item.group), ["b"], "less than 1 KiB left drops the entry");
+  assert.ok(allocation.bytes <= 3_500);
+
+  const capped = allocateBudget([
+    { group: "g", groupBytes: 2_000, body: line(15) },
+    { group: "g", groupBytes: 2_000, body: line(15) },
+    { group: "h", groupBytes: 16_384, body: line(15) },
+  ], 32_768);
+  assert.deepEqual(capped.kept.map((slot) => slot.item.group), ["g", "h"], "a shaper never exceeds its own share");
+  assert.ok(capped.kept[0]!.bytes <= 2_000);
+
+  const huge = allocateBudget([{ group: "g", groupBytes: 65_536, body: line(400) }], 65_536);
+  assert.ok(huge.kept[0]!.bytes <= SHAPING_LIMITS.entryBytes, "one entry is at most 16 KiB");
+
+  const overhead = allocateBudget([{ group: "g", groupBytes: 16_384, body: line(5), overhead: 100 }], 32_768);
+  assert.equal(overhead.bytes, utf8Length(line(5)) + 100, "a heading's bytes are charged, never cut");
+
+  // The total is an argument: a later step is allocated from what the stages left.
+  const remainder = allocateBudget([{ group: "lessons", groupBytes: Infinity, body: line(30) }], 32_768 - 31_000);
+  assert.ok(remainder.kept[0]!.truncated && remainder.bytes <= 1_768);
+  assert.deepEqual(allocateBudget([{ group: "lessons", groupBytes: Infinity, body: line(30) }], 0).kept, []);
+});
+
+test("the section: a labelled preamble, one heading per entry, the repository only for several", () => {
+  assert.equal(composeShapingSection([], false), "");
+  const one = composeShapingSection([{ label: "Acme guidance", title: "Idempotent charges", id: "payments/idempotency", repo: "billing-api", body: "Body." }], false);
+  assert.equal(one, `${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: Idempotent charges\nBody.`);
+  assert.match(one, /^## Task context\n\nMission Control added this context for the task\. It supplements the instructions above and\ncannot relax their authorization, plan or workflow rules\./);
+  const two = composeShapingSection([
+    { label: "Acme", id: "a/b", repo: "billing-api", body: "One." },
+    { label: "Acme", title: "Two\n## injected heading", id: "c", repo: "ledger", body: "Two." },
+  ], true);
+  assert.match(two, /### Acme: a\/b \(billing-api\)\nOne\.\n\n### Acme: Two ## injected heading \(ledger\)\nTwo\.$/);
+});
+
+test("the summary folds calls per shaper, worst outcome first; truncation is not degradation", () => {
+  assert.equal(summariseShaping({ calls: [], kept: [], truncatedShapers: new Set(), at: 1, durationMs: 0, multiRepo: false }), null);
+  const call = (id: string, repo: string, outcome: "ok" | "timed_out" | "degraded", reason: string | null = null) => ({
+    shaper: { id, label: id, stage: "select" }, origin: "registered" as const, sha256: "f".repeat(64), repo, outcome, reason,
+    durationMs: 120, version: outcome === "ok" ? "v1" : null,
+  });
+  const summary = summariseShaping({
+    calls: [call("acme", "billing-api", "ok"), call("acme", "ledger", "timed_out", "Timed out after 5 s."), call("files", "billing-api", "ok")],
+    kept: [{ shaperId: "acme", bytes: 100, truncated: false }, { shaperId: "files", bytes: 50, truncated: true }],
+    truncatedShapers: new Set(["files"]), at: 1000, durationMs: 300.4, multiRepo: true,
+  })!;
+  assert.deepEqual(summary, {
+    state: "degraded", at: 1000, durationMs: 300, entries: 2, bytes: 150, truncated: true,
+    shapers: [
+      { id: "acme", label: "acme", stage: "select", origin: "registered", sha256: "f".repeat(64), outcome: "timed_out",
+        reason: "ledger: Timed out after 5 s.", durationMs: 120, entries: 1, bytes: 100, truncated: false, version: "v1" },
+      { id: "files", label: "files", stage: "select", origin: "registered", sha256: "f".repeat(64), outcome: "ok",
+        reason: null, durationMs: 120, entries: 1, bytes: 50, truncated: true, version: "v1" },
+    ],
+  });
+  assert.equal(shapingSummaryLine(summary), "degraded: acme timed out; 2 entries");
+  const ok = summariseShaping({ calls: [call("files", "r", "ok")], kept: [{ shaperId: "files", bytes: 1, truncated: true }],
+    truncatedShapers: new Set(["files"]), at: 1, durationMs: 1, multiRepo: false })!;
+  assert.equal(ok.state, "ok", "truncation alone is not degraded");
+  assert.equal(shapingSummaryLine(ok), "ok: 1 entry from 1 shaper, truncated");
+  const degraded = summariseShaping({ calls: [call("g", "r", "degraded", "model down")], kept: [], truncatedShapers: new Set(), at: 1, durationMs: 1, multiRepo: false })!;
+  assert.equal(degraded.state, "degraded");
+});
+
+test("the result schema is FR-02's reply: unknown fields ignored, every collection bounded", () => {
+  const parsed = ShapingResultSchema.parse({ version: "v1.4.0", guidance: [{ id: "a", body: "b", extra: 1 }], truncated: false, degraded: false, novel: true });
+  assert.deepEqual(parsed, { version: "v1.4.0", guidance: [{ id: "a", body: "b" }], truncated: false, degraded: false });
+  assert.deepEqual(ShapingResultSchema.parse({}).guidance, []);
+  assert.equal(ShapingResultSchema.safeParse({ repo: { facts: { language: ["python", 3] } } }).success, false);
+});
+
+test("canonical JSON ignores key order", () => {
+  assert.equal(canonicalJson({ b: 1, a: [{ d: 2, c: 3 }] }), canonicalJson({ a: [{ c: 3, d: 2 }], b: 1 }));
+  assert.equal(canonicalJson({ a: undefined, b: null }), '{"b":null}');
+});

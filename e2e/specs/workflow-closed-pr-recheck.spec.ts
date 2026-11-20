@@ -33,7 +33,9 @@ const EVIDENCE = artifactsDir("workflow-closed-pr-recheck");
  * Everything from the click on is production: the route, the GitHub read, the ledger write, the
  * gate evaluation, the server event and the repaint.
  */
-test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "3600000" } });
+// The daemon fixture disables session discovery polling. Also keep PR polling from
+// publishing a session update that could own the explicit recheck's recovery read.
+test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "3600000", MISSION_PR_POLL_MS: "3600000" } });
 
 const PR_NUMBER = 1494;
 const PR_KEY = `owner/repo#${PR_NUMBER}`;
@@ -392,6 +394,8 @@ test(`${trigger} releases unsent feedback for a superseded clean Inspector head`
     // Session return cannot recover a remotely closed PR. Once reachable, a cached A
     // observation must not let Check again send before its own read discovers B.
     await expect.poll(() => ledgerRow(daemon).observed_state).toBe("CLOSED");
+    await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .find(session => session.id === sessionId)?.state).toBe("idle");
     withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
       observed_state = 'OPEN', observed_head_sha = ?, observed_at = ? WHERE key = ?`)
       .run(FAILED_HEAD, Date.now(), PR_KEY));

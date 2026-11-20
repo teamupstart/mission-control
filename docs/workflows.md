@@ -2729,6 +2729,9 @@ gate, while `restart_workflow` captures a full resubmission, preserving evidence
 Persona review. Recovery requires the same active attachment, live delivery authorization and
 an unpaused session. **Check again** is available only when the delivery block holds a
 recoverable prepared Inspector feedback packet, and asks Inspector for a fresh remote observation. Uncertain sends remain held for explicit resolution.
+Before re-offering feedback held behind another review or a pause, delivery checks its
+submission and findings gate again. Obsolete queued packets remain unsent without
+interrupting the current review, matching restart recovery's retention policy.
 
 The packet's findings section comes from a pure, shared renderer
 (`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the

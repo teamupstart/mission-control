@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
-import type { WorkflowBinding, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import type { WorkflowBinding, WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
+import { WorkflowInspectorGateStateSchema } from "../src/shared/protocol.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // One workflow run is one repository.
@@ -916,6 +917,97 @@ test("two repositories' packets never type into one pane at once", async () => {
     .scheduleQueuedDeliveries(f.agentSessionId);
   await f.manager.stop();
   assert.equal(f.store.getDelivery(second.delivery.id)?.state, "delivered");
+});
+
+for (const advance of ["unchanged", "observed-head", "target-head", "submission"] as const) {
+  test(`queued Inspector feedback revalidates its gate: ${advance}`, async () => {
+    const { f, runs } = await twoLiveRuns();
+    const [first, second] = runs;
+    assert.ok(first && second);
+    const now = Date.now();
+    const oldHead = second.submission.prHeadSha ?? PRIMARY_BASE;
+    const newHead = "d".repeat(40);
+    const gate = WorkflowInspectorGateStateSchema.parse({
+      prKey: "owner/second#2", prUrl: "https://github.com/owner/second/pull/2",
+      targetHeadSha: oldHead, failedHeadSha: oldHead,
+      observedHeadSha: oldHead, enteredAt: now, lastObservedAt: now,
+      reviewPosture: "live", waitReason: "findings", findingFingerprints: ["queued-finding"],
+    });
+    db.prepare("UPDATE workflow_versions SET completion_policy_json = json_set(completion_policy_json, '$.onFindings', 'inspector_only') WHERE id = ?")
+      .run(f.versionId);
+    db.prepare("UPDATE workflow_deliveries SET kind = 'inspector_feedback' WHERE id = ?")
+      .run(second.delivery.id);
+    f.store.setRunState(second.run.id, "waiting_for_new_head", "inspector_findings", workflowJson(gate), now);
+    const manager = f.manager as unknown as {
+      deliverPrepared(id: string, retry: boolean): Promise<void>;
+      scheduleQueuedDeliveries(noteKey: string): void;
+    };
+    await manager.deliverPrepared(first.delivery.id, false);
+    await manager.deliverPrepared(second.delivery.id, false);
+    assert.equal(f.store.getDelivery(second.delivery.id)?.state, "prepared");
+    assert.equal(f.store.listEvents(second.run.id).filter(e => e.kind === "delivery_queued").length, 1);
+    if (advance === "observed-head") {
+      f.store.setRunState(second.run.id, "waiting_for_new_head", "inspector_findings",
+        workflowJson({ ...gate, observedHeadSha: newHead }), now + 1);
+    } else if (advance !== "unchanged") {
+      const next: WorkflowInspectorGateState = {
+        ...gate, targetHeadSha: newHead, observedHeadSha: newHead, waitReason: "review_pending",
+      };
+      if (advance === "submission") {
+        assert.ok(f.store.createInspectorOnlySubmission({
+          id: `queued-new-submission-${serial}`, runId: second.run.id,
+          triggerKey: `queued-new-submission-${serial}`, newHeadSha: newHead,
+          failedHeadSha: oldHead, priorFindingFingerprints: gate.findingFingerprints,
+          bypassReason: "Inspector-only fixture", expectedState: gate, state: next, now: now + 1,
+        }));
+      } else f.store.setRunState(second.run.id, "waiting_for_inspector", "inspector_review", workflowJson(next), now + 1);
+    }
+    const before = f.store.getRun(second.run.id);
+    f.store.setRunState(first.run.id, "capturing", "capturing", null, now + 2);
+    manager.scheduleQueuedDeliveries(f.agentSessionId);
+    await f.manager.stop();
+    const packet = f.store.getDelivery(second.delivery.id)!;
+    assert.equal(packet.state, advance === "unchanged" ? "delivered" : "prepared");
+    if (advance !== "unchanged") {
+      assert.equal(packet.deliveredAt, null);
+      assert.deepEqual(f.store.getRun(second.run.id), before, "stale feedback must not block the newer review");
+      assert.equal(f.store.listEvents(second.run.id).filter(e => e.kind === "delivery_sending").length, 0);
+    }
+  });
+}
+
+test("Inspector feedback revalidates again at the terminal write boundary", async () => {
+  const { f, runs } = await twoLiveRuns();
+  const target = runs[1]!;
+  const now = Date.now();
+  const gate = WorkflowInspectorGateStateSchema.parse({
+    prKey: "owner/second#2", prUrl: "https://github.com/owner/second/pull/2",
+    targetHeadSha: PRIMARY_BASE, failedHeadSha: PRIMARY_BASE,
+    observedHeadSha: PRIMARY_BASE, enteredAt: now, lastObservedAt: now,
+    reviewPosture: "live", waitReason: "findings", findingFingerprints: ["late-finding"],
+  });
+  db.prepare("UPDATE workflow_deliveries SET kind = 'inspector_feedback' WHERE id = ?").run(target.delivery.id);
+  f.store.setRunState(target.run.id, "waiting_for_session", "inspector_findings", workflowJson(gate), now);
+  let attempts = 0;
+  const manager = new WorkflowManager(f.registry, f.store, {
+    inject: async (_session, _payload, _options, guard) => {
+      attempts += 1;
+      f.store.setRunState(target.run.id, "waiting_for_inspector", "inspector_review", workflowJson({
+        ...gate, targetHeadSha: MOVED, observedHeadSha: MOVED, waitReason: "review_pending",
+      }), now + 1);
+      const error = guard?.();
+      assert.equal(error, "inspector_feedback_superseded");
+      return { ok: false, pasted: false, submitVerified: false, error };
+    },
+    recordInjection: () => {},
+  });
+  await (manager as unknown as { deliverPrepared(id: string, retry: boolean): Promise<void> })
+    .deliverPrepared(target.delivery.id, false);
+  await manager.stop();
+  assert.equal(attempts, 1);
+  assert.equal(f.store.getDelivery(target.delivery.id)?.state, "prepared");
+  assert.equal(f.store.getDelivery(target.delivery.id)?.deliveredAt, null);
+  assert.equal(f.store.getRun(target.run.id)?.currentPhase, "inspector_review");
 });
 
 test("a sibling evidence-readiness hold is visible until a new submission releases the queue", async () => {

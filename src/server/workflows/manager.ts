@@ -5574,7 +5574,6 @@ export class WorkflowManager {
         continue;
       }
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-      const gate = this.gateState(run);
       const inspectorOnly =
         version?.completionPolicy.kind === "inspector"
         && version.completionPolicy.onFindings === "inspector_only";
@@ -5582,9 +5581,7 @@ export class WorkflowManager {
         delivery.kind !== "inspector_feedback"
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
         || run.currentPhase !== "inspector_findings"
-        || gate?.waitReason !== "findings"
-        || !gate.targetHeadSha
-        || gate.targetHeadSha !== gate.failedHeadSha
+        || !this.inspectorFeedbackIsCurrent(delivery, run)
       ) continue;
       this.schedulePreparedDelivery(delivery.id);
     }
@@ -6680,10 +6677,25 @@ export class WorkflowManager {
     }
   }
 
+  private inspectorFeedbackIsCurrent(delivery: WorkflowDelivery, run = this.store.getRun(delivery.runId)): boolean {
+    const gate = run ? this.gateState(run) : null;
+    return Boolean(run && this.store.latestSubmission(run.id)?.id === delivery.submissionId
+      && gate?.waitReason === "findings" && gate.targetHeadSha
+      && gate.targetHeadSha === gate.failedHeadSha
+      && (gate.observedHeadSha === null || gate.observedHeadSha === gate.failedHeadSha));
+  }
+
   private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery || transferForNote(delivery.noteKey)) return;
     if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
+    // As on restart, retain obsolete Inspector packets unsent. A sibling hold or pause can
+    // outlive the failed head; releasing it must not inject old feedback or block the new review.
+    if (delivery.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(delivery)) {
+      this.queuedDeliveries.delete(delivery.id);
+      this.pausedDeliveries.delete(delivery.id);
+      return;
+    }
     // The operator paused this session. Not a refusal: the packet stays `prepared`, the run is
     // left as it is, and the same bytes are offered again the moment the pause lifts (the
     // `session_upsert` arm of the subscription). A restart re-offers prepared packets anyway,
@@ -6755,7 +6767,9 @@ export class WorkflowManager {
         session,
         sending.payload,
         undefined,
-        () => this.deliveryBlock(sending, expectedPane),
+        () => this.deliveryBlock(sending, expectedPane)
+          ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
+            ? "inspector_feedback_superseded" : null),
       );
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
@@ -6768,6 +6782,13 @@ export class WorkflowManager {
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         releaseInjection(session.id, sending.payload);
+        if (result.error === "inspector_feedback_superseded") {
+          if (this.store.getDelivery(sending.id)?.state === "sending") {
+            this.store.setDeliveryState(sending.id, "prepared", null);
+          }
+          this.publishRun(sending.runId);
+          return;
+        }
         // The operator paused the session while this packet was on its way: the guard refused
         // for the pause, not for anything wrong with the packet. Held exactly as the check at
         // the top holds one - back to `prepared`, the run left as it is, offered again when the

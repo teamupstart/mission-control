@@ -207,10 +207,11 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
         "x-auth-token": "sk-live-trailing " } } },
   };
   const command = { id: "cmd", label: "Cmd", stage: "gather",
-    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["--json", "--token=sk-live-arg", "--api-key", "sk-live-next"] } };
+    transport: { type: "command", command: "/usr/local/bin/shaper",
+      args: ["--json", "--token=sk-live-arg", "--api-key", "sk-live-next", "-H", "Authorization: Bearer sk-live-header"] } };
   const parsed = ShapingConfigSchema.parse({ shapers: [future, command, shaperEntry()] });
   const text = JSON.stringify(parsed);
-  for (const secret of ["sk-live-literal", "sk-live-trailing", "sk-live-arg", "sk-live-next", "user:pw", "api_key", "k1"]) {
+  for (const secret of ["sk-live-literal", "sk-live-trailing", "sk-live-arg", "sk-live-next", "sk-live-header", "user:pw", "api_key", "k1"]) {
     assert.equal(text.includes(secret), false, secret);
   }
   const [stripped, cmd, untouched] = parsed.shapers as Array<Record<string, any>>;
@@ -218,7 +219,7 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
     "only the literal credential is emptied; a reference and an ordinary header are kept");
   assert.equal(stripped!.transport.server.url, "https://context.example/mcp?page=2");
   assert.deepEqual(stripped!.note, { kept: true }, "every other field of an unsupported entry is kept as written");
-  assert.deepEqual(cmd!.transport.args, ["--json", "", "--api-key", ""]);
+  assert.deepEqual(cmd!.transport.args, ["--json", "", "--api-key", "", "-H", ""]);
   assert.deepEqual(untouched, StoredShaperSchema.parse(shaperEntry()), "an entry with no literal credential is unchanged");
   assert.equal(withoutLiteralCredentials(untouched as StoredShaper), untouched, "and is not even copied");
   assert.equal(credentialsWereRemoved(untouched as StoredShaper), false);
@@ -256,7 +257,12 @@ test("an argument never hands over a credential as literal text; it is named in 
   const stdio = (args: string[]) => ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
     transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: "guide-server", args } } });
   for (const args of [["--token=sk-live-1"], ["--api-key", "sk-live-1"], ["api_key=sk-live-1"], ["-password", "hunter2"], ["--clientSecret=x"],
-    ["--token=line one\nsk-live-2"], ["--api-key=\nsk-live-3"], ["password=a=b=c"]]) {
+    ["--token=line one\nsk-live-2"], ["--api-key=\nsk-live-3"], ["password=a=b=c"],
+    // curl's credential forms: a credential header, a user and password, a bearer, a URL.
+    ["-H", "Authorization: Bearer sk-live-4"], ["--header", "X-Api-Key: sk-live-5"], ["--header=Authorization: Bearer sk-6"],
+    ["-HAuthorization: Bearer sk-7"], ["-H", "authorization: Bearer {env:ACME_TOKEN}"], ["--proxy-header", "Proxy-Authorization: Basic x"],
+    ["--user", "name:pass"], ["--user=name:pass"], ["-u", "name:pass"], ["-uname:pass"], ["-U", "proxy:pass"],
+    ["--oauth2-bearer", "sk-live-8"], ["https://name:pass@context.example/x"], ["https://context.example/x?api_key=sk-9"]]) {
     const refused = command(args);
     assert.equal(refused.success, false, args.join(" "));
     assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);
@@ -264,7 +270,9 @@ test("an argument never hands over a credential as literal text; it is named in 
   }
   assert.deepEqual(command(["--verbose", "--api-key", "sk"]).error!.issues[0]!.path, ["transport", "args", 2], "the value is named");
   for (const args of [["--json"], ["--token-file", "/etc/acme/token"], ["--key-path=/secrets/key"], ["--api-key-env=ACME_TOKEN"],
-    ["--token", "--verbose"], ["--repo", "billing-api"], ["--monkey=1"]]) {
+    ["--token", "--verbose"], ["--repo", "billing-api"], ["--monkey=1"],
+    ["-H", "Accept: application/json"], ["--header", "X-Request-Id: 42"], ["--user-agent", "shaper/1"], ["-u", "1000"],
+    ["sort", "-u"], ["https://context.example/x?page=2"], ["-v"]]) {
     assert.equal(command(args).success, true, args.join(" "));
   }
 });

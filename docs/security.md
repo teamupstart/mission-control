@@ -411,10 +411,13 @@ stderr is decoded as a stream, so a multi-byte character split across two pipe c
 whole and a non-ASCII value still matches exactly when it is redacted.
 
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
-started outside its process group cannot keep them open after the group is killed. A
+started outside its process group cannot keep them open after the group is killed. It also
+kills what is left of the shaper's own process group, even after a successful reply, so a
+helper the shaper started in its group cannot outlive the call. A
 selector's scratch directory is removed in the background after the call has answered, never
 before it. A large tree left behind costs disk work, not the dry run's latency or the event
-loop's. Removal never changes a permission and never follows a symlink. A directory the
+loop's. A removal that fails is logged through the call's redactor, because a path in the tree
+is named by the shaper. Removal never changes a permission and never follows a symlink. A directory the
 shaper locked is left behind and logged, because a path in the tree could be swapped for a
 link between a read and a `chmod`. A cleanup a transport registers after its call was
 abandoned runs as soon as it is registered, so a late resource is still released.
@@ -428,7 +431,11 @@ An API-key header such as `x-api-key` takes references alone. Any other leading 
 word with or without whitespace after it, or a key prefix such as `sk-live {env:X}`, is
 literal secret text and is refused. So is a value that names only a caller reference. A URL may not carry a user name,
 a password or a credential-shaped query parameter. An argument may not hand over a credential
-as literal text, as in `--token=…` or `--api-key …`; name the variable in `env` instead.
+as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
+credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
+`--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, or a URL with
+userinfo or a credential query parameter. Arguments are never resolved, so name the variable in
+`env` instead.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
 definition that breaks these rules is
 refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every

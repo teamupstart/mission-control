@@ -180,13 +180,25 @@ export function redactReceived(text: string, values: readonly string[], dropBefo
  * read and a `chmod`, and Node has no `openat` to refuse that at the point of use, so an
  * unlock could change permissions outside the tree. Removal itself does not follow symlinks.
  */
-export async function removeScratch(dir: string): Promise<void> {
+export async function removeScratch(dir: string, scrub: (text: string) => string = (text) => text): Promise<void> {
   try {
     await fsp.rm(dir, { recursive: true, force: true });
   } catch (error) {
-    console.warn("[shaping] could not remove a selector's working directory:", dir,
-      error instanceof Error ? error.message : String(error));
+    // A path inside the tree is named by the shaper and can repeat a value it was handed, so
+    // the diagnostic goes through the call's redactor before it reaches the daemon's log.
+    console.warn("[shaping] could not remove a selector's working directory:", scrub(dir),
+      scrub(error instanceof Error ? error.message : String(error)));
   }
+}
+
+/**
+ * Stop whatever is left of the shaper's process group. Runs on every settle, success included:
+ * a shaper can start a helper in its group with stdio of its own, answer, and exit, and nothing
+ * else would ever stop that helper. Never throws; an empty group is the common case.
+ */
+function reapGroup(child: ChildProcess | undefined): void {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch { /* Nothing left in the group. */ }
 }
 
 function isDirectory(path: string): boolean {
@@ -246,7 +258,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     cwd = scratch;
   }
   // Fire and forget: removal runs in the background and the call never waits for it.
-  const cleanup = () => { if (scratch) void removeScratch(scratch); };
+  const cleanup = (scrub?: (text: string) => string) => { if (scratch) void removeScratch(scratch, scrub); };
 
   let command = transport.command;
   if (command.startsWith("./")) {
@@ -289,8 +301,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       for (const timer of timers) clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
       releaseStdio(child as ChildProcess | undefined);
+      reapGroup(child as ChildProcess | undefined);
       settle(reply);
-      cleanup();
+      cleanup((text) => redactReceived(text, received));
     };
     const stderrTail = (): string => {
       // Once the front was cut, the first `longestValue` characters may hold the tail end of a

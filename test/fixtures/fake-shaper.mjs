@@ -97,6 +97,15 @@ switch (mode) {
     await sleep(60_000);
     break;
   }
+  case "orphan-helper": {
+    // A helper in this shaper's own process group, with stdio of its own, left running after a
+    // perfectly good reply. Nothing holds the pipes, so the call closes normally.
+    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    writeFileSync(rest[0], String(helper.pid));
+    helper.unref();
+    reply({ guidance: [{ id: "answered", body: "answered, and left a helper behind" }] });
+    break;
+  }
   case "lock-cwd": {
     // Leaves a nested directory with no permissions in its working directory, so a plain
     // recursive removal of that directory fails, then answers normally.

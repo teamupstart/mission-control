@@ -300,6 +300,51 @@ test("a helper outside the process group that holds the pipes cannot keep them o
   }
 });
 
+test("a helper left in the group after a successful reply is reaped when the call settles", async () => {
+  const pidFile = join(scratch, "orphan-helper.pid");
+  rmSync(pidFile, { force: true });
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  let pid = 0;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "orphan-helper", pidFile]), ctx(30_000));
+    assert.equal(reply.kind, "data", "the shaper answered normally");
+    pid = Number(readFileSync(pidFile, "utf8"));
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the helper did not outlive the dry run");
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+  }
+});
+
+test("a cleanup failure is logged through the call's redactor", async (t) => {
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-in-a-dir-name";
+  // A removal that fails on a path the shaper named after the value it was handed.
+  const removal = t.mock.method(fs.promises, "rm", async (path: string) => {
+    throw new Error(`EACCES: permission denied, rmdir '${path}/cache-s3cret-in-a-dir-name'`);
+  });
+  let cwd = "";
+  try {
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "echo"], { stage: "select", env: ["SHAPER_FIXTURE_SECRET"] }), ctx());
+    assert.equal(reply.kind, "data");
+    cwd = echoed(reply).cwd;
+    assert.equal(await until(() => warnings.length === 1), true);
+    const logged = JSON.stringify(warnings);
+    assert.equal(logged.includes("s3cret-in-a-dir-name"), false, "the value is not in the daemon's log");
+    assert.match(logged, /cache-\[redacted\]/);
+  } finally {
+    removal.mock.restore();
+    if (cwd) rmSync(cwd, { recursive: true, force: true });
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
 test("stopping a call kills its whole process group, descendants included", async () => {
   // Stopped only once the descendant exists, so how long Node takes to start on a busy machine
   // cannot decide what this test proves.

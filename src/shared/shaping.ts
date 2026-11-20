@@ -367,21 +367,80 @@ function credentialArgumentName(name: string): boolean {
  * credential flag such as `--api-key` followed by its value. Arguments are stored and backed up
  * as written and are never resolved, so a secret belongs in `env`, named, instead.
  */
-function literalCredentialArguments(args: readonly string[]): number[] {
-  const found: number[] = [];
-  args.forEach((arg, index) => {
+/** Flags whose value is an HTTP header, as `Name: value` (curl's `-H`, `--header`). */
+const HEADER_FLAGS = new Set(["H", "header", "proxy-header"]);
+/** Flags whose value is a credential whatever it is called (curl's `--user`, `--oauth2-bearer`). */
+const CREDENTIAL_VALUE_FLAGS = new Set(["user", "proxy-user", "oauth2-bearer", "basic-auth"]);
+/** Short flags that take `user:password` (curl's `-u`, `-U`). Only a value with a colon counts. */
+const USERINFO_FLAGS = new Set(["u", "U"]);
+
+/** One argument read as a flag: its name, and the value it carries and where, if any. */
+function argumentParts(args: readonly string[], index: number): { name: string; value?: string; at: number } | null {
+  const arg = args[index]!;
+  const next = args[index + 1];
+  const following = next !== undefined && !next.startsWith("-") ? next : undefined;
+  if (arg.startsWith("--")) {
+    const body = arg.slice(2);
     // Split at the first "=" and judge the name alone: a value may hold anything, line breaks
-    // included, and must not be what decides whether the argument is recognised.
-    const equals = arg.indexOf("=");
-    if (equals > 0) {
-      const name = /^-{0,2}([A-Za-z][A-Za-z0-9_.-]*)$/.exec(arg.slice(0, equals));
-      if (name && credentialArgumentName(name[1]!) && arg.length > equals + 1) found.push(index);
+    // included, and must not decide whether the argument is recognised.
+    const equals = body.indexOf("=");
+    if (equals > 0) return { name: body.slice(0, equals), value: body.slice(equals + 1), at: index };
+    return { name: body, value: following, at: index + 1 };
+  }
+  if (arg.startsWith("-") && arg.length > 1) {
+    const body = arg.slice(1);
+    const equals = body.indexOf("=");
+    if (equals > 0) return { name: body.slice(0, equals), value: body.slice(equals + 1), at: index };
+    // An attached short value, as in `-HAuthorization: Bearer x` or `-uuser:pass`: the letter,
+    // then text with a colon or a space, which no flag name contains.
+    if (body.length > 1 && (HEADER_FLAGS.has(body[0]!) || USERINFO_FLAGS.has(body[0]!)) && /[:\s]/.test(body.slice(1))) {
+      return { name: body[0]!, value: body.slice(1), at: index };
     }
-    const flag = /^-{1,2}([A-Za-z][A-Za-z0-9_.-]*)$/.exec(arg);
-    const next = args[index + 1];
-    if (flag && credentialArgumentName(flag[1]!) && next !== undefined && !next.startsWith("-")) found.push(index + 1);
+    return { name: body, value: following, at: index + 1 };
+  }
+  const equals = arg.indexOf("=");
+  if (equals > 0) return { name: arg.slice(0, equals), value: arg.slice(equals + 1), at: index };
+  return null;
+}
+
+/** Whether `value` is an http(s) URL that carries userinfo or a credential query parameter. */
+function urlCarriesCredential(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return Boolean(url.username || url.password) || Array.from(url.searchParams.keys()).some(credentialBearingName);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The arguments that hand a credential over as literal text. Arguments are stored and backed up
+ * as written and are never resolved, so a secret belongs in `env`, named, instead. Recognised:
+ * - a credential-named flag and its value, `--token=abc`, `api_key=abc`, `--api-key abc`;
+ * - a header flag whose header carries a credential, `-H "Authorization: Bearer x"`, refused
+ *   whatever the value, since an argument's `{env:NAME}` would never be resolved;
+ * - a credential flag such as `--user name:pass` or `--oauth2-bearer x`, and `-u name:pass`;
+ * - a URL with a user name, a password or a credential query parameter.
+ */
+function literalCredentialArguments(args: readonly string[]): number[] {
+  const found = new Set<number>();
+  args.forEach((arg, index) => {
+    if (urlCarriesCredential(arg)) found.add(index);
+    const parts = argumentParts(args, index);
+    if (!parts || parts.value === undefined || parts.value === "") return;
+    const name = parts.name;
+    if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name)) return;
+    if (HEADER_FLAGS.has(name)) {
+      const header = parts.value.split(":")[0]!.trim();
+      if (header && credentialBearingName(header)) found.add(parts.at);
+      return;
+    }
+    if (CREDENTIAL_VALUE_FLAGS.has(name)) found.add(parts.at);
+    else if (USERINFO_FLAGS.has(name)) { if (parts.value.includes(":")) found.add(parts.at); }
+    else if (credentialArgumentName(name)) found.add(parts.at);
   });
-  return found;
+  return [...found].sort((a, b) => a - b);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

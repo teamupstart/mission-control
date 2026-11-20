@@ -94,7 +94,10 @@ export function workerRefusal(
   const tasks = registry.listTasks();
   if (known) {
     if (known.runtime === "sdk") return workerDeny("this session is a Mission Control worker");
-    if (tasks.some((t) => t.sessionId === known.id)) {
+    // A finished task no longer makes its terminal session a worker, as with the worktree rule
+    // below: worker status tracks the task's current state, not its history. An SDK session is
+    // refused above whatever its task did.
+    if (tasks.some((t) => t.sessionId === known.id && !isTerminalTask(t.status))) {
       return workerDeny("this session is bound to a Mission Control task");
     }
   }

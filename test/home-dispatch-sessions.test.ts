@@ -178,6 +178,12 @@ test("worker rule: a task-bound terminal session is a worker, a discovered one i
   const bound = depsWith({ sessions: [terminal], tasks: [{ sessionId: "proc:t:1:1", status: "running", worktreePath: null, extraRepos: [] }] });
   assert.match(sessions.workerRefusal(bound, "h-1", undefined)?.reason ?? "", /bound to a Mission Control task/);
   assert.equal(sessions.workerRefusal(depsWith({ sessions: [terminal] }), "h-1", undefined), null);
+  for (const status of ["done", "failed", "cancelled"]) {
+    const finished = depsWith({ sessions: [terminal], tasks: [{ sessionId: "proc:t:1:1", status, worktreePath: null, extraRepos: [] }] });
+    assert.equal(sessions.workerRefusal(finished, "h-1", undefined), null, `a ${status} task no longer binds the session`);
+  }
+  const sdk = depsWith({ sessions: [{ id: "sdk:old", runtime: "sdk" }], tasks: [{ sessionId: "sdk:old", status: "done", worktreePath: null, extraRepos: [] }] });
+  assert.ok(sessions.workerRefusal(sdk, "sdk:old", undefined), "an SDK session stays a worker after its task finishes");
   assert.equal(sessions.workerRefusal(depsWith({}), "never-seen", undefined), null);
 });
 

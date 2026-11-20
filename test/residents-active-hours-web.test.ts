@@ -6,7 +6,7 @@ import { ResidentProfileRevisionSchema, type ResidentLoopStatus } from "../src/s
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import { ResidentLoopStatusLine } from "../src/web/residents/ResidentLoopControls.tsx";
-import { RESIDENT_EDITOR_SECTIONS, residentWeekSpans } from "../src/web/residents/editor-sections.tsx";
+import { RESIDENT_EDITOR_SECTIONS, residentScheduleToggled, residentWeekSpans } from "../src/web/residents/editor-sections.tsx";
 
 const on: FeatureFlagsConfig = { enableAll: false, overrides: { "resident-active-hours": true } };
 const off: FeatureFlagsConfig = { enableAll: false, overrides: {} };
@@ -77,4 +77,23 @@ test("the week strip draws a night shift's tail on the following day", () => {
   assert.deepEqual(spans.get(5), [[1320, 1440]]);
   assert.deepEqual(spans.get(6), [[0, 360]]);
   assert.deepEqual(spans.get(1), []);
+});
+
+test("turning active hours on names the browser's zone, and a stored null zone names only the daemon's", () => {
+  const section = RESIDENT_EDITOR_SECTIONS.find((entry) => entry.id === "schedule")!;
+  const off = ResidentProfileRevisionSchema.parse({ identity: { name: "Day" }, persona: { personaId: "p" } });
+  assert.equal(off.schedule.timeZone, null);
+  assert.deepEqual(residentScheduleToggled(off.schedule, true, "America/Chicago"), { ...off.schedule, enabled: true, timeZone: "America/Chicago" },
+    "turning hours on stores the browser's zone explicitly, so the governing clock is shown");
+  const chosen = { ...off.schedule, timeZone: "UTC" };
+  assert.deepEqual(residentScheduleToggled(chosen, true, "America/Chicago"), { ...chosen, enabled: true }, "a zone already chosen is kept");
+  assert.deepEqual(residentScheduleToggled({ ...chosen, enabled: true }, false, "America/Chicago"), { ...chosen, enabled: false });
+
+  const nullZone = ResidentProfileRevisionSchema.parse({ identity: { name: "Api" }, persona: { personaId: "p" }, schedule: { enabled: true } });
+  const html = renderToStaticMarkup(createElement(section.Body, { draft: nullZone, update: () => {}, personas: [], disabled: false }));
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.match(html, /<option value="" selected="">The Mission Control daemon&#x27;s time zone<\/option>/);
+  assert.doesNotMatch(html, new RegExp(`<option value=""[^>]*>[^<]*${browserZone.replace("/", "\\/")}`), "no browser-derived zone is claimed for null");
+  assert.match(html, /Times follow the Mission Control daemon&#x27;s time zone\. Choose a zone to preview the next window\./);
+  assert.match(html, /aria-label="Weekly active hours: Mon–Fri, 09:00–17:00 \(the Mission Control daemon&#x27;s time zone\)"/);
 });

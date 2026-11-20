@@ -496,7 +496,10 @@ for that conversation.
 [Settings > Feature flags](feature-flags.md) to see its card, which sits under **Loop and
 guardrails**. Check **Sleep outside active hours**, pick the days (Monday to Friday to start
 with, **Weekdays** and **Every day** as shortcuts), the time it **Wakes at** and **Sleeps at**,
-and a time zone; the default is this computer's. A week strip draws the awake spans, and a line
+and a time zone. Turning active hours on picks this browser's zone, shown and changeable, so the
+clock that governs the windows is always named. A profile saved without a zone, through the API,
+follows the Mission Control daemon's zone: the editor names it only as that, and every live-run
+surface evaluates it on the daemon's clock even when the dashboard is open in another zone. A week strip draws the awake spans, and a line
 under it says whether the resident would be awake now and when its next window opens.
 
 A window opens at its start time on each chosen day. When **Sleeps at** is at or before
@@ -507,7 +510,8 @@ daylight-saving changes.
 Outside its window a resident keeps running: its session, task and conversation stay open and
 its loop stays **waiting**. It only sleeps. A wake that falls due, at the cadence or one it asked
 for with `schedule_next_iteration`, is held and sent once when the next window opens; no loop
-prompt goes out and no compaction runs before it, so it spends no tokens. Whenever a waiting
+prompt goes out and no compaction runs before it, so it spends no tokens. A window that closes
+while a compaction is running sends no wake after it; that wake waits for the next window. Whenever a waiting
 resident is outside its window, every live-run surface shows **asleep** with the time its next
 wake goes out: the next opening when that wake was held, or the wake's own time when it is
 already due inside the next window. While the window is still open, a resident whose next wake

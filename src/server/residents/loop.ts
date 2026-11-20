@@ -345,6 +345,9 @@ export class ResidentLoop {
     }
     const blockedAfterCompaction = this.blocker(run, session);
     if (blockedAfterCompaction) { if (blockedAfterCompaction === BUSY_BLOCKER) restore(); return; }
+    // The window can close while a compaction runs: recheck before the wake is claimed, so the
+    // loop prompt never goes out after it. The next observation re-arms for the next opening.
+    if (trigger === "loop" && !residentAwakeAt(run.settings.schedule, this.now(), this.activeHours())) { restore(); return; }
     // Compaction spends tokens too. Recheck the window after every awaited operation.
     const afterCompaction = residentGuardrail(liveRun(id), this.now());
     if (afterCompaction) { this.pause(id, afterCompaction); return; }

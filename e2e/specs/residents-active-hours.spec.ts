@@ -71,6 +71,11 @@ test("the Active hours card follows its preview flag live, and the schedule chos
   await expect(card.getByRole("status")).toHaveText(/^Always awake/);
 
   await toggle.check();
+  // Turning hours on names a zone, this browser's, rather than leaving the daemon's clock implied;
+  // the unnamed choice stays available and claims no browser-derived zone.
+  const zone = card.getByRole("combobox", { name: "Time zone" });
+  await expect(zone).toHaveValue(await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone));
+  await expect(zone.locator('option[value=""]')).toHaveText("The Mission Control daemon's time zone");
   const days = card.getByRole("group", { name: "Active days" });
   for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) {
     await expect(days.getByRole("button", { name: day })).toHaveAttribute("aria-pressed", "true");

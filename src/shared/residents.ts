@@ -624,9 +624,21 @@ export function residentRestartRequestId(runId: string): string {
 
 /** Project a pinned revision to the sections a run summary carries. */
 export function residentRunSummarySettings(settings: ResidentProfileRevision): ResidentRunSummarySettings {
-  return Object.fromEntries(
+  const projected = Object.fromEntries(
     RESIDENT_RUN_SUMMARY_SECTIONS.map((id) => [id, settings[id]]),
   ) as ResidentRunSummarySettings;
+  // A null zone means the daemon's own clock. Summaries are built on the daemon, so name that
+  // zone here: a browser in another zone then evaluates the schedule on the clock that governs it.
+  if (projected.schedule.timeZone === null) {
+    const zone = runtimeTimeZone();
+    if (zone) projected.schedule = { ...projected.schedule, timeZone: zone };
+  }
+  return projected;
+}
+
+/** The IANA zone this runtime's local clock follows, or null when the runtime cannot say. */
+function runtimeTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
 
 /** The wire summary of a run, or null when the run is not live and leaves the collection. */

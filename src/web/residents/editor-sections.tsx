@@ -649,10 +649,26 @@ function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: Resi
   </div>;
 }
 
-/** The daemon's zone is the browser's on one machine; named so the operator sees which. */
-function localTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+/**
+ * The browser's zone: what turning active hours on stores, explicitly, so the zone that governs
+ * the windows is the one the operator sees. A stored null means the daemon's zone, which this
+ * browser cannot read and so never names.
+ */
+function browserTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
+
+/**
+ * The schedule after Sleep outside active hours is switched. Turning it on names a zone, the
+ * browser's, so the clock that governs the windows is stored and shown rather than implied;
+ * a zone already chosen is kept, and turning it off changes nothing else.
+ */
+export function residentScheduleToggled(schedule: ResidentScheduleSection, enabled: boolean, browserZone: string | null): ResidentScheduleSection {
+  return { ...schedule, enabled, timeZone: enabled && schedule.timeZone === null ? browserZone : schedule.timeZone };
+}
+
+/** How a stored null zone is named: the daemon's clock, with no browser-derived claim. */
+const DAEMON_ZONE_LABEL = "the Mission Control daemon's time zone";
 
 /** Every zone this browser can name, or just the common ones where the list is unavailable. */
 function timeZoneChoices(): string[] {
@@ -691,6 +707,8 @@ function scheduleNowLine(schedule: ResidentScheduleSection, now: number): string
   if (!schedule.enabled) return "Always awake: the loop wakes it on its cadence, day and night.";
   if (schedule.days.length === 0) return "Choose at least one day.";
   const zone = schedule.timeZone;
+  // This browser's clock may not be the daemon's, so it cannot say where a null zone stands.
+  if (zone === null) return `Times follow ${DAEMON_ZONE_LABEL}. Choose a zone to preview the next window.`;
   const at = (instant: number) => `${residentWakeOpeningLabel(instant, now, zone)}${zone ? ` ${zone}` : ""}`;
   const window = residentActiveWindowAt(schedule, now);
   if (window) return `Awake now, until ${at(window.end)}.`;
@@ -707,7 +725,7 @@ function ActiveHoursSection({ draft, update, disabled }: ResidentEditorSectionPr
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
-  const local = localTimeZone();
+  const browserZone = browserTimeZone();
   const zones = timeZoneChoices();
   const toggleDay = (day: number) => set({
     days: schedule.days.includes(day) ? schedule.days.filter((d) => d !== day) : [...schedule.days, day].sort((a, b) => a - b),
@@ -722,7 +740,7 @@ function ActiveHoursSection({ draft, update, disabled }: ResidentEditorSectionPr
             type="checkbox"
             checked={schedule.enabled}
             disabled={disabled}
-            onChange={(event) => set({ enabled: event.target.checked })}
+            onChange={(event) => update("schedule", residentScheduleToggled(schedule, event.target.checked, browserZone))}
           />
         </Tooltip>
         <span>Sleep outside active hours</span>
@@ -798,14 +816,14 @@ function ActiveHoursSection({ draft, update, disabled }: ResidentEditorSectionPr
                 disabled={off}
                 onChange={(event) => set({ timeZone: event.target.value || null })}
               >
-                <option value="">This computer's time zone ({local})</option>
+                <option value="">{DAEMON_ZONE_LABEL[0]!.toUpperCase() + DAEMON_ZONE_LABEL.slice(1)}</option>
                 {schedule.timeZone && !zones.includes(schedule.timeZone) && <option value={schedule.timeZone}>{schedule.timeZone}</option>}
                 {zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
               </select>
             </Tooltip>
           </div>
         </div>
-        <div className="resident-schedule-week" role="img" aria-label={`Weekly active hours: ${residentScheduleSummary(schedule, local)}`}>
+        <div className="resident-schedule-week" role="img" aria-label={`Weekly active hours: ${residentScheduleSummary(schedule, DAEMON_ZONE_LABEL)}`}>
           {RESIDENT_WEEKDAYS.map((entry) => (
             <div key={entry.day} className="resident-schedule-week-row">
               <span className="resident-schedule-week-day">{entry.short}</span>

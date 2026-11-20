@@ -1013,3 +1013,26 @@ test("a sleeping resident whose context is over the threshold does not compact u
     assert.equal(f.calls.length, 2);
   } finally { activeHours(false); }
 });
+
+test("a window that closes while a compaction runs sends no wake after it; the wake waits for the next window", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    // Friday 16:50 UTC: the 16:55 wake is inside the 09:00-17:00 window, but compaction is due.
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC + 8 * HOUR + 50 * 60_000);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    f.patch({ meta: meta({ contextPct: 80 }) }); await settle();
+    // The compaction takes ten minutes and finishes at 17:05, after the window has closed.
+    f.setCompact(async () => { f.calls.push("compact"); f.advance(10 * 60_000); return 5; });
+    t.mock.timers.tick(300_000); f.advance(300_000); await settle();
+    assert.deepEqual(f.calls, ["compact"], "compacted while awake, but no loop prompt after the window closed");
+    assert.equal(f.run().loopState, "waiting", "the resident sleeps; it is not paused");
+    const monday = FRIDAY_0800_UTC + 3 * 24 * HOUR + HOUR;
+    await elapse(monday - f.now - 1);
+    assert.equal(f.calls.filter((call) => call.includes("mission-resident:")).length, 0, "nothing over the weekend");
+    await elapse(1);
+    assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "the held wake goes out when Monday's window opens");
+  } finally { activeHours(false); }
+});

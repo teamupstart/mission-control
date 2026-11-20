@@ -153,7 +153,11 @@ test("only a live run has a wire summary", () => {
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
     loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
-    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority, loop: run.settings.loop, schedule: run.settings.schedule },
+    settings: {
+      identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority, loop: run.settings.loop,
+      // A null zone is named on the daemon, where summaries are built, so a browser elsewhere evaluates on its clock.
+      schedule: { ...run.settings.schedule, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    },
     createdAt: 5,
   });
   // Projected to the sections the browser draws: the instruction text, Persona id, execution
@@ -163,6 +167,10 @@ test("only a live run has a wire summary", () => {
     settings: { ...run.settings, instructions: { markdown: "SECRET-INSTRUCTION-TEXT" } },
   }));
   assert.doesNotMatch(wire, /SECRET-INSTRUCTION-TEXT|builtin:fleet-triage|defaultRepoRoot|"execution"/);
+  const explicit = { ...run.settings.schedule, timeZone: "Pacific/Auckland" };
+  assert.equal(residentRunSummary({ ...run, settings: { ...run.settings, schedule: explicit } })!.settings.schedule.timeZone, "Pacific/Auckland",
+    "an explicit zone is carried as chosen");
+  assert.equal(run.settings.schedule.timeZone, null, "the pinned revision itself is not rewritten");
   assert.equal(residentRunSummary({ ...run, endedAt: 9 }), null);
   assert.equal(residentRunSummary({ ...run, launchState: "failed", endedAt: 9 }), null);
   assert.notEqual(residentRunSummary({ ...run, launchState: "pending" }), null);

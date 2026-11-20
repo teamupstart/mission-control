@@ -19,6 +19,9 @@ request completes the task and closes its open questions as moot.
 - Foreman can answer an `input` question, and its answer is excluded from the outbox in two
   places (`src/server/db.ts:5384` and `:5407`). A flag-on session would never hear it, so the
   any-actor delivery lands in Phase 1, not with the other delivery work.
+- An answer delivered through the outbox is operator-authored today and is written as a new
+  Goal prompt revision (`src/server/pending-turns.ts:961-1012`, `src/server/registry.ts:9311-9344`).
+  With the flag on every answer takes that path, so daemon authorship lands in Phase 1 too.
 - The source plan's first draft named no field for the merge closure. The browser cannot tell
   a merge closure from any other `orphaned` row, so Phase 1 adds `closed_reason`.
 - `withdrawn` has a producer (Phase 2) and a renderer (Phase 3) that run concurrently, so the
@@ -42,8 +45,7 @@ Two findings were accepted and applied across the bundle:
   or snoozed, in either wait mode. An earlier draft limited both to message-mode questions,
   which left a snoozed call-mode question outside both.
 - **No activation gap.** Both rules moved from Phase 2 to Phase 1, so the flag is safe to turn
-  on as soon as Phase 1 merges. What Phase 1 leaves for later is quality, not safety: answer
-  wording and authorship, coalescing, the bound, the agent's two tools and the dashboard detail.
+  on as soon as Phase 1 merges.
 
 ## Plan validation round 2
 
@@ -70,15 +72,29 @@ One finding was accepted and applied:
   the table does: the table's own cells now say "not held" and "while a question is pending"
   where that is the rule, and "completed past by automation" became the three named gates.
 
+## Pull request review
+
+One finding from the pull request's automated review was accepted and applied:
+
+- **Daemon authorship of answers moved from Phase 2 to Phase 1.** Phase 1 had left an answer as
+  operator-authored text that could be captured as a Goal revision, and called that a quality
+  gap. It is a safety gap: with the flag on, answering a question could change the agent's
+  task. Phase 1 now marks message-mode answer rows as daemon-written and pins that with a test,
+  and its handoff no longer lists this as left for later. Phase 2 keeps the answer's wording and
+  coalescing, and must preserve the authorship it inherits.
+- What Phase 1 still leaves for later is quality only: how the answer is worded, one message
+  for several answers, the bound, the agent's two tools and the dashboard detail.
+
 ## Sizing and phase count
 
 Estimated 1,250 to 1,500 non-test implementation lines across shared contracts, the daemon, the
 MCP child and the dashboard. One phase is too large for one reviewable pull request, and its
 server half is useful before its dashboard half. Three phases:
 
-- Phase 1 is everything needed for the flag to be safe to turn on, including residents and both
-  completion rules, so it delivers the stated goal alone. Splitting it would leave a flag that
-  lets prompted completion finish a task under an open question, or a second source of truth
+- Phase 1 is everything needed for the flag to be safe to turn on, including residents, both
+  completion rules and daemon-authored answers from any actor, so it delivers the stated goal
+  alone. Splitting it would leave a flag that lets prompted completion finish a task under an
+  open question, lets an answer rewrite the agent's Goal, or creates a second source of truth
   for what a question holds.
 - Phases 2 and 3 are split because they share only contracts Phase 1 fixes and touch disjoint
   code (daemon and MCP against dashboard). A fourth phase for residents or for the two
@@ -86,8 +102,8 @@ server half is useful before its dashboard half. Three phases:
 
 | Phase | File | Delivers | Depends on | Est. lines |
 | --- | --- | --- | --- | --- |
-| 1 | `phase-1-file-and-continue.md` | Flag, contracts, the non-blocking ask, what an open question holds, both completion rules, alerts, residents, agent instructions | this plan merged | 560 to 660 |
-| 2 | `phase-2-answer-delivery-and-lifecycle.md` | Self-contained daemon-authored answers, coalescing, the open-question bound, `list_open_questions`, `withdraw_question` | 1 | 300 to 380 |
+| 1 | `phase-1-file-and-continue.md` | Flag, contracts, the non-blocking ask, what an open question holds, both completion rules, daemon-authored answers from any actor, alerts, residents, agent instructions | this plan merged | 600 to 700 |
+| 2 | `phase-2-answer-delivery-and-lifecycle.md` | Self-contained answer wording, coalescing, the open-question bound, `list_open_questions`, `withdraw_question` | 1 | 260 to 340 |
 | 3 | `phase-3-dashboard-surfaces.md` | Card status line, ordering, badge, conversation Asked entry, Remind me later under async, Residents drawer | 1 | 380 to 460 |
 
 ```mermaid
@@ -115,6 +131,9 @@ different sections; the later one rebases.
   and the completion hold applies in every session state.
 - The consumer table in the source plan's section 4 is the complete statement of what a
   question holds and what it deliberately does not.
+- A message-mode answer row is daemon-authored: never captured as a Goal revision, never echoed
+  as an operator turn, and still subject to the operator-message escalation. Phase 2 changes
+  such a row's text and coalescing only.
 - `src/shared/async-input.ts`: the receipt text and the wait-mode decision. Phase 2 adds the
   answer text and the bound there. Phase 3 reads it only.
 - Outbox turn ids keep the `review-continuation:` prefix, which resident pacing reads.

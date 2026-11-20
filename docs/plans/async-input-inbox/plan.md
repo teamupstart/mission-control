@@ -1,8 +1,8 @@
 # Asynchronous input inbox
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 to 3. This task delivers the plan and its phases only.
-No product code changes here.
+revised after plan validation rounds 1 to 3 and the pull request review. This task delivers the
+plan and its phases only. No product code changes here.
 
 ## Goal
 
@@ -50,8 +50,9 @@ Three gaps in today's code matter once every question takes the message path:
    blocked call returns Foreman's answer directly, so nothing is lost. Without a blocked call it
    would never reach the agent.
 2. **An answer message is treated as operator-typed text.** It is echoed as a human turn and
-   offered to Goal capture (`src/server/pending-turns.ts:961-1012`). Only the snooze instruction
-   is marked as daemon-written (`:147-149`).
+   offered to Goal capture (`src/server/pending-turns.ts:961-1012`), which writes it as a new
+   prompt revision of the session's Goal (`src/server/registry.ts:9311-9344`). Only the snooze
+   instruction is marked as daemon-written (`pending-turns.ts:147-149`).
 3. **Merge-driven completion never looks at open questions.** `settleIfEpisodeFinished` checks
    only idle state, the queue and the landed pull request (`src/server/tasks.ts:1706-1754`).
    Today the blocked call keeps the session out of `idle`, which hides this. A snoozed question
@@ -115,14 +116,15 @@ Answers use the existing pending-turn outbox (`submitReviewContinuation`), with 
 
 - **Any actor's resolution is delivered.** For message-mode questions the continuation query and
   `isConversationResolvedReview` gate also admit `foreman` and `standing-approval`, closing gap 1.
+- **It is not the operator typing.** Answer rows get their own daemon authorship, like the
+  snooze instruction, so they are not captured as a Goal revision and are not echoed as a human
+  turn. The operator's answer is already recorded in the conversation as the gold answer entry.
+  This closes gap 2. Like any-actor delivery, it lands in the first phase: with the flag on,
+  every answer takes this path, and an answer must never rewrite the agent's Goal.
 - **The message stands on its own.** It restates the question, the agent's own `meanwhile` line
   and how long ago it was asked, then gives the answer and the instruction to reconcile. A
   dismissal says to keep what the agent chose. The agent may have compacted or cleared its
   context since asking, and today's text for an open-ended ask carries only the answer.
-- **It is not the operator typing.** Answer rows get their own daemon authorship, like the
-  snooze instruction, so they are not captured as a Goal revision and are not echoed as a human
-  turn. The operator's answer is already recorded in the conversation as the gold answer entry.
-  This closes gap 2.
 - **Answers given together arrive together.** Answers waiting in the outbox for one session at
   the moment of delivery go as one message rather than one turn each, so draining a resident's
   five questions does not produce five wake-ups.
@@ -324,6 +326,7 @@ sequenceDiagram
 | --- | --- |
 | An agent told to keep working guesses at something irreversible. | The receipt forbids irreversible and outward-facing action on an assumption. The same wording is in production for Remind me later. Verified against the fake agents and one real dispatch per harness before the flag goes default-on. |
 | An agent ends its turn while a question is open and prompted completion concludes it is done. | Section 4: the idle clause in `reportBucket`, plus the completion hold on every outstanding question, both in the first phase. A unit test per row of the section 4 table. |
+| An answer is recorded as the operator's Goal and changes the agent's task. | Section 3: answer rows are daemon-authored from the first phase, so no answer reaches Goal capture while the flag is on. Pinned by a test. |
 | An answer interrupts a long-running command after 180 s. | Accepted with the adopted mid-turn decision: it is what an operator message does today. The answer text tells the agent to resume what was interrupted. |
 | A question is closed unanswered by a merge. | Accepted with the adopted merge decision. The closure is recorded in the conversation, never silent. |
 | Sessions launched before the flag flips carry the old "BLOCKS until they answer" prompt. | The receipt is self-describing and overrides that expectation. New wording is mode-neutral. |
@@ -346,14 +349,16 @@ feature the bar is:
 - Flag on: every row of the section 4 table behaves as written, including the rows that are
   not held (operator messages, workflow repair rounds, `report_blocker`, resident wakes) and
   the snoozed-question exceptions.
+- Flag on: answering a question never writes a Goal revision and is never echoed as an
+  operator turn.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and `npm run test:e2e`
   pass.
 
 ## Implementation phases
 
 `phased-plan.md` splits the work into three phases: first **file and continue** (flag,
-contracts, the ask path, what a question holds including both completion rules, residents,
-agent instructions), then two that can run concurrently, **answer delivery and question
-lifecycle** and **dashboard surfaces**. The flag is safe to turn on once the first phase has
-merged. Moving the flag to `default-on` and retiring it are later pull requests and are not
-scheduled.
+contracts, the ask path, what a question holds including both completion rules, daemon-authored
+answers from any actor, residents, agent instructions), then two that can run concurrently,
+**answer delivery and question lifecycle** and **dashboard surfaces**. The flag is safe to turn
+on once the first phase has merged. Moving the flag to `default-on` and retiring it are later
+pull requests and are not scheduled.

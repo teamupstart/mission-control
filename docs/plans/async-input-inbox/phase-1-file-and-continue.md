@@ -9,9 +9,10 @@ agent keeps working. A session that then stops with a pending question shows as 
 outstanding `request_input` question, pending or snoozed and in either wait mode, can be
 completed past by prompted completion, workflow resumption or automatic evidence preparation. A
 merge, which is the operator's own conclusion, still completes the task and closes every one of
-them with a recorded reason. A resident keeps iterating. An answer from the inbox wakes the
-agent through the existing outbox. The flag is safe to turn on once this phase merges. With the
-flag off nothing changes.
+them with a recorded reason. A resident keeps iterating. An answer from the inbox, whoever gave
+it, wakes the agent through the existing outbox as a daemon-written message, so answering a
+question never rewrites the agent's Goal. The flag is safe to turn on once this phase merges.
+With the flag off nothing changes.
 
 ## 2. Entry criteria
 
@@ -20,12 +21,13 @@ The planning pull request is merged. No phase dependencies.
 ## 3. Scope and non-goals
 
 In scope: the flag, the cross-phase contracts, the ask path, what an open question holds, both
-completion rules (the hold and the merge closure), alerts, the resident loop, agent
-instructions, docs for all of it.
+completion rules (the hold and the merge closure), delivery of an answer from any actor and its
+daemon authorship, alerts, the resident loop, agent instructions, docs for all of it.
 
-Not in this phase: answer wording, authorship and coalescing, the open-question bound and the
-two new tools (Phase 2); the card status line, badge chip, conversation entry, Remind me later
-copy and Residents drawer (Phase 3). None of those is needed for the flag to be safe.
+Not in this phase: how the answer is worded and coalescing of several answers, the
+open-question bound and the two new tools (Phase 2); the card status line, badge chip,
+conversation entry, Remind me later copy and Residents drawer (Phase 3). None of those is
+needed for the flag to be safe.
 
 ## 4. Repository findings
 
@@ -56,6 +58,11 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
   `residents/agent-shepherd.md`.
 - Continuation eligibility excludes Foreman: `src/server/db.ts:5384`, `5407`;
   `isConversationResolvedReview` in `src/shared/review-item.ts`.
+- Answer authorship: `daemonAuthorOf` marks only snooze instructions as `harness`
+  (`src/server/pending-turns.ts:147-149`). Every other row takes `expectHumanEcho` and
+  `captureAcceptedPrompt` (`:961-1012`), and `captureAcceptedPrompt` writes the text as a new
+  Goal prompt revision (`src/server/registry.ts:9311-9344`). Escalation: `nextDelivery` and
+  `canDrain`, `src/server/pending-turns.ts:639-722`.
 - Flag gates: `docs/feature-flags.md`, `src/server/feature-flags/index.ts`.
 
 ## 5. Implementation steps
@@ -112,14 +119,23 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
      and pin it with a test.
 10. **Any-actor delivery.** For message-mode rows, admit `foreman` and `standing-approval` in
     both eligibility predicates and in the continuation gate in `publishSettled`.
-11. **Alerts.** Raise the review alert when `openQuestions` grows, titled by whether the session
+11. **Answer authorship.** With the flag on every answer takes the outbox, so a message-mode
+    answer row is daemon-authored from this phase, whoever resolved the question. Give it a
+    turn id that `daemonAuthorOf` can tell apart under the `review-continuation:` prefix, as
+    the snooze instruction has, so it is recorded as `harness`, skips `expectHumanEcho` and
+    `captureAcceptedPrompt`, and is not drawn as an operator turn. The operator's answer is
+    already in the conversation as the gold answer entry. Daemon authorship must not exempt the
+    row from the operator-message escalation: it still steers at 60 s and interrupts at 180 s.
+    A call-mode detached answer keeps operator authorship, as today. The answer's wording is
+    not changed here; Phase 2 rewrites it.
+12. **Alerts.** Raise the review alert when `openQuestions` grows, titled by whether the session
     is working ("has a question, still working") or stopped ("needs your answer").
-12. **Residents.** With the exemption in step 8 the loop's existing `needs-you` hold and its
+13. **Residents.** With the exemption in step 8 the loop's existing `needs-you` hold and its
     `resume()` refusal no longer cover open message-mode questions, while call-mode reviews,
     gates and pane dialogs still hold. Pin both with tests rather than adding a second
     predicate. Add the one-sentence reminder to `RESIDENT_LOOP_PROMPT`. Update
     `residents/agent-shepherd.md` and regenerate the built-in profiles.
-13. **Instructions and docs.** Reword the ask-channel redirect, the Codex developer instruction,
+14. **Instructions and docs.** Reword the ask-channel redirect, the Codex developer instruction,
     the `mockups` skill line and the comments that say the call always blocks. Update
     `docs/sessions.md`, `docs/residents.md`, `docs/attention-and-alerts.md`, `docs/overview.md`
     and document the flag, including both completion rules and their scope.
@@ -129,8 +145,10 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
 - New columns are nullable with no default: an existing row is a call-mode question.
 - An older MCP child sends no `asyncCapable` and is answered `wait: "call"`. Its questions are
   call-mode and are covered by both completion rules while the flag is on.
-- Turning the flag off leaves open message-mode questions answerable, delivered and still under
-  both completion rules; call-mode questions return to today's completion behavior.
+- Turning the flag off leaves open message-mode questions answerable, delivered as
+  daemon-authored messages and still under both completion rules; call-mode questions return to
+  today's completion behavior.
+- An answer row queued before this phase's code runs keeps the authorship it was queued with.
 - Persisted status ids are append-only: `withdrawn` is appended, nothing is renamed.
 
 ## 7. Tests and verification
@@ -152,12 +170,18 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
   delivered; `report_blocker` is accepted; a resident's wake fires. And the snoozed-question
   exceptions: with only a snoozed question, the session is not `needs-you`, queue sends and
   backlog assignment are not held, and rebinding and reassignment are not refused, as today.
+- Unit, answer authorship, for an answer from the operator, from Foreman and from a standing
+  approval, delivered to an idle session and steered into a working one: the session's Goal
+  gains no prompt revision, no human echo is recorded, and the row is recorded as `harness`.
+  The same row still steers at 60 s and interrupts at 180 s. A call-mode detached answer keeps
+  operator authorship.
 - HTTP: mode negotiation for flag off, old child, unmessageable session.
 - MCP bundle: receipt without a long poll; long poll when told `call`.
 - Playwright: flag Settings row and second-window toggle; with the flag on, a fake-agent session
   asks, is not amber while working, turns amber when it stops, and resumes after an answer from
-  the inbox; a resident wakes on cadence with a question open; a merge with a question open
-  removes it from the inbox. No model tokens.
+  the inbox, with the conversation showing the gold answer entry and no operator turn for the
+  delivered message; a resident wakes on cadence with a question open; a merge with a question
+  open removes it from the inbox. No model tokens.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
   `npm run test:e2e`.
 
@@ -179,17 +203,21 @@ section 4 behaves as that table says, its exceptions included:
   assignment, rebinding or reassignment, as today.
 - **Merge.** Merge-driven completion is not held. It leaves no question outstanding and records
   `merged` on each.
+- **Answers.** An answer to a message-mode question, from any actor, reaches the agent and never
+  writes a Goal revision or an operator turn.
 
 Nothing that makes the flag unsafe to turn on is left for a later phase.
 
 ## 9. Downstream handoff
 
 Phases 2 and 3 rely on every contract in `phased-plan.md` and must not rename them. This phase
-writes `closedReason`; Phase 3 only renders it. Left for Phase 2, as quality rather than safety:
-an answer is still operator-authored text and may be captured as a Goal, several answers arrive
-as several turns, and there is no bound and no tool to list or withdraw questions. Left for
-Phase 3: no working-tone chip, no conversation entry for an open or merge-closed question, and a
-resident with open questions is not yet listed in the drawer's needs-you group.
+writes `closedReason`; Phase 3 only renders it. This phase makes message-mode answer rows
+daemon-authored; Phase 2 must keep that when it rewrites and coalesces them. Left for Phase 2,
+as quality rather than safety: the answer still carries today's wording, which for an
+open-ended ask is the answer alone; several answers arrive as several turns; and there is no
+bound and no tool to list or withdraw questions. Left for Phase 3: no working-tone chip, no
+conversation entry for an open or merge-closed question, and a resident with open questions is
+not yet listed in the drawer's needs-you group.
 
 ## 10. Cross-phase audit
 
@@ -216,5 +244,12 @@ resident with open questions is not yet listed in the drawer's needs-you group.
   section 1 names the three gates instead of "automation", since a merge does complete the
   task. Steps 7 and 8 and a new test bullet cover the unheld rows. Phases 2 and 3 make no claim
   about these rows and needed no change.
+- Pull request review: daemon authorship of answers moved here from Phase 2 as step 11. This
+  file's handoff had listed "an answer is still operator-authored text and may be captured as
+  a Goal" as left for Phase 2; with the flag on that would let an answer change the agent's
+  task, so it is a safety item and belongs here. Sections 1, 3, 4, 6, 7, 8 and 9 were updated,
+  and Phase 2 was edited to drop the step and to preserve what it inherits. Phase 3 needed no
+  change.
 - Final audit: every source-plan section 1, 2, 4, 6, 8 and 9 requirement is owned here, except
-  the drawer line of section 6 (Phase 3).
+  the drawer line of section 6 (Phase 3); and from section 3, any-actor delivery and daemon
+  authorship.

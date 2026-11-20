@@ -50,8 +50,9 @@ function HibernatedCard({ task }: { task: Task }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const record = task.hibernation ?? null;
   const since = record?.hibernatedAt ?? task.updatedAt;
-  // Ticks only while the age is counted in seconds or minutes; a day-old one has nothing to move.
-  const now = useNow(Date.now() - since < 3_600_000);
+  // Every second while the age reads in seconds or minutes, then every minute: an hour-old card
+  // still has to move on to "2h ago", and a stopped clock would hold it at "1h ago" for days.
+  const now = useNow(true, Date.now() - since < 3_600_000 ? 1000 : 60_000);
   const failure = record?.failure ?? null;
   const when = new Date(since).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 

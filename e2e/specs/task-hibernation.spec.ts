@@ -256,6 +256,30 @@ test("Hibernate parks a task in the Backlog across a restart, and Retry reopens 
   await shoot(page, page.locator("main.board"), "board-resumed");
 });
 
+test("a hibernated task's age keeps counting past its first hour", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setHibernationFlag(daemon, true);
+  const session = await dispatchIdle(page, daemon, "Hibernate clock");
+  await putUi(daemon, { layout: "board" });
+  // The page's clock, so hours can pass in a moment. It keeps running at normal speed until
+  // fast-forwarded, so everything else on the page behaves as it always does.
+  await page.clock.install();
+  await page.reload();
+  await expect(page.locator("main.board")).toBeVisible();
+  const card = boardCard(page, session.name);
+  await card.getByRole("button", { name: "Pause controls: Running" }).click();
+  await page.getByRole("menu", { name: "Pause" }).getByRole("menuitem", { name: /^Hibernate/ }).click();
+  const row = page.getByRole("region", { name: "Hibernated tasks" })
+    .getByRole("listitem", { name: `Hibernated task: ${session.name}` });
+  await expect(row).toContainText(/Hibernated (just now|\d+s ago)/);
+
+  // Past the first hour it still moves on: a clock that stopped there would read "2h ago" for days.
+  await page.clock.fastForward("02:00:00");
+  await expect(row).toContainText("Hibernated 2h ago");
+  await page.clock.fastForward("03:00:00");
+  await expect(row).toContainText("Hibernated 5h ago");
+});
+
 test("the Hibernate tasks flag appears in Settings, and switching it on reaches another window without a reload", async ({ dashboard: page, context, daemon }) => {
   const session = await dispatchIdle(page, daemon, "Hibernate flag ledger");
   await putUi(daemon, { layout: "board" });

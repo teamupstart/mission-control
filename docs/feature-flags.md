@@ -1,6 +1,9 @@
 # Feature flags
 
-The flag core stores one set of operator choices for this machine. The registry declares one preview flag today, `headless-mode`.
+The flag core stores one set of operator choices for this machine. The registry includes
+**Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
+and **Headless mode** (`headless-mode`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -8,7 +11,18 @@ Settings > Feature flags controls these choices. The ai-conductor integration sw
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
 searchable list; filter by name, description, keyword or id. Every click applies immediately
 in every open window, with no Save button or restart. A refused write rolls back and shows an
-inline error. The shipped registry holds `headless-mode` (Headless mode), a preview flag, so the panel lists it with every preview switched off.
+inline error. Preview features are off until enabled individually or through the master switch.
+With no preview declared the panel shows its empty state instead of a list.
+
+**Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
+Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing
+runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
+**Pinned at launch** when the preview is off.
+
+**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
+a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
+answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
+route answers 404 and the `home-dispatch-v1` health capability is absent.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
@@ -27,8 +41,7 @@ Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAG
 (today `HEADLESS_MODE_FLAG_ID`), so a gate imports the id instead of respelling it. It holds data
 only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
-at most 64 characters. `FeatureFlagId` is derived from the tuple; an empty registry means
-there are no valid ids for production gates.
+at most 64 characters. `FeatureFlagId` is derived from the tuple.
 
 The `featureFlags` app_config entry stores `{ enableAll, overrides }`, defaulting to
 `{ enableAll: false, overrides: {} }`, with at most 512 boolean overrides. There is no database

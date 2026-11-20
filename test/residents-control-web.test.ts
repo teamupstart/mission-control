@@ -34,7 +34,7 @@ function run(controlOtherSessions: boolean): ResidentRunSummary {
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
     loopState: "waiting", iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
-    settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop },
+    settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop, schedule: settings.schedule },
     createdAt: 1,
   };
 }
@@ -52,6 +52,7 @@ test("Control other sessions is off by default, and a revision from before it re
   const html = renderToStaticMarkup(createElement(section.Body, {
     draft: revision(),
     update: () => {},
+    changeHarness: () => {},
     personas: [],
     disabled: false,
   }));

@@ -4,10 +4,11 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const oracle = JSON.parse(readFileSync(join(root, "test/fixtures/route-surface.json"), "utf8")) as Record<string, string>;
 
 test("guard 2: the route oracle's Focus and terminal entries are the ones `main` recorded", () => {
@@ -28,13 +29,13 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 416 entries `main` recorded before headless mode, hashed key-sorted. Any added, removed
+  // The 416 entries `main` records outside /dispatch (refreshed when `main` last changed one), hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 416);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "ce6c9ebba3ac9513ba78646bfc575041b80c70ded387d8bc4c5dd786f0cb16af");
+    "a024968494352f725e6f719aabbb86cf9b06a3596e399f35704172ee0e9dab56");
 });
 
 function sourceFiles(dir: string): string[] {
@@ -49,9 +50,39 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
+/**
+ * `source` with comments blanked, so a comment between import tokens, or a commented-out import,
+ * cannot hide or fake one. String literals are copied through untouched, so a `"/*"` in one string
+ * and a `"*\/"` in a later one cannot swallow the import between them. Regex literals are not
+ * parsed; none of the guarded files needs one before its imports.
+ */
+function withoutComments(source: string): string {
+  let out = "";
+  for (let i = 0; i < source.length;) {
+    const c = source[i]!;
+    const next = source[i + 1];
+    if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end < 0 ? source.length : end + 2;
+      out += " ";
+    } else if (c === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+    } else if (c === '"' || c === "'" || c === "`") {
+      const start = i++;
+      while (i < source.length && source[i] !== c) i += source[i] === "\\" ? 2 : 1;
+      i++;
+      out += source.slice(start, i);
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
 /** Every module specifier a file imports, re-exports or dynamically imports. */
 function specifiers(source: string): string[] {
-  return [...source.matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']([^"']+)["']/g)].map((match) => match[1]!);
+  return [...withoutComments(source).matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']([^"']+)["']/g)].map((match) => match[1]!);
 }
 
 const GUARDED = ["src/mod", "src/cli", "src/server/home-dispatch"];
@@ -64,6 +95,7 @@ export function terminalViolations(source: string): string[] {
 /** The actions.ts rule: what `source`, living at `rel`, imports from actions.ts that it may not. */
 export function actionsViolations(rel: string, source: string): string[] {
   const out: string[] = [];
+  source = withoutComments(source);
   const imports = [...source.matchAll(/import\s+(type\s+)?([^;]*?)\s+from\s+["']([^"']*\/actions\.ts)["']/gs)];
   const reExports = [...source.matchAll(/export\s+[^;]*?from\s+["']([^"']*\/actions\.ts)["']/gs)];
   const dynamic = [...source.matchAll(/import\s*\(\s*["'][^"']*\/actions\.ts["']\s*\)/g)];
@@ -100,4 +132,14 @@ test("guard 3 rejects a violating file and accepts the allowed import", () => {
   assert.equal(actionsViolations(chat, `export { focus } from "../actions.ts";`).length, 1, "re-export");
   assert.equal(actionsViolations(chat, `const a = await import("../actions.ts");`).length, 1, "dynamic import");
   assert.deepEqual(actionsViolations("src/mod/x.ts", `import type { Action } from "../actions.ts";`), [], "type-only imports are erased");
+  // A comment between the tokens neither hides a violation nor invents one.
+  assert.equal(actionsViolations("src/server/home-dispatch/inbox.ts", `import { focus } from /* rationale */ "../actions.ts";`).length, 1, "comment before the specifier");
+  assert.equal(actionsViolations(chat, `import { sendText, focus } /* why */ from "../actions.ts";`).length, 1, "comment before from");
+  assert.deepEqual(terminalViolations(`import { x } from /* rationale */ "../terminal/tmux.ts";`), ["../terminal/tmux.ts"], "terminal import with a comment");
+  assert.deepEqual(terminalViolations(`// import { x } from "../terminal/tmux.ts";`), [], "commented-out import");
+  assert.deepEqual(actionsViolations("src/mod/x.ts", `/* import { focus } from "../actions.ts"; */`), [], "block-commented import");
+  // Comment markers inside strings do not hide the import between them.
+  const quoted = 'const start = "/*";\nimport { focus } from "../actions.ts";\nconst end = "*/";\n';
+  assert.equal(actionsViolations("src/mod/x.ts", quoted).length, 1, "import between strings holding comment markers");
+  assert.deepEqual(terminalViolations('const a = "/*";\nimport { x } from "../terminal/tmux.ts";\nconst b = "*/";\n'), ["../terminal/tmux.ts"]);
 });

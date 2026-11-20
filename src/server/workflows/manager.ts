@@ -217,7 +217,7 @@ import {
   getInspectorPr,
   loadInspectorComments,
   loadAdoptedInspectorPrsSince,
-  loadInspectorInspections,
+  loadInspectorInspection,
   loadOpenInspectorPrs,
   primaryRepoPrForTask,
   taskReposFor,
@@ -1227,7 +1227,7 @@ export class WorkflowManager {
     const state = this.gateState(detail.run);
     if (!state) return detail;
     const inspection = state.prKey
-      ? loadInspectorInspections().find((row) => row.key === state.prKey) ?? null
+      ? loadInspectorInspection(state.prKey)
       : null;
     const cfg = getInspectorConfig();
     return {
@@ -4512,7 +4512,7 @@ export class WorkflowManager {
     let state = run ? this.gateState(run) : null;
     if (run?.status === "blocked" && run.currentPhase === "delivery_blocked" && state?.prKey) {
       const prKey = state.prKey;
-      const ledger = loadInspectorInspections().find((row) => row.key === prKey);
+      const ledger = loadInspectorInspection(prKey);
       // A queued signal carries a historical ledger snapshot. Prefer the newer durable
       // remote observation (including ties), and carry it through BOTH packet recovery
       // and gate evaluation so the old signal cannot put the failed head back afterward.
@@ -4526,6 +4526,11 @@ export class WorkflowManager {
         };
       }
     }
+    // Once a gate has observed a newer remote state, a queued older snapshot must not
+    // change its head, reopen/close the PR, or supply review facts for an obsolete head.
+    if (observation && state?.lastObservedAt != null
+        && observation.prKey === state.prKey
+        && observation.observedAt < state.lastObservedAt) return;
     if (run && state) {
       if (await this.recoverBlockedInspectorFeedback(run, state, observation)) return;
       run = this.store.getRun(runId);

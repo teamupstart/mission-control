@@ -2593,6 +2593,54 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
 }
 
 
+for (const staleState of ["OPEN", "CLOSED", "MERGED"] as const) {
+  test(`stale Inspector signals cannot regress a recovered head: ${staleState}`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      const { packet, session } = await blockUnsentFeedback(seeded);
+      const repairedHead = "recovered-head-b";
+      const observedAt = Date.now() + 1_000;
+      updateInspectorPr(seeded.key, {
+        observedHeadSha: repairedHead, observedState: "OPEN", observedAt,
+      }, observedAt);
+      session.state = "idle";
+      signal(seeded, repairedHead, observedAt);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "waiting_for_inspector/inspector_review");
+      const accepted = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+      const submission = seeded.store.latestSubmission(seeded.ids.run)!;
+      assert.equal(submission.mode, "inspector_only");
+      assert.equal(submission.prHeadSha, repairedHead);
+      assert.equal(accepted.lastObservedAt, observedAt);
+      assert.ok(observedAt - 1 >= accepted.enteredAt, "the stale signal must pass the entry-time guard");
+
+      // A delayed signal arrives after delivery recovery has already recorded B. Both an
+      // older head and an older closed state must leave the newer review wait untouched.
+      seeded.registry.inspectionUpdated(seeded.key,
+        staleState === "OPEN" ? seeded.head : repairedHead, staleState, observedAt - 1);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "waiting_for_inspector/inspector_review");
+      assert.deepEqual(seeded.store.getRun(seeded.ids.run)!.gateState, accepted);
+      assert.equal(seeded.store.latestSubmission(seeded.ids.run)!.id, submission.id);
+      assert.equal(seeded.store.getDelivery(packet.id)!.state, "cancelled");
+      assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+      assert.deepEqual(seeded.injected, []);
+
+      // Equal observation times remain usable when Inspector finishes the current review.
+      db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+      updateInspectorPr(seeded.key, {
+        headSha: repairedHead, cleanReviewHeadSha: repairedHead, reviewComplete: true,
+      }, observedAt);
+      signal(seeded, repairedHead, observedAt);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "completed/complete");
+    } finally {
+      await seeded.manager.stop();
+    }
+  });
+}
+
+
 for (const guard of ["uncertain", "sending", "delivered", "refused", "preview", "retargeted",
   "paused", "unauthorized", "unavailable", "stale", "closed", "switched-pr", "old-submission"] as const) {
   test(`unsent Inspector recovery preserves the ${guard} guard`, async () => {

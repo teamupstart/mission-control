@@ -807,6 +807,10 @@ export class WorkflowManager {
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;
+          // A hibernated task's binding waits for its own conversation: a woken driver that
+          // reported another one is refused and put back to sleep (`HibernationManager`), and
+          // delivery refuses a mismatched conversation anyway, so it is not paused for that.
+          if (this.hibernationHoldsBinding(binding)) continue;
           for (const delivery of this.store.markSendingUncertainForSession(
             event.session.id,
             "conversation_changed",
@@ -7761,20 +7765,31 @@ export class WorkflowManager {
    * on the stopped session for THAT conversation (`noteKey`, the hibernation's) follow the new
    * one. A binding the stopped session held for any other conversation stays where it is: it
    * belongs to a conversation this Resume did not reopen. Only an armed binding moves -
-   * hibernation is refused while a run is open, so none has a delivery in flight - and only into
-   * the same checkout and agent, the compatibility `reattach` asks for.
+   * hibernation is refused while a run is open, so none has a delivery in flight - and only to
+   * the same agent.
+   *
+   * The conversation's own binding (no `repoRoot`) moves only into the same checkout, the
+   * compatibility `reattach` asks for. Each secondary repository's binding (`ensureRepoBinding`)
+   * reviews its own worktree rather than the session's, so it moves with the session and keeps
+   * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
+   * it on the stopped session where no review could find a live one. A session in another
+   * checkout takes none of them.
    */
   followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): void {
-    for (const binding of this.store.listBindings()) {
-      if (binding.sessionId !== priorSessionId || binding.state !== "active" || binding.noteKey !== noteKey) continue;
-      if ((binding.sessionAgent && binding.sessionAgent !== session.agent) || binding.sessionCwd !== session.cwd) continue;
+    const held = this.store.listBindings().filter((binding) =>
+      binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
+      && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
+    const own = held.filter((binding) => !binding.repoRoot);
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) return;
+    for (const binding of held) {
+      const secondary = Boolean(binding.repoRoot);
       const updated = this.store.reattachBinding(binding.id, {
         noteKey: noteKeyFor(session),
         sessionId: session.id,
         sessionAgent: session.agent,
         sessionName: session.name,
-        sessionCwd: session.cwd,
-        sessionRepoRoot: session.repoRoot,
+        sessionCwd: secondary ? binding.sessionCwd : session.cwd,
+        sessionRepoRoot: secondary ? binding.sessionRepoRoot : session.repoRoot,
       }, now);
       if (updated) this.publishBinding(updated.id);
     }

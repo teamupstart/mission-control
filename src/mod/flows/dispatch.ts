@@ -1,6 +1,5 @@
 import type { ModHost } from "../host.ts";
 
-/** The text a stub flow shows the person. */
 export const FLOW_NOT_IMPLEMENTED = "not implemented";
 
 /**

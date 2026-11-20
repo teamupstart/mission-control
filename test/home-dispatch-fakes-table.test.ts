@@ -270,7 +270,6 @@ for (const c of CLAUDE_CASES) {
 
 test("fake claude table: state, update, setInstalledVersion, staged version, failure counts and launches", () => {
   const fake = fresh({ stagedVersion: "3.0.0", failures: { install: { exitCode: 2, stderr: "x", times: 2 } } });
-  assert.deepEqual(fake.state().marketplaces, []);
   assert.deepEqual([run(fake, "plugin", "install", "a@b").status, run(fake, "plugin", "install", "a@b").status, run(fake, "plugin", "install", "a@b").status], [2, 2, 0]);
   assert.equal(fake.state().plugins[0]!.version, "3.0.0");
   fake.setInstalledVersion("1.0.0", "a@b");

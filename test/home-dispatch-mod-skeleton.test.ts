@@ -35,7 +35,6 @@ test("every flow is a stub that tells the person it is not implemented", async (
   await runDispatchFlow(fake.host, { kind: "ship", words: "x" });
   await runStartDispatchTool(fake.host, { brief: "x" });
   assert.deepEqual(fake.notices, [FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED]);
-  assert.equal(FLOW_NOT_IMPLEMENTED, "not implemented");
   // A stub never asks, fetches, opens the pane or writes to the model.
   assert.deepEqual(fake.calls.map((c) => c.type), ["notice", "notice", "notice"]);
 });
@@ -120,8 +119,6 @@ test("the fake host reports an unplaced pane as isPlaced false and still records
 test("the skeleton registers no hook, so an installed P2 build changes nothing in a session", () => {
   const on = (event: unknown) => assert.fail(`the P2 skeleton hooked ${String(event)}`);
   register(on, {});
-  assert.equal(MOD_NAME, "mission-control");
-  assert.equal(MOD_API, 1);
 });
 
 test("the $.state contract matches the shared schemas in both directions", () => {

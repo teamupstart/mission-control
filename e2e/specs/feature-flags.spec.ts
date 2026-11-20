@@ -10,6 +10,9 @@ function fakeAlphaBridge(): void {
     isDesktop: true, version: async () => "1.2.3", onOpenSettings: () => () => {},
     updates: { getState: async () => snapshot,
       setAlpha: async (alpha: boolean) => {
+        const bridge = window as unknown as { refuseNextAlphaSave?: string };
+        const refusal = bridge.refuseNextAlphaSave;
+        if (refusal) { delete bridge.refuseNextAlphaSave; throw new Error(refusal); }
         snapshot = { ...snapshot, alpha };
         for (const listener of listeners) listener(snapshot);
         return snapshot;
@@ -118,12 +121,19 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await page.reload();
   const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert");
+  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   const retry = updates.getByRole("button", { name: "Retry" });
   await alpha.check();
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on: flag store unavailable");
   await expect(alpha).toBeChecked();
   await expect(peerMaster).not.toBeChecked();
+  // A refused opt-out leaves alpha on, so its failure and Retry stay too.
+  await page.evaluate(() => { (window as unknown as { refuseNextAlphaSave?: string }).refuseNextAlphaSave = "update preferences are read-only"; });
+  await alpha.click();
+  await expect(updates.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
+  await expect(alpha).toBeChecked();
+  await expect(alert).toContainText("flag store unavailable");
+  await expect(retry).toBeEnabled();
   // Leaving Setup and coming back keeps the failure and its Retry.
   await updates.getByRole("link", { name: "Feature flags" }).click();
   await expect(page.getByRole("tab", { name: /Feature flags/ })).toHaveAttribute("aria-selected", "true");

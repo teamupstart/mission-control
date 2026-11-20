@@ -68,7 +68,6 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
   const change = async (alpha: boolean) => {
     setSaving(true);
     setError(null);
-    if (!alpha) forgetEnableAllFailure();
     try {
       await updates.setAlpha!(alpha);
     } catch (error) {
@@ -77,7 +76,10 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
     } finally {
       setSaving(false);
     }
+    // Only once the desktop confirms alpha is off: a refused opt-out leaves alpha on, and its
+    // Retry with it.
     if (alpha) void switchOnEnableAll();
+    else forgetEnableAllFailure();
   };
   const enableAllError = snapshot?.alpha && !enableAllOn ? flagWrite.error : null;
   const check = async () => {

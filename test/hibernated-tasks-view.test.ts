@@ -29,6 +29,7 @@ test("a hibernated task is drawn with its blocker, its age and Resume", () => {
   assert.match(html, /Hibernated 3d ago/);
   assert.match(html, />Resume<\/button>/);
   assert.match(html, /bl-hib-title">Migrate billing webhooks</);
+  assert.match(html, /Its agent is stopped and uses no memory\./, "a clean hibernation says its memory is free");
   assert.doesNotMatch(html, /Could not resume/);
 });
 
@@ -44,6 +45,25 @@ test("a failed resume shows its reason and offers Retry", () => {
   assert.match(html, /class="bl-hib-card is-failed"/);
   assert.match(html, /role="alert">Could not resume: its checkout \/wt\/x no longer exists\. Its worktree and conversation are kept\./);
   assert.match(html, />Retry<\/button>/);
+  assert.match(html, /See the note below: its agent may not have stopped cleanly\./);
+});
+
+test("a stop that had not finished never claims the agent's memory was freed", () => {
+  const html = renderToStaticMarkup(createElement(HibernatedSection, {
+    tasks: [mkTask({
+      id: "l",
+      title: "Lingering agent",
+      status: "hibernated",
+      hibernation: { ...record, failure: {
+        reason: "Hibernate asked its agent in \"work\" to stop, but it had not exited after 10 seconds and may still be running and using memory",
+        at: 3,
+        launch: null,
+      } },
+    })],
+  }));
+  assert.doesNotMatch(html, /uses no memory/);
+  assert.match(html, /See the note below: its agent may not have stopped cleanly\./);
+  assert.match(html, /role="alert">Could not resume: Hibernate asked its agent .* may still be running and using memory\./);
 });
 
 test("no hibernated task draws nothing, and the Backlog draws the section above its queue", () => {

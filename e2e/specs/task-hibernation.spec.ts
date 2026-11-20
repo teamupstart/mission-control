@@ -157,6 +157,8 @@ test("Hibernate parks a task in the Backlog across a restart, and Retry reopens 
   const row = shelf.getByRole("listitem", { name: `Hibernated task: ${session.name}` });
   await expect(row).toBeVisible();
   await expect(row.getByRole("button", { name: "Resume" })).toBeVisible();
+  // A clean hibernation, and only a clean one, says its agent's memory is free.
+  await expect(row.locator(".bl-hib-meta")).toHaveAccessibleDescription(/Its agent is stopped and uses no memory\./);
   await expect(card, "the stopped card leaves the board").toHaveCount(0, { timeout: 30_000 });
   // With no session left on the board, the Backlog still draws the hibernated task rather than
   // the fleet's "No agent sessions detected" screen hiding it, and the Line names it.
@@ -227,6 +229,8 @@ test("Hibernate parks a task in the Backlog across a restart, and Retry reopens 
     await expect(parkedRow.getByRole("alert").first()).toContainText("Could not resume");
     await expect(parkedRow.getByRole("alert").first()).toContainText("no longer exists");
     await expect(parkedRow.getByRole("button", { name: "Retry" })).toBeVisible();
+    // With a failure on record the card claims nothing about the agent, and points at the note.
+    await expect(parkedRow.locator(".bl-hib-meta")).toHaveAccessibleDescription(/See the note below: its agent may not have stopped cleanly\./);
     expect((await taskById(daemon, task.id))?.status).toBe("hibernated");
     await shoot(page, page.locator("section.board-backlog"), "backlog-resume-failed");
   } finally {

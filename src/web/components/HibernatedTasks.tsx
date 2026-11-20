@@ -80,8 +80,12 @@ function HibernatedCard({ task }: { task: Task }): React.JSX.Element {
         </span>
       )}
       <span className="bl-hib-foot">
+        {/* Only a hibernation with nothing recorded against it is known to have ended its agent.
+            A recorded failure can be a stop that had not finished, or a launch that could not be
+            closed, so the card claims nothing then and points at the note that says which. */}
         <Tooltip
-          label={`Hibernated ${when}${task.branch ? ` on ${task.branch}` : ""}. Its agent is stopped and uses no memory.`}
+          label={`Hibernated ${when}${task.branch ? ` on ${task.branch}` : ""}. ` +
+            (failure ? "See the note below: its agent may not have stopped cleanly." : "Its agent is stopped and uses no memory.")}
         >
           <span className="bl-hib-meta">
             <MoonGlyph size={9} />

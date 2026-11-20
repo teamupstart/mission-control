@@ -80,7 +80,7 @@ flowchart TD
 | Dispatcher and runtime | Home-dispatched tasks keep the dashboard runtime for their kind. No terminal runtime, `homeTerminalFromEnv`, `origin_terminal`, tmux key table, herdr mirror, `mctl pick` or `mctl claude` workspace. | Withdrawn (D50) |
 | Data | No new tables. `origin_terminal` and `home_dispatch_sessions.terminal` are not added. | Smaller |
 | MCP contract | Unchanged. No MCP tool, server or form is added. The `mission-control` server's tool list is identical. The mod still adds one sentence to `create_task`'s description in a home session. The mod never spawns Codex or any other agent CLI (D54). | Restated in 2.3 |
-| Owned hooks | `hooks/harness-hook.mjs` and the status line wrapper unchanged (D43). | Unchanged |
+| Owned hooks | `hooks/harness-hook.mjs` and the status line wrapper unchanged in v1 (D43). D53 amends D43 only for how attention is shown, so this still holds. | Unchanged |
 | Skills | None for Claude (D42). Agents `mission-briefer`, `mission-explorer` and `mission-reviewer` unchanged. Subagent lines move from the picker to the pane (`src/shared/subagent-lines.ts`). | Picker gone |
 | Setup skills | `mctl setup` and `doctor` run an ordered list of steps (`src/cli/setup-steps/`, WP1). WP7 owns every step but agents and Codex. WP11 owns the agents step and its doctor check (v10), and WP18 owns the Codex step and its doctor checks (v12). F2 is accepted only once WP11 and WP18 merge (v13). `--off` no longer unbinds tmux, and the config view drops `dispatch.multiplexer`. Mod staging and install (7.10a) are unchanged. | Changed (v10) |
 
@@ -132,7 +132,7 @@ Merge waves: (1) WP1; (2) WP2a, WP2b, WP3, WP8, WP18; (3) WP13, WP16, WP6a; (4) 
   - D52: how the pane opens, with no Alt hotkey.
   - D53: two-press approvals and a quiet glance layer.
   - D54 to D57 (v12): only the daemon starts Codex; reviewer calls stay one-shots tracked as rows; readiness is checked in the daemon with no tokens; a missing or signed-out Codex fails fast.
-  - D21, D22, D26, D39 and D43 are marked amended or withdrawn. No ID is renumbered.
+  - D21 and D22 are withdrawn by D50. D26 is amended by D48, D39 by D48, D49 and D53, and D43 by D53. D53 changes only how attention is shown, so D43's rule that the owned hook, the `mission-control` MCP server and the status line wrapper are unchanged in v1 still holds. No ID is renumbered.
 - **New lessons** L32 to L39 record the round 2 spike results and the facts about `main` above. L40 to L43 (v12) record the Codex headless scout.
 - **Questions:** Q14 is closed. Q22 (Restart from the terminal) and Q23 (full tool calls in chat) are new, each with a position until decided. Q24 (refuse Start now when Codex is not ready: no, warn), Q25 (fail fast with the flag off: not in FR-05) and Q26 (record reviewer spend: not in v1) came with v12.
 - **Spikes:**

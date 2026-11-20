@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 const root = new URL("..", import.meta.url).pathname;
@@ -22,10 +23,18 @@ test("guard 2: the route oracle's Focus and terminal entries are the ones `main`
   assert.deepEqual(current, recorded);
 });
 
-test("guard 2: the regenerated oracle adds /dispatch entries and renames no /api entry", () => {
-  const dispatch = Object.keys(oracle).filter((key) => key.split(" ")[1]?.startsWith("/dispatch/"));
+test("guard 2: the regenerated oracle adds /dispatch entries and changes no other entry", () => {
+  const isDispatch = (key: string) => key.split(" ")[1]?.startsWith("/dispatch/") === true;
+  const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
+  // The 416 entries `main` recorded before headless mode, hashed key-sorted. Any added, removed
+  // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
+  // be a deliberate edit of this value, never a side effect of regenerating the oracle.
+  const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
+  assert.equal(others.length, 416);
+  assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
+    "ce6c9ebba3ac9513ba78646bfc575041b80c70ded387d8bc4c5dd786f0cb16af");
 });
 
 function sourceFiles(dir: string): string[] {

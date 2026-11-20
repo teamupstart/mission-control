@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CodexReadinessSchema, HOME_DISPATCH_SEND_MAX_CHARS, HomeDispatchAnswerRequestSchema,
+  CodexReadinessSchema, HomeDispatchConfigSchema, HomeDispatchDraftConfirmSchema, HomeDispatchDraftCreateSchema,
+  HomeDispatchDraftSummarySchema, HomeDispatchDraftUpdateSchema, HomeDispatchOptionsRequestSchema,
+  HomeDispatchOptionsResponseSchema, HomeDispatchReceiptSchema, HomeDispatchResidentSchema,
+  HomeDispatchResidentsSchema, HomeSessionRegistrationAnswerSchema, HOME_DISPATCH_SEND_MAX_CHARS, HomeDispatchAnswerRequestSchema,
   HomeDispatchInboxSchema, HomeDispatchSendRequestSchema, HomeDispatchTranscriptSchema,
   HomeSessionRegistrationSchema, INBOX_STATES, type CodexReadiness,
 } from "../src/shared/home-dispatch.ts";
@@ -70,4 +73,68 @@ test("CodexReadiness carries observed, accountVerified and the reviewer set", ()
   assert.equal(CodexReadinessSchema.safeParse(readiness).success, true);
   const { accountVerified: _dropped, ...without } = readiness;
   assert.equal(CodexReadinessSchema.safeParse(without).success, false);
+});
+
+const ok = (schema: { safeParse: (value: unknown) => { success: boolean } }, value: unknown) => schema.safeParse(value).success;
+
+test("registration answers carry the launcher decision and banner counts", () => {
+  const answer = { sessionId: "s1", repoRoot: "/repo", created: true, offerLauncher: false,
+    counts: { running: 1, waiting: 0 }, daemonVersion: "2.2.0", minModApi: 1, dashboardUrl: "http://127.0.0.1:7317" };
+  assert.ok(ok(HomeSessionRegistrationAnswerSchema, answer));
+  assert.ok(ok(HomeSessionRegistrationAnswerSchema, { ...answer, repoRoot: null }), "no repository is a null, not absent");
+  const { counts: _counts, ...noCounts } = answer;
+  assert.ok(!ok(HomeSessionRegistrationAnswerSchema, noCounts));
+  assert.ok(!ok(HomeSessionRegistrationAnswerSchema, { ...answer, counts: { running: -1, waiting: 0 } }));
+});
+
+test("receipts name the review, the task, what was sent and when", () => {
+  const receipt = { reviewId: "r1", taskId: "t1", sent: "approve rev abc1234: ok", at: 1 };
+  assert.ok(ok(HomeDispatchReceiptSchema, receipt));
+  assert.ok(!ok(HomeDispatchReceiptSchema, { ...receipt, at: undefined }));
+  assert.ok(!ok(HomeDispatchReceiptSchema, { ...receipt, reviewId: "" }));
+});
+
+test("dispatch options need a working directory and a known entry, and answer with questions", () => {
+  const request = { sessionId: "s1", cwd: "/repo", entry: "command" };
+  assert.ok(ok(HomeDispatchOptionsRequestSchema, request));
+  assert.ok(ok(HomeDispatchOptionsRequestSchema, { ...request, kind: "bugfix", brief: "fix it" }));
+  assert.ok(!ok(HomeDispatchOptionsRequestSchema, { ...request, entry: "somewhere" }));
+  assert.ok(!ok(HomeDispatchOptionsRequestSchema, { ...request, kind: "nonsense" }));
+  assert.ok(!ok(HomeDispatchOptionsRequestSchema, { sessionId: "s1", entry: "command" }), "cwd is required");
+  const questions = { questions: [{ id: "kind", header: "Kind", question: "What kind of task?",
+    options: [{ value: "ship", label: "Ship: build it" }, { value: "more", label: "More..." }] }] };
+  assert.ok(ok(HomeDispatchOptionsResponseSchema, questions));
+  assert.ok(!ok(HomeDispatchOptionsResponseSchema, { questions: [{ ...questions.questions[0], id: "harness" }] }), "no harness question exists");
+});
+
+test("drafts: create needs a kind, update changes picks, confirm takes only start, backlog or cancel", () => {
+  const create = { sessionId: "s1", kind: "ship", words: "add a button", intent: "now" };
+  assert.ok(ok(HomeDispatchDraftCreateSchema, create));
+  assert.ok(!ok(HomeDispatchDraftCreateSchema, { sessionId: "s1", words: "no kind" }));
+  assert.ok(!ok(HomeDispatchDraftCreateSchema, { ...create, intent: "later" }));
+  assert.ok(ok(HomeDispatchDraftUpdateSchema, { sessionId: "s1", words: "changed", workflowId: "none" }));
+  assert.ok(!ok(HomeDispatchDraftUpdateSchema, { words: "no session" }));
+  for (const choice of ["start", "backlog", "cancel"]) assert.ok(ok(HomeDispatchDraftConfirmSchema, { sessionId: "s1", choice }));
+  assert.ok(!ok(HomeDispatchDraftConfirmSchema, { sessionId: "s1", choice: "maybe" }));
+  assert.ok(!ok(HomeDispatchDraftConfirmSchema, { sessionId: "s1" }));
+  const summary = { draftId: "d1", repoRoot: "/repo", kind: "ship", kindLabel: "Ship", afterWork: "None", afterWorkApplies: true,
+    words: "add a button", context: null, needs: [], brief: "add a button", text: "Repo: /repo" };
+  assert.ok(ok(HomeDispatchDraftSummarySchema, summary));
+  assert.ok(!ok(HomeDispatchDraftSummarySchema, { ...summary, brief: undefined }));
+});
+
+test("residents carry loop state and every field the pane reads", () => {
+  const resident = { runId: "run1", taskId: "t1", name: "Observer", builtIn: true, repos: 2, loopState: "working", needsYou: false,
+    iteration: 3, nextWakeAt: null, pauseReason: null, wakeReason: null, runRequestedAt: null, contextPercent: 41, costUsd: null };
+  assert.ok(ok(HomeDispatchResidentSchema, resident));
+  assert.ok(ok(HomeDispatchResidentsSchema, { residents: [resident] }));
+  assert.ok(!ok(HomeDispatchResidentSchema, { ...resident, loopState: "sleeping" }));
+  assert.ok(!ok(HomeDispatchResidentSchema, { ...resident, nextWakeAt: undefined }), "null and absent differ");
+  assert.ok(!ok(HomeDispatchResidentsSchema, { residents: [{ ...resident, iteration: -1 }] }));
+});
+
+test("config answers the launcher setting", () => {
+  assert.ok(ok(HomeDispatchConfigSchema, { launcher: { prompt: true } }));
+  assert.ok(!ok(HomeDispatchConfigSchema, { launcher: { prompt: "yes" } }));
+  assert.ok(!ok(HomeDispatchConfigSchema, {}));
 });

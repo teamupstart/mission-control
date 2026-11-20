@@ -85,6 +85,43 @@ test("a stored off value with an unknown property nested past SQLite's JSON dept
   }
 });
 
+test("a stored off value nested past JSON.stringify's stack limit still upgrades, byte for byte", () => {
+  // Built as text: past roughly ten thousand levels `JSON.stringify` overflows the stack on
+  // Node 24, while `JSON.parse` and the schema still accept the blob.
+  const depth = 50_000;
+  const deep = "{\"next\":".repeat(depth) + "\"leaf\"" + "}".repeat(depth);
+  const value = (flag: string) => `{"autoMerge":true,"codeRabbitAutoResolve":${flag},"legacyExtra":${deep}}`;
+  assert.throws(() => JSON.stringify(JSON.parse(value("false"))), RangeError, "the fixture really is past the serializer's limit");
+  const db = legacyDatabase(value("false"));
+  try {
+    upgradeDatabaseToCurrentSchema(db);
+    assert.equal(storedShipping(db), value("true"), "only the top-level flag's bytes change");
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+  } finally {
+    db.close();
+  }
+});
+
+test("the in-place rewrite changes only the top-level member JSON.parse keeps", () => {
+  const cases: Array<[string, string]> = [
+    // A nested member of the same name, and the key inside a string, are left alone.
+    [`{"nested":{"codeRabbitAutoResolve":false},"note":"\\"codeRabbitAutoResolve\\":false","codeRabbitAutoResolve" : false }`,
+      `{"nested":{"codeRabbitAutoResolve":false},"note":"\\"codeRabbitAutoResolve\\":false","codeRabbitAutoResolve" : true }`],
+    // With a duplicate key, the last one is what the stored setting reads as.
+    [`{"codeRabbitAutoResolve":true,"codeRabbitAutoResolve":false}`, `{"codeRabbitAutoResolve":true,"codeRabbitAutoResolve":true}`],
+  ];
+  for (const [before, after] of cases) {
+    assert.equal(JSON.parse(before).codeRabbitAutoResolve, false, before);
+    const db = legacyDatabase(before);
+    try {
+      upgradeDatabaseToCurrentSchema(db);
+      assert.equal(storedShipping(db), after);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test("the CodeRabbit upgrade leaves missing and corrupt Shipping settings untouched", () => {
   for (const value of [undefined, "{", "null", JSON.stringify({ soakMinutes: "invalid", codeRabbitAutoResolve: false })]) {
     const db = legacyDatabase(value);

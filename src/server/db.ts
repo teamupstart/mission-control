@@ -3517,14 +3517,59 @@ function migrateCodeRabbitFollowUp(d: DatabaseSync): void {
   if (!entry.schema.safeParse(stored).success) return;
   // Only an explicit stored `false` changes. An absent key already reads as the new default,
   // and writing it would rewrite a row that holds nothing to migrate.
-  const blob = stored as Record<string, unknown>;
-  if (blob.codeRabbitAutoResolve !== false) return;
-  // Rewritten from the parsed object rather than with SQLite's `json_set`, which refuses JSON
-  // nested past its own depth limit. The schema ignores unknown properties, so such a blob can
-  // pass the check above, and a throw here would abort every startup on the same migration.
-  // Every other property, known or not, is written back unchanged.
-  d.prepare("UPDATE app_config SET value = ? WHERE key = ?")
-    .run(JSON.stringify({ ...blob, codeRabbitAutoResolve: true }), entry.key);
+  if ((stored as Record<string, unknown>).codeRabbitAutoResolve !== false) return;
+  // The schema ignores unknown properties, so a valid blob can carry one nested arbitrarily
+  // deep - deeper than SQLite's JSON functions accept, and deeper than `JSON.stringify` can
+  // recurse. A throw here aborts startup before the schema is marked current, so every restart
+  // would hit it again. So the stored text is edited in place: only the top-level value changes,
+  // and every other byte, known property or not, is kept.
+  const next = withTopLevelLiteral(row.value, "codeRabbitAutoResolve", "false", "true");
+  if (next === null) return;
+  d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, entry.key);
+}
+
+/**
+ * Replace one top-level member's literal value in a JSON object's text, without recursion.
+ *
+ * A single pass tracks nesting depth and string escapes, so it is safe at any depth. The last
+ * top-level occurrence of `key` is the one `JSON.parse` keeps, so that is the one replaced.
+ * Returns null when that member's value is not exactly `from`, or when the edited text does
+ * not parse back with the new value; the caller then writes nothing.
+ */
+function withTopLevelLiteral(text: string, key: string, from: string, to: string): string | null {
+  let depth = 0;
+  let target = -1;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\"") {
+      const start = i;
+      for (i += 1; i < text.length && text[i] !== "\""; i += text[i] === "\\" ? 2 : 1);
+      const token = text.slice(start, i + 1);
+      i += 1;
+      if (depth !== 1) continue;
+      let j = i;
+      while (j < text.length && /\s/.test(text[j]!)) j += 1;
+      if (text[j] !== ":") continue;
+      let name: unknown;
+      try { name = JSON.parse(token); } catch { return null; }
+      if (name !== key) continue;
+      for (j += 1; j < text.length && /\s/.test(text[j]!); j += 1);
+      target = j;
+      continue;
+    }
+    if (ch === "{" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === "]") depth -= 1;
+    i += 1;
+  }
+  if (target < 0 || text.slice(target, target + from.length) !== from) return null;
+  const next = text.slice(0, target) + to + text.slice(target + from.length);
+  try {
+    if ((JSON.parse(next) as Record<string, unknown>)[key] !== JSON.parse(to)) return null;
+  } catch {
+    return null;
+  }
+  return next;
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */

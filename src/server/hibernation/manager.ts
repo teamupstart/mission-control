@@ -759,6 +759,12 @@ export class HibernationManager {
    * so Retry can try again, rather than a running task with a binding left on the stopped
    * session. The moved bindings are announced only once that has committed. Throws when the
    * transaction does, for the caller to undo the launch it is binding.
+   *
+   * The commit is the point of no return: from then on the task runs on this session, so the
+   * follow-ups after it (announcing the bindings, linking the work episode, whose dependency
+   * bookkeeping broadcasts other tasks and so cannot run inside the transaction) are best
+   * effort. One that fails is reported, never turned into a failed Resume that would stop an
+   * agent its task is already running on.
    */
   private bindResumed(
     current: Task,
@@ -773,9 +779,18 @@ export class HibernationManager {
       session.id !== record.sessionId && workflows
         ? workflows.followResumedConversation(record.sessionId, record.noteKey, session, at)
         : []) ?? [];
-    workflows?.announceBindings(moved);
-    this.registry.bindTaskToWorkEpisode(current.id, session.id);
+    this.afterCommit(current.id, "announce its moved workflow bindings", () => workflows?.announceBindings(moved));
+    this.afterCommit(current.id, "link its work episode", () => this.registry.bindTaskToWorkEpisode(current.id, session.id));
     return { ok: true, task: this.registry.getTask(current.id) ?? running };
+  }
+
+  /** A follow-up to a committed bind: reported when it fails, never thrown (see `bindResumed`). */
+  private afterCommit(taskId: string, what: string, step: () => unknown): void {
+    try {
+      step();
+    } catch (error) {
+      console.error(`[hibernation] task ${taskId} resumed, but could not ${what}:`, error);
+    }
   }
 
   /**

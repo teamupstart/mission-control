@@ -1106,6 +1106,35 @@ test("a terminal Resume whose workflow bindings cannot move is undone, and the t
   assert.deepEqual(announced, [["binding-moved"]], "the moved bindings are announced once committed");
 });
 
+test("a follow-up that fails after the bind commits is reported, and never stops the resumed agent", async (t) => {
+  const workflows = {
+    runs: () => [],
+    resumeNeedsEvidence: () => false,
+    followResumedConversation: () => ["binding-moved"],
+    announceBindings: () => {
+      throw new Error("event stream closed");
+    },
+  };
+  const f = terminalFleet(checkout("terminal-after-commit"), { workflows });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  // Linking the work episode fails too.
+  f.registry.bindTaskToWorkEpisode = () => {
+    throw new Error("episode write failed");
+  };
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
+
+  const resumed = await f.hibernation.resume("term");
+  assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
+  assert.equal(f.registry.getTask("term")?.status, "running", "the committed bind stands");
+  assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+  assert.deepEqual(f.closed, [], "and the agent it runs on is not stopped");
+  assert.equal(errors.length, 2, "each failed follow-up is reported");
+  assert.match(String(errors[0]?.[0]), /could not announce its moved workflow bindings/);
+  assert.match(String(errors[1]?.[0]), /could not link its work episode/);
+});
+
 test("a task or checkout that changes while the resume is prepared launches nothing", async (t) => {
   // Cancelled while preparing: nothing is spawned, the preparation is released, the task is left as it is.
   const cancelled = terminalFleet(checkout("terminal-cancel-while-preparing"), { duringPrepare: "cancel" });

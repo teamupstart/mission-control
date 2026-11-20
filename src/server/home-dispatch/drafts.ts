@@ -57,9 +57,14 @@ interface Draft {
 /** In memory, one per session, replaced by the next one that session creates. */
 const drafts = new Map<string, Draft>();
 
+/** The latest create each session has started, so a slower earlier create cannot overwrite a newer draft. */
+const createTicket = new Map<string, number>();
+let ticketCounter = 0;
+
 /** Forget every draft. For tests, and nothing else. */
 export function clearHomeDispatchDrafts(): void {
   drafts.clear();
+  createTicket.clear();
 }
 
 function liveDraft(sessionId: string, id: string | undefined): Draft | null {
@@ -173,6 +178,8 @@ export const createDraftHandler: HomeDispatchHandler = (deps): Handler => async 
   if (!acting.ok) return c.json(acting.body, acting.status);
   const refused = kindRefusal(body.kind);
   if (refused) return c.json(refused.body, refused.status);
+  const ticket = ++ticketCounter;
+  createTicket.set(body.sessionId, ticket);
   const workflowId = workflowPick(body.workflowId);
   const blocked = selectionBlock(deps, workflowId);
   if (blocked) return c.json(blocked.body, blocked.status);
@@ -181,6 +188,9 @@ export const createDraftHandler: HomeDispatchHandler = (deps): Handler => async 
     const resolved = await resolveRepoSelector(body.repo, acting.session);
     if (!resolved.ok) return c.json(resolved.body, resolved.status);
     repoRoot = resolved.repoRoot;
+  }
+  if (createTicket.get(body.sessionId) !== ticket) {
+    return c.json({ error: "a newer draft was started for this session" }, 409);
   }
   sweepExpired();
   const draft: Draft = {

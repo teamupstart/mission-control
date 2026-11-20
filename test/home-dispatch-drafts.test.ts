@@ -586,3 +586,15 @@ test("a start that throws still reports the filed task id", async () => {
   assert.equal(body.started, false);
   assert.equal(taskRow(body.taskId as string).status, "backlog");
 });
+
+test("a slower earlier create cannot overwrite a newer draft", async () => {
+  await register("s1", repo);
+  const slow = createDraft({ kind: "ship", words: "older", repo: other, workflowId: "none" });
+  const fast = await createDraft({ kind: "ship", words: "newer", workflowId: "none" });
+  assert.equal(fast.res.status, 200);
+  const older = await slow;
+  assert.equal(older.res.status, 409);
+  assert.equal(older.body.error, "a newer draft was started for this session");
+  const kept = await post("/dispatch/drafts/" + fast.body.draftId, { sessionId: "s1", words: "still here" });
+  assert.equal(kept.status, 200, "the newer draft survived");
+});

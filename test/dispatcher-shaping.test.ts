@@ -282,6 +282,41 @@ test("with the flag off an embedded launch hands the supervisor exactly what it 
   setFlag(true);
 });
 
+test("with the flag on and no shaper, an embedded launch hands the supervisor exactly what an unshaped one does", async () => {
+  const repo = seedRepo("identical-sdk-no-shaper");
+  const intent = "sort out the flexbox helper";
+  setFlag(false);
+  const baseline = await sdkDispatch({ agent: "claude", repo, taskId: "sdk-baseline", intent });
+  assertRunning(baseline.task);
+  setFlag(true);
+  // The real engine with nothing configured: no shaper applies to this launch.
+  const none = await sdkDispatch({ agent: "claude", repo, taskId: "sdk-no-shaper", intent });
+  assertRunning(none.task);
+  assert.equal(none.start!.sessionId, undefined, "no pre-minted id reaches the supervisor when no shaper ran");
+  assert.deepEqual(Object.keys(none.start!).sort(), Object.keys(baseline.start!).sort(), "the same start input, key for key");
+  assert.equal(none.start!.prompt, await unshapedExpectation(none.task, intent));
+  assert.deepEqual(
+    { ...none.start!, cwd: "<worktree>", taskId: "<task>", gitBranch: "<branch>", gitRoot: "<worktree>", prompt: "<prompt>",
+      launchPresentation: "<presentation>", standingInstructions: none.start!.standingInstructions },
+    { ...baseline.start!, cwd: "<worktree>", taskId: "<task>", gitBranch: "<branch>", gitRoot: "<worktree>", prompt: "<prompt>",
+      launchPresentation: "<presentation>", standingInstructions: baseline.start!.standingInstructions },
+    "every value that is not this launch's own worktree, task or prompt is the baseline's",
+  );
+  assert.equal(none.task.shaping, undefined, "no record");
+  assert.equal(getDurableTask("sdk-no-shaper")?.shaping, undefined);
+  assert.equal(getTaskShapingText("sdk-no-shaper"), null);
+});
+
+test("an embedded launch a shaper ran for starts under the id its shapers' trace context came from", async () => {
+  const repo = seedRepo("sdk-shared-id");
+  const probe = standIn(SECTION);
+  const run = await sdkDispatch({ agent: "codex", repo, taskId: "sdk-shared-id", intent: "do it", shapeTask: probe.shapeTask });
+  assertRunning(run.task);
+  assert.ok(run.start!.sessionId, "the shaped launch passes its pre-minted id");
+  assert.deepEqual(probe.calls[0]!.trace, sessionTraceContext(run.start!.sessionId!));
+  assert.equal(currentShaping(run.task)?.sessionId, run.start!.sessionId);
+});
+
 // ---- where the section lands ----
 
 test("the section follows the kind contract in both turn-one variants", async () => {
@@ -457,7 +492,8 @@ test("a launch whose commit fails keeps a record naming the previous session, wh
 
 test("the shaping input carries exactly the trace context the agent is launched with", async () => {
   const repo = seedRepo("trace");
-  const sdkProbe = standIn("");
+  // A run a shaper took part in: only those launches share the pre-minted id with the agent.
+  const sdkProbe = standIn(SECTION);
   const sdk = await sdkDispatch({ agent: "claude", repo, taskId: "trace-sdk", intent: "do it", shapeTask: sdkProbe.shapeTask });
   assertRunning(sdk.task);
   // The supervisor derives its agent's context from the id it is started under, which the

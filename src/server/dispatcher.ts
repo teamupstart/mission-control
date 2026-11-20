@@ -931,7 +931,11 @@ export class Dispatcher {
           standing,
           standingFallbackTurnOne,
           residentMcp,
-          sdkSessionId,
+          // Only a launch a shaper actually ran for shares the pre-minted id: those shapers were
+          // handed its trace context, so the agent must start under the same one. When no
+          // shaper applied, nothing saw that id, and the supervisor mints its own exactly as an
+          // unshaped launch always has.
+          shaping.summary ? sdkSessionId : null,
         );
         // Turn one IS the start on this runtime, so the launch reached its worker the moment
         // `supervisor.start` returned - cancelled underneath or not.

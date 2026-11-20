@@ -1,5 +1,7 @@
 import { ResidentState } from "./ResidentState.tsx";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { resolveLaunchModel } from "@shared/kind-defaults.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
@@ -22,7 +24,7 @@ import {
   createResidentProfile,
   updateResidentProfile,
 } from "./api.ts";
-import { RESIDENT_EDITOR_SECTIONS } from "./editor-sections.tsx";
+import { RESIDENT_EDITOR_SECTIONS, type ResidentEditorSection } from "./editor-sections.tsx";
 import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "../workflows/WorkflowConfirmModal.tsx";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 
@@ -39,6 +41,24 @@ export function blankResidentDraft(): ResidentProfileRevision {
       .map((id) => [id, RESIDENT_PROFILE_SECTIONS[id].parse(undefined)]),
   );
   return { ...defaulted, ...required } as ResidentProfileRevision;
+}
+
+/**
+ * The sections a draft has a validation error in. A preview section whose flag is off is still
+ * drawn while it holds one, so a draft never fails to save on a field the author cannot reach.
+ */
+export function residentDraftProblemSections(draft: ResidentProfileRevision): ReadonlySet<string> {
+  const parsed = ResidentProfileRevisionRequestSchema.safeParse(draft);
+  return new Set(parsed.success ? [] : parsed.error.issues.map((issue) => String(issue.path[0] ?? "")));
+}
+
+/** Whether the editor draws a section: always, unless it is a preview whose flag is off and it holds no error. */
+export function residentEditorSectionVisible(
+  section: Pick<ResidentEditorSection, "id" | "featureFlag">,
+  flags: FeatureFlagsConfig,
+  problemSections: ReadonlySet<string>,
+): boolean {
+  return !section.featureFlag || resolveFeatureFlag(section.featureFlag, flags) || problemSections.has(section.id);
 }
 
 /** The first thing wrong with a draft, in the operator's words, or null when it can be saved. */
@@ -89,6 +109,7 @@ export function ResidentProfileEditor({
   const [draft, setDraft] = useState<ResidentProfileRevision>(() => profile?.settings ?? seed ?? blankResidentDraft());
   // A built-in ships with Mission Control and is replaced on upgrade: nothing here can save it.
   const readOnly = profile?.builtin === true;
+  const featureFlags = useContext(FeatureFlagsContext);
   const [dirty, setDirtyState] = useState(profile === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,6 +174,7 @@ export function ResidentProfileEditor({
       : null;
   const spendProblem = draft.loop.spendCapUsd !== null ? spendUnavailable : null;
   const problem = residentDraftProblem(draft) ?? spendProblem;
+  const problemSections = residentDraftProblemSections(draft);
 
   /** Save the draft, on top of `expectedRevision` - the base, or a newer one the operator chose to overwrite. */
   async function save(expectedRevision = base?.revision ?? null): Promise<void> {
@@ -350,7 +372,7 @@ export function ResidentProfileEditor({
       {error && <p className="resident-error" role="alert">{error}</p>}
       {!error && dirty && problem && <p className="field-hint resident-problem">{problem}</p>}
       <div className="resident-cards">
-        {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
+        {RESIDENT_EDITOR_SECTIONS.filter((section) => residentEditorSectionVisible(section, featureFlags, problemSections)).map(({ id, title: heading, blurb, Body }) => (
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>

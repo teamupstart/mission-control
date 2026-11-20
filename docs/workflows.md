@@ -2715,6 +2715,24 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
+If a temporarily unavailable session blocked a packet before any write, session return,
+Inspector updates, and daemon startup reconcile that prepared packet against a fresh remote
+observation. Session return, daemon startup, and **Check again** request a fresh Inspector read
+before recovery; concurrent recovery requests share that read, and a failed read keeps the packet prepared and
+blocked until a successful fresh read or a newer poll observation arrives. Queued signals
+older than the gate's recorded observation cannot replace its
+head or remote state. Equal timestamps use the current durable observation to break ties;
+without one, conflicting signals are ignored while same-head review completion can proceed.
+An unchanged head receives the original bytes once. A newer head cancels the
+unsent packet without a delivery timestamp: `inspector_only` evaluates it through the existing
+gate, while `restart_workflow` captures a full resubmission, preserving evidence readiness and
+Persona review. Recovery requires the same active attachment, live delivery authorization and
+an unpaused session. **Check again** is available only when the delivery block holds a
+recoverable prepared Inspector feedback packet, and asks Inspector for a fresh remote observation. Uncertain sends remain held for explicit resolution.
+Before re-offering feedback held behind another review or a pause, delivery checks its
+submission and findings gate again. Obsolete queued packets remain unsent without
+interrupting the current review, matching restart recovery's retention policy.
+
 The packet's findings section comes from a pure, shared renderer
 (`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the
 daemon-built CodeRabbit follow-up render findings through it as well, so all three describe a

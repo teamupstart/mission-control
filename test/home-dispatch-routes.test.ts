@@ -59,12 +59,19 @@ test("flag off: every route answers the disabled 404, even with a token, and the
   assert.ok(health.capabilities.includes(DAEMON_PROTOCOL_CAPABILITIES.explicitScoutFiles), "other capabilities stay");
 });
 
-test("flag on: every route is 501 with a token, 401 without one and 403 off loopback", async () => {
+// Routes a later phase has filled; they no longer answer 501. Add a path when its phase lands.
+const FILLED = new Set(["/dispatch/sessions"]);
+
+test("flag on: every unfilled route is 501 with a token, 401 without one and 403 off loopback", async () => {
   setFlag(true);
   for (const route of HOME_DISPATCH_ROUTES) {
     const res = await call(route, authed);
-    assert.equal(res.status, 501, `${route.method} ${route.path}`);
-    assert.deepEqual(await res.json(), { error: "not implemented", feature: "headless-mode" });
+    if (FILLED.has(route.path)) {
+      assert.notEqual(res.status, 501, `${route.method} ${route.path} is filled`);
+    } else {
+      assert.equal(res.status, 501, `${route.method} ${route.path}`);
+      assert.deepEqual(await res.json(), { error: "not implemented", feature: "headless-mode" });
+    }
     assert.equal((await call(route, loopback)).status, 401, `${route.path} without a token`);
     assert.equal((await call(route, { host: "evil.example", "x-harness-token": authed["x-harness-token"] })).status, 403, `${route.path} off loopback`);
   }
@@ -73,7 +80,7 @@ test("flag on: every route is 501 with a token, 401 without one and 403 off loop
 });
 
 test("a flag change takes effect on the next request, in both directions, with no restart", async () => {
-  const route = HOME_DISPATCH_ROUTES[0];
+  const route = HOME_DISPATCH_ROUTES.find((r) => !FILLED.has(r.path))!;
   assert.equal((await call(route, authed)).status, 404);
   setFlag(true);
   assert.equal((await call(route, authed)).status, 501);

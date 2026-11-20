@@ -381,20 +381,25 @@ function layerLabel(name: unknown): string {
   return where ? `the ${String(name.type)} configuration ${where}` : `the ${String(name.type)} configuration`;
 }
 
-/** Validate our own registrations before Codex starts a thread in native mode. */
-export function codexNativeResidentMcpProblem(
+/** Validate our registrations and record the active layer versions around native startup. */
+export function checkCodexNativeResidentMcp(
   result: unknown,
   customNames: readonly string[],
   mission: MissionMcpDescriptor | null,
-): string | null {
+): { ok: true; layerVersions: string } | { ok: false; reason: string } {
   if (!plain(result) || !plain(result.config) || !Array.isArray(result.layers)) {
-    return "Codex did not report its configuration layers";
+    return { ok: false, reason: "Codex did not report its configuration layers" };
   }
   const custom = new Set(customNames.map((name) => name.toLowerCase()));
   let overrides: Record<string, unknown> = {};
+  const activeLayers: Array<[Record<string, unknown>, string]> = [];
   for (const layer of result.layers) {
     if (!plain(layer) || !plain(layer.name)) continue;
     if (typeof layer.disabledReason === "string" && layer.disabledReason.length > 0) continue;
+    if (typeof layer.version !== "string" || !layer.version) {
+      return { ok: false, reason: "Codex did not report its active configuration layer versions" };
+    }
+    activeLayers.push([layer.name, layer.version]);
     if (!plain(layer.config) || !plain(layer.config.mcp_servers)) continue;
     if (layer.name.type === "sessionFlags") {
       overrides = layer.config.mcp_servers;
@@ -402,7 +407,7 @@ export function codexNativeResidentMcpProblem(
     }
     for (const [name, server] of Object.entries(layer.config.mcp_servers)) {
       if (custom.has(name.toLowerCase())) {
-        return `${layerLabel(layer.name)} already defines the custom MCP server ${name}; rename one of them`;
+        return { ok: false, reason: `${layerLabel(layer.name)} already defines the custom MCP server ${name}; rename one of them` };
       }
       if (name !== mission?.serverName) continue;
       // Setup's user registration can coexist. The launch flags supply its command and
@@ -411,7 +416,7 @@ export function codexNativeResidentMcpProblem(
       if (layer.name.type !== "user" || !plain(server)
         || Object.keys(server).some((key) => key !== "command" && key !== "args" && key !== "env")
         || (server.env !== undefined && (!plain(server.env) || Object.keys(server.env).some((key) => !Object.hasOwn(mission.env, key))))) {
-        return `${layerLabel(layer.name)} conflicts with Mission Control's own MCP server ${name}`;
+        return { ok: false, reason: `${layerLabel(layer.name)} conflicts with Mission Control's own MCP server ${name}` };
       }
     }
   }
@@ -420,10 +425,10 @@ export function codexNativeResidentMcpProblem(
     const server = effective[name];
     const override = overrides[name];
     if (!plain(override) || override.required !== true || !plain(server) || server.enabled === false) {
-      return `Codex did not load the launch registration for MCP server ${name}`;
+      return { ok: false, reason: `Codex did not load the launch registration for MCP server ${name}` };
     }
   }
-  return null;
+  return { ok: true, layerVersions: JSON.stringify(activeLayers) };
 }
 
 /**

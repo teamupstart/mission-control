@@ -921,10 +921,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         config: { mcp_servers: configured },
         origins: {},
         layers: [
-          { name: { type: "sessionFlags" }, config: { mcp_servers: flags } },
-          { name: { type: "user", file, profile: null }, config: { mcp_servers: user } },
+          { name: { type: "sessionFlags" }, version: "flags", config: { mcp_servers: flags } },
+          { name: { type: "user", file, profile: null }, version: createHash("sha256").update(text).digest("hex"), config: { mcp_servers: user } },
           ...(homeProject ? [{
             name: { type: "project", dotCodexFolder: join(process.env.HOME, ".codex") },
+            version: "home-project",
             config: { mcp_servers: homeProject },
           }] : []),
         ],

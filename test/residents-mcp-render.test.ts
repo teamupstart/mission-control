@@ -126,9 +126,9 @@ test("the overlay links the operator's home, writes an owner-only configuration,
 
 // ---- verifying the layers before any server loads ----
 
-const user = (servers: Record<string, unknown>) => ({ name: { type: "user", file: "/run/codex-home/config.toml" }, config: { mcp_servers: servers } });
-const project = (servers: Record<string, unknown>) => ({ name: { type: "project", dotCodexFolder: "/repo/.codex" }, config: { mcp_servers: servers } });
-const flags = { name: { type: "sessionFlags" }, config: { mcp_servers: { "mission-control": { command: "m" } } } };
+const user = (servers: Record<string, unknown>) => ({ name: { type: "user", file: "/run/codex-home/config.toml" }, version: "user", config: { mcp_servers: servers } });
+const project = (servers: Record<string, unknown>) => ({ name: { type: "project", dotCodexFolder: "/repo/.codex" }, version: "project", config: { mcp_servers: servers } });
+const flags = { name: { type: "sessionFlags" }, version: "flags", config: { mcp_servers: { "mission-control": { command: "m" } } } };
 const input = { overlayConfig: "/run/codex-home/config.toml", names: ["snap"], disabled: [] as string[], missionServer: "mission-control" };
 
 test("Codex's layers decide whether a start is exact, needs foreign servers switched off, or is refused", () => {
@@ -586,10 +586,11 @@ test("Codex native runs keep the normal home, attach the custom snapshot, and re
   for (const resume of [null, "thread-1"]) {
     const startsBeforePreflight = resident.starts;
     const current = resume ? { added: { command: "new" } } : {};
+    let threadOpened = false;
     const server = new ScriptedServer({
       initialize: () => ({}),
       "config/read": () => {
-        assert.equal(resident.starts, startsBeforePreflight, "preflight must not issue tickets");
+        if (!threadOpened) assert.equal(resident.starts, startsBeforePreflight, "preflight must not issue tickets");
         return {
           config: { developer_instructions: null, mcp_servers: { glean, ...current, "mission-control": {}, [name]: {} } },
           layers: [{
@@ -600,6 +601,7 @@ test("Codex native runs keep the normal home, attach the custom snapshot, and re
       },
       [resume ? "thread/resume" : "thread/start"]: () => {
         assert.equal(resident.starts, startsBeforePreflight + 1, "thread startup must have fresh tickets");
+        threadOpened = true;
         return THREAD;
       },
       "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
@@ -619,6 +621,7 @@ test("Codex native runs keep the normal home, attach the custom snapshot, and re
     const layerRead = server.sent.findIndex((frame) => frame.method === "config/read"
       && (frame.params as { includeLayers?: boolean }).includeLayers);
     assert.ok(layerRead >= 0 && layerRead < start);
+    assert.ok(methods.lastIndexOf("config/read") > start && methods.lastIndexOf("config/read") < methods.indexOf("turn/start"));
     await handle.stop();
   }
   assert.equal(resident.starts, 2);
@@ -628,6 +631,36 @@ test("Codex native runs keep the normal home, attach the custom snapshot, and re
 const missionRegistrations = {
   "mission-control": { command: "/usr/bin/node", args: ["/mcp.mjs"], env: { MISSION_PORT: "1" }, required: true },
 };
+
+for (const resume of [null, "thread-1"]) {
+  test(`Codex native ${resume ? "resume" : "launch"} refuses a configuration change during thread startup`, async (t) => {
+    const resident = residentLaunch(["notes"], () => [
+      { name: "notes", options: {}, shape: "stdio", command: "/usr/bin/notes", args: [], env: {} },
+    ], () => {}, "all");
+    const overrides = { ...missionRegistrations, notes: { command: "/usr/bin/notes", required: true } };
+    let threadOpened = false;
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => ({
+        config: { developer_instructions: null, mcp_servers: overrides },
+        layers: [
+          { ...flags, version: "flags", config: { mcp_servers: overrides } },
+          { ...user({ glean: { url: "https://glean.example.test/mcp" } }), version: threadOpened ? "new" : "old" },
+        ],
+      }),
+      [resume ? "thread/resume" : "thread/start"]: () => {
+        threadOpened = true;
+        return THREAD;
+      },
+      "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+    });
+    t.after(() => server.close());
+    await assert.rejects(codexSdkSpec({ connect: async () => server }).launch(sdkOptions({ residentMcp: resident, resume })),
+      /Codex configuration changed during thread startup/);
+    assert.equal(threadOpened, true);
+    assert.equal(server.calls("turn/start").length, 0);
+  });
+}
 
 test("Codex native launch opens a thread with no custom MCP servers selected", async (t) => {
   const resident = residentLaunch([], () => [], () => {}, "all");

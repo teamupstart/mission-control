@@ -68,7 +68,7 @@ import type {
 import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
 import {
   codexNativeResidentMcpArgs,
-  codexNativeResidentMcpProblem,
+  checkCodexNativeResidentMcp,
   codexResidentMcpVerdict,
   operatorRolloutPath,
   prepareResidentCodexHome,
@@ -1713,11 +1713,13 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // rule is still installed on this process or has to be repeated in turn one, and a
         // prefix does not govern later turns.
         if (standingFellBackToPrompt) session.markStandingInstructionsPrefixed();
-        if (native) {
+        const verifyNativeMcp = native ? async () => {
           const layers = await client.request("config/read", { cwd: opts.cwd, includeLayers: true });
-          const problem = codexNativeResidentMcpProblem(layers, native.names, opts.mcp);
-          if (problem) throw new Error(`this resident's native MCP servers cannot start: ${problem}`);
-        }
+          const verification = checkCodexNativeResidentMcp(layers, native.names, opts.mcp);
+          if (!verification.ok) throw new Error(`this resident's native MCP servers cannot start: ${verification.reason}`);
+          return verification.layerVersions;
+        } : null;
+        const nativeVersions = verifyNativeMcp ? await verifyNativeMcp() : null;
         if (pinned && overlay && overlayConfig) {
           // At most two reads: the second confirms the servers only another layer defines are
           // now switched off. Anything else is refused before a thread exists to load it.
@@ -1755,6 +1757,11 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           session.bind(
             await client.request<ThreadStartResponse>("thread/start", threadStartParams(config)),
           );
+        }
+        // Codex reads configuration again when it opens a thread. Check the registrations
+        // and layer versions once more before sending the resident's first turn.
+        if (verifyNativeMcp && (await verifyNativeMcp()) !== nativeVersions) {
+          throw new Error("Codex configuration changed during thread startup. Launch the resident again.");
         }
         // Turn one, awaited: `SdkSpec.launch` promises a session that is running what it
         // was asked to run, and a dispatch whose intent was never accepted has to FAIL

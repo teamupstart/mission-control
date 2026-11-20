@@ -600,6 +600,8 @@ the app-server arguments.
 Mission Control's registration. A standard Setup registration can coexist because launch flags
 provide its command, arguments and environment. Native servers outside the snapshot are allowed to
 start. Codex reads native configuration again when the run resumes.
+Mission Control checks registrations and active layer versions before and after thread startup.
+If the checks observe a change during startup, the resident stops before its first turn.
 
 Checked on 2026-11-09 against Claude Code 2.1.319 and a real account's configuration, through the
 production driver and without sending a prompt: a pinned launch reported only Mission's server.

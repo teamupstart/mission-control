@@ -688,11 +688,23 @@ async function probeCodex(): Promise<void> {
   writeFileSync(join(nativeHome, "AGENTS.md"), "PROBE_USER_INSTRUCTIONS\n");
   writeFileSync(join(repo, ".codex/config.toml"), `[mcp_servers."native.project"]\n${toml("native.project")}`);
   const agentEnvs: Array<Record<string, string | undefined>> = [];
+  let beforeNextThreadStart: (() => void) | null = null;
+  let turnsSent = 0;
   const spec = codexSdkSpec({
     async connect(args, cwd, _stateHome, options) {
       const env = { PATH: process.env.PATH, HOME: home, CODEX_HOME: options?.codexHome ?? nativeHome };
       agentEnvs.push(env);
-      return spawnAppServer(codex!.path, args, cwd, env);
+      const transport = spawnAppServer(codex!.path, args, cwd, env);
+      return { ...transport, send(frame) {
+        const { method } = frame as { method?: string };
+        if (method === "thread/start" && beforeNextThreadStart) {
+          const change = beforeNextThreadStart;
+          beforeNextThreadStart = null;
+          change();
+        }
+        if (method === "turn/start") turnsSent++;
+        transport.send(frame);
+      } };
     },
   });
   const runId = "00000000-0000-4000-8000-00000000c0de";
@@ -771,6 +783,13 @@ async function probeCodex(): Promise<void> {
           await handle.stop();
         }
       }
+      writeFileSync(configPath, nativeMcpConfig);
+      beforeNextThreadStart = () => writeFileSync(configPath, nativeMcpConfig + `\n[mcp_servers.snap]\n${toml("snap")}`);
+      const previousTurns = turnsSent;
+      await assert.rejects(spec.launch({ ...options(null), residentMcp: observedLaunch(nativeRun, "all") }),
+        /already defines the custom MCP server snap/);
+      assert.equal(turnsSent, previousTurns);
+      say({ harness: "codex", check: "a native name collision added during thread startup refuses the first resident turn", pass: true });
       return;
     }
     for (const phase of ["launch", "resume"] as const) {

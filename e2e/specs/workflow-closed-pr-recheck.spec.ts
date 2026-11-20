@@ -219,14 +219,14 @@ function strandAsClosed(daemon: DaemonHandle, runId: string): void {
 }
 
 /** Script what GitHub answers when the daemon reads this pull request. */
-function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED"): void {
+function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED", head = FAILED_HEAD): void {
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo,
     url: PR_URL,
     number: PR_NUMBER,
     state,
     headRefName: "feat/closed-pr",
-    headRefOid: FAILED_HEAD,
+    headRefOid: head,
     createdAt: new Date(Date.now() - 60_000).toISOString(),
     mergedAt: null,
   }]);
@@ -369,16 +369,25 @@ test("session return releases unsent feedback for a superseded clean Inspector h
   await dashboard.reload();
   const checkAgain = header.getByRole("button", { name: "Check again" });
   await expect(checkAgain).toBeVisible();
+  scriptGitHub(daemon, "CLOSED");
   await checkAgain.click();
   await expect.poll(() => eventCount(daemon, runId, "inspector_recheck_requested")).toBe(1);
+  await expect.poll(() => ledgerRow(daemon).observed_state).toBe("CLOSED");
   // An explicit recheck also respects the operator's pause and never pretends to send.
   expect((await probe(daemon, runId)).run.status).toBe("blocked");
   await checkAgain.hover();
   await dashboard.mouse.move(800, 600);
   await expect(dashboard.locator(".tooltip")).toHaveCount(0);
   await shoot(dashboard, header, "03-unsent-feedback-blocked");
+  // The earlier read is no longer fresh enough for this gate. Only session return may
+  // request the current head now: the Inspector poll is an hour away and no recheck follows.
+  withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
+    observed_state = 'OPEN', observed_head_sha = ?, observed_at = 0 WHERE key = ?`)
+    .run(FAILED_HEAD, PR_KEY));
+  scriptGitHub(daemon, "OPEN", head);
   await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {});
   await expect.poll(async () => (await probe(daemon, runId)).run.status).toBe("completed");
+  expect(ledgerRow(daemon).observed_at).toBeGreaterThan(0);
   await expect(header.getByText("Completed", { exact: true })).toBeVisible();
   const packet = withDaemonDb(daemon, (db) => db.prepare(
     "SELECT state, delivered_at FROM workflow_deliveries WHERE id = 'unsent-inspector'",

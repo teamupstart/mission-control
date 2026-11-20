@@ -2717,7 +2717,9 @@ labels the Persona bypass and offers an explicit confirmed restart of the full w
 
 If a temporarily unavailable session blocked a packet before any write, session return,
 Inspector updates, and daemon startup reconcile that prepared packet against a fresh remote
-observation. Queued signals older than the gate's recorded observation cannot replace its
+observation. Session return requests a fresh Inspector read before recovery; concurrent session
+updates share that read, and a failed read keeps the packet prepared and blocked. Queued signals
+older than the gate's recorded observation cannot replace its
 head or remote state. Equal timestamps use the current durable observation to break ties;
 without one, conflicting signals are ignored while same-head review completion can proceed.
 An unchanged head receives the original bytes once. A newer head cancels the

@@ -2418,6 +2418,137 @@ async function blockUnsentFeedback(seeded: Seeded) {
 }
 
 for (const policy of ["inspector_only", "restart_workflow"] as const) {
+  for (const current of ["unchanged", "clean", "pending"] as const) {
+    test(`session return refreshes unsent Inspector feedback: ${policy}, ${current}`, async () => {
+      let captureHead = "before-session-return";
+      let reads = 0;
+      const seeded = await seed({ policy, deliveryMode: "live", head: captureHead,
+        captureHead: () => captureHead,
+        reobservePullRequest: async (prKey) => {
+          reads += 1;
+          return reobserveInspectorPr(seeded.registry, prKey);
+        },
+      });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        captureHead = current === "unchanged" ? seeded.head : "after-session-return";
+        if (current === "clean") {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+        }
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: seeded.head, observedState: "OPEN", observedAt: seeded.now - 1,
+          headSha: current === "clean" ? captureHead : seeded.head,
+          cleanReviewHeadSha: current === "clean" ? captureHead : null,
+        }, Date.now());
+        scriptGitHub("OPEN", captureHead);
+        session.state = "idle";
+        seeded.registry.setSessionPause(session.id, null);
+        await settleGate(seeded);
+        assert.equal(reads, 1, "session return must request a fresh observation without a manual recheck");
+        assert.equal(eventCount(seeded, "inspector_recheck_requested"), 0);
+        assert.ok(getInspectorPr(seeded.key)!.observedAt! >= seeded.now);
+        const recovered = seeded.store.getDelivery(packet.id)!;
+        if (current === "unchanged") {
+          assert.equal(recovered.state, "delivered");
+          assert.deepEqual(seeded.injected, [packet.payload]);
+        } else {
+          assert.equal(recovered.state, "cancelled");
+          assert.equal(recovered.deliveredAt, null);
+          assert.deepEqual(seeded.injected, []);
+          const latest = seeded.store.latestSubmission(seeded.ids.run)!;
+          if (policy === "restart_workflow") {
+            assert.equal(latest.mode, "full_workflow");
+            assert.equal((latest.context as unknown as WorkflowContextSnapshot).evidence.headSha, captureHead);
+            assert.equal(inspectorOnlyRounds(seeded), 0);
+            assert.notEqual(seeded.store.getRun(seeded.ids.run)!.status, "completed");
+          } else {
+            assert.equal(latest.prHeadSha, captureHead);
+            assert.equal(phaseOf(seeded), current === "clean"
+              ? "completed/complete" : "waiting_for_inspector/inspector_review");
+          }
+        }
+      } finally {
+        scriptGitHub(null);
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
+for (const answer of [null, "CLOSED", "MERGED"] as const) {
+  test(`session return refreshes unsent Inspector feedback safely on ${answer ?? "outage"}`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      const { packet, session } = await blockUnsentFeedback(seeded);
+      updateInspectorPr(seeded.key, {
+        observedHeadSha: seeded.head, observedState: "OPEN", observedAt: seeded.now - 1,
+      }, Date.now());
+      scriptGitHub(answer, seeded.head);
+      session.state = "idle";
+      seeded.registry.setSessionPause(session.id, null);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+      assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+      assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+      assert.deepEqual(seeded.injected, []);
+      if (answer === null) assert.equal(eventCount(seeded, "inspector_pr_reobserve_failed"), 1);
+      else assert.equal(getInspectorPr(seeded.key)!.observedState, answer);
+    } finally {
+      scriptGitHub(null);
+      await seeded.manager.stop();
+    }
+  });
+}
+
+test("session return refreshes unsent Inspector feedback once and holds queued signals while reading", async () => {
+  let release!: () => void;
+  const reading = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live",
+    reobservePullRequest: async (prKey) => {
+      reads += 1;
+      if (reads === 1) await reading;
+      return reobserveInspectorPr(seeded.registry, prKey);
+    },
+  });
+  try {
+    const { packet, session } = await blockUnsentFeedback(seeded);
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+    updateInspectorPr(seeded.key, {
+      observedHeadSha: seeded.head, observedState: "OPEN", observedAt: Date.now(),
+      headSha: "fresh-return-head", cleanReviewHeadSha: "fresh-return-head",
+    }, Date.now());
+    scriptGitHub("OPEN", "fresh-return-head");
+    // Even a previously fresh queued signal must not send A while the return reads B.
+    signal(seeded, seeded.head);
+    session.state = "idle";
+    for (let i = 0; i < 3; i += 1) seeded.registry.setSessionPause(session.id, null);
+    await waitFor(() => reads === 1, "session return did not begin its observation");
+    assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+    assert.deepEqual(seeded.injected, []);
+    seeded.registry.setSessionPause(session.id, {
+      phase: "frozen", reason: "operator", since: Date.now(), frozenAt: Date.now(),
+      interrupted: null, stopped: true,
+    });
+    release();
+    await settleGate(seeded);
+    assert.equal(reads, 1, "concurrent session updates must share one refresh");
+    assert.equal(phaseOf(seeded), "blocked/delivery_blocked", "a pause during the read must be respected");
+    assert.deepEqual(seeded.injected, []);
+    seeded.registry.setSessionPause(session.id, null);
+    await settleGate(seeded);
+    assert.equal(reads, 2);
+    assert.equal(phaseOf(seeded), "completed/complete");
+    assert.equal(seeded.store.getDelivery(packet.id)!.state, "cancelled");
+    assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+  } finally {
+    release();
+    scriptGitHub(null);
+    await seeded.manager.stop();
+  }
+});
+
+for (const policy of ["inspector_only", "restart_workflow"] as const) {
   for (const newerHead of [false, true]) {
     test(`unsent Inspector feedback recovers after session return: ${policy}, newer=${newerHead}`, async () => {
       let captureHead = "initial-head";
@@ -2433,6 +2564,7 @@ for (const policy of ["inspector_only", "restart_workflow"] as const) {
         }
         session.state = "idle";
         captureHead = head;
+        scriptGitHub("OPEN", head);
         if (newerHead) seeded.registry.setSessionPause(session.id, null);
         else {
           updateInspectorPr(seeded.key, { observedHeadSha: head, observedState: "OPEN", observedAt: Date.now() }, Date.now());
@@ -2464,6 +2596,7 @@ for (const policy of ["inspector_only", "restart_workflow"] as const) {
         await settleGate(seeded);
         assert.equal(seeded.injected.length, newerHead ? 0 : 1);
       } finally {
+        scriptGitHub(null);
         await seeded.manager.stop();
       }
     });
@@ -2488,6 +2621,7 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
           lastAttemptSha: captureHead, reviewComplete: review !== "pending",
           cleanReviewHeadSha: null, round: review === "pending" ? 1 : 2,
         }, Date.now());
+        scriptGitHub("OPEN", captureHead);
         session.state = "idle";
         seeded.registry.setSessionPause(session.id, null);
         await settleGate(seeded);
@@ -2534,6 +2668,7 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
         assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
         assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
       } finally {
+        scriptGitHub(null);
         await seeded.manager.stop();
       }
     });

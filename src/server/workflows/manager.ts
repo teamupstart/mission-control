@@ -378,8 +378,8 @@ export interface WorkflowManagerOptions {
    * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
    * import because it shells out to `gh` and lives with the Inspector worker.
    *
-   * A recheck of a closed-PR block calls it, because the sweep never reads a row it retired as
-   * closed. Without it a recheck can only consult the stored ledger.
+   * Closed-PR rechecks and session return for prepared Inspector feedback call it so recovery
+   * can use current remote facts instead of relying on a cached ledger observation.
    */
   reobservePullRequest?: (
     prKey: string,
@@ -601,6 +601,7 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly pendingInspectorFeedbackRefreshes = new Set<string>();
   /**
    * The run whose ONE canonical compaction is in flight, and what it will produce.
    *
@@ -3407,13 +3408,13 @@ export class WorkflowManager {
     const prKey = this.gateState(run)?.prKey ?? null;
     if (run.status === "blocked"
         && ["inspector_pr_closed", "delivery_blocked"].includes(run.currentPhase) && prKey) {
-      this.reobserveClosedPullRequest(run.id, prKey);
+      void this.reobserveGatePullRequest(run.id, prKey);
     }
     return { ok: true, value: run };
   }
 
   /**
-   * Ask GitHub again about the pull request a closed-PR block is pinned to.
+   * Ask GitHub again about the pull request a recovery block is pinned to.
    *
    * The ledger alone cannot lift such a block once its row is retired: the sweep stops reading
    * a row the moment it reads it closed, so a pull request open on GitHub - never closed, or
@@ -3421,10 +3422,10 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveClosedPullRequest(runId: string, prKey: string): void {
+  private reobserveGatePullRequest(runId: string, prKey: string): Promise<void> {
     const reobserve = this.options.reobservePullRequest;
-    if (!reobserve) return;
-    const task = reobserve(prKey)
+    if (!reobserve) return Promise.resolve();
+    const task = Promise.resolve().then(() => reobserve(prKey))
       .catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
@@ -3437,6 +3438,7 @@ export class WorkflowManager {
         this.publishRun(runId);
       });
     this.trackBackgroundTask(task);
+    return task;
   }
 
   async restartFull(
@@ -4360,12 +4362,40 @@ export class WorkflowManager {
     for (const binding of this.store.listBindings()) {
       if (binding.sessionId !== sessionId) continue;
       const run = this.store.activeRunForBinding(binding.id);
-      if (run && this.gateState(run)) this.scheduleGateEvaluation(run.id, null);
+      if (run && this.gateState(run)) {
+        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+      }
     }
   }
 
-  private scheduleGateEvaluation(runId: string, event: InspectionUpdated | null): void {
-    const task = this.withGateLock(runId, () => this.evaluateInspectorGate(runId, event))
+  private scheduleGateEvaluation(
+    runId: string,
+    event: InspectionUpdated | null,
+    refreshPreparedFeedback = false,
+  ): void {
+    if (refreshPreparedFeedback) {
+      if (this.pendingInspectorFeedbackRefreshes.has(runId)) return;
+      this.pendingInspectorFeedbackRefreshes.add(runId);
+    }
+    const task = this.withGateLock(runId, async () => {
+      try {
+        if (refreshPreparedFeedback) {
+          const run = this.store.getRun(runId);
+          const delivery = run ? this.store.recoverableInspectorFeedback(run) : null;
+          const prKey = run ? this.gateState(run)?.prKey : null;
+          if (delivery && prKey && !this.deliveryBlock(delivery)
+              && !this.registry.getSession(delivery.sessionId)?.pause) {
+            // Inspector's read publishes an observation whose evaluation queues behind
+            // this lock. Revalidate delivery eligibility there after the read completes.
+            await this.reobserveGatePullRequest(runId, prKey);
+          }
+          return;
+        }
+        await this.evaluateInspectorGate(runId, event);
+      } finally {
+        if (refreshPreparedFeedback) this.pendingInspectorFeedbackRefreshes.delete(runId);
+      }
+    })
       .catch((error) => {
         const run = this.store.getRun(runId);
         if (!run || runIsTerminal(run)) return;
@@ -4419,7 +4449,7 @@ export class WorkflowManager {
    * nothing read as closed, which blocked open pull requests in the middle of a repair, with
    * cancel and a full restart as the only ways out. Runs already blocked that way recover here
    * on the next Inspector poll, or at once on a recheck, without spending a review round. A
-   * recheck also reads GitHub again (`reobserveClosedPullRequest`), which is the only way a row
+   * recheck also reads GitHub again (`reobserveGatePullRequest`), which is the only way a row
    * the sweep retired as closed can be seen open.
    *
    * The block overwrote the wait it interrupted, so the wait is rebuilt from the gate. A run
@@ -4466,6 +4496,8 @@ export class WorkflowManager {
     state: WorkflowInspectorGateState,
     observation: InspectionUpdated | null,
   ): Promise<boolean> {
+    // Session return must finish its fresh read before even an already-queued signal can send.
+    if (this.pendingInspectorFeedbackRefreshes.has(run.id)) return false;
     if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked"
         || state.waitReason !== "findings" || !state.targetHeadSha
         || state.targetHeadSha !== state.failedHeadSha || !state.prKey) return false;

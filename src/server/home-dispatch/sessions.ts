@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import type { Handler } from "hono";
 import { HOST, PORT } from "../config.ts";
 import { inTransaction, openDb } from "../db.ts";
@@ -31,7 +31,7 @@ export type HomeDispatchCaller =
 export interface TaskOrigin {
   originSurface: "home-session" | "mctl" | null;
   originRepo: string | null;
-  /** `tasks.origin_session_id`. Only a repository-less caller needs it (see `canReadTask`). */
+  /** `tasks.origin_session_id`. A home session always reads the tasks it started, whatever repository it is registered in now. */
   originSessionId?: string | null;
 }
 
@@ -54,40 +54,18 @@ export interface HomeSessionRow {
   startedAt: number;
 }
 
-/**
- * The real path of `p`, or null when it cannot be resolved. A path that does not exist yet
- * (ENOENT, ENOTDIR) resolves through its deepest existing ancestor, with the missing tail
- * appended, so a symlinked ancestor of a missing path is still followed. Any other failure (a
- * symlink loop, a denied segment) returns null: a containment or repository check that cannot
- * resolve a path must not fall back to comparing the unresolved spelling.
- */
+/** The real path of `p`, or null when `realpathSync` cannot fully resolve it for any reason. */
 function realPath(p: string): string | null {
-  const absolute = resolve(p);
-  const missing: string[] = [];
-  let current = absolute;
-  for (;;) {
-    try {
-      return missing.length === 0 ? realpathSync(current) : resolve(realpathSync(current), ...missing);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") return null;
-      const parent = dirname(current);
-      if (parent === current) return null;
-      missing.unshift(basename(current));
-      current = parent;
-    }
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
   }
 }
 
-/**
- * True when `child` is `parent` or lies inside it, compared as real paths, never by prefix.
- * It fails closed: a path that cannot be resolved counts as inside, so the worker check refuses.
- */
+/** True when the resolved path `child` is `parent` or lies inside it, never by name prefix. */
 function isInside(child: string, parent: string): boolean {
-  const c = realPath(child);
-  const p = realPath(parent);
-  if (c === null || p === null) return true;
-  const rel = relative(p, c);
+  const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
@@ -127,11 +105,19 @@ export function workerRefusal(
     }
   }
   if (cwd) {
+    // One fail-closed rule: a cwd that `realpathSync` cannot fully resolve (it is missing, a
+    // dangling or looping link, or unreadable) cannot be shown to lie outside a worker's
+    // worktree, so it is refused rather than compared by its unresolved spelling.
+    const real = realPath(cwd);
+    if (real === null) return workerDeny("this session's working directory cannot be resolved, so it cannot be verified");
     for (const task of tasks) {
       if (isTerminalTask(task.status)) continue;
       const trees = [task.worktreePath, ...task.extraRepos.map((r) => r.worktreePath)];
-      if (trees.some((tree) => tree && isInside(cwd, tree))) {
-        return workerDeny("this session is inside the worktree of a Mission Control task");
+      for (const tree of trees) {
+        const realTree = tree ? realPath(tree) : null;
+        if (realTree !== null && isInside(real, realTree)) {
+          return workerDeny("this session is inside the worktree of a Mission Control task");
+        }
       }
     }
   }
@@ -213,12 +199,13 @@ export function canReadTask(
   }
   if (options.residentVisible) return null;
   if (task.originSurface === null) return deny("a dashboard task is not readable from a home session");
+  // A session always reads the tasks it started, wherever it is registered now: a later
+  // registration from another repository updates `repo_root` but not who started the task.
+  if (task.originSessionId != null && task.originSessionId === caller.sessionId) return null;
   if (caller.repoRoot === null && task.originRepo === null) {
     // A session outside any repository has no repository to match on, and two such sessions are
-    // not the same context, so it reads only the tasks it started itself.
-    return task.originSessionId === caller.sessionId
-      ? null
-      : deny("the task was started from another session outside a repository");
+    // not the same context, so it reads only the tasks it started itself (allowed above).
+    return deny("the task was started from another session outside a repository");
   }
   return sameRepo(caller.repoRoot, task.originRepo)
     ? null

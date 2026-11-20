@@ -274,21 +274,24 @@ test("registration from a symlink into a live task worktree is a 403 and leaves 
   }
 });
 
-test("a missing cwd under a symlinked ancestor is resolved through the ancestor, so it is refused inside a live worktree", async () => {
-  const tree = join(home, "trees-missing", "live");
-  mkdirSync(join(tree, "src"), { recursive: true });
-  const link = join(home, "ancestor-link");
-  symlinkSync(join(tree, "src"), link);
-  const missingCwd = join(link, "not", "created", "yet");
+test("a cwd that cannot be fully resolved is refused: missing, or a dangling symlink into a live worktree", async () => {
+  const tree = join(home, "trees-dangling", "live");
+  mkdirSync(tree, { recursive: true });
+  const dangling = join(home, "dangling-link");
+  symlinkSync(join(tree, "will", "exist", "later"), dangling);
   const original = registry.listTasks;
   registry.listTasks = (() => [{ sessionId: null, status: "running", worktreePath: tree, extraRepos: [] }]) as unknown as typeof registry.listTasks;
   try {
-    const res = await register(registration({ sessionId: "missing-under-link", cwd: missingCwd }));
-    assert.equal(res.status, 403);
-    assert.match(((await res.json()) as { error: string }).error, /inside the worktree/);
-    assert.equal(sessions.getHomeSession("missing-under-link"), null);
-    // A missing path under an ordinary directory outside every worktree is still allowed.
-    assert.equal((await register(registration({ sessionId: "missing-elsewhere", cwd: join(plain, "nope", "nada") }))).status, 200);
+    for (const [sessionId, cwd] of [
+      ["dangling-last", dangling],
+      ["dangling-below", join(dangling, "deeper")],
+      ["missing", join(home, "never", "created")],
+    ] as const) {
+      const res = await register(registration({ sessionId, cwd }));
+      assert.equal(res.status, 403, cwd);
+      assert.match(((await res.json()) as { error: string }).error, /cannot be resolved/);
+      assert.equal(sessions.getHomeSession(sessionId), null);
+    }
   } finally {
     registry.listTasks = original;
   }
@@ -364,9 +367,23 @@ test("task rules: a session outside a repository reads its own tasks and not ano
   assert.equal(sessions.canMessageTask(bare, mine), null);
   assert.equal(sessions.canReadTask(bare, theirs)?.status, 403);
   assert.match(sessions.canReadTask(bare, theirs)?.reason ?? "", /outside a repository/);
-  assert.equal(sessions.canReadTask(bare, { originSurface: "home-session", originRepo: repo, originSessionId: "s-bare" })?.status, 403,
-    "a repository task is not read from outside a repository");
+  assert.equal(sessions.canReadTask(bare, { originSurface: "home-session", originRepo: repo, originSessionId: "s-other" })?.status, 403,
+    "another session's repository task is not read from outside a repository");
+  assert.equal(sessions.canReadTask(bare, { originSurface: "home-session", originRepo: repo, originSessionId: "s-bare" }), null,
+    "its own task is read wherever it is registered");
   assert.equal(sessions.canReadTask({ surface: "cli", repoRoot: null }, mine)?.status, 403, "the cli must name a repository");
+});
+
+test("task rules: a session reads its own task after registering from another repository", () => {
+  const moved = { surface: "home-session" as const, sessionId: "s-moved", repoRoot: plain };
+  const started = { originSurface: "home-session" as const, originRepo: repo, originSessionId: "s-moved" };
+  assert.equal(sessions.canReadTask(moved, started), null, "origin session is its own allowed path");
+  assert.equal(sessions.canAnswerTask(moved, started), null);
+  assert.equal(sessions.canMessageTask(moved, started), null);
+  const someoneElses = { ...started, originSessionId: "s-other" };
+  assert.equal(sessions.canReadTask(moved, someoneElses)?.status, 403, "the repository rule still applies to others' tasks");
+  assert.equal(sessions.canReadTask({ ...moved, repoRoot: repo }, someoneElses), null, "same repository still reads");
+  assert.equal(sessions.canReadTask({ surface: "cli", repoRoot: plain }, started)?.status, 403, "the cli is unchanged");
 });
 
 test("requireHomeSession refuses an unregistered id and a registered session that became a worker", async () => {

@@ -45,6 +45,14 @@ export interface RepoTaskSkillRecord {
   skipped: RepoTaskSkillSkipped[];
 }
 
+/**
+ * What GET /api/sessions/:id/standing-instructions returns: the delivery, plus the repository
+ * task skill launch record when the launch included or skipped one.
+ */
+export interface StandingInstructionsResponse extends StandingInstructionsDelivery {
+  repoTaskSkills?: RepoTaskSkillRecord;
+}
+
 /** Semantic ceiling for one repository's block, and for the machine-wide default. */
 export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
 

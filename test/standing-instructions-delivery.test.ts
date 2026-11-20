@@ -740,6 +740,25 @@ test("the real supervisor persists the skill launch record, with or without stan
   }
 });
 
+test("a later write that does not speak for skills keeps the stored record; an explicit null clears it", () => {
+  const record = {
+    included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 3, truncated: false }],
+    skipped: [],
+  };
+  const registry = new Registry();
+  const session = registry.registerSdkSession({ id: "sdk:keep-skills", agent: "claude", name: "keep", cwd: "/wt/keep" });
+  const delivery = { text: BLOCK, mechanism: "prompt-prefix" as const, sources: [] };
+  registry.recordStandingInstructions(session.id, delivery, record);
+  registry.recordStandingInstructions(session.id, delivery);
+  assert.deepEqual(registry.standingInstructionsFor(session.id)?.repoTaskSkills, record, "omitted: kept");
+  assert.deepEqual(getStandingInstructions(registry.standingInstructionsFor(session.id)!.noteKey)?.repoTaskSkills, record);
+  // No text and nothing said about skills writes nothing, so the row is untouched.
+  registry.recordStandingInstructions(session.id, { text: "", mechanism: "none", sources: [] });
+  assert.equal(registry.standingInstructionsFor(session.id)?.text, BLOCK);
+  registry.recordStandingInstructions(session.id, delivery, null);
+  assert.equal(registry.standingInstructionsFor(session.id)?.repoTaskSkills, null, "explicit null: cleared");
+});
+
 test("a note-key rotation carries the skill launch record to the new key whole", () => {
   const record = {
     included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 12, truncated: true }],

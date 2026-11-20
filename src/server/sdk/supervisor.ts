@@ -621,7 +621,8 @@ export class SdkSupervisor {
             mechanism:
               handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
           },
-          input.standingInstructions.repoTaskSkills,
+          // A start is a launch: no record on the input means this launch had none.
+          input.standingInstructions.repoTaskSkills ?? null,
         );
       }
       return started;

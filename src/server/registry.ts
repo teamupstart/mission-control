@@ -8790,16 +8790,25 @@ export class Registry extends EventEmitter {
     repoTaskSkills?: RepoTaskSkillRecord | null,
   ): void {
     const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const key = noteKeyFor(s);
     // A launch that included or skipped a repository task skill is recorded even with no
     // standing text, as a row of empty text on the "none" channel, which every reader of the
     // mechanism already treats as "nothing to replay". A launch with neither has no row.
+    //
+    // `undefined` means the caller does not speak for skills, so a record already stored under
+    // this key is kept; only an explicit record, or an explicit `null` ("this launch had none"),
+    // replaces it. Defaulting to erase would let a later write that only knows the standing
+    // text wipe the launch's recorded skills.
     const skills =
-      repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
-        ? repoTaskSkills
-        : null;
-    if (!s || (!delivery.text && !skills)) return;
+      repoTaskSkills === undefined
+        ? (this.standingInstructions.get(key)?.repoTaskSkills ?? null)
+        : repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
+          ? repoTaskSkills
+          : null;
+    if (!delivery.text && (repoTaskSkills === undefined || !skills)) return;
     const snapshot: StandingInstructionsSnapshot = {
-      noteKey: noteKeyFor(s),
+      noteKey: key,
       text: delivery.text,
       mechanism: delivery.text ? delivery.mechanism : "none",
       sources: delivery.sources,

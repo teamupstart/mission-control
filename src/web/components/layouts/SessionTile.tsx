@@ -583,8 +583,6 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
-        {/* A degraded shaping step on this session's launch. Nothing otherwise, including a
-            record left by an earlier launch of the task. */}
         <ShapingTileFlag session={session} />
         {/* Stacked pull requests: why this child is held and what moves it - the same
             component, label and actions as its merge-queue row. */}

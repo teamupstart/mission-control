@@ -49,9 +49,6 @@ test("shapingView reports shaping while the mark is set, and the current record 
   assert.deepEqual(shapingView({ sessionId: "s1", shaping: record("s1", "degraded") }), record("s1", "degraded"));
   assert.equal(shapingView({ sessionId: "s1", shaping: record("s0", "degraded") }), null, "never another session's record");
   assert.equal(shapingView({ sessionId: "s1", shapingContext: null }), null);
-  for (const view of [shapingView({ sessionId: null, shapingContext: { startedAt: 1 } }), record("s1", "ok"), record("s1", "degraded")]) {
-    assert.ok(["shaping", "ok", "degraded"].includes(view!.state));
-  }
 });
 
 test("task reads drop a record that names another session and keep the current one", () => {

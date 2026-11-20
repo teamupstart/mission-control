@@ -606,8 +606,6 @@ export function ConsoleDetail({
             chip that re-resolved would quote it text it never saw the moment the operator
             edits the rule, which is exactly when they are most likely to be reading it. */}
         <StandingInstructionsChip sessionId={session.id} />
-        {/* What task shaping added to this session's turn one, from the task's record of the
-            launch it received - and nothing at all when that record names another session. */}
         <ShapingChip session={session} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}

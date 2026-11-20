@@ -1,7 +1,8 @@
 # Work unit id: mint, inherit and carry across sessions and MCP calls
 
-Status: decisions adopted in the plan review on 2026-11-20, and phased the same day. Owner:
-Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
+Status: decisions adopted in the plan review on 2026-11-20, phased the same day, and repaired
+after plan validation rounds 1 and 2 (decision D6 on residents, the `codex app-server`
+checks, the flag-off wording). Owner: Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
 and MCP calls".
 
 ## Goal
@@ -24,6 +25,11 @@ phases is at least six unrelated traces.
 | R4 | It travels as explicit fields, not W3C baggage. Agent Platform's control plane strips baggage. |
 | R5 | The worker's own in-session MCP calls carry it too. |
 
+**Narrowed by a later human decision.** In the plan validation repair Jordan decided that a
+resident run has no work unit (D6, below). R1 to R5 therefore apply to every task that has a
+work unit, which is every task except a resident run's. R3 and R5 do not reach a resident's
+spans or its MCP calls.
+
 ## Adopted decisions (Jordan, plan review, 2026-11-20)
 
 | # | Decision | Choice |
@@ -33,6 +39,11 @@ phases is at least six unrelated traces.
 | D3 | Tasks that exist before this ships | No inference. Such a task gets a new id at its next dispatch. |
 | D4 | Which telemetry lanes export the unhashed id | Every lane that exports traces. |
 | D5 | After the plan | Create the phased implementation plan and schedule its tasks. |
+| D6 | Residents. Asked of Jordan in the plan validation repair on 2026-11-20, with two options: cover pinned residents by filling the same reference at launch (a fifth phase), or leave residents out of work units | **Leave residents out of work units.** A resident run is a standing agent, not a piece of work. It gets no work unit: no id on its task, no launch variable, no span attribute, so its spans and MCP calls cannot be found by work unit. Tasks a resident schedules get their own. This narrows R3 and R5, and it is the one exception to "every task has a work unit". |
+
+D1 to D5 were chosen by Jordan in the first review. D6 was chosen by Jordan in the Mission
+Control dashboard during the plan validation repair. It is a human decision, not a
+planner's repair.
 
 ## Step 1: the spike, and what it found
 
@@ -69,10 +80,13 @@ names.
 | Per-launch `-c mcp_servers.<name>.env_http_headers={"x-work-unit-id"="WORK_UNIT_ID"}`, variable set | The variable's value. |
 | The same entry written in `~/.codex/config.toml` | The variable's value. |
 | The same entry, variable unset | No header at all. |
+| `codex app-server`, started as Mission Control starts it (`-c` overrides, the variable in the process environment), thread started, no turn | The variable's value, on every request the server made: `initialize`, `notifications/initialized` and `tools/list`. A literal `http_headers` value arrived the same way. |
+| The same `codex app-server` launch, variable unset | No header at all. |
+| A `codex app-server` launch with the variable set and one real turn, in which the model called the fixture's tool | The variable's value on that `tools/call`, and on the three startup requests before it. |
 | A stdio server, default settings | `WORK_UNIT_ID` is not in its environment. |
 | A stdio server with `env_vars = ["WORK_UNIT_ID"]` | It is. |
 | `params._meta` on `tools/call` | Codex's own keys (`traceparent`, `threadId`, `sessionId`, `x-codex-turn-metadata` and others). No setting adds a key. |
-| `traceparent` | Sent as a header on every request. Startup requests carried the launch's trace id. In `codex exec` each `tools/call` carried a different trace id, not the launch's. |
+| `traceparent` | Sent as a header on every request. Startup requests carried the launch's trace id. In `codex exec` each `tools/call` carried a different trace id, not the launch's, and so did the `tools/call` under `codex app-server`. |
 
 ### What follows from it
 
@@ -95,9 +109,10 @@ names.
   Claude Code: the user-scope server list has the same count (3) and the same content hash
   before and after. Codex: the file has the same size (9044 bytes) and the same SHA-256
   before and after.
-- Not run on its own: `codex app-server`, Mission Control's embedded Codex runtime. It is the
-  same binary and config loader as `codex exec`, and Mission Control already passes it
-  `-c mcp_servers...` overrides.
+- `codex app-server`, Mission Control's embedded Codex runtime, was checked after plan
+  validation asked for it, in two runs: one that only started a thread, and one that ran a
+  real turn in which the model called the fixture's tool. The header arrived on every
+  request of both, the `tools/call` included.
 - Not testable with a local fixture: claude.ai cloud connectors, and servers that sign in
   with OAuth.
 - Pi has no remote MCP client, so it has no header to send.
@@ -118,7 +133,7 @@ names.
 ### 2. The task record and inheritance
 
 A new column `tasks.work_unit_id`, and `Task.workUnitId`. Every task created after this
-ships has one from creation. It is written once: no later write changes a value that is set.
+ships has one from creation, except a resident run's (D6). It is written once: no later write changes a value that is set.
 
 Minting and inheriting happen in one place, `TaskManager.create` in `src/server/tasks.ts`,
 which every task-creating path already goes through. The source is named by an internal
@@ -128,20 +143,25 @@ choose a work unit.
 | How the task is created | Its work unit |
 |---|---|
 | MCP `create_task`, called by a session whose own task is a plan task | The plan task's. This is how phase tasks inherit, with no change to the phasing skill (D1). |
-| MCP `create_task` with `workUnit: "inherit"`, from any session bound to a task | That task's. Refused, with the reason, when the session has no task. |
+| MCP `create_task` with `workUnit: "inherit"`, from any session bound to a task | That task's. Refused, with the reason, when the session has no task or its task has no work unit. |
 | MCP `create_task` with `workUnit: "new"`, or from a session whose task is not a plan task | A new one. |
 | A retro follow-up task | The source task's. |
 | A failed chat retried as a new task | The source task's. |
 | Best-of-N members, their retries and a replacement | One for the whole run. |
-| Dashboard dispatch, a schedule occurrence, an imported issue, a resident run, a pipeline task, a tour, a launch-failure report | A new one. |
+| Dashboard dispatch, a schedule occurrence, an imported issue, a pipeline task, a tour, a launch-failure report | A new one. |
+| A resident run | None (D6). |
 | Requeue, retry, reassign, restore, runtime transfer (the same row) | Unchanged. |
 
-- **A standalone task** gets its own id: a work unit of one. Every task-bound session is
-  therefore tagged the same way.
+- **A standalone task** gets its own id: a work unit of one. Its sessions are therefore
+  tagged the same way as a plan's. A resident run is the one exception (D6, two bullets
+  down).
 - **A plan created by a plan** inherits, and so do its phases, because a copied id is the
   same id.
 - **A session with no task** (a discovered session, a home session) has no work unit, and
   nothing is sent for it.
+- **A resident run** has no work unit either (D6). A resident is a standing agent, not a
+  piece of work. A task a resident's session creates gets a new unit, and asking to inherit
+  from it is refused.
 - **A task that predates the column** has no id until its next dispatch, which mints one
   (D3). Nothing is inferred from its plan inputs or dependencies. When a new task inherits
   from such a task, the parent is given its id first and the child copies it.
@@ -162,7 +182,8 @@ choose a work unit.
 
 ### 4. The launch environment
 
-Every agent process Mission Control starts for a task gets `WORK_UNIT_ID`.
+Every agent process Mission Control starts for a task that has a work unit gets
+`WORK_UNIT_ID`. A resident launch has none (D6).
 
 - One pure helper, beside `withAgentTraceContext`: remove any inherited `WORK_UNIT_ID`, then
   set the task's. The daemon may itself have been started from a worker's shell, and a
@@ -195,8 +216,18 @@ Why Mission Control does not inject the header itself:
 - A per-launch entry cannot add one header to a server the operator defined elsewhere. It
   would have to restate the whole server.
 
-Limits: cloud connectors and Pi, as above. A pinned resident does not load the operator's
-MCP config, so its remote servers do not carry the header in this plan.
+Limits: cloud connectors and Pi, as above.
+
+Residents (D6). A resident run has no work unit, so nothing is sent for it. The resident
+catalog still has to learn the reference, because of what a pinned resident does today with
+the two remote-server lines above. It snapshots the Claude Code line as an empty header and
+sends that on every call. It refuses a Codex server outright: "it uses env_http_headers,
+which residents cannot carry". The catalog will accept exactly this reference and drop it,
+so a server is not refused for it and no work unit header, empty or otherwise, is sent.
+One existing rule stays: on Claude Code a server with any header, this one included, is
+reached through Mission Control's launcher, which presents no harness login. A resident
+that loads all native sources reads the operator's config with the variable unset, like
+any session outside a work unit.
 
 ### 6. Telemetry: the unhashed attribute
 
@@ -213,7 +244,7 @@ MCP config, so its remote servers do not carry the header in this plan.
   span-bearing event that declares `session_id` or `task_id` also declares `work_unit_id`,
   so a new event cannot forget it. And `work_unit_id` is a forbidden metric dimension.
 - The value is read from the task record at capture, through one helper. A session with no
-  task gets none.
+  task gets none, and neither does a resident's.
 - Only `mission.session.start` is in the session's trace today. Every other session span is
   the root of its own trace. That is why the attribute goes on each span, and why a query on
   it returns all of them.
@@ -255,11 +286,18 @@ fixed here so the later work has no choice left to make.
 
 A preview flag, `work-unit-id`, as the repository requires for a new user-facing feature.
 
-- Off (the default): launches, exports and the dashboard are exactly as today.
+- Off (the default): nothing is emitted. No launch carries the variable, no span carries
+  the attribute, no shaper call carries the id and the dashboard shows no row.
 - On: the variable is set, the attribute is exported, shaping receives the id and the
   dashboard shows it.
-- Minting, inheritance and the task read field are not gated. They are data, so a plan and
-  its phases are already one unit when the flag is switched on.
+- Not gated, so the same with the flag on or off:
+  - Minting, inheritance and the task read field. They are data, so a plan and its phases
+    are already one unit when the flag is switched on.
+  - The resident catalog's handling of the reference (section 5). An MCP config is usually
+    shared by many people, and it must not break a pinned resident on a machine where the
+    preview is off. This is the one launch-visible change that does not depend on the
+    flag: for a pinned resident, a Codex server is no longer refused for the reference,
+    and a Claude Code server stops sending an empty work unit header.
 
 ## The flow
 
@@ -287,7 +325,7 @@ flowchart LR
   Control does not produce those spans. For embedded sessions they sit in the trace whose
   root span carries the attribute. For terminal sessions they are not linked. A later spike
   can test `OTEL_RESOURCE_ATTRIBUTES`.
-- Sending the header to a resident's pinned remote servers.
+- Work units for resident runs (D6).
 - Inferring a work unit for tasks that already exist, and joining a task to another unit
   after creation (D3).
 
@@ -297,9 +335,12 @@ flowchart LR
   pattern and a known ULID vector; every row of the inheritance table; write-once; the
   environment helper; the projection (the attribute is present and equal in two lanes, is
   never hashed, and a malformed value is dropped); the catalog lint rules.
-- End to end, with the fake agents and no model tokens: a launched task's agent records the
-  task's `WORK_UNIT_ID`; two standalone tasks record different ones; with the flag off a
-  launch has none; the dashboard row shows and copies the id.
+- End to end, with the fake agents and no model tokens: an embedded Claude, an embedded
+  Codex and a terminal launch each record their task's `WORK_UNIT_ID`; two standalone tasks
+  record different ones; with the flag off a launch has none; the dashboard row shows and
+  copies the id.
+- Residents: a resident run's task has no id and its launch has no variable; for a pinned
+  resident the reference neither gets a server refused nor sends an empty header.
 - The local telemetry stack test asserts the attribute on an exported span.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.
@@ -312,7 +353,7 @@ plan. Investigation merged the dashboard row into the flag phase, so there are f
 | Phase | File | Delivers | Direct prerequisites |
 |---|---|---|---|
 | 1. Id and task record | `phase-1-id-and-task-record.md` | The helper, the column, the creation rules and inheritance, the read field and filter | This plan |
-| 2. Flag, launch environment and dashboard row | `phase-2-flag-launch-environment-and-dashboard.md` | The preview flag, `WORK_UNIT_ID` on every launch path, the "Work unit" row, the config guide | 1 |
+| 2. Flag, launch environment and dashboard row | `phase-2-flag-launch-environment-and-dashboard.md` | The preview flag, `WORK_UNIT_ID` on every launch path, the "Work unit" row, the config guide, the resident catalog's handling of the reference | 1 |
 | 3. Telemetry attribute | `phase-3-telemetry-attribute.md` | The unscoped ref, capture, lint, the privacy contract | 2 |
 | 4. Shaping hand-off | `phase-4-shaping-hand-off.md` | `workUnitId` on the shaping run, filled at dispatch | 2, and task-shaping phases 2 and 5 |
 

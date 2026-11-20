@@ -2,8 +2,8 @@
 
 ## Outcome
 
-With the preview on, every span Mission Control exports for a task-bound session carries
-the attribute `work_unit_id`, unhashed and identical in every lane. One query on it returns
+With the preview on, every span Mission Control exports for a session whose task has a work
+unit carries the attribute `work_unit_id`, unhashed and identical in every lane. One query on it returns
 the session spans of a plan and all its phases. The exception to hashing is named in one
 list, checked by the catalog lint and stated in the privacy documentation.
 
@@ -68,8 +68,9 @@ the shaping run, any launch path.
 6. **Capture.** One helper in `sessions.ts` returns `activeWorkUnitId(host.getTask(taskId))`.
    Add its result to the refs at every site: start, segment, turn, end, kill, effort
    selected and session operation (from the track's task), dispatch finished, restore,
-   task outcome, `workflowAuthorContext`, and PR observations. With the flag off, or for a
-   session with no task, the ref is absent, so nothing is stored or exported.
+   task outcome, `workflowAuthorContext`, and PR observations. With the flag off, for a
+   session with no task, or for a resident's session (its task has no id, decision D6), the
+   ref is absent, so nothing is stored or exported.
 7. **Docs.**
    - `docs/observability.md`: amend "What travels, and what never does" to name the one
      exception, and add a "Work unit id" subsection after "Trace context for embedded
@@ -99,7 +100,7 @@ the shaping run, any launch path.
   different `mission.ref.task_id`; there is no `mission.ref.work_unit_id`; a malformed
   value is dropped; an event without the ref is unchanged.
 - Capture: start, turn and end for a task-bound session carry the ref; a discovered
-  session carries none; with the flag off none do; effort selected and session operation
+  session and a resident's session carry none; with the flag off none do; effort selected and session operation
   carry it from the track.
 - `test/telemetry-stack.integration.ts`: the exported span has the attribute with the raw
   id.
@@ -108,8 +109,9 @@ the shaping run, any launch path.
 
 ## Merge and exit criteria
 
-- Flag on: every exported span for a task-bound session has `work_unit_id` equal to the
-  task's id, in every lane, and never in hashed form.
+- Flag on: every exported span for a session whose task has a work unit has `work_unit_id`
+  equal to the task's id, in every lane, and never in hashed form. A resident's spans have
+  none.
 - Only a well-formed `wu_` id can be exported unhashed. The lint fails a second unscoped
   key that is not on the list.
 - A new span-bearing event with a session or task ref cannot be added without the
@@ -128,3 +130,4 @@ inherits the rule from the lint.
   path.
 - Phase 4: no shared file except `docs/work-units.md`, where the two sections sit apart.
 - Source plan: owns R3 and D4.
+- Plan validation repair, round 1: a resident's session carries no ref (D6).

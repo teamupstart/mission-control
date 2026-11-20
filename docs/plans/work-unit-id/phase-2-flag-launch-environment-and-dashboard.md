@@ -3,9 +3,14 @@
 ## Outcome
 
 With the `work-unit-id` preview switched on, every agent Mission Control launches for a
-task has `WORK_UNIT_ID` in its environment, so MCP config that references it sends the
+task that has a work unit has `WORK_UNIT_ID` in its environment, so MCP config that references it sends the
 `x-work-unit-id` header. The session detail shows the id with a copy control. With the
-preview off, launches and the dashboard are exactly as they are today.
+preview off, no launch carries the variable and the dashboard shows no row.
+
+One change in this phase does not depend on the flag: the resident catalog accepts the work
+unit reference and drops it. With the flag on or off, a pinned resident no longer refuses a
+Codex server for that reference, and no longer sends an empty work unit header to a Claude
+Code one.
 
 ## Entry criteria and dependencies
 
@@ -17,9 +22,10 @@ preview off, launches and the dashboard are exactly as they are today.
 - `WORK_UNIT_ID` on every launch path, and removal of an inherited value everywhere.
 - The "Work unit" row in the session detail, with its browser spec.
 - The config guide for MCP server owners.
+- The resident catalog accepts the work unit reference and drops it (decision D6).
 
 Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP config
-(decision D2), residents' pinned remote servers.
+(decision D2), a work unit for resident runs (decision D6).
 
 ## Repository findings
 
@@ -45,6 +51,19 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
   `fake-codex.mjs` records argv and cwd.
 - Exact-equality tests on the environment exist: `test/claude-sdk-adapter.test.ts` and
   `test/agent-trace-propagation.test.ts`.
+- A pinned resident does not load the operator's MCP config.
+  `src/server/residents/mcp-catalog.ts` snapshots it. `parseClaudeServer` expands
+  `${VAR:-default}` from the daemon's environment and stores every header as a secret, so
+  the line `"x-work-unit-id": "${WORK_UNIT_ID:-}"` becomes an empty header that the
+  launcher bridge sends on every call. If the daemon's environment has the variable, the
+  server is refused as `inherited`. `parseCodexServer` allows only the fields in
+  `CODEX_HTTP_FIELDS`, so a server with `env_http_headers` is refused: "it uses
+  env_http_headers, which residents cannot carry".
+- The embedded Codex runtime was checked against a local fixture during planning. Real
+  `codex app-server`, started with `-c` overrides and the variable in its process
+  environment, sent the header on every request it made at thread start and on the
+  `tools/call` of a real turn, and none with the variable unset. What this phase has to pin is Mission Control's half: the variable is in
+  the environment of the app-server it spawns.
 
 ## Steps
 
@@ -72,19 +91,40 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
    the task has an id. `bandHasContent` must count it.
 8. **Fakes.** `fake-claude.mjs`, `fake-codex.mjs` and `fake-pi.mjs` record
    `workUnitId: process.env.WORK_UNIT_ID ?? null`.
-9. **Docs.** In `docs/work-units.md` add "The launch environment" and "MCP servers the
-   worker calls": the four config lines from the plan's section 5, the rule that Claude
-   Code needs `${WORK_UNIT_ID:-}` and that a server treats an empty value as absent, and
-   the limits (cloud connectors, Pi, pinned residents). Name the flag in
-   `docs/feature-flags.md` and the variable in `docs/configuration.md`.
+9. **Resident catalog.** In `src/server/residents/mcp-catalog.ts`, recognize the reference
+   with one predicate kept in `src/shared/work-unit.ts`, and drop it. This step is not gated
+   by the flag: it keeps the recommended config lines from breaking residents.
+   - `parseClaudeServer`: a header named `x-work-unit-id`, compared without case, whose
+     whole value is `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}`, is removed before
+     expansion. It is not expanded, not stored and not a secret.
+   - `parseCodexServer`: `env_http_headers` is accepted when its only entry maps
+     `x-work-unit-id` to `WORK_UNIT_ID`, and that entry is removed. Any other entry keeps
+     today's refusal.
+   - Nothing else about the server changes. For the decision whether the harness may sign
+     in to the server itself, a removed reference still counts as a header, as it does
+     today.
+   - A custom server defined in Settings is not changed.
+10. **Docs.** In `docs/work-units.md` add "The launch environment" and "MCP servers the
+    worker calls": the four config lines from the plan's section 5, the rule that Claude
+    Code needs `${WORK_UNIT_ID:-}` and that a server treats an empty value as absent, and
+    the limits: cloud connectors, Pi, and residents, which have no work unit (D6). Say the
+    same in `docs/residents.md`, with the existing rule that on Claude Code a server with
+    any header is reached through the launcher, which presents no harness login. Name the flag in `docs/feature-flags.md` and the variable
+    in `docs/configuration.md`.
 
 ## Data, API and compatibility
 
 - No schema change. `TaskSummary.workUnitId` is additive on the event stream.
 - The variable is set whether or not telemetry is on: it identifies the work.
 - One-shot model calls and workflow check commands get no id. They are not sessions.
-- Flag off: `activeWorkUnitId` is null, so no launch differs from today by one byte.
+- Flag off: `activeWorkUnitId` is null, so no launch gains the variable, and an ordinary
+  launch does not differ from today by one byte. The resident catalog rule (step 9) is the
+  one difference from today that applies with the flag on or off.
 - Turning the flag off affects new launches only. A running agent keeps its environment.
+- A resident launch has no variable, because its task has no id. The catalog change only
+  removes two effects of the reference: a Codex server is no longer refused for it, and a
+  Claude Code server stops sending the empty header. A snapshot taken before this phase
+  keeps what it stored.
 
 ## Tests and verification
 
@@ -93,9 +133,17 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
   malformed id; the supervisor passes the field on launch and on restore; the Claude, Codex
   and Pi environments carry it; the wrapper script has the `export` line; resume carries
   it. Update the exact-equality tests only for the cases that now carry a value.
+- Resident catalog: the Claude Code reference is dropped with the variable set and with it
+  unset in the daemon's environment, and the snapshot holds no header for it; a Codex
+  server whose `env_http_headers` holds only the reference is available and has no header;
+  one with another entry is still refused, with today's reason; a resident launch has no
+  variable.
 - `e2e/specs/work-unit-id.spec.ts`, with the fake agents:
-  - flag on, one embedded and one terminal task: each recorded invocation has that task's
-    id, and the two ids differ;
+  - flag on, an embedded Claude task, an embedded Codex task and a terminal task: each
+    recorded invocation has that task's id, and the ids differ. The embedded Codex case is
+    the app-server launch. It shows the variable is in that process's environment, which is
+    Mission Control's half. That real Codex then puts it on every MCP request, `tools/call`
+    included, was observed with a local fixture during planning;
   - the session detail shows "work unit" with the id, and the copy button reports success;
   - flag off: no row, and the recorded value is null.
   Select by role and label. Add no `data-testid`.
@@ -108,9 +156,13 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
 - Flag on: every launch path for a task-bound session sets `WORK_UNIT_ID` to the task's
   id, and a session with no task has none.
 - No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
-- Flag off: launches and the session detail are unchanged.
+- Flag off: no launch has the variable and the session detail is unchanged. The resident
+  catalog rule in the last criterion below applies with the flag on or off.
 - The row shows and copies the id, covered by the browser spec.
 - The guide tells a config owner exactly what to write for each agent.
+- A resident launch has no `WORK_UNIT_ID`. For a pinned resident the reference no longer
+  gets a Codex server refused, and no work unit header, empty or otherwise, is sent.
+  This holds with the flag on and with it off.
 
 ## Handoff
 
@@ -125,4 +177,9 @@ not add a second gate or read the flag another way.
   where it adds its own section.
 - Phase 4: uses `activeWorkUnitId` at the dispatch seam. The shaper transports set their
   own environment for shaper processes; this phase does not touch them.
-- Source plan: owns D2, R5, and the environment half of R4.
+- Source plan: owns D2, R5, the environment half of R4 and the catalog half of D6.
+- Plan validation repair, round 1: the resident catalog step, the embedded Codex case in
+  the browser spec, and the planning-time check of `codex app-server`.
+- Plan validation repair, round 2: the outcome, the compatibility notes and the exit
+  criteria now say the same thing about the flag being off, and the embedded Codex finding
+  records the observed `tools/call`.

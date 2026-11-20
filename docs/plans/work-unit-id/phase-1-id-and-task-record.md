@@ -2,8 +2,9 @@
 
 ## Outcome
 
-Every task created from now on has a `workUnitId`. A plan task and the phase tasks its
-session creates share one. The id can be read through the API and the MCP tools, and tasks
+Every task created from now on has a `workUnitId`, except a resident run's (decision D6,
+Jordan's choice in the plan validation repair). A
+plan task and the phase tasks its session creates share one. The id can be read through the API and the MCP tools, and tasks
 can be listed by it. Nothing else changes: no launch, export or dashboard behaviour.
 
 ## Entry criteria and dependencies
@@ -58,20 +59,25 @@ Nothing in this phase is gated.
    a named task, or use a supplied id that passes `isWorkUnitId`, or mint when there is
    none. It must work without a reserved id, because MCP creation passes none. When the
    parent has no id yet, mint and save the parent's first, then copy it. A creation that
-   finds its reserved id already stored keeps the stored value.
-6. **D1 as kind behaviour.** Add one boolean to `TaskKindBehavior`, true for `plan` only,
-   with a reader function. It means "tasks this kind's session creates join its work unit".
+   finds its reserved id already stored keeps the stored value. A kind with no work unit
+   (step 6) is created with none. An automatic inheritor whose source has none by kind gets
+   a new one.
+6. **D1 and D6 as kind behaviour.** Add two booleans to `TaskKindBehavior`, each with a
+   reader function. One is true for `plan` only and means "tasks this kind's session creates
+   join its work unit". The other is false for `resident` only and means "a task of this
+   kind has a work unit".
 7. **MCP `create_task`.** Add an optional `workUnit: "inherit" | "new"` to the tool and to
    the daemon schema the three routes share. In `createMcpTask`, resolve the calling session
    and its task on every call. `"new"` mints. `"inherit"` copies the caller's task's unit,
-   and is refused with a reason when the caller has no task. With no value, inherit when
+   and is refused with a reason when the caller has no task or its task has no work unit. With no value, inherit when
    the caller's task kind says so, otherwise mint. A caller that cannot be resolved, with
    no value, is not an error: the task gets a new unit.
 8. **Other inheriting creators.** `createRetroFollowup` and `fileChatRetry` inherit from
    their source task. For a best-of-N run, the first member task mints, and every later
    member, retry and replacement inherits from a member task of the same run. If a run's
    `source_*` fields can name a task, inherit from that task instead.
-9. **Older rows.** `TaskManager.dispatch` gives a task with no id one before it launches.
+9. **Older rows.** `TaskManager.dispatch` gives a task with no id one before it launches,
+   unless its kind has no work unit.
 10. **Reads.** Add `workUnitId` to `taskConfiguration` in `src/mcp/server.ts`. Add a
     `workUnitId` filter to the `list_tasks` tool, `/mcp/tasks/list` and `readTaskPage`: an
     exact match, refused when the value is not a well-formed id. `GET /api/tasks` already
@@ -102,7 +108,9 @@ Nothing in this phase is gated.
   with no task is refused; `"new"` from a plan session mints; a plan created by a plan and
   its own child all share one; retro follow-up; chat retry; ensemble members are equal; a
   parent with no id gets one when a child inherits; dispatch gives an older row an id;
-  requeue keeps it; a recovered creation keeps it.
+  requeue keeps it; a recovered creation keeps it; a resident run's task has none, at
+  creation and after dispatch; a task created from a resident's session gets a new one, and
+  `"inherit"` from it is refused.
 - MCP, in process: the `create_task` result, `get_task` and `list_tasks` carry the field;
   the filter returns exactly one unit's tasks; a malformed filter value is refused.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`.
@@ -111,7 +119,10 @@ Nothing in this phase is gated.
 
 - A task created by a plan task's session has the plan task's `workUnitId`, with no change
   to any skill.
-- A task created any other way has its own, unless it asked to inherit.
+- A task created any other way has its own, with these exceptions, which are the rules of
+  steps 5 to 8: a retro follow-up and a retried chat take their source task's; best-of-N
+  members, their retries and a replacement share one for the run; a caller that passed
+  `"inherit"` gets its own task's; and a resident run has none.
 - No write changes an id once set.
 - An existing database upgrades and its tasks read `workUnitId: null` until dispatched.
 - No launch environment, exported payload or dashboard markup differs from before.
@@ -120,7 +131,8 @@ Nothing in this phase is gated.
 
 Later phases may rely on:
 
-- `Task.workUnitId`, set for every task created or dispatched after this phase.
+- `Task.workUnitId`, set for every task created or dispatched after this phase, except a
+  resident run's, which is always null.
 - The constants and `isWorkUnitId` in `src/shared/work-unit.ts`.
 - `src/server/work-unit.ts` as the home for server-side work unit helpers.
 
@@ -133,4 +145,6 @@ add a way for a request body to choose an id.
   `TaskSummary`. This phase leaves both alone, so there is no overlap.
 - Phase 3: reads the id at capture through the task record. Nothing here writes telemetry.
 - Phase 4: reads `task.workUnitId` at the dispatch seam. No change needed here.
-- Source plan: owns R1, D1 and D3, and defines the names for R2.
+- Source plan: owns R1, D1, D3 and the record half of D6, and defines the names for R2.
+- Plan validation repair, round 1: the exit criterion now lists every automatic inheritor,
+  and a resident run has no work unit.

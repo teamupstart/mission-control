@@ -296,6 +296,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/headless-mode-flag.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -1910,7 +1911,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled("headless-mode") }),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 

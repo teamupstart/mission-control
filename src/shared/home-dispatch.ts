@@ -1,6 +1,6 @@
 import { z } from "zod";
+import { HEADLESS_MODE_FLAG_ID } from "./headless-mode-flag.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS } from "./types.ts";
-import type { TranscriptMessage } from "./types.ts";
 import { WORKFLOW_RUN_STATUSES } from "./workflow.ts";
 import type { ResidentLoopState } from "./residents.ts";
 
@@ -13,8 +13,8 @@ import type { ResidentLoopState } from "./residents.ts";
  * optional, and lands in its own `contract:` commit. Browser safe: no `node:` imports.
  */
 
-/** The preview flag that gates every surface in this file. */
-export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+/** The preview flag that gates every surface in this file; `headless-mode-flag.ts` owns its id. */
+export { HEADLESS_MODE_FLAG_ID };
 
 /** Largest chat message `POST /dispatch/tasks/{taskId}/send` accepts (7.23). */
 export const HOME_DISPATCH_SEND_MAX_CHARS = 8000;
@@ -326,9 +326,22 @@ export const HomeDispatchStreamQuerySchema = z.object({
   from: z.coerce.number().int().nonnegative().optional(),
 });
 
+/**
+ * One transcript turn as `TranscriptMessage` (types.ts) defines it. The five native fields are
+ * required; the advisory ones (`origin`, `presentation`, `advisor`, ...) pass through untouched,
+ * so a field added to the turn later never makes a valid response fail to parse.
+ */
+export const HomeDispatchTranscriptMessageSchema = z.looseObject({
+  id: Text,
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+  tools: z.array(z.looseObject({ name: z.string(), input: z.string().optional(), id: z.string().optional() })),
+  ts: z.number().nonnegative(),
+});
+
 export const HomeDispatchTranscriptSchema = z.object({
   sessionId: Text,
-  messages: z.array(z.custom<TranscriptMessage>((value) => typeof value === "object" && value !== null)),
+  messages: z.array(HomeDispatchTranscriptMessageSchema),
   next: Count,
   canMessage: z.boolean(),
   state: z.string(),

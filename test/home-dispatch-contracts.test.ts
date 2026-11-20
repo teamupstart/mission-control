@@ -57,12 +57,20 @@ test("send is bounded at 8,000 characters and the transcript response lists per-
   assert.equal(HomeDispatchSendRequestSchema.safeParse({ sessionId: "s", text: "x".repeat(HOME_DISPATCH_SEND_MAX_CHARS) }).success, true);
   assert.equal(HomeDispatchSendRequestSchema.safeParse({ sessionId: "s", text: "x".repeat(HOME_DISPATCH_SEND_MAX_CHARS + 1) }).success, false);
   assert.equal(HomeDispatchSendRequestSchema.safeParse({ sessionId: "s", text: "" }).success, false);
+  const message = { id: "m1", role: "assistant", text: "done", tools: [{ name: "Bash", input: "ls" }], ts: 1, origin: "human" };
   const transcript = {
-    sessionId: "s", messages: [], next: 0, canMessage: false, state: "running", elapsedMs: 5, costUsd: null,
+    sessionId: "s", messages: [message], next: 0, canMessage: false, state: "running", elapsedMs: 5, costUsd: null,
     subagents: [{ type: "mission-explorer", state: "running", elapsedMs: 1, description: "Find callers", tokens: 10, toolUses: 2 }],
   };
   assert.equal(HomeDispatchTranscriptSchema.safeParse(transcript).success, true);
   assert.equal(HomeDispatchTranscriptSchema.safeParse({ ...transcript, subagents: { running: 1, finished: 0 } }).success, false);
+  const withMessages = (messages: unknown[]) => HomeDispatchTranscriptSchema.safeParse({ ...transcript, messages }).success;
+  assert.equal(withMessages([{}]), false, "an empty object is not a turn");
+  assert.equal(withMessages([{ ...message, role: "system" }]), false);
+  assert.equal(withMessages([{ ...message, tools: [{ input: "ls" }] }]), false, "a tool call needs its name");
+  const { text: _text, ...noText } = message;
+  assert.equal(withMessages([noText]), false);
+  assert.equal(withMessages([{ ...message, futureAdvisoryField: 1 }]), true, "unknown advisory fields pass through");
 });
 
 test("CodexReadiness carries observed, accountVerified and the reviewer set", () => {

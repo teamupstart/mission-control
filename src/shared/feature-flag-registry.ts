@@ -1,8 +1,9 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
+import { HEADLESS_MODE_FLAG_ID } from "./headless-mode-flag.ts";
 
 export const FEATURE_FLAGS = [
   {
-    id: "headless-mode",
+    id: HEADLESS_MODE_FLAG_ID,
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",

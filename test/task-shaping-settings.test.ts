@@ -149,10 +149,10 @@ test("moving a shaper rewrites only its stage and keeps every other stored id in
 test("a move within the order's bound drops only stored ids that place nothing, and says so when it cannot fit", () => {
   const unseen = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => `gone-${n}`);
   const config = view({ shapers: [gatherer("a"), gatherer("b")], order: unseen });
-  // Before the folder has been read, no stored id is known to be absent, so none is dropped.
+  // Without a current read of the folder, no stored id is known to be absent, so none is dropped.
   const unread = moveShaper(config, "b", -1);
   assert.equal(unread?.ok, false);
-  assert.match(unread && !unread.ok ? unread.reason : "", /The shapers folder has not been read yet, so no stored entry is dropped/);
+  assert.match(unread && !unread.ok ? unread.reason : "", /could not read which shapers are in the shapers folder, so no stored entry is dropped/);
   assert.deepEqual(moveShaper(config, "b", -1, null), unread);
   // Once it has been read and is empty: 128 stored ids that name no shaper, plus the two moved,
   // keep the oldest first and stay at 128.

@@ -130,7 +130,7 @@ export function moveShaper(
   if (live === null) {
     return {
       ok: false,
-      reason: `The stored run order is full: it holds at most ${limit} shaper ids. The shapers folder has not been read yet, so no stored entry is dropped to make room. Try again in a moment.`,
+      reason: `The stored run order is full: it holds at most ${limit} shaper ids. Mission Control could not read which shapers are in the shapers folder, so no stored entry is dropped to make room. Try again in a moment.`,
     };
   }
   const known = new Set([...view.shapers.map((entry) => entry.id), ...live]);

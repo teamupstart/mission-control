@@ -15,19 +15,22 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
   const config = state?.config ?? null;
   const ready = state?.ready ?? false;
   const [references, setReferences] = useState<ShapingReferenceStatus>({});
-  // The folder's shapers, which the list does not draw yet, so a move keeps their place in the order.
-  const [discovered, setDiscovered] = useState<string[] | null>(null);
   const configKey = config ? canonicalJson(config) : null;
   useEffect(() => {
     if (!ready || configKey === null) return;
     let current = true;
     void api.getShaping().then((reply) => {
-      if (!current || !reply.ok) return;
-      if (reply.references) setReferences(reply.references);
-      if (Array.isArray(reply.discovered)) setDiscovered(reply.discovered.map((entry) => entry.id));
+      if (current && reply.ok && reply.references) setReferences(reply.references);
     });
     return () => { current = false; };
   }, [ready, configKey]);
+  // The folder's shapers, which the list does not draw yet, read fresh each time a move has to
+  // drop stored order entries. A folder can change with no config write, so a copy kept from an
+  // earlier read could judge a shaper absent that has appeared since. Null when the read fails.
+  const readLive = useCallback(async (): Promise<string[] | null> => {
+    const reply = await api.getShaping();
+    return reply.ok && Array.isArray(reply.discovered) ? reply.discovered.map((entry) => entry.id) : null;
+  }, []);
   const onTest = useCallback<ShapingTestRunner>((request, signal) => api.testShaper(request, signal), []);
   const repositories = useCallback(() => fetchRepos(), []);
   return (
@@ -40,7 +43,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve(false)}
       onTest={onTest}
       repositories={repositories}
-      live={discovered}
+      readLive={readLive}
     />
   );
 }

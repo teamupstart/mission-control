@@ -35,7 +35,7 @@ export function TaskShapingView({
   onSet,
   onTest,
   repositories,
-  live = null,
+  readLive,
 }: {
   /** Null while the config has not arrived. */
   config: ShapingConfigView | null;
@@ -48,19 +48,33 @@ export function TaskShapingView({
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
   /**
-   * Ids of shapers that exist but the list does not draw, such as the folder's, so a move keeps
-   * their place. Null until that inventory is known; while it is null, no stored entry is dropped.
+   * Reads, now, the ids of shapers that exist but the list does not draw, such as the folder's,
+   * or null when the read fails. Asked only when a move has to drop stored order entries, so the
+   * answer is current: a shaper that appeared on disk since the panel opened is never judged
+   * absent. Without it, or when it answers null, no stored entry is dropped.
    */
-  live?: readonly string[] | null;
+  readLive?: () => Promise<readonly string[] | null>;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
   const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   // A move the stored order cannot hold, refused here before anything is sent.
   const [moveProblem, setMoveProblem] = useState<{ id: string; reason: string } | null>(null);
-  const move = (id: string, offset: -1 | 1): void => {
-    const result = config && moveShaper(config, id, offset, live);
+  const [reading, setReading] = useState(false);
+  const move = async (id: string, offset: -1 | 1): Promise<void> => {
+    if (!config) return;
+    // First without dropping anything: most moves fit the order as it is.
+    let result = moveShaper(config, id, offset, null);
     if (!result) return;
+    if (!result.ok && readLive) {
+      // This move has to drop stored entries to fit, so decide which from a read taken now.
+      setReading(true);
+      try {
+        result = moveShaper(config, id, offset, await readLive()) ?? result;
+      } finally {
+        setReading(false);
+      }
+    }
     if (!result.ok) {
       setMoveProblem({ id, reason: result.reason });
       return;
@@ -68,7 +82,8 @@ export function TaskShapingView({
     setMoveProblem(null);
     void onSet({ kind: "reorder", order: result.order }, `row:${id}`);
   };
-  const busy = !ready || pending !== null || config === null;
+  // A move waiting on its folder read counts as a write in flight: one change at a time.
+  const busy = !ready || pending !== null || config === null || reading;
   const groups = config ? shapingList(config) : [];
   const count = config?.shapers.length ?? 0;
 
@@ -110,12 +125,12 @@ export function TaskShapingView({
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
                   disabled={busy || at === 0}
-                  onClick={() => move(entry.id, -1)}>↑</button>
+                  onClick={() => void move(entry.id, -1)}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
                   disabled={busy || at === group.rows.length - 1}
-                  onClick={() => move(entry.id, 1)}>↓</button>
+                  onClick={() => void move(entry.id, 1)}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
                 <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready}

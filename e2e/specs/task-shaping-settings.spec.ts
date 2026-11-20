@@ -514,3 +514,55 @@ test("saving one setting keeps another window's newer change to the fields left 
     await expect(window.save).toBeDisabled();
   }
 });
+
+// A move that must drop stored order entries reads the folder at that moment. Here a shaper
+// appears on disk after the panel loaded, with no config write to tell it so; the move still
+// keeps that shaper's place, and when the read fails nothing is dropped and the row says why.
+test("a full-order move reads the shapers folder afresh, so a shaper that appeared on disk keeps its place", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("a-notes", "A notes") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("b-notes", "B notes") });
+  // A full stored order: 127 ids that name no shaper, then the folder shaper's, last, where a
+  // move that judged it absent would drop it first.
+  const stale = Array.from({ length: 127 }, (_, n) => `gone-${n}`);
+  await putShaping(daemon, { kind: "reorder", order: [...stale, "disk-notes"] });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(gatherRows(page)).toHaveText(["A notes", "B notes"]);
+
+  // The folder read fails: the move is refused with its reason, and the order is untouched.
+  let reads = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    reads += 1;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+  });
+  await page.getByRole("button", { name: "Move B notes up" }).click();
+  await expect(row(page, "B notes").getByRole("alert")).toContainText("could not read which shapers are in the shapers folder");
+  expect(reads, "the move read the folder when it needed to drop entries").toBe(1);
+  expect((await shapingConfig(daemon)).order).toEqual([...stale, "disk-notes"]);
+  await page.unroute("**/api/shaping");
+
+  // Now the folder holds disk-notes, a change no config write announced. The read taken for the
+  // move sees it, so its place survives and the room comes from ids that name nothing.
+  const requests: string[] = [];
+  await page.route("**/api/shaping", async (route) => {
+    requests.push(route.request().method());
+    if (route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch();
+    const body = await response.json() as { discovered: unknown[] };
+    body.discovered = [{ id: "disk-notes", path: "/shapers/disk-notes", state: "ok", problem: null, sha256: null, shaper: null }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.getByRole("button", { name: "Move B notes up" }).click();
+  await expect(gatherRows(page)).toHaveText(["B notes", "A notes"]);
+  // The folder was read for this move, before its write: the panel's own refresh after the write
+  // comes later and plays no part in the decision.
+  expect(requests.slice(0, 2)).toEqual(["GET", "PUT"]);
+  const order = (await shapingConfig(daemon)).order;
+  expect(order).toHaveLength(128);
+  expect(order).toContain("disk-notes");
+  expect(order.slice(-2)).toEqual(["b-notes", "a-notes"]);
+  expect(order).not.toContain("gone-126");
+  await expect(row(page, "B notes").getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/api/shaping");
+});

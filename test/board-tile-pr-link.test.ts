@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createElement } from "react";
+import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
@@ -138,9 +138,15 @@ test("a failing check still rides along on the link rather than needing its own 
 test("the failing-check tooltip explains itself, not just the healthy case", () => {
   const session = mkSession({ ...withPr, prChecks: "failing" });
   const flagEl = PrTileFlag({ session });
-  assert.equal(flagEl?.type, Tooltip, "expected the PR flag to be wrapped in the shared Tooltip");
+  assert.ok(flagEl, "expected a PR flag for this session");
+  const tooltip = Children.toArray((flagEl.props as { children: ReactNode }).children)
+    .find(child => isValidElement(child) && child.type === Tooltip);
+  assert.ok(isValidElement<{ label: string; children: ReactElement<{ href: string }> }>(tooltip),
+    "expected the PR flag to be wrapped in the shared Tooltip");
+  assert.equal(tooltip.props.children.type, "a");
+  assert.equal(tooltip.props.children.props.href, withPr.prUrl);
   assert.equal(
-    (flagEl?.props as { label: string }).label,
+    tooltip.props.label,
     "A CI check failed on this pull request - open on GitHub",
   );
 });

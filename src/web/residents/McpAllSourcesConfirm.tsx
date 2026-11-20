@@ -4,13 +4,15 @@ import { Tooltip } from "../components/Tooltip.tsx";
 /**
  * Confirm giving a resident's pinned MCP set up for everything its harness loads natively.
  *
- * Asked once, when the operator turns the option on, because it is the one MCP choice that widens
+ * Asked when the operator turns the option on or changes harnesses, because this choice widens
  * what an autonomous, looping agent can reach: every connector's account-level access, outside
  * the snapshot, the connect check and the scoped launcher. Turning it off needs no confirmation.
  */
 export function McpAllSourcesConfirm({
   harness,
   sources,
+  changingHarness = false,
+  unavailableReason,
   onConfirm,
   onClose,
 }: {
@@ -18,9 +20,12 @@ export function McpAllSourcesConfirm({
   harness: string;
   /** What the harness loads on its own (`AllNativeMcpSourcesSpec.sources`). */
   sources: string;
+  changingHarness?: boolean;
+  unavailableReason?: string;
   onConfirm: () => void;
   onClose: () => void;
 }): React.JSX.Element {
+  const cancelLabel = changingHarness ? "Keep the current harness" : "Keep the pinned MCP set";
   return (
     <Overlay
       id={OVERLAY_IDS.residentMcpAllSources}
@@ -33,12 +38,12 @@ export function McpAllSourcesConfirm({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          onConfirm();
+          if (!unavailableReason) onConfirm();
         }}
       >
         <header className="modal-head">
           <h2 tabIndex={-1} autoFocus>Import all native MCP sources</h2>
-          <Tooltip label="Keep the pinned set and close (Escape)">
+          <Tooltip label={`${cancelLabel} and close (Escape)`}>
             <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
               ✕
             </button>
@@ -55,28 +60,29 @@ export function McpAllSourcesConfirm({
               reaches the resident at its next start or resume.
             </li>
             <li>
-              <strong>Not checked.</strong> Only Mission Control's server and your custom servers must
-              connect before it starts. A native server that fails or needs a login does not stop it.
+              <strong>Not checked.</strong> Mission Control requires its own server and your custom
+              servers. {harness} handles native server connection failures and sign-in.
             </li>
             <li>
-              <strong>Broader reach.</strong> An autonomous, looping resident can use every connector's
-              account-level access, such as sending Slack messages as you.
+              <strong>Broader reach.</strong> A looping resident can act with the permissions of each
+              native server's saved login.
             </li>
             <li>
               <strong>Not isolated.</strong> Native servers and connectors use {harness}'s own
               configuration and stored logins, not Mission Control's scoped launcher.
             </li>
           </ul>
+          {unavailableReason && <p className="resident-error" role="alert">{unavailableReason}</p>}
         </div>
         <footer className="modal-foot">
           <span className="actions-spacer" />
-          <Tooltip label="Keep the pinned MCP set">
+          <Tooltip label={cancelLabel}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Cancel
             </button>
           </Tooltip>
-          <Tooltip label={`Start this resident on everything ${harness} loads natively`}>
-            <button type="submit" className="btn btn-primary">
+          <Tooltip label={unavailableReason ?? `Start this resident on everything ${harness} loads natively`}>
+            <button type="submit" className="btn btn-primary" disabled={!!unavailableReason}>
               Import all sources
             </button>
           </Tooltip>

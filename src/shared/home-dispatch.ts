@@ -29,7 +29,11 @@ export const HOME_DISPATCH_CALLER_SURFACES = ["home-session", "cli"] as const;
 const Text = z.string().min(1);
 const Count = z.number().int().nonnegative();
 
-/** Caller fields every route that acts for a home session carries (7.2, 7.6, 7.8). */
+/**
+ * Caller fields shared by every route that acts for an already registered home session: answers
+ * (7.8, through `AnswerCaller`), drafts (7.6) and resident actions (7.24). Registration (7.2)
+ * declares its own `sessionId` and `cwd` because it requires `cwd`.
+ */
 export const HomeDispatchCallerSchema = z.object({
   sessionId: Text,
   cwd: z.string().optional(),
@@ -195,7 +199,7 @@ export const HOME_DISPATCH_ANSWER_ACTIONS = [
 ] as const;
 
 const AnswerTarget = { taskId: Text, reviewId: Text } as const;
-const AnswerCaller = { sessionId: Text, cwd: z.string().optional(), fromForm: z.boolean().optional() } as const;
+const AnswerCaller = { ...HomeDispatchCallerSchema.shape, fromForm: z.boolean().optional() } as const;
 
 /**
  * `taskId` and `reviewId` name the item answered, so a question replaced since the person
@@ -245,8 +249,7 @@ export const HomeDispatchOptionsResponseSchema = z.object({ questions: z.array(H
 export type HomeDispatchOptionsResponse = z.infer<typeof HomeDispatchOptionsResponseSchema>;
 
 export const HomeDispatchDraftCreateSchema = z.object({
-  sessionId: Text,
-  cwd: z.string().optional(),
+  ...HomeDispatchCallerSchema.shape,
   kind: z.enum(TASK_KINDS),
   workflowId: z.string().optional(),
   repo: z.string().optional(),
@@ -257,8 +260,7 @@ export const HomeDispatchDraftCreateSchema = z.object({
 export type HomeDispatchDraftCreate = z.infer<typeof HomeDispatchDraftCreateSchema>;
 
 export const HomeDispatchDraftUpdateSchema = z.object({
-  sessionId: Text,
-  cwd: z.string().optional(),
+  ...HomeDispatchCallerSchema.shape,
   kind: z.enum(TASK_KINDS).optional(),
   workflowId: z.string().optional(),
   repo: z.string().optional(),
@@ -269,8 +271,7 @@ export type HomeDispatchDraftUpdate = z.infer<typeof HomeDispatchDraftUpdateSche
 
 export const HOME_DISPATCH_CONFIRM_CHOICES = ["start", "backlog", "cancel"] as const;
 export const HomeDispatchDraftConfirmSchema = z.object({
-  sessionId: Text,
-  cwd: z.string().optional(),
+  ...HomeDispatchCallerSchema.shape,
   choice: z.enum(HOME_DISPATCH_CONFIRM_CHOICES),
 });
 export type HomeDispatchDraftConfirm = z.infer<typeof HomeDispatchDraftConfirmSchema>;
@@ -299,8 +300,10 @@ export type HomeDispatchConfirmResult = z.infer<typeof HomeDispatchConfirmResult
 
 /* ------------------------------------------------------------ residents (7.24) */
 
-/** Mirrors `ResidentLoopState` in `residents.ts`; the `satisfies` below fails if they drift. */
+/** Mirrors `ResidentLoopState` in `residents.ts`: `satisfies` fails if a value here is not a state, and `ResidentLoopStatesComplete` below fails if a state is missing here. */
 export const RESIDENT_LOOP_STATE_VALUES = ["working", "waiting", "compacting", "paused", "ended"] as const satisfies readonly ResidentLoopState[];
+type AssertNever<T extends never> = T;
+export type ResidentLoopStatesComplete = AssertNever<Exclude<ResidentLoopState, (typeof RESIDENT_LOOP_STATE_VALUES)[number]>>;
 export const HomeDispatchResidentSchema = z.object({
   runId: Text,
   taskId: Text,

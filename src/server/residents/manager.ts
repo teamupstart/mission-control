@@ -17,6 +17,7 @@ import {
   removeResidentMcpRunState,
   residentMcpStateToRemove,
   resolveResidentMcpSet,
+  residentNativeMcpProblem,
   sweepResidentMcpCredentials,
 } from "./mcp-launch.ts";
 import {
@@ -364,10 +365,9 @@ export class ResidentManager {
   private mcpProblem(settings: ResidentProfileRevision): string | null {
     const agent = settings.execution.agent;
     const label = AGENT_IDENTITY[agent].label;
-    const { inheritDefaults, selected, nativeSources } = settings.mcp;
-    if (nativeSources === "all" && !capabilitiesFor(agent).mcpSelection?.allNativeSources) {
-      return `${label} cannot start a resident on all of its native MCP sources, so a profile on it must keep a pinned set`;
-    }
+    const { inheritDefaults, selected } = settings.mcp;
+    const nativeProblem = residentNativeMcpProblem(settings);
+    if (nativeProblem) return nativeProblem;
     if (capabilitiesFor(agent).mcpSelection === null && (selected.length > 0 || !inheritDefaults)) {
       return `${label} cannot pin a resident's MCP servers, so a profile on it cannot choose them`;
     }

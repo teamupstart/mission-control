@@ -426,27 +426,9 @@ const positionAt = (column, row) => ({
  * and PASSES, exactly as it does on any repository the built-in was bound to before its operator
  * configured commands. So the demo shows the gate, shows why it did not run, and still completes.
  *
- * WHY NOT BIND THE BUILT-IN ITSELF - measured, not assumed. Every shipped version of No-Mistakes
- * Review ends on `completionPolicy: {kind:"inspector"}`, and `WorkflowManager.enterInspectorGate`
- * reads that policy against the machine it is running on:
- *
- *   - the Inspector is off by default (`InspectorConfigSchema`: `enabled: false`), and a gate
- *     entered with it off is recorded `blocked`, phase `inspector_inspector_disabled`. A run bound
- *     to the built-in here would put "Workflow blocked" on the demo's showcase card.
- *   - armed, the gate then needs a pull request ADOPTED into the Inspector's own store and a fresh
- *     observation of its head. Every read of that state goes through `run("gh", ...)` in
- *     `src/server/inspector/github.ts` - nine call sites, no env indirection anywhere in the repo -
- *     against a real GitHub. This demo reaches no network, fakes every binary by path override,
- *     and its repositories are local `git init` directories with no remote. `dry-run` mode does not
- *     help: it still adopts and still reviews.
- *
- * Satisfying that gate from here would mean either arming, inside a demo, the one subsystem that
- * comments on real pull requests under the operator's own account, or adding a `gh` override to
- * production Inspector code so a demo can stand in for GitHub. The first is a consent boundary
- * this tooling must not cross; the second is a product change to the code that acts outside this
- * machine, and it belongs to a task that asks for it. So the seeded copy carries the create-default
- * `completionPolicy: {kind:"none"}` and ends where its End node says it does, and README.md's
- * seeded-fleet section names the omission rather than letting a reader infer completeness.
+ * The built-in workflow's GitHub Inspector gate needs an adopted pull request and a fresh
+ * observation of its head through `gh`. This offline demo uses local Git repositories with
+ * no remote, so the seeded copy uses `completionPolicy: {kind:"none"}` and completes at End.
  *
  * WHY NOT THE TWO-NODE STUB IT REPLACES. `session --submitted--> end` does complete, but it
  * reviews nothing: no Persona node means no verdict, no round, and two synthetic attempts that

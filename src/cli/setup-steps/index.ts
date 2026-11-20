@@ -6,7 +6,7 @@ import * as flag from "./flag.ts";
 import * as mod from "./mod.ts";
 import type { SetupStep } from "./types.ts";
 
-export type { SetupStep, SetupStepId, SetupStepOptions, SetupStepResult } from "./types.ts";
+export type { SetupStep, SetupStepId, SetupStepOptions, SetupStepOwner, SetupStepResult } from "./types.ts";
 
 /**
  * The ordered steps of `mctl setup` (spec 7.14), one file each. After P2 only P14 edits this

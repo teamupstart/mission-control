@@ -17,8 +17,12 @@ export interface SetupStepResult {
   message: string;
 }
 
+/** The phase that replaces a step's stub; the skeleton test pins it so no step is left unowned. */
+export type SetupStepOwner = "P7" | "P14" | "P15";
+
 export interface SetupStep {
   id: SetupStepId;
+  owner: SetupStepOwner;
   /** False while the file is a stub; the owning phase sets it true by replacing the file. */
   implemented: boolean;
   run: (options: SetupStepOptions) => Promise<SetupStepResult>;

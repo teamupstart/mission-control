@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
@@ -105,14 +106,14 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
 }
 
 /** One single-reviewer run that passes, built through the routes the dashboard itself uses. */
-async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
+async function seedRun(page: Page, daemon: DaemonHandle, name = "E2E closed pull request"): Promise<string> {
   const sessionId = await dispatch(page, daemon);
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "Closed PR reviewer",
     guidanceMarkdown: "# Closed PR reviewer\n\nE2E_PASS_VERDICT",
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E closed pull request",
+    name,
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -310,4 +311,67 @@ test("a run blocked as closed offers Check again, which lifts the block only for
     await expect(dashboard.locator(".tooltip")).toHaveCount(0);
   }
   await shoot(dashboard, header, "02-open-pull-request-restores-the-repair-wait");
+});
+
+
+// Issue #1549: seed the historical unsent delivery block, then let a real session
+// resume event reconcile the current Inspector ledger and repaint the open run page.
+test("session return releases unsent feedback for a superseded clean Inspector head", async ({ dashboard, daemon }) => {
+  const runId = await seedRun(dashboard, daemon, "E2E Inspector feedback recovery");
+  const sessionId = (await api<Array<{ id: string }>>(daemon, "/api/sessions"))[0]!.id;
+  await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/pause`, { mode: "now" });
+  await api(daemon, "/api/inspector/config", {
+    enabled: true, mode: "live", repoAllowlist: [daemon.repo],
+  }, "PUT");
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true, repoAllowlist: [daemon.repo],
+  }, "PUT");
+  strandAsClosed(daemon, runId);
+  const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare("SELECT binding_id, gate_state_json FROM workflow_runs WHERE id = ?")
+      .get(runId) as { binding_id: string; gate_state_json: string };
+    const gate = JSON.parse(run.gate_state_json);
+    gate.waitReason = "findings";
+    db.prepare("UPDATE workflow_runs SET current_phase = 'delivery_blocked', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify(gate), runId);
+    db.prepare("UPDATE workflow_bindings SET delivery_mode = 'live' WHERE id = ?").run(run.binding_id);
+    db.prepare(`INSERT INTO workflow_deliveries
+      (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at)
+      SELECT 'unsent-inspector', ?, s.id, 'inspector_feedback', b.session_id, b.note_key,
+        'Old head feedback never sent', 'frozen-packet', 'prepared', ?, ?
+      FROM workflow_submissions s JOIN workflow_bindings b ON b.id = ?
+      WHERE s.run_id = ? ORDER BY s.round DESC LIMIT 1`)
+      .run(runId, Date.now(), Date.now(), run.binding_id, runId);
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(PR_KEY);
+    db.prepare(`UPDATE inspector_prs SET state = 'open', observed_state = 'OPEN',
+      observed_head_sha = ?, head_sha = ?, clean_review_head_sha = ?, observed_at = ? WHERE key = ?`)
+      .run(head, head, head, Date.now(), PR_KEY);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  const checkAgain = header.getByRole("button", { name: "Check again" });
+  await expect(checkAgain).toBeVisible();
+  await checkAgain.click();
+  await expect.poll(() => eventCount(daemon, runId, "inspector_recheck_requested")).toBe(1);
+  // An explicit recheck also respects the operator's pause and never pretends to send.
+  expect((await probe(daemon, runId)).run.status).toBe("blocked");
+  await checkAgain.hover();
+  await dashboard.mouse.move(800, 600);
+  await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+  await shoot(dashboard, header, "03-unsent-feedback-blocked");
+  await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {});
+  await expect.poll(async () => (await probe(daemon, runId)).run.status).toBe("completed");
+  await expect(header.getByText("Completed", { exact: true })).toBeVisible();
+  const packet = withDaemonDb(daemon, (db) => db.prepare(
+    "SELECT state, delivered_at FROM workflow_deliveries WHERE id = 'unsent-inspector'",
+  ).get());
+  expect(packet).toEqual({ state: "cancelled", delivered_at: null });
+  expect(await eventCount(daemon, runId, "inspector_feedback_recovered")).toBe(1);
+  expect(await eventCount(daemon, runId, "inspector_persona_bypass_used")).toBe(1);
+  await header.getByRole("button", { name: "Run this review again" }).hover();
+  await dashboard.mouse.move(800, 600);
+  await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+  await shoot(dashboard, header, "04-unsent-feedback-recovered");
 });

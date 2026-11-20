@@ -102,7 +102,9 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     || (run.status === "blocked" && run.phase === "inspector_disabled")
     // Reopens only on a GitHub read that saw the pull request open, so a recheck of one that
     // really closed changes nothing. See `reopenClosedInspectorGate`.
-    || (run.status === "blocked" && run.phase === "inspector_pr_closed");
+    || (run.status === "blocked" && run.phase === "inspector_pr_closed")
+    // The manager reconciles only positively unsent feedback; other packets stay held.
+    || (run.status === "blocked" && run.phase === "delivery_blocked");
 }
 
 export function infrastructureRecoveryAvailable(
@@ -156,7 +158,8 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
     // The one non-destructive move a closed-PR block has. Without it the run page offered
     // only cancel and a full restart, which re-spends every review on an unchanged head - and
     // the block was not always true. It stays a decision: no resubmission is offered.
-    if (c.phase === "inspector_pr_closed" && recovery.operations.includes("recheck-inspector")) {
+    if (["inspector_pr_closed", "delivery_blocked"].includes(c.phase)
+        && recovery.operations.includes("recheck-inspector")) {
       recovery.primary = "recheck-inspector";
     }
   }

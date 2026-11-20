@@ -3402,7 +3402,8 @@ export class WorkflowManager {
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
     this.scheduleGateEvaluation(run.id, null);
     const prKey = this.gateState(run)?.prKey ?? null;
-    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
+    if (run.status === "blocked"
+        && ["inspector_pr_closed", "delivery_blocked"].includes(run.currentPhase) && prKey) {
       this.reobserveClosedPullRequest(run.id, prKey);
     }
     return { ok: true, value: run };
@@ -4456,12 +4457,82 @@ export class WorkflowManager {
     return updated ? { run: updated, state: reopened } : null;
   }
 
+  /** Reconcile only positively unsent packets, under the existing per-run gate lock. */
+  private async recoverBlockedInspectorFeedback(
+    run: WorkflowRun,
+    state: WorkflowInspectorGateState,
+    observation: InspectionUpdated | null,
+  ): Promise<boolean> {
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked"
+        || state.waitReason !== "findings" || !state.targetHeadSha
+        || state.targetHeadSha !== state.failedHeadSha || !state.prKey) return false;
+    const binding = this.store.getBinding(run.bindingId);
+    const latest = this.store.latestSubmission(run.id);
+    const delivery = this.store.listDeliveries(run.id).find((item) =>
+      item.kind === "inspector_feedback" && item.submissionId === latest?.id
+      && item.state === "prepared" && item.deliveredAt === null);
+    if (binding?.deliveryMode !== "live" || !delivery || this.deliveryBlock(delivery)
+        || this.registry.getSession(delivery.sessionId)?.pause) return false;
+    const session = this.registry.getSession(delivery.sessionId)!;
+    const candidateUrl = this.gateCandidateUrl(binding, session);
+    const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
+    if (candidate && candidate.key !== state.prKey) return false;
+    const ledger = getInspectorPr(state.prKey);
+    const observed = observation?.prKey === state.prKey && observation.observedState !== null
+      ? observation : ledger;
+    // Review head alone is not evidence of the current remote head. Unknown or stale
+    // observations leave the packet held until Inspector supplies positive remote facts.
+    if (!ledger || ledger.state !== "open" || observed?.observedState !== "OPEN"
+        || !observed.observedHeadSha || observed.observedAt === null
+        || observed.observedAt < state.enteredAt) return false;
+    const superseded = observed.observedHeadSha !== state.failedHeadSha;
+    const restored = this.store.recoverInspectorFeedback(delivery.id, state, {
+      ...state, lastObservedAt: observed.observedAt, observedHeadSha: observed.observedHeadSha,
+    }, superseded);
+    if (!restored) return false;
+    this.publishRun(run.id);
+    if (!superseded) {
+      await this.deliverPrepared(delivery.id, false);
+      return true;
+    }
+    if (restored.status === "waiting_for_session") {
+      // A clean Inspector review never substitutes for the published full workflow policy.
+      // The existing capture path retains evidence readiness, round limits and graph review.
+      await this.resubmit(run.id, { requestId: `inspector-feedback-recovery:${delivery.id}` });
+      return true;
+    }
+    return false;
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
+    if (run?.status === "blocked" && run.currentPhase === "delivery_blocked" && state?.prKey) {
+      const prKey = state.prKey;
+      const ledger = loadInspectorInspections().find((row) => row.key === prKey);
+      // A queued signal carries a historical ledger snapshot. Prefer the newer durable
+      // remote observation (including ties), and carry it through BOTH packet recovery
+      // and gate evaluation so the old signal cannot put the failed head back afterward.
+      if (ledger?.observedState != null && ledger.observedAt !== null
+          && ledger.observedAt >= state.enteredAt
+          && (observation?.prKey !== state.prKey || observation.observedState === null
+            || ledger.observedAt >= observation.observedAt)) {
+        observation = {
+          prKey: ledger.key, observedHeadSha: ledger.observedHeadSha,
+          observedState: ledger.observedState, observedAt: ledger.observedAt, ledger,
+        };
+      }
+    }
+    if (run && state) {
+      if (await this.recoverBlockedInspectorFeedback(run, state, observation)) return;
+      run = this.store.getRun(runId);
+      state = run ? this.gateState(run) : null;
+    }
+    // Recheck can ask about this block, but only the unsent-packet recovery above may lift it.
+    if (run?.status === "blocked" && run.currentPhase === "delivery_blocked") return;
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
@@ -5409,6 +5480,10 @@ export class WorkflowManager {
         || binding?.deliveryMode !== "live"
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
+      if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
+        this.scheduleGateEvaluation(run.id, null);
+        continue;
+      }
       if (delivery.kind === "evidence_capture_repair") {
         // A temporary delivery block may replace the capture phase. Its durable failure
         // receipt still owns this packet; confirmed delivery restores that phase and detail.

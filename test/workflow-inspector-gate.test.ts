@@ -130,6 +130,7 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
 }
 
 interface SeedOptions {
+  captureHead?: () => string;
   policy?: "none" | "restart_workflow" | "inspector_only";
   missingPrAction?: "wait" | "offer_prepare_pr" | "prepare_pr";
   deliveryMode?: "preview" | "live";
@@ -299,6 +300,19 @@ async function seed(over: SeedOptions = {}) {
     setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   }
   const manager = new WorkflowManager(registry, store, {
+    ...(over.captureHead ? {
+      readContextRaw: async () => {
+        const next = context(over.captureHead!());
+        return {
+          raw: next, context: next,
+          boundary: { noteKey: binding.noteKey, sessionId: ids.session,
+            headSha: next.evidence.headSha, transcriptPath: null, transcriptSize: 0,
+            repositoryFingerprint: `repo-${next.evidence.headSha}` },
+        };
+      },
+      boundaryChanged: async () => false,
+      compactContext: async () => context(over.captureHead!()),
+    } : {}),
     resolveCommit: over.resolveCommit ?? (async (_root, head) => head),
     resolveCommitTree: over.resolveCommitTree,
     reobservePullRequest: over.reobservePullRequest
@@ -312,7 +326,7 @@ async function seed(over: SeedOptions = {}) {
       ? { ok: false, message: `${id} is not ready` }
       : { ok: true, command: skillCommand(session.agent, id)! },
     readEvidenceProbe: async () => ({
-      headSha: head,
+      headSha: over.captureHead?.() ?? head,
       workingTreeStatus: over.dirty ? [" M src/file.ts"] : [],
       diffFingerprint: `diff-${head}`,
     }),
@@ -2375,5 +2389,267 @@ test("a recovered closed block that was not waiting on a repair push resumes the
   } finally {
     scriptGitHub(null);
     await seeded.manager.stop();
+  }
+});
+
+
+async function blockUnsentFeedback(seeded: Seeded) {
+  await settleGate(seeded);
+  const session = seeded.registry.getSession(seeded.ids.session)!;
+  session.state = "exited";
+  const now = Date.now();
+  updateInspectorPr(seeded.key, { headSha: seeded.head, reviewPosture: "live",
+    reviewComplete: true, round: 1 }, now);
+  signal(seeded, seeded.head);
+  // Seed the finding before the scheduled evaluation executes.
+  upsertInspectorComment({
+    id: `unavailable-${serial}`, prKey: seeded.key, fingerprint: `unavailable-${serial}`,
+    path: "src/file.ts", line: 1, title: "Repair", body: "Repair the edge",
+    severity: "major", round: 1, status: "open", replies: 0, answeredCommentId: null,
+    createdAt: now, updatedAt: now,
+  });
+  await settleGate(seeded);
+  assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+  const packet = seeded.store.listDeliveries(seeded.ids.run)[0]!;
+  assert.equal(packet.state, "prepared");
+  assert.equal(packet.deliveredAt, null);
+  assert.deepEqual(seeded.injected, []);
+  return { packet, session };
+}
+
+for (const policy of ["inspector_only", "restart_workflow"] as const) {
+  for (const newerHead of [false, true]) {
+    test(`unsent Inspector feedback recovers after session return: ${policy}, newer=${newerHead}`, async () => {
+      let captureHead = "initial-head";
+      const seeded = await seed({ policy, deliveryMode: "live", head: captureHead, captureHead: () => captureHead });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        const head = newerHead ? "repaired-head" : seeded.head;
+        if (newerHead) {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+          updateInspectorPr(seeded.key, { headSha: head, cleanReviewHeadSha: head,
+            reviewComplete: true, observedHeadSha: head, observedState: "OPEN",
+            observedAt: Date.now() }, Date.now());
+        }
+        session.state = "idle";
+        captureHead = head;
+        if (newerHead) seeded.registry.setSessionPause(session.id, null);
+        else {
+          updateInspectorPr(seeded.key, { observedHeadSha: head, observedState: "OPEN", observedAt: Date.now() }, Date.now());
+          assert.ok(seeded.store.runSummary(seeded.ids.run)?.recovery?.operations.includes("recheck-inspector"));
+          assert.equal(seeded.manager.recheckInspector(seeded.ids.run, "recover-unsent").ok, true);
+        }
+        await settleGate(seeded);
+        const recovered = seeded.store.getDelivery(packet.id)!;
+        if (!newerHead) {
+          assert.equal(recovered.state, "delivered");
+          assert.deepEqual(seeded.injected, [packet.payload]);
+        } else {
+          assert.equal(recovered.state, "cancelled");
+          assert.equal(recovered.deliveredAt, null);
+          assert.deepEqual(seeded.injected, []);
+          if (policy === "inspector_only") {
+            assert.equal(phaseOf(seeded), "completed/complete");
+            assert.equal(inspectorOnlyRounds(seeded), 1);
+          } else {
+            const submissions = seeded.store.listSubmissions(seeded.ids.run);
+            assert.equal(submissions.length, 2);
+            assert.equal(submissions[1]!.mode, "full_workflow");
+            assert.equal((submissions[1]!.context as unknown as WorkflowContextSnapshot).evidence.headSha, head);
+            assert.equal(inspectorOnlyRounds(seeded), 0);
+            assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+          }
+        }
+        signal(seeded, head);
+        await settleGate(seeded);
+        assert.equal(seeded.injected.length, newerHead ? 0 : 1);
+      } finally {
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
+
+for (const policy of ["restart_workflow", "inspector_only"] as const) {
+  for (const review of ["pending", "open-findings", "publication-pending"] as const) {
+    test(`unsent Inspector recovery does not approve a newer non-clean head: ${policy}, ${review}`, async () => {
+      let captureHead = "non-clean-initial-head";
+      const seeded = await seed({ policy, deliveryMode: "live", head: captureHead, captureHead: () => captureHead });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        captureHead = "non-clean-new-head";
+        if (review === "publication-pending") {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+        }
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: captureHead, observedState: "OPEN", observedAt: Date.now(),
+          headSha: review === "pending" ? seeded.head : captureHead,
+          lastAttemptSha: captureHead, reviewComplete: review !== "pending",
+          cleanReviewHeadSha: null, round: review === "pending" ? 1 : 2,
+        }, Date.now());
+        session.state = "idle";
+        seeded.registry.setSessionPause(session.id, null);
+        await settleGate(seeded);
+
+        const recovered = seeded.store.getDelivery(packet.id)!;
+        assert.equal(recovered.state, "cancelled");
+        assert.equal(recovered.deliveredAt, null);
+        assert.equal(seeded.injected.includes(packet.payload), false, "obsolete findings must never be sent");
+        assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+        assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
+        const latest = seeded.store.latestSubmission(seeded.ids.run)!;
+        if (policy === "restart_workflow") {
+          assert.equal(latest.mode, "full_workflow");
+          assert.equal((latest.context as unknown as WorkflowContextSnapshot).evidence.headSha, captureHead);
+          assert.equal(inspectorOnlyRounds(seeded), 0, "recovery must not bypass the published full review");
+          assert.equal(eventCount(seeded, "inspector_persona_bypass_used"), 0);
+          assert.deepEqual(seeded.injected, []);
+        } else {
+          // This policy expressly permits skipping Personas, never skipping Inspector's
+          // current-head review. Its audited submission is a review target, not approval.
+          assert.equal(latest.mode, "inspector_only");
+          assert.equal(latest.prHeadSha, captureHead);
+          assert.equal(inspectorOnlyRounds(seeded), 1);
+          const gate = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+          assert.equal(gate.targetHeadSha, captureHead);
+          assert.equal(gate.waitReason, review === "pending" ? "review_pending"
+            : review === "open-findings" ? "findings" : "clean_review_pending");
+          if (review === "open-findings") {
+            const replacement = seeded.store.listDeliveries(seeded.ids.run).find((item) => item.id !== packet.id)!;
+            assert.equal(replacement.submissionId, latest.id);
+            assert.equal(replacement.state, "delivered");
+            assert.match(replacement.payload, /Pinned head: non-clean-new-head/);
+            assert.deepEqual(seeded.injected, [replacement.payload]);
+          } else {
+            assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+            assert.deepEqual(seeded.injected, []);
+          }
+        }
+        // Repeated observations must not turn either an unfinished review or open findings
+        // into approval, nor resurrect the cancelled packet.
+        signal(seeded, captureHead);
+        await settleGate(seeded);
+        assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+        assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
+        assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
+      } finally {
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
+
+for (const policy of ["restart_workflow", "inspector_only"] as const) {
+  for (const newest of ["ledger", "event", "ledger-tie"] as const) {
+    test(`unsent Inspector recovery uses the newest remote observation: ${policy}, ${newest}`, async () => {
+      let captureHead = "queued-head-a";
+      const seeded = await seed({ policy, deliveryMode: "live", head: captureHead, captureHead: () => captureHead });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        const olderAt = Date.now();
+        const newerAt = newest === "ledger-tie" ? olderAt : olderAt + 1;
+        captureHead = "current-head-b";
+        // Queue an update with A's old ledger snapshot. Before the per-run evaluator gets
+        // the turn, Inspector records B. The converse proves a newer event also wins.
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: seeded.head, observedState: "OPEN", observedAt: olderAt,
+        }, olderAt);
+        signal(seeded, newest === "event" ? captureHead : seeded.head,
+          newest === "event" ? newerAt : olderAt);
+        if (newest !== "event") {
+          updateInspectorPr(seeded.key, {
+            observedHeadSha: captureHead, observedState: "OPEN", observedAt: newerAt,
+          }, newerAt);
+        }
+        session.state = "idle";
+        await settleGate(seeded);
+        const recovered = seeded.store.getDelivery(packet.id)!;
+        assert.equal(recovered.state, "cancelled", "head A feedback must not cross the send boundary");
+        assert.equal(recovered.deliveredAt, null);
+        assert.deepEqual(seeded.injected, []);
+        assert.equal(eventCount(seeded, "delivery_sending"), 0);
+        assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
+        const latest = seeded.store.latestSubmission(seeded.ids.run)!;
+        if (policy === "restart_workflow") {
+          assert.equal(latest.mode, "full_workflow");
+          assert.equal((latest.context as unknown as WorkflowContextSnapshot).evidence.headSha, captureHead);
+          assert.equal(inspectorOnlyRounds(seeded), 0);
+        } else {
+          assert.equal(latest.prHeadSha, captureHead, "the same newest observation must reach gate evaluation");
+          const gate = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+          assert.equal(gate.observedHeadSha, captureHead);
+          assert.equal(gate.lastObservedAt, newerAt);
+          assert.equal(gate.targetHeadSha, captureHead);
+          assert.equal(gate.waitReason, "review_pending");
+          assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+        }
+      } finally {
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
+
+for (const guard of ["uncertain", "sending", "delivered", "refused", "preview", "retargeted",
+  "paused", "unauthorized", "unavailable", "stale", "closed", "switched-pr", "old-submission"] as const) {
+  test(`unsent Inspector recovery preserves the ${guard} guard`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      const { packet, session } = await blockUnsentFeedback(seeded);
+      session.state = "idle";
+      updateInspectorPr(seeded.key, { observedHeadSha: "new-head", observedState: "OPEN",
+        observedAt: guard === "stale" ? seeded.now - 1 : Date.now(),
+        state: guard === "closed" ? "closed" : "open" }, Date.now());
+      if (["uncertain", "sending", "delivered", "refused"].includes(guard)) {
+        seeded.store.setDeliveryState(packet.id, guard as "uncertain" | "sending" | "delivered" | "refused", null);
+      }
+      if (guard === "preview") seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "preview" });
+      if (guard === "retargeted") db.prepare("UPDATE workflow_bindings SET session_id = 'other' WHERE id = ?").run(seeded.ids.binding);
+      if (guard === "paused") seeded.registry.setSessionPause(session.id, {
+        phase: "frozen", reason: "operator", since: Date.now(), frozenAt: Date.now(),
+        interrupted: null, stopped: true,
+      });
+      if (guard === "unauthorized") setWorkflowPolicy({ liveEnabled: false });
+      if (guard === "unavailable") session.state = "exited";
+      if (guard === "switched-pr") session.prUrl = "https://github.com/owner/repo/pull/9999";
+      if (guard === "old-submission") db.prepare("UPDATE workflow_deliveries SET submission_id = 'older' WHERE id = ?").run(packet.id);
+      const before = seeded.store.getDelivery(packet.id);
+      await (seeded.manager as unknown as {
+        evaluateInspectorGate(id: string, observation: null): Promise<void>;
+      }).evaluateInspectorGate(seeded.ids.run, null);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+      assert.deepEqual(seeded.store.getDelivery(packet.id), before);
+      assert.deepEqual(seeded.injected, []);
+      assert.equal(eventCount(seeded, "inspector_feedback_recovered"), 0);
+    } finally {
+      await seeded.manager.stop();
+    }
+  });
+}
+
+test("startup reconciles a blocked unsent packet using the durable observed head", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  const { packet, session } = await blockUnsentFeedback(seeded);
+  await seeded.manager.stop();
+  session.state = "idle";
+  db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+  updateInspectorPr(seeded.key, { observedHeadSha: "restart-head", observedState: "OPEN",
+    observedAt: Date.now(), headSha: "restart-head", cleanReviewHeadSha: "restart-head" }, Date.now());
+  const manager = new WorkflowManager(seeded.registry, seeded.store, {
+    resolveCommit: async (_root, head) => head,
+    inject: async () => { assert.fail("must not send superseded feedback"); },
+  });
+  try {
+    manager.start();
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "startup stayed blocked");
+    assert.equal(seeded.store.getDelivery(packet.id)?.state, "cancelled");
+    assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
+    assert.equal(inspectorOnlyRounds(seeded), 1);
+  } finally {
+    await manager.stop();
   }
 });

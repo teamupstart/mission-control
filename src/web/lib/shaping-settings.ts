@@ -257,6 +257,17 @@ export function shapingRefusalText(intent: ShapingIntent, reason: string, supers
   return superseded ? `An earlier change, ${describeShapingIntent(intent)}, was refused: ${reason}` : reason;
 }
 
+/**
+ * The text for a write whose answer never arrived. Not a refusal: the daemon may have stored it.
+ * `shown` is whether the event stream already showed the change stored.
+ */
+export function shapingUnconfirmedText(intent: ShapingIntent, shown: boolean, superseded: boolean, cause: string): string {
+  const outcome = shown
+    ? `${cause} Every window shows this change stored, but the daemon did not confirm it.`
+    : `${cause} Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.`;
+  return superseded ? `An earlier change, ${describeShapingIntent(intent)}, is unconfirmed: ${outcome}` : outcome;
+}
+
 function commandLine(command: string, args: readonly string[]): string {
   return [command, ...args].map(shellWord).join(" ");
 }

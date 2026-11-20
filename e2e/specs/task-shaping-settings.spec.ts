@@ -1081,6 +1081,10 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
   const changed = "\"both-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.";
   const alert = row(page, "Both notes").getByRole("alert");
   const earlier = row(page, "Both notes").getByRole("list", { name: "Earlier refusals" });
+  // A polite live region is already there, empty, before any late refusal arrives in it.
+  const live = row(page, "Both notes").locator("[aria-live=polite]");
+  await expect(live).toHaveCount(1);
+  await expect(live).toBeEmpty();
   gates[1]!.open();
   expect((await (await second).response())?.status()).toBe(409);
   await expect(alert).toHaveText(changed);
@@ -1088,6 +1092,7 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
   expect((await (await first).response())?.status()).toBe(409);
   // The latest action's reason stays the row's refusal; the late one is listed apart from it.
   await expect(earlier).toHaveText(`An earlier change, switching both-notes on, was refused: ${changed}`);
+  await expect(live.getByRole("list", { name: "Earlier refusals" })).toHaveCount(1);
   await expect(alert).toHaveText(changed);
   await page.unroute("**/api/shaping");
 });
@@ -1124,4 +1129,64 @@ test("a save that answers late keeps a manifest pasted into the same dialog afte
   await dialog.getByRole("button", { name: "Save switched off" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(pill(page, "Next notes")).toHaveAccessibleName("Next notes: off");
+});
+
+test("a refusal stays under its own row while another control writes", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("kept-notes", "Kept notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The switch is refused once, by the test standing in for the daemon.
+  await page.route("**/api/shaping", (route) => route.request().method() !== "PUT" ? route.fallback() : route.fulfill({
+    status: 409, contentType: "application/json", body: JSON.stringify({ error: "shaper_changed", reason: "Refused for this test." }),
+  }));
+  await pill(page, "Kept notes").click();
+  const alert = row(page, "Kept notes").getByRole("alert");
+  await expect(alert).toHaveText("Refused for this test.");
+  await page.unroute("**/api/shaping");
+  // A save in the settings form neither clears nor replaces it.
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  await form.getByRole("textbox", { name: "Caller identity" }).fill("other-control");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("other-control");
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(alert).toHaveText("Refused for this test.");
+  // Acting on the row again dismisses it, and the switch goes through.
+  await pill(page, "Kept notes").click();
+  await expect(alert).toHaveCount(0);
+  await expect(pill(page, "Kept notes")).toHaveAccessibleName("Kept notes: on");
+});
+
+test("an import whose answer is lost is reported unconfirmed, never refused", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  const save = dialog.getByRole("button", { name: "Save switched off" });
+
+  // Stored, and shown by the stream, but the answer never arrives: the dialog closes as saved.
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    await route.fetch();
+    // Only once a frame has brought the stored row: Dry run waits for the daemon's revision.
+    await expect(page.getByRole("button", { name: "Dry-run Lost answer" })).toBeEnabled();
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  await manifest.fill(JSON.stringify(commandShaper("lost-answer", "Lost answer")));
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(pill(page, "Lost answer")).toHaveAccessibleName("Lost answer: off");
+  await page.unroute("**/api/shaping");
+
+  // Never reaching the daemon, the outcome is unknown: the dialog stays open and says so.
+  await page.route("**/api/shaping", (route) => route.request().method() !== "PUT" ? route.fallback() : route.abort("connectionreset"));
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  await manifest.fill(JSON.stringify(commandShaper("never-sent", "Never sent")));
+  await save.click();
+  const outcome = dialog.getByRole("alert");
+  await expect(outcome).toHaveText("The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.");
+  await expect(outcome).not.toContainText("refused");
+  await expect(dialog).toBeVisible();
+  await page.unroute("**/api/shaping");
+  expect((await shapingConfig(daemon)).shapers.map((entry) => entry.id)).toEqual(["lost-answer"]);
 });

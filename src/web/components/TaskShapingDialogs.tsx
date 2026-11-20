@@ -59,25 +59,29 @@ export function ShaperReview({ shaper }: { shaper: Shaper }): React.JSX.Element 
 }
 
 /**
+ * Refusals of earlier writes under one control that arrived after a newer write went out. They
+ * are listed apart from the control's current refusal, which stays the reason its latest action
+ * failed. The polite live region is always present, so a refusal that arrives while the current
+ * one is unchanged is still announced: a region inserted together with its content often is not.
+ */
+export function EarlierRefusals({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element {
+  return (
+    <div className="shaping-earlier-live" aria-live="polite">
+      {messages && messages.length > 0 && (
+        <ul className="shaping-earlier-refusals" aria-label="Earlier refusals">
+          {messages.map((message, at) => <li key={at}>{message}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * Import one manifest: pasted JSON or a chosen file, read with the daemon's own schema, and
  * reviewed in full before anything is saved. Saving stores it switched off, whatever its
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-/**
- * Refusals of earlier writes under one control that arrived after a newer write went out. They
- * are listed apart from the control's current refusal, which stays the reason its latest action
- * failed.
- */
-export function EarlierRefusals({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element | null {
-  if (!messages || messages.length === 0) return null;
-  return (
-    <ul className="shaping-earlier-refusals" aria-label="Earlier refusals">
-      {messages.map((message, at) => <li key={at}>{message}</li>)}
-    </ul>
-  );
-}
-
 export function ShapingImportDialog({ config, busy, saving, error, earlier, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */

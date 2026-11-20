@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { previewShapingIntent, shapingIntentReflected, shapingRefusalText } from "./lib/shaping-settings.ts";
+import { previewShapingIntent, shapingIntentReflected, shapingRefusalText, shapingUnconfirmedText } from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
 
 /** How long one write may wait for the daemon's answer before the panel stops waiting. */
@@ -36,11 +36,14 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
+  /** The last request a stream frame showed stored, for a reply that never arrives. */
+  const observed = useRef<ShapingIntent | null>(null);
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
     if (shapingIntentReflected(config, request)) {
+      observed.current = request;
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     }
   }), [subscribe]);
@@ -56,35 +59,56 @@ export function useShapingSettings(
       writing.current = null;
       setPending(null);
     } else if (reflected) {
+      observed.current = pending.intent;
       setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
   }, [pending, reflected, live]);
 
-  /** Send one intent. Resolves true when the daemon accepted it. */
+  /**
+   * Send one intent. Resolves true when the daemon accepted it, or when its answer was lost but
+   * the event stream already showed the change stored.
+   */
   const set = async (intent: ShapingIntent, key: string): Promise<boolean> => {
     if (!live || writing.current) return false;
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
-      setRefusals({ [key]: [{ number: ++sent.current, message: parsed.error.issues[0]?.message ?? "This change is not valid." }] });
+      const message = parsed.error.issues[0]?.message ?? "This change is not valid.";
+      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, message }]));
       return false;
     }
     const request = parsed.data;
     const number = ++sent.current;
     writing.current = request;
     latest.current = request;
-    setRefusals({});
+    // Acting on a control again dismisses what it showed. Every other control keeps its own
+    // refusals, and one that arrives late for an earlier write here is still shown, labelled.
+    setRefusals((current) => withRefusals(current, key, []));
     setPending({ intent: request, key, accepted: false, observed: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
       const result = await api.setShaping(request, { signal: timeout });
+      if (!result.ok && result.status === undefined) {
+        // No answer at all: the request timed out or the connection failed. That is not the daemon
+        // refusing it, so it is never reported as a refusal. When the stream already showed the
+        // change stored, the window treats it as saved and says the answer was lost.
+        const shown = observed.current === request;
+        const cause = timeout.aborted
+          ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
+          : "The daemon's answer did not arrive.";
+        const message = shapingUnconfirmedText(request, shown, latest.current !== request, cause);
+        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, message }]));
+        if (writing.current === request) {
+          writing.current = null;
+          setPending(null);
+        }
+        return shown;
+      }
       if (!result.ok) {
-        throw new Error(timeout.aborted
-          ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds. This shows its current settings; make the change again if it is missing.`
-          : result.reason ?? result.error ?? "Could not save task shaping.");
+        throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");
       }
       if (writing.current === request) {
         if (result.config && !shapingIntentReflected(result.config, request)) {

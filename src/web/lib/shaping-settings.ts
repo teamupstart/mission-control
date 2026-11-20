@@ -12,7 +12,6 @@ import {
   canonicalJson,
   compareShapingOrder,
   moveInShapingOrder,
-  shapingEntryRevision,
   ShaperManifestSchema,
   ShaperSchema,
   shaperIsLocal,
@@ -46,8 +45,11 @@ export interface ShapingListRow {
   on: boolean;
   /** Why it cannot run, or null when it can. */
   problem: string | null;
-  /** The entry's `shapingEntryRevision`, sent with any intent that acts on what this row shows. */
-  revision: string;
+  /**
+   * The daemon's revision of the stored definition, sent as `expect` with any intent that acts on
+   * what this row shows. Null only while an optimistic import awaits the frame that brings it.
+   */
+  revision: string | null;
 }
 
 /** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
@@ -68,13 +70,13 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
     if (isUnsupportedShaper(entry)) {
       unsupported.push({
         id: entry.id, label: entry.label, shaper: null,
-        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision: shapingEntryRevision(entry),
+        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision: view.revisions[entry.id] ?? null,
       });
       return;
     }
     known.push({
       id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
-      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision: shapingEntryRevision(entry),
+      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision: view.revisions[entry.id] ?? null,
     });
   });
   known.sort(compareShapingOrder(view.order));
@@ -121,16 +123,21 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       if (at === -1) shapers.push(parsed.data);
       else shapers[at] = parsed.data;
       overrides[parsed.data.id] = false;
-      return { ...view, shapers, overrides };
+      // The stored definition's revision is the daemon's to derive; it arrives with the frame.
+      const { [parsed.data.id]: _replaced, ...revisions } = view.revisions;
+      return { ...view, shapers, overrides, revisions };
     }
-    case "remove":
+    case "remove": {
       delete overrides[intent.id];
+      const { [intent.id]: _removed, ...revisions } = view.revisions;
       return {
         ...view,
         shapers: view.shapers.filter((entry) => entry.id !== intent.id),
         overrides,
         order: view.order.filter((id) => id !== intent.id),
+        revisions,
       };
+    }
     case "enable":
       overrides[intent.id] = intent.enabled;
       return { ...view, overrides };
@@ -178,7 +185,13 @@ export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingI
       const at = rows.indexOf(intent.id);
       return intent.after === null ? at === 0 : at > 0 && rows[at - 1] === intent.after;
     }
-    case "upsert":
+    case "upsert": {
+      // The definition is stored as sent, and switched off. Its revision is the daemon's.
+      const parsed = ShaperSchema.safeParse(intent.shaper);
+      if (!parsed.success) return false;
+      const stored = view.shapers.find((entry) => entry.id === parsed.data.id);
+      return stored !== undefined && canonicalJson(stored) === canonicalJson(parsed.data) && view.overrides[parsed.data.id] === false;
+    }
     case "reorder":
     case "settings":
       return sameShapingView(previewShapingIntent(view, intent), view);

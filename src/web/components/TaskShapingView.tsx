@@ -58,8 +58,8 @@ export function TaskShapingView({
   // Each of these is bound to the revision of the entry the operator was shown: when another
   // window replaces that shaper, the confirmation or dialog no longer applies to what is stored,
   // and the daemon refuses any intent still carrying the old revision.
-  const [testing, setTesting] = useState<{ id: string; label: string; revision: string } | null>(null);
-  const [removing, setRemoving] = useState<{ id: string; revision: string; folder: boolean | null } | null>(null);
+  const [testing, setTesting] = useState<{ id: string; label: string; revision: string | null } | null>(null);
+  const [removing, setRemoving] = useState<{ id: string; revision: string | null; folder: boolean | null } | null>(null);
   const confirmRemoval = (entry: ShapingListRow): void => {
     setRemoving({ id: entry.id, revision: entry.revision, folder: null });
     if (!readFolderIds) return;
@@ -135,7 +135,7 @@ export function TaskShapingView({
               </Tooltip>
               <Tooltip label="Delete this shaper's stored definition and its on or off choice">
                 <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy}
-                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision }, key); }}>Remove</button>
+                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision ?? undefined }, key); }}>Remove</button>
               </Tooltip>
             </>
           ) : (
@@ -151,7 +151,7 @@ export function TaskShapingView({
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
               disabled={busy || !canSwitch} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
-              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision }, key)}>
+              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
           </Tooltip>

@@ -15,7 +15,7 @@ import {
   SHAPING_LIMITS,
   ShaperSchema,
   ShapingConfigSchema,
-  shapingEntryRevision,
+  shapingStoredRevision,
   shapingConfigView,
   type ShapingConfigView,
   type ShapingIntent,
@@ -134,7 +134,7 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
   assert.deepEqual(groups[2]!.rows, [{
     id: "future", label: "Future shaper", shaper: null, on: false,
-    problem: "stage: This build does not support the stage this entry names.", revision: shapingEntryRevision({ id: "future", label: "Future shaper", unsupported: "stage: This build does not support the stage this entry names." }),
+    problem: "stage: This build does not support the stage this entry names.", revision: shapingStoredRevision(unsupported as never),
   }]);
 });
 
@@ -196,7 +196,7 @@ test("a move keeps a hidden shaper's slot, composes with another window's move, 
 
 test("an intent bound to a revision is refused once another window replaces the shaper, and a removal keeps a folder shaper off", () => {
   const config = ShapingConfigSchema.parse({ shapers: [gatherer("a")], overrides: { a: false } });
-  const shown = shapingEntryRevision(shapingConfigView(config).shapers[0]!);
+  const shown = shapingConfigView(config).revisions.a!;
   assert.equal(registeredShaperRevision(config, "a"), shown);
   assert.match(shown, /^[0-9a-f]{16}$/);
   const replaced = applyShapingIntent(config, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("a", { label: "Replacement" })) });

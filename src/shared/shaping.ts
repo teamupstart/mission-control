@@ -973,7 +973,16 @@ export interface UnsupportedShaperView {
 }
 
 /** The config as it leaves the daemon: the HTTP reply, and Phase 3's snapshot field and event. */
-export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Array<Shaper | UnsupportedShaperView> };
+export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
+  shapers: Array<Shaper | UnsupportedShaperView>;
+  /**
+   * Each registered id's `shapingStoredRevision`, derived by the daemon from the definition as
+   * stored. A window sends it back as `expect` with an intent that acts on a shaper it showed.
+   * Opaque to the browser: two stored definitions that look the same in the view - an unsupported
+   * entry's id, label and reason, say - still have different revisions.
+   */
+  revisions: Record<string, string>;
+};
 
 /**
  * The config view: known shapers in full, and each unsupported entry reduced to its id, label
@@ -985,23 +994,29 @@ export function shapingConfigView(
   config: ShapingConfig,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
+  const classified = classifyShapers(config, definitions);
+  const revisions: Record<string, string> = {};
+  // The first stored entry owns an id, as everywhere else; a repeat never sets its revision.
+  for (const entry of classified) revisions[entry.stored.id] ??= shapingStoredRevision(entry.stored);
   return {
     ...config,
-    shapers: classifyShapers(config, definitions).map((entry) => entry.kind === "known"
+    shapers: classified.map((entry) => entry.kind === "known"
       ? entry.shaper
       : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
+    revisions,
   };
 }
 
 /**
- * A short, stable revision of one entry exactly as the config view shows it: FNV-1a (64-bit)
- * over its canonical JSON. A window sends it with an intent that acts on a shaper it showed, and
- * the daemon refuses the intent when the stored entry no longer has that revision, so a click
- * can never act on a replacement another window wrote in the meantime. Browser-safe and
- * synchronous; it identifies a definition, it does not protect one, so it is not a security hash.
+ * A short, stable revision of one stored definition: FNV-1a (64-bit) over the canonical JSON of
+ * the envelope exactly as stored, so any change to what is stored - a field the view never shows
+ * included - changes it. Only the daemon computes it, and the view carries it in `revisions`.
+ * The daemon refuses an intent whose `expect` no longer matches, so a click can never act on a
+ * replacement written in the meantime by another window or a settings restore. It identifies a
+ * definition; it does not protect one, so it is not a security hash.
  */
-export function shapingEntryRevision(entry: Shaper | UnsupportedShaperView): string {
-  const text = canonicalJson(entry);
+export function shapingStoredRevision(stored: StoredShaper): string {
+  const text = canonicalJson(stored);
   let hash = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
   const mask = 0xffffffffffffffffn;
@@ -1012,14 +1027,14 @@ export function shapingEntryRevision(entry: Shaper | UnsupportedShaperView): str
   return hash.toString(16).padStart(16, "0");
 }
 
-/** The revision of the registered entry with this id, as the view shows it, or null when none is stored. */
+/** The revision of the stored entry that owns this id, or null when none is stored. */
 export function registeredShaperRevision(
   config: ShapingConfig,
   id: string,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): string | null {
-  const entry = shapingConfigView(config, definitions).shapers.find((candidate) => candidate.id === id);
-  return entry ? shapingEntryRevision(entry) : null;
+  const entry = classifyShapers(config, definitions).find((candidate) => candidate.stored.id === id);
+  return entry ? shapingStoredRevision(entry.stored) : null;
 }
 
 /** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
@@ -1144,14 +1159,14 @@ export interface ShapingReply {
 // ---------------------------------------------------------------------------------------------
 // Intents
 
-/** A `shapingEntryRevision`: 16 lowercase hex digits. */
+/** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
   /**
-   * `expect`, when sent, is the `shapingEntryRevision` of the registered entry the sender showed.
+   * `expect`, when sent, is the revision the config view reported for the registered entry the sender showed.
    * The intent is refused if the stored entry has changed since, so it never removes or switches
    * a replacement written meanwhile.
    */
@@ -1879,7 +1894,7 @@ export function composeShapingSection(
 /** `POST /api/shaping/test`: run one shaper against a repository, as dispatch would. */
 export const ShapingTestRequestSchema = z.object({
   id: z.string().min(1).max(64),
-  /** The `shapingEntryRevision` the sender showed; the dry run is refused if the entry has changed. */
+  /** The revision the config view reported to the sender; the dry run is refused if the entry has changed. */
   expect: ShapingRevisionSchema.optional(),
   /** An absolute path to a local repository checkout. */
   repository: z.string().min(1).max(4096).refine((value) => value.startsWith("/"), { message: "The repository is an absolute path." }),

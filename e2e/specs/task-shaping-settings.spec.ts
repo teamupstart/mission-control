@@ -497,6 +497,109 @@ test("a peer's newer write wins while this window's own write answer is still he
   await page.unroute("**/api/shaping");
 });
 
+// A frame can show what this window asked for when a peer wrote it. This window's enable is held
+// before it reaches the daemon while a peer replaces the shaper and switches the replacement on:
+// the frame shows "on" and frees the controls, then the daemon refuses the held enable because
+// the definition it named is gone. The HTTP answer decides the outcome, so the refusal is shown.
+test("a refused write is shown even after a peer's frame already showed what it asked for", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("swap-notes", "Swap notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Swap notes")).toHaveAccessibleName("Swap notes: off");
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let sent!: () => void;
+  const requested = new Promise<void>((resolve) => { sent = resolve; });
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    sent();
+    await held;
+    await route.continue();
+  });
+  const answer = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Swap notes").click();
+  await requested;
+  // The peer replaces the definition this window showed, then switches the replacement on.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("swap-notes", "Swap notes", { timeoutMs: 20_000 }) });
+  await putShaping(daemon, { kind: "enable", id: "swap-notes", enabled: true });
+  await expect(pill(page, "Swap notes")).toHaveAccessibleName("Swap notes: on");
+  await expect(pill(page, "Swap notes")).toBeEnabled();
+
+  release();
+  expect((await answer).status()).toBe(409);
+  await expect(row(page, "Swap notes").getByRole("alert"))
+    .toHaveText("\"swap-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.");
+  // The peer's switch stays: the refusal changed nothing the daemon stores.
+  await expect(pill(page, "Swap notes")).toHaveAccessibleName("Swap notes: on");
+  expect((await shapingConfig(daemon)).overrides["swap-notes"]).toBe(true);
+  await page.unroute("**/api/shaping");
+});
+
+test("the import dialog offers Save only for a file it has read and reviewed", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // Every file read waits until the test finishes it or fails it.
+  await page.evaluate(() => {
+    const read = Blob.prototype.text;
+    const hooks = window as unknown as { finishRead?: (fail: boolean) => void };
+    Blob.prototype.text = function (this: Blob) {
+      return new Promise<string>((resolve, reject) => {
+        hooks.finishRead = (fail) => {
+          if (fail) reject(new Error("The disk went away."));
+          else read.call(this).then(resolve, reject);
+        };
+      });
+    };
+  });
+  const finishRead = (fail: boolean) => page.evaluate((value) => {
+    (window as unknown as { finishRead: (fail: boolean) => void }).finishRead(value);
+  }, fail);
+  const file = (id: string, label: string) => ({
+    name: id + ".json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(commandShaper(id, label))),
+  });
+
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  const save = dialog.getByRole("button", { name: "Save switched off" });
+  const chooser = dialog.getByLabel("Choose a manifest file");
+  const pasted = JSON.stringify(commandShaper("pasted-notes", "Pasted notes"));
+  await manifest.fill(pasted);
+  await expect(save).toBeEnabled();
+
+  // While a chosen file is read, what was reviewed before is gone and nothing can be saved.
+  await chooser.setInputFiles(file("chosen-notes", "Chosen notes"));
+  await expect(dialog.getByRole("status")).toHaveText("Reading chosen-notes.json…");
+  await expect(manifest).toHaveValue("");
+  await expect(save).toBeDisabled();
+  await finishRead(false);
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await expect(manifest).toHaveValue(/"id":"chosen-notes"/);
+  await expect(dialog.getByRole("region", { name: "What this shaper runs or calls" })).toContainText("Chosen notes");
+  await expect(save).toBeEnabled();
+
+  // A file that fails to read leaves nothing to save, not the file reviewed before it.
+  await chooser.setInputFiles(file("lost-notes", "Lost notes"));
+  await expect(save).toBeDisabled();
+  await finishRead(true);
+  await expect(dialog.getByRole("alert")).toHaveText("Could not read lost-notes.json: The disk went away.");
+  await expect(manifest).toHaveValue("");
+  await expect(save).toBeDisabled();
+
+  // Nor does one too large to read, chosen over a pasted manifest.
+  await manifest.fill(pasted);
+  await expect(save).toBeEnabled();
+  await chooser.setInputFiles({ name: "huge.json", mimeType: "application/json", buffer: Buffer.alloc(70_000, 0x20) });
+  await expect(dialog.getByRole("alert")).toContainText("huge.json is 70,000 bytes.");
+  await expect(manifest).toHaveValue("");
+  await expect(save).toBeDisabled();
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect((await shapingConfig(daemon)).shapers).toEqual([]);
+});
+
 // A save sends only what this window typed. With an unsaved identity edit open here, the peer
 // changes both limits; this window's untouched fields follow the peer at once, and saving the
 // identity keeps the peer's newer limits rather than writing back this window's stale copy.

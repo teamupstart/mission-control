@@ -581,7 +581,10 @@ test("the config view shows known shapers in full and an unsupported entry only 
   assert.deepEqual(Object.keys(view.shapers[2]!).sort(), ["id", "label", "unsupported"]);
   const text = JSON.stringify(view);
   assert.equal(/sk-live/.test(text), false, "no stored value of an unsupported entry leaves, its stage included");
-  assert.deepEqual({ ...view, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
+  const { revisions, ...rest } = view;
+  assert.deepEqual({ ...rest, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
+  assert.deepEqual(Object.keys(revisions).sort(), ["bad", "known", "skill-router"], "the daemon derives one revision per stored shaper");
+  assert.ok(Object.values(revisions).every((revision) => /^[0-9a-f]{16}$/.test(revision)));
 });
 
 test("a positional argument holding a well-known credential is refused, and stripped when stored", () => {

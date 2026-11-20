@@ -244,7 +244,9 @@ All three routes are behind the flag and answer 404 while it is off.
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`. Its raw definition stays in the daemon's storage and settings
-  backup, and `PUT` replies with the same view.
+  backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
+  revision per stored shaper id, which the daemon derives from the stored entry itself, so two
+  unsupported entries that show the same id, label and reason still have different revisions.
   `discovered` and `references` are empty until the folder and the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
@@ -264,8 +266,8 @@ All three routes are behind the flag and answer 404 while it is off.
   - `{ "kind": "settings", "caller": { "user": "..." }, "limits": {...} }` changes the declared
     caller identity and the budgets.
 
-  `expect` is the `shapingEntryRevision` of the entry as the sender showed it: 16 hex digits
-  over its view, from `src/shared/shaping.ts`. When it is sent and the stored entry has changed
+  `expect` is the entry's revision from the view's `revisions`, as the sender showed it. A
+  client sends it back as given and never computes one. When it is sent and the stored entry has changed
   since, the intent answers 409 `shaper_changed` and nothing is stored, so a click never removes
   or switches on a replacement another window wrote in the meantime. Any other refused intent
   answers 400 with `{ error, reason }`.
@@ -319,7 +321,9 @@ Arrives with the dispatch seam.
 every open window, in the rail, settings search and the palette alike, with no reload; a
 window already open on its link shows the panel the moment the flag turns on. Every change
 below applies at once in every open window, one write at a time. A refused write rolls back and
-shows the daemon's reason beside the control that sent it.
+shows the daemon's reason beside the control that sent it. The daemon's answer decides whether a
+write succeeded: a frame from another window can free the controls first, but a refusal that
+arrives after it is still shown.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery
@@ -337,7 +341,9 @@ shows the daemon's reason beside the control that sent it.
   repositories' local paths and every other credential are left out, but the text that is sent
   goes as written: a prompt, title, fact or summary that contains a path, file contents or a
   secret sends that too. Text longer than four times a stored definition's 16 KiB is refused
-  before it is read or parsed. **Save
+  before it is read or parsed. Choosing a file clears what was reviewed before it, so Save waits
+  until that file has been read and reviewed, and a file that is too large or fails to read
+  leaves nothing to save. **Save
   switched off** stores it off, whatever its manifest says and whatever was stored for its id
   before, so it runs only once you switch it on. A manifest that breaks the credential rule, or
   names a `./` command a registered shaper cannot resolve, is refused with its reason and

@@ -29,14 +29,11 @@ export function useShapingSettings(
   } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const writing = useRef<ShapingIntent | null>(null);
-  // The last request a frame confirmed, so a reply that never arrives cannot report it unsaved.
-  const confirmedByStream = useRef<ShapingIntent | null>(null);
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
     if (shapingIntentReflected(config, request)) {
-      confirmedByStream.current = request;
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     }
   }), [subscribe]);
@@ -52,7 +49,6 @@ export function useShapingSettings(
       writing.current = null;
       setPending(null);
     } else if (reflected) {
-      confirmedByStream.current = pending.intent;
       setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
   }, [pending, reflected, live]);
@@ -93,13 +89,17 @@ export function useShapingSettings(
       }
       return true;
     } catch (error) {
-      // A frame already confirmed it: saved, whatever became of the reply.
-      if (confirmedByStream.current === request) return true;
-      // A disconnect cancels local optimism; a late response must not revive that request.
-      if (writing.current !== request) return false;
-      setErrors({ [key]: error instanceof Error ? error.message : String(error) });
-      writing.current = null;
-      setPending(null);
+      // The HTTP result decides whether this write succeeded. A frame can free the controls
+      // early, but it only shows a config that looks like the outcome: a peer may have written it,
+      // say by replacing and enabling the shaper this request named, while the daemon refused this
+      // request with `shaper_changed`. So a refusal is always shown, even after a frame freed the
+      // panel, and never reported as saved.
+      const message = error instanceof Error ? error.message : String(error);
+      setErrors((current) => ({ ...current, [key]: message }));
+      if (writing.current === request) {
+        writing.current = null;
+        setPending(null);
+      }
       return false;
     }
   };

@@ -74,7 +74,7 @@ test("with the flag off all three routes answer 404 and write nothing", async ()
 test("GET returns the config and the final reply shape", async () => {
   const response = await get();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { config: SHAPING_CONFIG_DEFAULTS, discovered: [], references: {} });
+  assert.deepEqual(await response.json(), { config: shapingConfigView(SHAPING_CONFIG_DEFAULTS), discovered: [], references: {} });
 });
 
 test("each intent persists, notifies and is reflected by GET", async () => {
@@ -92,7 +92,7 @@ test("each intent persists, notifies and is reflected by GET", async () => {
     assert.deepEqual(config.overrides, { "gather-one": true, "select-one": false }, "an upsert stores an explicit off");
     assert.deepEqual(config.order, ["select-one", "gather-one"]);
     assert.deepEqual([config.caller.user, config.limits.deadlineMs], ["declared-user", 20_000]);
-    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), config);
+    assert.deepEqual(shapingConfigView(getAppConfig(APP_CONFIG_ENTRIES.shaping)!), config, "the reply is the view of what was stored");
     assert.deepEqual(((await (await get()).json()) as { config: unknown }).config, config);
     // Replacing a shaper that is on stores an explicit off, in the reply and in storage.
     const replaced = await put({ kind: "upsert", shaper: fixture("gather-one", "gather", "degraded") });
@@ -767,9 +767,8 @@ test("the shaping_config frame stays bounded at the stored maximum", () => {
 
 test("enable, remove and a dry run that name a replaced definition answer 409 and change nothing", async () => {
   assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "ok") })).status, 200);
-  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
-  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
-  const revision = shapingEntryRevision(shown as never);
+  // The daemon's revision, as the view carries it: the browser never computes one.
+  const revision = ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions.bound!;
   // Another window replaces it: same id, a different command line.
   assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "degraded") })).status, 200);
   const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
@@ -786,8 +785,33 @@ test("enable, remove and a dry run that name a replaced definition answer 409 an
   assert.equal(((await run.json()) as { error: string }).error, "shaper_changed");
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
   // The definition actually stored goes through.
-  const current = shapingEntryRevision(((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0] as never);
+  const current = ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions.bound!;
   assert.equal((await put({ kind: "enable", id: "bound", enabled: true, expect: current })).status, 200);
+});
+
+test("an unsupported entry replaced with a different raw envelope answers 409 to the revision shown before", async () => {
+  // Two envelopes this build cannot run: the view shows both only as id, label and reason, so
+  // only the daemon's revision over the stored entry can tell them apart.
+  const envelope = (endpoint: string) => ({ id: "future", label: "Future shaper", stage: "route",
+    transport: { type: "grpc", endpoint } });
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [envelope("grpc://first")] });
+  shaping.reloadShaping();
+  const read = async () => ((await (await get()).json()) as {
+    config: { shapers: unknown[]; revisions: Record<string, string> };
+  }).config;
+  const shown = await read();
+  // Another writer replaces the stored envelope; the projection the browser sees is unchanged.
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [envelope("grpc://second")] });
+  shaping.reloadShaping();
+  const replaced = await read();
+  assert.deepEqual(replaced.shapers, shown.shapers, "the two envelopes project to the same row");
+  assert.notEqual(replaced.revisions.future, shown.revisions.future, "the revision is over the stored entry");
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const refused = await put({ kind: "remove", id: "future", expect: shown.revisions.future });
+  assert.equal(refused.status, 409);
+  assert.equal(((await refused.json()) as { error: string }).error, "shaper_changed");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "the replacement was not removed");
+  assert.equal((await put({ kind: "remove", id: "future", expect: replaced.revisions.future })).status, 200);
 });
 
 test("move places a shaper against the stored order, so moves from two windows in different stages both survive", async () => {
@@ -812,10 +836,8 @@ test("a replacement written while the dry run resolves its checkout is not what 
   const { Hono } = await import("hono");
   const { registerShapingRoutes } = await import("../src/server/shaping/routes.ts");
   const { resolveRepoRoot, insideWorkTree } = await import("../src/server/repos.ts");
-  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
   assert.equal((await put({ kind: "upsert", shaper: fixture("snapshot", "gather", "ok") })).status, 200);
-  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
-  const revision = shapingEntryRevision(shown as never);
+  const revision = ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions.snapshot!;
   // While Git is asked about the checkout, another window replaces the shaper with one that
   // answers degraded. The revision check already passed; the engine must run what it checked.
   let replaced = false;

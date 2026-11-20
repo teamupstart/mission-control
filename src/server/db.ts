@@ -254,7 +254,13 @@ let db: DatabaseSync | undefined;
 //     no question offered or used a snooze before these existed.
 // 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
 //     '[]' with no backfill: no run attached a repository before this existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
+// 36: headless mode (FR-05). Where a task came from (`tasks.origin_surface`, `origin_repo`,
+//     `origin_session_id`), the home sessions that registered (`home_dispatch_sessions`), the
+//     receipt of each answer given from one (`home_dispatch_receipts`) and what repository task
+//     skill text a launch included (`session_standing_instructions.repo_task_skills`). New
+//     tables and nullable columns with no backfill: no task has an origin before this existed,
+//     and nothing writes any of it while the `headless-mode` flag is off.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3495,6 +3501,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateHomeDispatch(d);
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
@@ -5123,6 +5130,45 @@ function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
     ...LEGACY_OBSERVATION_QUARANTINE_REASONS,
     ...LEGACY_OBSERVATION_QUARANTINE_PREFIXES.flatMap((prefix) => [prefix.length, prefix]),
   );
+}
+
+/**
+ * Schema 36: headless mode's tables and columns (spec 2.4). Idempotent, because `migrate` runs
+ * on every start. The table is created before any index on it, and a column is added before any
+ * index that names it, so an upgraded database never indexes a column it does not have yet.
+ */
+function migrateHomeDispatch(d: DatabaseSync): void {
+  addColumn(d, "tasks", "origin_surface", "TEXT");
+  addColumn(d, "tasks", "origin_repo", "TEXT");
+  addColumn(d, "tasks", "origin_session_id", "TEXT");
+  addColumn(d, "session_standing_instructions", "repo_task_skills", "TEXT");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS home_dispatch_sessions (
+      session_id          TEXT PRIMARY KEY,
+      harness             TEXT NOT NULL,
+      cwd                 TEXT NOT NULL,
+      repo_root           TEXT,
+      client_version      TEXT,
+      start_source        TEXT,
+      entrypoint          TEXT,
+      launcher_offered_at INTEGER,
+      launcher_disabled   INTEGER NOT NULL DEFAULT 0,
+      started_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_sessions_repo
+      ON home_dispatch_sessions(repo_root);
+    -- One row per answer, keyed by the review it settled, so a retry finds its own receipt.
+    CREATE TABLE IF NOT EXISTS home_dispatch_receipts (
+      review_id  TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      session_id TEXT,
+      surface    TEXT NOT NULL,
+      sent       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_receipts_age
+      ON home_dispatch_receipts(created_at);
+  `);
 }
 
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {

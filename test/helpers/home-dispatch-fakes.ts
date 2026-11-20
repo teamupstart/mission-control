@@ -340,6 +340,8 @@ export interface FakeDaemon {
   /** Replaces one route's reply for the rest of the test. */
   override: (key: FakeAnyRouteKey, route: FakeRoute) => void;
   requests: FakeDaemonRequestRecord[];
+  /** The messages of request errors (a client that dropped mid-request) the socket server handled. */
+  requestErrors: string[];
 }
 
 const HEALTH: FakeRoute = (request) => ({
@@ -366,6 +368,7 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
   let down = false;
   const token = options.token === undefined ? FAKE_TOKEN : options.token;
   const requests: FakeDaemonRequestRecord[] = [];
+  const requestErrors: string[] = [];
 
   const table = new Map<string, FakeRoute>(Object.entries(CANNED_ROUTES));
   table.set("GET /api/health", HEALTH);
@@ -415,6 +418,7 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
   return {
     handle,
     requests,
+    requestErrors,
     setFlag: (enabled) => { flag = enabled; },
     setDown: (value) => { down = value; },
     override: (key, route) => { table.set(key, route); },
@@ -424,7 +428,7 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
         if (down) { req.socket.destroy(); return; }
         const chunks: Buffer[] = [];
         // A client that drops mid-request must fail that request, not crash the test worker.
-        req.on("error", () => req.socket.destroy());
+        req.on("error", (error) => { requestErrors.push(error.message); req.socket.destroy(); });
         req.on("data", (chunk: Buffer) => chunks.push(chunk));
         req.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");

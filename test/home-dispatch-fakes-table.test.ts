@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { connect } from "node:net";
 import test, { after } from "node:test";
 import type { ModAskAnswer } from "../src/mod/host.ts";
 import {
@@ -77,6 +78,30 @@ test("fake host table: the token option makes the host agree or disagree with a 
   assert.equal(await status(), 401, "the default token does not match a daemon with another token");
   assert.equal(await status("other-token"), 200);
   assert.equal(await status("wrong"), 401);
+});
+
+test("fake daemon table: a client that drops mid-request is handled as a request error and the daemon keeps serving", async () => {
+  const daemon = createFakeDaemon({ token: null });
+  const { port, url } = await daemon.listen();
+  try {
+    await new Promise<void>((resolve) => {
+      const socket = connect(port, "127.0.0.1", () => {
+        // Promise a 500-byte body, send a few bytes of it, then reset the connection.
+        socket.write("POST /dispatch/answers HTTP/1.1\r\nHost: x\r\nContent-Length: 500\r\nContent-Type: application/json\r\n\r\n{\"par");
+        setTimeout(() => socket.resetAndDestroy(), 20);
+      });
+      socket.on("error", () => {});
+      socket.on("close", () => resolve());
+    });
+    for (let waited = 0; daemon.requestErrors.length === 0 && waited < 2000; waited += 20) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(daemon.requestErrors.length, 1, "the request error reached the handler");
+    assert.equal(daemon.requests.length, 0, "the dropped request was never answered");
+    assert.equal((await fetch(url + "/api/health")).status, 200);
+  } finally {
+    await daemon.close();
+  }
 });
 
 test("fake daemon table: a second listen is refused and the first listener stays usable", async () => {

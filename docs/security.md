@@ -424,7 +424,9 @@ the notes, the version and an error becomes `[NAME redacted]`. Keys the result s
 never changed. An entry whose id, or a fact whose name, contains the value is dropped with a
 note rather than renamed, so redaction never merges two of them. Every value is found on the
 original text before anything is replaced, so two named values that overlap are removed over
-their combined span and no fragment of either survives. The shaper's record is marked
+their combined span and no fragment of either survives. A field the result schema bounds, such
+as an entry's title or the version, is cut back to its bound when the marker makes it longer, so
+a reply that was valid stays valid. The shaper's record is marked
 `redacted`, its reason names what was dropped, and its outcome does not change. Inherited values are not rewritten in content, which
 legitimately holds paths and ordinary words.
 

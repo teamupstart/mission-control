@@ -1,4 +1,4 @@
-import type { ShapingConfig, ShapingReferenceStatus } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import { redactSpans } from "./redaction.ts";
 
 /**
@@ -31,9 +31,33 @@ export interface ScrubbedReply {
  * Every occurrence of every resolved value, found on the original text and merged where values
  * overlap, so replacing one can never hide part of another from a later pass.
  */
-function replaceResolved(text: string, resolved: readonly ResolvedValue[]): string {
-  return redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
+function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number | undefined): string {
+  const next = redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
     (labels) => `[${labels.join(", ")} redacted]`);
+  // `[NAME redacted]` can be longer than the value it replaced. A field the result schema bounds
+  // is cut back to that bound, so a reply that was valid never becomes invalid because something
+  // was removed from it. Only the tail is cut, and nothing of the value is left in it. A field
+  // within its bound is left whole.
+  return limit !== undefined && next.length > limit ? next.slice(0, limit) : next;
+}
+
+/**
+ * The result schema's bound on the string at `path`, or undefined for a field it does not bound
+ * or does not define. Read from `SHAPING_LIMITS`, the same constants the schema reads.
+ */
+function fieldLimit(path: readonly (string | number)[]): number | undefined {
+  const [first, second, third] = path;
+  if (first === "version" && path.length === 1) return SHAPING_LIMITS.versionChars;
+  if (first === "notes" && path.length === 2) return SHAPING_LIMITS.replyNoteChars;
+  if (first === "guidance" && path.length === 3) {
+    if (third === "title") return SHAPING_LIMITS.entryTitleChars;
+    if (third === "path") return SHAPING_LIMITS.entryPathChars;
+    if (third === "id") return SHAPING_LIMITS.entryIdChars;
+    if (third === "body") return SHAPING_LIMITS.replyText;
+  }
+  if (first === "repo" && second === "summary" && path.length === 2) return SHAPING_LIMITS.replyText;
+  if (first === "repo" && second === "facts" && (path.length === 3 || path.length === 4)) return SHAPING_LIMITS.factValueChars;
+  return undefined;
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
@@ -77,27 +101,23 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
     }
   }
   if (notes.length > 0) redacted = true;
-  const pending: unknown[] = [root];
+  // Each node carries its path, so a replaced string can be held to its field's bound. The
+  // path is kept only to the depth the result schema defines; below that no field is bounded.
+  const pending: Array<{ node: unknown; path: readonly (string | number)[] }> = [{ node: root, path: [] }];
+  const child = (path: readonly (string | number)[], key: string | number) => (path.length < 4 ? [...path, key] : path);
   while (pending.length > 0) {
-    const node = pending.pop();
-    if (Array.isArray(node)) {
-      node.forEach((item, at) => {
-        if (typeof item === "string") {
-          const next = replaceResolved(item, values);
-          if (next !== item) { node[at] = next; redacted = true; }
-        } else if (item && typeof item === "object") {
-          pending.push(item);
-        }
-      });
-    } else if (node && typeof node === "object") {
-      const record = node as Record<string, unknown>;
-      for (const [key, item] of Object.entries(record)) {
-        if (typeof item === "string") {
-          const next = replaceResolved(item, values);
-          if (next !== item) { record[key] = next; redacted = true; }
-        } else if (item && typeof item === "object") {
-          pending.push(item);
-        }
+    const { node, path } = pending.pop()!;
+    if (!node || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    const keys = Array.isArray(node) ? node.map((_, at) => at) : Object.keys(record);
+    for (const key of keys) {
+      const item = (record as Record<string | number, unknown>)[key];
+      const at = child(path, key);
+      if (typeof item === "string") {
+        const next = replaceResolved(item, values, at.length === path.length + 1 ? fieldLimit(at) : undefined);
+        if (next !== item) { (record as Record<string | number, unknown>)[key] = next; redacted = true; }
+      } else if (item && typeof item === "object") {
+        pending.push({ node: item, path: at });
       }
     }
   }

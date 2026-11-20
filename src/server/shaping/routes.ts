@@ -71,8 +71,13 @@ export function registerShapingRoutes(app: Hono): void {
     // owner, which names the repository but is not the tree under test.
     const repoRoot = await resolveRepoRoot(repository);
     if (!repoRoot) return c.json({ error: "unknown_repository", reason: "The path is not inside a Git checkout." }, 400);
-    // A bare repository resolves too, but has no working tree for a gatherer to run in.
-    if (!(await insideWorkTree(repository))) {
+    // A bare repository resolves too, but has no working tree for a gatherer to run in. A check
+    // Git never answered is reported as such, never as a bare repository.
+    const tree = await insideWorkTree(repository);
+    if (tree === "unknown") {
+      return c.json({ error: "repository_check_failed", reason: "Git did not answer whether the path is a working tree. Try again." }, 503);
+    }
+    if (tree === "not-worktree") {
       return c.json({ error: "unknown_repository", reason: "The path is a bare repository, with no working tree to run a shaper in." }, 400);
     }
     let checkout = repository;

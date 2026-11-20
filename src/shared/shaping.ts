@@ -47,6 +47,15 @@ export const SHAPING_LIMITS = {
   replyEntries: 32,
   /** Notes one reply may carry. */
   replyNotes: 16,
+  /** Characters in one reply note. */
+  replyNoteChars: 1000,
+  /** Characters in an entry's id and title. */
+  entryIdChars: 512,
+  entryTitleChars: 512,
+  /** Characters in an entry's path. */
+  entryPathChars: 1024,
+  /** Characters in one fact value, or in one item of a list-valued fact. */
+  factValueChars: 1024,
   /** Text one reply may carry in any one string, before Mission Control applies its caps. */
   replyText: 256 * KIB,
   /** The bound on a reason recorded for an outcome. */
@@ -1282,8 +1291,8 @@ export function resolveShaperById(
 // The contract: one request, one result
 
 const FactValueSchema = z.union([
-  z.string().max(1024),
-  z.array(z.string().max(1024)).max(SHAPING_LIMITS.facts),
+  z.string().max(SHAPING_LIMITS.factValueChars),
+  z.array(z.string().max(SHAPING_LIMITS.factValueChars)).max(SHAPING_LIMITS.facts),
 ]);
 export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), FactValueSchema, SHAPING_LIMITS.facts);
 export type ShapingFacts = z.output<typeof ShapingFactsSchema>;
@@ -1338,9 +1347,9 @@ export const ShapingRequestSchema = z.object({
 export type ShapingRequest = z.output<typeof ShapingRequestSchema>;
 
 export const ShapingEntrySchema = z.object({
-  id: z.string().min(1).max(512),
-  path: z.string().max(1024).optional(),
-  title: z.string().max(512).optional(),
+  id: z.string().min(1).max(SHAPING_LIMITS.entryIdChars),
+  path: z.string().max(SHAPING_LIMITS.entryPathChars).optional(),
+  title: z.string().max(SHAPING_LIMITS.entryTitleChars).optional(),
   body: z.string().max(SHAPING_LIMITS.replyText),
   truncated: z.boolean().optional(),
 });
@@ -1359,7 +1368,7 @@ export const ShapingResultSchema = z.object({
     facts: ShapingFactsSchema.optional(),
     summary: z.string().max(SHAPING_LIMITS.replyText).optional(),
   }).optional(),
-  notes: z.array(z.string().max(1000)).max(SHAPING_LIMITS.replyNotes).optional(),
+  notes: z.array(z.string().max(SHAPING_LIMITS.replyNoteChars)).max(SHAPING_LIMITS.replyNotes).optional(),
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
-import { ShaperManifestSchema, ShaperSchema } from "../src/shared/shaping.ts";
+import { ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
   callCommand, COMMAND_OUTPUT_BYTES, receivedValues, redactReceived, removeScratch, shaperCommandEnv,
 } from "../src/server/shaping/transports/command.ts";
@@ -366,6 +366,24 @@ test("overlapping named values are removed over their combined span, so no fragm
   // A value overlapping itself.
   const self = scrubResolved({ guidance: [{ id: "e", body: "<ababab>" }] }, [{ name: "AB", value: "abab" }]);
   assert.equal((self.data as { guidance: Array<{ body: string }> }).guidance[0]!.body, "<[AB redacted]>");
+});
+
+test("a scrubbed field never grows past its schema limit, so a reply at its limits stays valid", () => {
+  // A two-character credential becomes a far longer marker: each field must still fit.
+  const title = `${"t".repeat(509)}x9z`; // 512, the title's limit
+  const version = `${"v".repeat(253)}x9z`; // 256, the version's limit
+  const reply = { version, guidance: [{ id: "e", title, path: `${"p".repeat(1021)}x9z`, body: "b" }], repo: { facts: { owner: `${"o".repeat(4)}x9` } } };
+  const before = ShapingResultSchema.safeParse(reply);
+  assert.equal(before.success, true, "valid as written");
+  const scrubbed = scrubResolved(structuredClone(reply), [{ name: "TOKEN", value: "x9" }]);
+  assert.equal(scrubbed.redacted, true);
+  const after = ShapingResultSchema.safeParse(scrubbed.data);
+  assert.equal(after.success, true, after.success ? "" : JSON.stringify(after.error.issues[0]));
+  const entry = (scrubbed.data as typeof reply).guidance[0]!;
+  assert.equal(entry.title.length, 512);
+  assert.equal(entry.title.includes("x9"), false, "and the value is gone");
+  assert.equal((scrubbed.data as typeof reply).version.length, 256);
+  assert.equal((scrubbed.data as typeof reply).repo.facts.owner, "oooo[TOKEN redacted]", "a field well within its limit keeps the whole marker");
 });
 
 test("a reply holding no named value is returned byte for byte", async () => {

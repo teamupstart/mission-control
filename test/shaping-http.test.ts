@@ -181,6 +181,20 @@ test("an oversized body is refused with 413 after the flag's gate, before it is 
   }
 });
 
+test("a working-tree check Git never answered is unknown, never reported as a bare repository", async () => {
+  const { insideWorkTree } = await import("../src/server/repos.ts");
+  assert.equal(await insideWorkTree(repository), "worktree");
+  const bare = join(home, "repos", "bare-check.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  assert.equal(await insideWorkTree(bare), "not-worktree");
+  const unanswered = async () => ({ code: null, stdout: "", stderr: "", outcomeUnknown: true, overflowed: false, timedOut: true }) as never;
+  assert.equal(await insideWorkTree(repository, unanswered), "unknown", "a timed-out check is not a no");
+  const overflowed = async () => ({ code: 0, stdout: "true", stderr: "", outcomeUnknown: false, overflowed: true }) as never;
+  assert.equal(await insideWorkTree(repository, overflowed), "unknown");
+  const neverStarted = async () => ({ code: null, stdout: "", stderr: "spawn git ENOENT", outcomeUnknown: false, overflowed: false }) as never;
+  assert.equal(await insideWorkTree(repository, neverStarted), "unknown", "nor is a check that never started");
+});
+
 test("a dry run refuses a bare repository and accepts a linked worktree", async () => {
   const bare = join(home, "repos", "bare.git");
   execFileSync("git", ["init", "-q", "--bare", bare]);

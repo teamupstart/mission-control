@@ -319,26 +319,19 @@ export class HibernationManager {
       }
       // An earlier terminal attempt's launch that could not be confirmed undone is settled
       // first: its own agent may be what holds the conversation, and only closing it frees it.
-      let closedStranded = false;
+      let strandedEnded = false;
       if (record.runtime === "terminal") {
         const settled = await this.settleStrandedLaunch(task, record);
         if ("refused" in settled) return settled.refused;
-        closedStranded = settled.closed;
+        strandedEnded = settled.ended;
       }
       // One already open elsewhere: resumed by hand, or by an earlier attempt whose outcome was
       // not known. Read again, after any settling above.
-      let open: Session | undefined;
-      for (const holder of live().filter((s) => s.agentSessionId === record.agentSessionId)) {
-        // The agent of a launch closed just now can stay listed until discovery next looks;
-        // one whose process is gone holds nothing. Anything else on the conversation does.
-        if (closedStranded && holder.runtime === "terminal" && (await this.terminal.exited(holder))) continue;
-        open = holder;
-        break;
-      }
+      const open = await this.conversationHolder(record, strandedEnded);
       if (open) return this.resumeFailed(taskId, `its conversation is already open in "${open.name}"`);
       return record.runtime === "sdk"
         ? await this.resumeEmbedded(taskId, record)
-        : await this.resumeTerminal(task, record);
+        : await this.resumeTerminal(task, record, strandedEnded);
     } finally {
       this.busy.delete(taskId);
     }
@@ -402,7 +395,11 @@ export class HibernationManager {
       );
     }
     this.supervisor.wakeBound(session.id);
-    return this.bindResumed(current, live, record, {});
+    try {
+      return this.bindResumed(current, live, record, {});
+    } catch (error) {
+      return this.putBackToSleep(taskId, live, record, `its task could not be bound to it (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
 
   /**
@@ -468,10 +465,11 @@ export class HibernationManager {
    * undone. Runs before anything looks at who holds the conversation: that launch's own agent
    * may be the holder, and only closing it can let go of the conversation.
    *
-   * Answers the refusal when that launch may still be running, or whether it closed a launch
-   * just now (so a holder still listed may be the agent that has just gone).
+   * Answers the refusal when that launch may still be running, or whether there was a launch
+   * whose agent is now known to have ended - its lease released, before Retry or by the close
+   * just now - so a holder still listed may be that agent, gone but not yet rediscovered.
    */
-  private async settleStrandedLaunch(task: Task, record: TaskHibernation): Promise<{ refused: HibernationResult } | { closed: boolean }> {
+  private async settleStrandedLaunch(task: Task, record: TaskHibernation): Promise<{ refused: HibernationResult } | { ended: boolean }> {
     const stranded = record.failure?.launch ?? null;
     const strandedLive = stranded !== null && this.terminal.launchLive(stranded);
     let strandedHomeOpen = false;
@@ -511,7 +509,7 @@ export class HibernationManager {
     // Confirmed gone or closed: the only place a recorded launch is let go of. Every failure
     // before this point kept it (see `resumeFailed`), and so does a terminal still open.
     if (stranded && !strandedHomeOpen) this.forgetLaunch(task.id);
-    return { closed: stranded !== null && strandedLive };
+    return { ended: stranded !== null };
   }
 
   /**
@@ -524,7 +522,7 @@ export class HibernationManager {
    * elsewhere, is revoked or closed - or, when it cannot be, recorded so the next Resume
    * refuses to launch beside it.
    */
-  private async resumeTerminal(task: Task, record: TaskHibernation): Promise<HibernationResult> {
+  private async resumeTerminal(task: Task, record: TaskHibernation, strandedEnded: boolean): Promise<HibernationResult> {
     // The directory the conversation ran in, verified to still be that directory: the task's
     // own worktree path is not consulted, because it is not what the conversation is filed under.
     const mismatch = checkoutMismatch(record.checkout);
@@ -559,8 +557,7 @@ export class HibernationManager {
     }
     // And who holds the conversation: one opened while preparing would have a second agent
     // writing it the moment this one starts, before any later check could undo the launch.
-    const openedWhilePreparing = this.registry.snapshot().sessions
-      .find((s) => s.state !== "exited" && s.agentSessionId === record.agentSessionId);
+    const openedWhilePreparing = await this.conversationHolder(record, strandedEnded);
     if (openedWhilePreparing) {
       this.disposePrepared(prepared);
       return this.resumeFailed(task.id, `its conversation was opened in "${openedWhilePreparing.name}" while it was resuming`);
@@ -638,12 +635,21 @@ export class HibernationManager {
     if (rival) {
       return this.abandonLaunch(task.id, `its conversation was opened in "${rival.name}" by something other than this resume`, home, prepared);
     }
-    return this.bindResumed(current, session, record, {
-      ...homeRecord(home),
-      terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
-        ? { resourceId: home.terminalResourceId, sessionId: session.id }
-        : null,
-    });
+    try {
+      return this.bindResumed(current, session, record, {
+        ...homeRecord(home),
+        terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
+          ? { resourceId: home.terminalResourceId, sessionId: session.id }
+          : null,
+      });
+    } catch (error) {
+      return this.abandonLaunch(
+        task.id,
+        `its task could not be bound to the agent it launched in ${home.homeName} (${error instanceof Error ? error.message : String(error)})`,
+        home,
+        prepared,
+      );
+    }
   }
 
   /**
@@ -697,6 +703,21 @@ export class HibernationManager {
     };
   }
 
+  /**
+   * A live session holding the hibernated conversation, if any. After a recorded launch whose
+   * agent has ended (`settleStrandedLaunch`), a terminal card discovery still lists but whose
+   * process is gone holds nothing: it is that agent, not yet rediscovered. Anything else does.
+   */
+  private async conversationHolder(record: TaskHibernation, strandedEnded: boolean): Promise<Session | undefined> {
+    const holders = this.registry.snapshot().sessions
+      .filter((s) => s.state !== "exited" && s.agentSessionId === record.agentSessionId);
+    for (const holder of holders) {
+      if (strandedEnded && holder.runtime === "terminal" && (await this.terminal.exited(holder))) continue;
+      return holder;
+    }
+    return undefined;
+  }
+
   /** Release a preparation nothing will launch: answers whether its lease was revoked. */
   private disposePrepared(prepared: PreparedResume): boolean {
     try {
@@ -727,7 +748,15 @@ export class HibernationManager {
       s.id !== resumed.id && s.state !== "exited" && s.agentSessionId === record.agentSessionId);
   }
 
-  /** The task, its work episode and its armed workflow follow the session that reopened it. */
+  /**
+   * The task, its work episode and its armed workflow follow the session that reopened it.
+   *
+   * The workflow bindings' moves and the task's own row commit in ONE transaction, the task
+   * last: a write that fails leaves every binding where it was and the task still hibernated,
+   * so Retry can try again, rather than a running task with a binding left on the stopped
+   * session. The moved bindings are announced only once that has committed. Throws when the
+   * transaction does, for the caller to undo the launch it is binding.
+   */
   private bindResumed(
     current: Task,
     session: Session,
@@ -736,11 +765,13 @@ export class HibernationManager {
   ): HibernationResult {
     const at = this.now();
     const running: Task = { ...current, ...home, status: "running", sessionId: session.id, hibernation: null, updatedAt: at };
-    this.registry.upsertTask(running);
+    const workflows = this.options.workflows;
+    const moved = this.registry.upsertTasks([running], () =>
+      session.id !== record.sessionId && workflows
+        ? workflows.followResumedConversation(record.sessionId, record.noteKey, session, at)
+        : []) ?? [];
+    workflows?.announceBindings(moved);
     this.registry.bindTaskToWorkEpisode(current.id, session.id);
-    if (session.id !== record.sessionId) {
-      this.options.workflows?.followResumedConversation(record.sessionId, record.noteKey, session, at);
-    }
     logEvent(session.id, at, "task_resumed", { taskId: current.id, runtime: record.runtime });
     return { ok: true, task: this.registry.getTask(current.id) ?? running };
   }

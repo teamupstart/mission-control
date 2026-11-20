@@ -7499,10 +7499,20 @@ export class Registry extends EventEmitter {
    * The bulk edit's write. Every row lands or none does, so a failure halfway through a
    * selection cannot leave some cards edited and the rest not. Broadcasting waits until
    * the commit, so no dashboard is shown a row that was then rolled back.
+   *
+   * `alongside` is another owner's writes that must land with these rows or not at all - a
+   * resumed task's workflow bindings moving to its new session - run first, inside the same
+   * transaction. Its answer is returned once everything has committed, for that owner to
+   * announce its own changes.
    */
-  upsertTasks(tasks: readonly Task[]): void {
-    const displaced = inTransaction(() => tasks.map((task) => dbUpsertTask(task)));
+  upsertTasks<T = undefined>(tasks: readonly Task[], alongside?: () => T): T | undefined {
+    let companion: T | undefined;
+    const displaced = inTransaction(() => {
+      companion = alongside?.();
+      return tasks.map((task) => dbUpsertTask(task));
+    });
     tasks.forEach((task, i) => this.publishTask(task, displaced[i] ?? [], false));
+    return companion;
   }
 
   /**

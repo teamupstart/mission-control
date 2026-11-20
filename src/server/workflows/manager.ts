@@ -7774,13 +7774,18 @@ export class WorkflowManager {
    * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
    * it on the stopped session where no review could find a live one. A session in another
    * checkout takes none of them.
+   *
+   * Writes only, and answers the bindings it moved: Resume makes these moves in the same
+   * transaction as the task's own row, and publishes them with `announceBindings` once it has
+   * committed.
    */
-  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): void {
+  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): string[] {
     const held = this.store.listBindings().filter((binding) =>
       binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
       && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
     const own = held.filter((binding) => !binding.repoRoot);
-    if (own.some((binding) => binding.sessionCwd !== session.cwd)) return;
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) return [];
+    const moved: string[] = [];
     for (const binding of held) {
       const secondary = Boolean(binding.repoRoot);
       const updated = this.store.reattachBinding(binding.id, {
@@ -7791,8 +7796,17 @@ export class WorkflowManager {
         sessionCwd: secondary ? binding.sessionCwd : session.cwd,
         sessionRepoRoot: secondary ? binding.sessionRepoRoot : session.repoRoot,
       }, now);
-      if (updated) this.publishBinding(updated.id);
+      if (updated) moved.push(updated.id);
     }
+    return moved;
+  }
+
+  /**
+   * Publish bindings a caller moved inside its own transaction (`followResumedConversation`),
+   * once that has committed, so no dashboard is shown a move that was then rolled back.
+   */
+  announceBindings(ids: readonly string[]): void {
+    for (const id of ids) this.publishBinding(id);
   }
 
   /**

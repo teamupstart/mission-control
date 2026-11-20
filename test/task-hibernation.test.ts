@@ -618,6 +618,8 @@ interface TerminalFleet {
     revocable: boolean;
     /** Runs after a home closes successfully: what discovery sees once that terminal is gone. */
     onClose: (() => void) | null;
+    /** Sessions still listed whose process is gone: a card discovery has not caught up with. */
+    gone: Set<string>;
   };
 }
 
@@ -646,6 +648,8 @@ function terminalFleet(
     replaceDuringLaunch?: boolean;
     /** What happens while the managed resume is being prepared, before anything launches. */
     duringPrepare?: "replace" | "cancel" | "open";
+    /** The workflow manager Resume moves armed bindings through, when a test needs one. */
+    workflows?: unknown;
   } = {},
 ): TerminalFleet {
   const registry = new Registry();
@@ -665,11 +669,13 @@ function terminalFleet(
     closeEnds: true,
     revocable: false,
     onClose: null,
+    gone: new Set(),
   };
   let launches = 0;
   // Sessions that stay in every discovery sweep, whatever the test does to the others.
   const resident: Discovered[] = options.switcher ? [discovered(`proc-switch-${basename(cwd)}`, cwd, "%5", 5)] : [];
   const hibernation = new HibernationManager(registry, null, {
+    workflows: options.workflows as never,
     terminal: {
       stop: async (session) => {
         if (options.stopFails) return { ok: false, error: "the pane refused" };
@@ -744,7 +750,8 @@ function terminalFleet(
       launchLive: () => controls.live,
       launchEndMs: 100,
       // The process is gone once the stop took effect; a survivor never goes.
-      exited: async (session) => registry.getSession(session.id)?.state === "exited" || !registry.getSession(session.id),
+      exited: async (session) =>
+        registry.getSession(session.id)?.state === "exited" || !registry.getSession(session.id) || controls.gone.has(session.id),
       backendFor: () => "tmux",
       appearMs: 300,
     },
@@ -1009,6 +1016,84 @@ test("Retry closes a recorded launch whose own agent holds the conversation befo
   const retried = await f.hibernation.resume("term");
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
   assert.equal(f.spawned.length, 2);
+});
+
+test("a recorded launch that ended before Retry does not block it through its stale card", async (t) => {
+  const cwd = checkout("terminal-ended-stale-card");
+  const f = terminalFleet(cwd, { appears: false, closeFailures: 1 });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  assert.equal((await f.hibernation.resume("term")).ok, false);
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1");
+  // That launch's agent came up and has since ended - its lease released - but discovery still
+  // lists its card on the conversation.
+  const stale = discovered(`proc-stale-${basename(cwd)}`, cwd, "%8", 81);
+  f.registry.applyDiscovery([stale]);
+  started(f.registry, cwd, "%8", "conv-t");
+  f.controls.gone.add(stale.syntheticId);
+  f.controls.live = false;
+  f.controls.appear = true;
+
+  const retried = await f.hibernation.resume("term");
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(f.spawned.length, 2);
+  assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+});
+
+test("Registry.upsertTasks commits another owner's writes with its rows, or neither, and broadcasts only after", () => {
+  const registry = new Registry();
+  const broadcast: string[] = [];
+  registry.subscribe((e: ServerEvent) => {
+    if (e.type === "task_upsert") broadcast.push(e.task.id);
+  });
+  assert.throws(() => registry.upsertTasks([mkTask({ id: "atomic-row", status: "running" })], () => {
+    // Another owner's write, then its failure: nothing of either may land.
+    db.upsertTask(mkTask({ id: "atomic-companion", status: "backlog" }));
+    throw new Error("binding move failed");
+  }), /binding move failed/);
+  assert.equal(db.getTask("atomic-row"), undefined, "the row was not written");
+  assert.equal(db.getTask("atomic-companion"), undefined, "and the companion write rolled back");
+  assert.deepEqual(broadcast, [], "and nothing was broadcast");
+
+  const answer = registry.upsertTasks([mkTask({ id: "atomic-row", status: "running" })], () => ["moved"]);
+  assert.deepEqual(answer, ["moved"], "the companion's answer is handed back after the commit");
+  assert.equal(db.getTask("atomic-row")?.status, "running");
+  assert.deepEqual(broadcast, ["atomic-row"]);
+});
+
+test("a terminal Resume whose workflow bindings cannot move is undone, and the task stays hibernated for Retry", async (t) => {
+  const announced: string[][] = [];
+  const workflows = (fail: boolean) => ({
+    runs: () => [],
+    resumeNeedsEvidence: () => false,
+    followResumedConversation: () => {
+      if (fail) throw new Error("disk I/O error");
+      return ["binding-moved"];
+    },
+    announceBindings: (ids: readonly string[]) => announced.push([...ids]),
+  });
+
+  // The binding moves fail: nothing of the bind commits, and the launch is undone.
+  const f = terminalFleet(checkout("terminal-bindings-fail"), { workflows: workflows(true) });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  const refused = await f.hibernation.resume("term");
+  assert.match(refused.ok ? "" : refused.error, /its task could not be bound to the agent it launched in Terminal task \(disk I\/O error\)/);
+  assert.deepEqual(f.closed, ["Terminal task"], "the launch is undone");
+  assert.equal(f.registry.getTask("term")?.status, "hibernated", "the task stays hibernated, so Retry can try again");
+  assert.equal(db.getTask("term")?.status, "hibernated", "durably: nothing of the bind committed");
+  assert.equal(f.registry.getTask("term")?.sessionId, null);
+  assert.equal(f.registry.getTask("term")?.hibernation?.agentSessionId, "conv-t");
+  assert.deepEqual(announced, [], "no binding move was announced");
+
+  // They move: committed with the task, then announced.
+  const g = terminalFleet(checkout("terminal-bindings-move"), { workflows: workflows(false) });
+  t.after(() => g.tasks.stopMissionSessionClosures());
+  assert.equal((await g.hibernation.hibernate(g.old)).ok, true);
+  const resumed = await g.hibernation.resume("term");
+  assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
+  assert.equal(g.registry.getTask("term")?.sessionId, g.fresh);
+  assert.deepEqual(announced, [["binding-moved"]], "the moved bindings are announced once committed");
 });
 
 test("a task or checkout that changes while the resume is prepared launches nothing", async (t) => {
@@ -1370,16 +1455,23 @@ test("a turn sent to a woken Agent SDK session is refused until its task is boun
   const fake = withFakeDriver(async () => woken);
   t.after(fake.restore);
   let early: unknown = null;
+  let queued: "started" | null | undefined;
+  let heldWhileWaking = false;
   const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
   f.supervisor.reportedConversation = async (session, timeoutMs) => {
     // While Resume still waits to learn which conversation the driver opened.
     early = await f.supervisor.send(session, { text: "too soon" }).then(() => null, (error: unknown) => error);
+    queued = await f.supervisor.sendWhenIdle(session, { text: "queued too soon" });
+    heldWhileWaking = f.supervisor.holdsDelivery(session);
     return confirm(session, timeoutMs);
   };
   const resumed = await f.hibernation.resume(id);
   f.supervisor.reportedConversation = confirm;
   assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
   assert.match(early instanceof Error ? early.message : "", /its conversation is still being reopened/);
+  assert.equal(queued, null, "an idle-only delivery is held for the next idle transition");
+  assert.equal(heldWhileWaking, true);
+  assert.equal(f.supervisor.holdsDelivery(sessionId), false, "and released once the task is bound");
   assert.equal(woken.sent.length, 0, "nothing reached the driver before it was bound");
   // Bound now: turns go through.
   assert.equal(await f.supervisor.send(sessionId, { text: "now" }), "started");

@@ -2,7 +2,7 @@
 
 Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start after P8 has merged, then `git rebase --onto origin/main <old base>`.
 
-**1. Outcome.** On a clean machine `mctl setup` finds `claude` and stages and installs the mod; `mctl doctor` reports what is wrong and the fix. The automated Claude-session loop test (plan.md 0.3) passes, and the manual walkthrough there works.
+**1. Outcome.** On a clean machine `mctl setup` finds `claude` and stages and installs the Mission Control mod plugin itself (marketplace add, then install at user scope), so the pane and the banner above the prompt appear in the next Claude session with no manual step; `mctl doctor` reports what is wrong and the fix. The automated Claude-session loop test (plan.md 0.3) passes, and the manual walkthrough there works.
 
 **2. Entry.** P8 merged to start the install work. The proof commit waits for P11 and P12 to merge, then rebases with `git rebase --onto origin/main <old base>`. P14 merges last. Soft spikes S17 and S18 only: if none is recorded, install through the folder marketplace and ship documentation-only facts as warn, never fail.
 

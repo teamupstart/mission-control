@@ -20,4 +20,4 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **9. Handoff.** P15 adds subagent lines to the pane; P17 documents keys. This phase replaces P8's placeholder view behind the existing `paneOpen` calls.
 
-**10. Cross-phase audit.** P4 owns `workflowStages` and `residentLoopLabel`; this phase only reads them. P11 calls this phase's open function.
+**10. Cross-phase audit.** P4 owns `workflowStages` and `residentLoopLabel`; this phase only reads them. P11 calls P8's `paneOpen`; this phase replaces P8's placeholder view behind that same call and adds no new entry point.

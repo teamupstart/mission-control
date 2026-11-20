@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 4). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 5). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -10,6 +10,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 4). Spec: Co
 - S28 (FR-06 ledger and retro trigger) runs in two stages as two scout tasks that open no pull request; they are not phases.
 - Spike answers live in task reports and Commonroom, with no results file in the repository.
 - Review repairs (revision 4): widget placement is out of v1; P4 merges after P3; P8 owns `paneOpen` with a placeholder view that P12 replaces; P14 probes the installed mod version and reinstalls a stale build.
+- Review repairs (revision 5): P7 merges after P3; P10's `logs` has defined interim behavior until P9 lands; P13's launcher handoff is defined (`mctl claude` starts plain Claude until P11 and P14); P17 merges after P13; a failed mod reinstall has an honest recovery path, with no rollback claimed.
 
 ## 2. Findings from the repository
 
@@ -73,7 +74,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P4 `phase-4-read-only-inbox-answers-and-approval` | WP2b | P3 | none |
 | P5 `phase-5-dispatch-options-drafts-and-banner` | WP3 | P2 | none |
 | P6 `phase-6-repository-task-skills` | WP8 | P2 | none |
-| P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P2 | S27 recorded; S24 to S26 |
+| P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P3 | S27 recorded; S24 to S26 |
 | P8 `phase-8-mod-core-and-glance-layer` | WP13 | P3, P4 | S14 |
 | P9 `phase-9-residents-and-chat-routes` | WP16 | P3, P4 | S16 |
 | P10 `phase-10-mctl-client-and-reads` | WP6a | P4 | none |
@@ -83,7 +84,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10 | S5, S14, S17, S18, S20 |
 | P15 `phase-15-subagents-and-agents-step` | WP11 | P11, P12, P14 | S4 |
 | P16 `phase-16-app-packaging-of-the-mod` | WP15 | P14 | none |
-| P17 `phase-17-docs` | WP9 | P14, P15, P12, P7 | none |
+| P17 `phase-17-docs` | WP9 | P14, P15, P12, P7, P13 | none |
 | P18 `phase-18-full-loop-and-flag-off-sweep` | WP12 | P6, P13, P16, P17 | none |
 
 P18 lists P6, P13, P16 and P17 directly because every other phase is already a transitive prerequisite of one of them.
@@ -97,7 +98,7 @@ flowchart TD
   P3 --> P4
   P2 --> P5
   P2 --> P6
-  P2 --> P7
+  P3 --> P7
   P3 --> P8
   P4 --> P8
   P3 --> P9
@@ -120,13 +121,14 @@ flowchart TD
   P15 --> P17
   P12 --> P17
   P7 --> P17
+  P13 --> P17
   P6 --> P18
   P13 --> P18
   P16 --> P18
   P17 --> P18
 ```
 
-Concurrency: after P2, P3, P5, P6 and P7 run together; P4 follows P3. After P4, P8, P9 and P10 run together. P11 to P14 run together once their prerequisites land. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
+Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P14 run together once their prerequisites land. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
 ## 7. Cross-phase contracts
 

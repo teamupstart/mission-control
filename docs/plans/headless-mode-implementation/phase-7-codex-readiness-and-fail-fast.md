@@ -4,7 +4,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **1. Outcome.** Mission Control checks, with no model tokens, that Codex can run the after-work reviews, shows the result through `GET /dispatch/readiness`, and fails a run fast when Codex is missing or signed out.
 
-**2. Entry and dependencies.** Direct prerequisite: P2. Gate: S27's answer recorded in Commonroom as `CODEX_AUTH_MTIME_RELIABLE` before merge (either answer is acceptable); S24 to S26 are soft. Quote the recorded answer in the pull request and stop without merging if there is none.
+**2. Entry and dependencies.** Direct prerequisite: P3 (which itself follows P2). The readiness route applies P3's home-session rules, so this phase merges only after P3. Gate: S27's answer recorded in Commonroom as `CODEX_AUTH_MTIME_RELIABLE` before merge (either answer is acceptable); S24 to S26 are soft. Quote the recorded answer in the pull request and stop without merging if there is none.
 
 **3. Scope.** `src/server/setup/codex-readiness.ts` (six checks, the `HOME_DISPATCH_READINESS_MAX_AGE_MS` 10-minute cache, `accountVerified`, `reviewsReady`), `src/server/home-dispatch/readiness.ts`, `src/cli/setup-steps/codex.ts` with its doctor checks (including `--live` and the `codex login` offer), the flag-gated reviewer-failure gate in `src/server/workflows/engine.ts` and its two classes (`not-installed`, `signed-out`) in `src/server/llm/provider-failure.ts`, and `test/home-dispatch-codex-readiness.test.ts`, `test/home-dispatch-codex-failfast.test.ts`.
 

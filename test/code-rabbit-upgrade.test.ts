@@ -85,13 +85,25 @@ test("a stored off value with an unknown property nested past SQLite's JSON dept
   }
 });
 
-test("a stored off value nested past JSON.stringify's stack limit still upgrades, byte for byte", () => {
-  // Built as text: past roughly ten thousand levels `JSON.stringify` overflows the stack on
-  // Node 24, while `JSON.parse` and the schema still accept the blob.
-  const depth = 50_000;
-  const deep = "{\"next\":".repeat(depth) + "\"leaf\"" + "}".repeat(depth);
+test("a stored off value nested past JSON.stringify's stack limit still upgrades, byte for byte", (t) => {
+  // Built as text, because `JSON.parse` and the schema accept nesting that a recursive
+  // `JSON.stringify` cannot serialize. Where that limit sits depends on the runtime (about ten
+  // thousand levels on Node 24), so the fixture finds it rather than assuming one. A runtime
+  // whose serializer never overflows still checks the in-place edit at the deepest fixture.
+  const nested = (depth: number) => "{\"next\":".repeat(depth) + "\"leaf\"" + "}".repeat(depth);
+  let deep = "";
   const value = (flag: string) => `{"autoMerge":true,"codeRabbitAutoResolve":${flag},"legacyExtra":${deep}}`;
-  assert.throws(() => JSON.stringify(JSON.parse(value("false"))), RangeError, "the fixture really is past the serializer's limit");
+  let overflows = false;
+  for (let depth = 10_000; depth <= 320_000 && !overflows; depth *= 2) {
+    deep = nested(depth);
+    try {
+      JSON.stringify(JSON.parse(value("false")));
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      overflows = true;
+    }
+  }
+  if (!overflows) t.diagnostic("this runtime's JSON.stringify did not overflow at 320,000 levels");
   const db = legacyDatabase(value("false"));
   try {
     upgradeDatabaseToCurrentSchema(db);

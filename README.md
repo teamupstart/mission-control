@@ -357,9 +357,11 @@ Read more in [Workflows and Personas](docs/workflows.md) and
 
 ## Shipping and the GitHub reviewer
 
-The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
-answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
-code fixes them. Dry run records what it would say without publishing anything.
+The GitHub Inspector starts enabled in Live mode on fresh installations. It reviews pull requests
+Mission Control can prove it opened and publishes only in repositories granted access in Settings >
+Trust. It comments inline, answers replies in its own threads, re-reviews every pushed head, and
+resolves findings when the code fixes them. Dry run records what it would say without publishing
+anything.
 
 Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
 eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including

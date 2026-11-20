@@ -2,7 +2,7 @@
 
 # GitHub Inspector (automated PR review)
 
-GitHub Inspector is the optional remote reviewer. It is separate from the local Personas
+GitHub Inspector is the remote reviewer. It is separate from the local Personas
 in [No-Mistakes Review](workflows.md#built-in-personas). No-Mistakes versions 9 through 17
 completed after verified PR publication; versions 18 and 19 include the final Inspector gate.
 A published workflow keeps its own completion policy. Installing that gate does not enable
@@ -44,11 +44,12 @@ not itself certify CI or authorize a merge.
 If Inspector's reply was posted but resolving its thread failed, that resolution is retried without
 another reply. An operator resolving local ledger findings does not authorize closing GitHub threads.
 
-It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
-separate acts in Settings → GitHub Inspector, and the first two are reversible without anyone
-else seeing anything. Enabling and mode live on the GitHub Inspector panel; which repos it may post
-in is a column of **Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** now (the
-panel shows the count and links there), the same list `mode` is checked against below.
+Fresh installations start with the GitHub Inspector **enabled** in **Live** mode and with
+**no repository grants**. It can publish only in repositories granted access in
+**Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)**. The
+**Settings → GitHub Inspector** panel shows the grant count and lets you switch the reviewer off
+or select Dry run. Saved settings carry forward on upgrade. Existing installations that never
+saved Inspector settings keep the prior defaults: off and Dry run.
 
 ### Only our pull requests
 

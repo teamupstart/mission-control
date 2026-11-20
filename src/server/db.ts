@@ -340,6 +340,34 @@ export function databaseMigratedOnOpen(): boolean {
   return ranMigrationOnOpen;
 }
 
+const CREATE_APP_CONFIG = `
+  CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`;
+
+function createAppConfig(d: DatabaseSync): void {
+  const fresh = databaseSchemaVersion(d) === 0 && !d.prepare("SELECT 1 FROM sqlite_schema LIMIT 1").get();
+  if (!fresh) {
+    d.exec(CREATE_APP_CONFIG);
+    return;
+  }
+
+  // Commit the first table and the install default together. An interrupted first start
+  // either retries as a fresh database or resumes with the default already recorded.
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    d.exec(CREATE_APP_CONFIG);
+    d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
+      .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
+    d.exec("COMMIT;");
+  } catch (error) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw error;
+  }
+}
+
 /**
  * The one forward-upgrade contract for both the live database and disposable restore
  * verification. Callers must provide a database they own and may mutate.
@@ -377,6 +405,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
+  createAppConfig(d);
   d.exec(`
     CREATE TABLE IF NOT EXISTS reviews (
       id                     TEXT PRIMARY KEY,
@@ -950,11 +979,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       plan_id TEXT NOT NULL, revision INTEGER NOT NULL, receipt TEXT NOT NULL,
       PRIMARY KEY(plan_id, revision)
     );
-    CREATE TABLE IF NOT EXISTS app_config (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
     -- Operational identity for daemon-owned native worktree pools. Policy does not live
     -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
     -- The physical Git common directory is the pool identity, not a remote URL, so two local

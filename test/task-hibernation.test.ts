@@ -255,9 +255,13 @@ test("the record persists only while the task is hibernated, and hibernated task
   db.upsertTask(mkTask({ id: "persist", status: "hibernated", hibernation }));
   assert.deepEqual(db.getTask("persist")?.hibernation, hibernation);
   assert.ok(db.loadActiveTasks().some((t) => t.id === "persist"), "a hibernated task is reloaded on start");
-  // A status change that forgot to clear the record cannot leave it behind.
+  const stored = () => (db.openDb().prepare("SELECT hibernation FROM tasks WHERE id = ?").get("persist") as { hibernation: string | null }).hibernation;
+  assert.equal(typeof stored(), "string", "the record is stored while hibernated");
+  // A status change that forgot to clear the record cannot leave it behind: not in what reads
+  // back, and not in the column either.
   db.upsertTask({ ...db.getTask("persist")!, status: "done" });
   assert.equal(db.getTask("persist")?.hibernation, null);
+  assert.equal(stored(), null, "the stored JSON is SQL NULL once the task is not hibernated");
 });
 
 test("hibernated tasks list longest-asleep last, and only a hibernated task holds its session's conversation", () => {
@@ -422,6 +426,7 @@ test("an Agent SDK Resume binds the task only once its driver reports reopening 
   const sessionId = await hibernated(f, t, "sdk-other", checkout("sdk-other"));
   const other = boundTo(fakeHandle(), "conv-something-else");
   const first = withFakeDriver(async () => other);
+  t.after(first.restore);
   const wrong = await f.hibernation.resume("sdk-other");
   first.restore();
   assert.match(wrong.ok ? "" : wrong.error, /its driver opened conversation conv-something-else instead of conv-sdk-other/);
@@ -439,6 +444,7 @@ test("an Agent SDK Resume binds the task only once its driver reports reopening 
   const silentId = await hibernated(g, t, "sdk-silent", checkout("sdk-silent"));
   const silent = fakeHandle();
   const second = withFakeDriver(async () => silent);
+  t.after(second.restore);
   const unconfirmed = await g.hibernation.resume("sdk-silent");
   second.restore();
   assert.match(unconfirmed.ok ? "" : unconfirmed.error, /its driver did not report reopening the conversation within 0 seconds/);
@@ -457,6 +463,7 @@ test("a driver that opens the wrong conversation does not repoint the row, and R
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const wrong = boundTo(fakeHandle(), "conv-elsewhere");
   const first = withFakeDriver(async () => wrong);
+  t.after(first.restore);
   const refused = await f.hibernation.resume(id);
   first.restore();
   assert.match(refused.ok ? "" : refused.error, /its driver opened conversation conv-elsewhere instead of conv-sdk-wrong-then-right/);
@@ -471,6 +478,7 @@ test("a driver that opens the wrong conversation does not repoint the row, and R
 
   const right = boundTo(fakeHandle(), `conv-${id}`);
   const second = withFakeDriver(async () => right);
+  t.after(second.restore);
   const retried = await f.hibernation.resume(id);
   second.restore();
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
@@ -489,6 +497,7 @@ test("a failed resume says why, keeps the task hibernated, and a retry succeeds"
   const aside = `${cwd}-aside`;
   renameSync(cwd, aside);
   const launches = withFakeDriver(async () => fakeHandle());
+  t.after(launches.restore);
   const gone = await f.hibernation.resume("retry");
   assert.match(gone.ok ? "" : gone.error, /no longer exists/);
   assert.equal(launches.calls.length, 0, "nothing was launched into a missing checkout");
@@ -501,6 +510,7 @@ test("a failed resume says why, keeps the task hibernated, and a retry succeeds"
   const refusing = withFakeDriver(async () => {
     throw new Error("conversation file missing");
   });
+  t.after(refusing.restore);
   const refused = await f.hibernation.resume("retry");
   refusing.restore();
   assert.match(refused.ok ? "" : refused.error, /conversation file missing/);
@@ -1386,6 +1396,7 @@ test("an Agent SDK Resume rereads the task after its driver confirms, and never 
     await hibernated(f, t, id, checkout(id));
     const woken = boundTo(fakeHandle(), `conv-${id}`);
     const fake = withFakeDriver(async () => woken);
+    t.after(fake.restore);
     // The driver does reopen the saved conversation, but the task changes while the manager
     // is still waiting for that report.
     const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
@@ -1512,6 +1523,7 @@ test("an Agent SDK driver that exits after reopening the conversation is never b
   const sessionId = await hibernated(f, t, id, checkout(id));
   const woken = boundTo(fakeHandle(), `conv-${id}`);
   const first = withFakeDriver(async () => woken);
+  t.after(first.restore);
   // The driver does report the saved conversation, then ends before the task is bound to it.
   const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
   f.supervisor.reportedConversation = async (session, timeoutMs) => {
@@ -1537,6 +1549,7 @@ test("an Agent SDK driver that exits after reopening the conversation is never b
   assert.equal(f.registry.getSession(sessionId), undefined);
   const again = boundTo(fakeHandle(), `conv-${id}`);
   const second = withFakeDriver(async () => again);
+  t.after(second.restore);
   const retried = await f.hibernation.resume(id);
   second.restore();
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);

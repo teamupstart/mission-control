@@ -953,9 +953,11 @@ still blocked if it was blocked, and the task is bound back to it and returns to
   waits up to a minute for it to report the hibernated conversation's own id, then moves the
   task, its work history and any armed workflow onto it. Only the process this Resume launched
   qualifies: the one in the terminal tab it opened, or descended from the launch that claimed its
-  managed resume. A new agent in the same worktree that reports any other conversation is left
-  alone. If something else opens the same conversation meanwhile, the task is given to neither
-  and the launch is undone, so two processes never write one conversation.
+  managed resume. If the agent it launched reports any other conversation, that launch is undone
+  like any failed one. An agent in the same worktree that Resume did not launch is left alone,
+  whatever conversation it reports. If something else opens the same conversation meanwhile, the
+  task is given to neither and the launch is undone, so two processes never write one
+  conversation.
 
 Hibernate records the checkout the conversation ran in, as the filesystem identifies that
 directory. Before Resume starts anything, it checks that the directory at that path is still

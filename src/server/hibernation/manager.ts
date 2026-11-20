@@ -11,7 +11,6 @@ import type { PauseState } from "@shared/pause.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { kill } from "../actions.ts";
-import { logEvent } from "../db.ts";
 import { sessionLabel, spawnManagedResume } from "../dispatcher.ts";
 import { listProcesses } from "../discovery/processes.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
@@ -145,6 +144,11 @@ export class HibernationManager {
         return Boolean(owner && belongsToLaunch(session, owner, await listProcesses()));
       },
       closeHome: async (home) => {
+        // No backend closes an emulator tab by its resource id (`killHome` refuses one for every
+        // caller, Kill included), so say that rather than that its identity is unknown.
+        if (home.terminalResourceId?.startsWith("emulator:")) {
+          return { ok: false, error: "Mission Control cannot close a terminal emulator tab; close it yourself" };
+        }
         try {
           const closed = await killHome(home.homeName, undefined, home.homeBackend, home.terminalResourceId);
           return closed.ok ? { ok: true } : { ok: false, error: closed.error ?? `${home.homeBackend} could not close it` };
@@ -271,7 +275,6 @@ export class HibernationManager {
           error: `${reason}. The task is hibernated with its work kept; stop that session, or wait for it to exit, then Resume.`,
         };
       }
-      logEvent(session.id, at, "task_hibernated", { taskId: task.id, runtime: session.runtime });
       return { ok: true, task: this.registry.getTask(task.id) ?? task };
     } finally {
       this.busy.delete(task.id);
@@ -772,7 +775,6 @@ export class HibernationManager {
         : []) ?? [];
     workflows?.announceBindings(moved);
     this.registry.bindTaskToWorkEpisode(current.id, session.id);
-    logEvent(session.id, at, "task_resumed", { taskId: current.id, runtime: record.runtime });
     return { ok: true, task: this.registry.getTask(current.id) ?? running };
   }
 

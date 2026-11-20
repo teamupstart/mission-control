@@ -295,6 +295,7 @@ import {
   upsertSessionLaunchTurn,
   deleteSessionLaunchTurn,
   moveSessionLaunchTurn,
+  deleteStandingInstructions,
   insertStandingInstructions,
   moveStandingInstructions,
   pruneStandingInstructions as pruneStandingInstructionsDb,
@@ -8806,7 +8807,25 @@ export class Registry extends EventEmitter {
         : repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
           ? repoTaskSkills
           : null;
-    if (!delivery.text && (repoTaskSkills === undefined || !skills)) return;
+    // No text and no statement about skills: nothing this call can say, and it must not
+    // replace a stored row with an empty one.
+    if (!delivery.text && repoTaskSkills === undefined) return;
+    if (!delivery.text && !skills) {
+      // Nothing to record. An explicit "this launch had none" still has to retire a record an
+      // earlier launch left under this key: a row that held only skills goes away, and a row
+      // that also holds standing text keeps its text and loses only the stale skills.
+      const prior = this.standingInstructions.get(key);
+      if (!prior?.repoTaskSkills) return;
+      if (prior.text) {
+        const cleared: StandingInstructionsSnapshot = { ...prior, repoTaskSkills: null };
+        insertStandingInstructions(cleared);
+        this.standingInstructions.set(key, cleared);
+      } else {
+        deleteStandingInstructions(key);
+        this.standingInstructions.delete(key);
+      }
+      return;
+    }
     const snapshot: StandingInstructionsSnapshot = {
       noteKey: key,
       text: delivery.text,

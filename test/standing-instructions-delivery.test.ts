@@ -759,6 +759,39 @@ test("a later write that does not speak for skills keeps the stored record; an e
   assert.equal(registry.standingInstructionsFor(session.id)?.repoTaskSkills, null, "explicit null: cleared");
 });
 
+test("an explicit no-skills launch with no standing text retires a stale skill record", () => {
+  const record = {
+    included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 3, truncated: false }],
+    skipped: [],
+  };
+  const none = { text: "", mechanism: "none" as const, sources: [] };
+  const registry = new Registry();
+
+  // A row that held only skills goes away, in memory and in the table.
+  const a = registry.registerSdkSession({ id: "sdk:retire-a", agent: "claude", name: "a", cwd: "/wt/retire-a" });
+  registry.recordStandingInstructions(a.id, none, record);
+  const keyA = registry.standingInstructionsFor(a.id)!.noteKey;
+  registry.recordStandingInstructions(a.id, none);
+  assert.ok(registry.standingInstructionsFor(a.id), "omitted: not asserted, so kept");
+  registry.recordStandingInstructions(a.id, none, null);
+  assert.equal(registry.standingInstructionsFor(a.id), null);
+  assert.equal(getStandingInstructions(keyA), undefined);
+
+  // A row that also holds standing text keeps the text and loses only the skills.
+  const b = registry.registerSdkSession({ id: "sdk:retire-b", agent: "claude", name: "b", cwd: "/wt/retire-b" });
+  registry.recordStandingInstructions(b.id, { text: BLOCK, mechanism: "prompt-prefix", sources: [] }, record);
+  registry.recordStandingInstructions(b.id, none, null);
+  const kept = registry.standingInstructionsFor(b.id);
+  assert.equal(kept?.text, BLOCK);
+  assert.equal(kept?.repoTaskSkills, null);
+  assert.equal(getStandingInstructions(kept!.noteKey)?.repoTaskSkills, null);
+
+  // And with nothing stored, an explicit none writes no row.
+  const c = registry.registerSdkSession({ id: "sdk:retire-c", agent: "claude", name: "c", cwd: "/wt/retire-c" });
+  registry.recordStandingInstructions(c.id, none, null);
+  assert.equal(registry.standingInstructionsFor(c.id), null);
+});
+
 test("a note-key rotation carries the skill launch record to the new key whole", () => {
   const record = {
     included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 12, truncated: true }],

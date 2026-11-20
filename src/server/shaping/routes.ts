@@ -99,18 +99,22 @@ export function registerShapingRoutes(app: Hono): void {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind } = parsed.data;
+    // Resolved once, before any probe: the path Git checks is the path the gatherer runs in, so a
+    // symlink that changes after the probes cannot send the gatherer somewhere unchecked.
+    let checkout: string;
+    try { checkout = realpathSync(repository); } catch {
+      return c.json({ error: "unknown_repository", reason: "The repository is not a directory on this machine." }, 400);
+    }
     let directory = false;
-    try { directory = statSync(repository).isDirectory(); } catch { directory = false; }
+    try { directory = statSync(checkout).isDirectory(); } catch { directory = false; }
     if (!directory) return c.json({ error: "unknown_repository", reason: "The repository is not a directory on this machine." }, 400);
     // A Git checkout, through the same resolver dispatch uses, so a mistyped path that names an
     // ordinary folder is refused instead of running a gatherer there and reporting success. The
     // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
     // owner, which names the repository but is not the tree under test.
-    const checked = await checkoutFor(repository);
+    const checked = await checkoutFor(checkout);
     if (!checked.ok) return c.json({ error: checked.error, reason: checked.reason }, checked.status);
     const repoRoot = checked.repoRoot;
-    let checkout = repository;
-    try { checkout = realpathSync(repository); } catch { /* Keep the path as given. */ }
     const result = await dryRunShaper(id, {
       task: prompt ?? "",
       context: {

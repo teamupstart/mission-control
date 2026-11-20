@@ -390,6 +390,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
+          holdsNamed: (text) => namedValues.some(({ value }) => text.includes(value)),
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.

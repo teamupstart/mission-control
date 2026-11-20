@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -211,6 +211,23 @@ test("a repository check Git never answers is 503, never an invalid checkout", a
   const rejected = await checkoutFor(plainFolder, { resolveRepoRoot: async () => null, insideWorkTree: async () => "not-worktree" });
   assert.deepEqual([!rejected.ok && rejected.status, !rejected.ok && rejected.error], [400, "unknown_repository"]);
   assert.deepEqual(await checkoutFor(repository), { ok: true, repoRoot: realpathSync(repository) }, "the real probes accept the checkout");
+});
+
+test("a dry run resolves its path once: the gatherer runs where Git checked, and a dangling link is refused", async () => {
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  await put({ kind: "upsert", shaper: fixture("where", "gather", "echo") });
+  const link = join(home, "repos", "billing-api-link");
+  rmSync(link, { force: true });
+  symlinkSync(repository, link);
+  const response = await dryRun({ id: "where", repository: link });
+  assert.equal(response.status, 200);
+  const run = await response.json() as { entries: Array<{ body: string }> };
+  assert.equal((JSON.parse(run.entries[0]!.body) as { cwd: string }).cwd, realpathSync(repository), "the canonical path, not the link");
+  const dangling = join(home, "repos", "dangling-link");
+  rmSync(dangling, { force: true });
+  symlinkSync(join(home, "repos", "gone"), dangling);
+  const refused = await dryRun({ id: "where", repository: dangling });
+  assert.equal(refused.status, 400, "a path that cannot be resolved stops the dry run");
 });
 
 test("a dry run refuses a bare repository and accepts a linked worktree", async () => {

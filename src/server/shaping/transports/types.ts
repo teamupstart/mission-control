@@ -41,6 +41,12 @@ export type TransportReply =
      * Absent means the transport handed the shaper nothing secret.
      */
     redact?: (text: string, options?: RedactOptions) => string;
+    /**
+     * Whether `text` holds a value the operator named, which `redact` would remove. The engine asks
+     * it of each diagnostic it scrubs, so a credential removed there still marks the record
+     * `redacted`. Absent means the transport named nothing.
+     */
+    holdsNamed?: (text: string) => boolean;
   }
   | { kind: "failed" | "timed_out" | "unavailable"; reason: string; redacted?: boolean };
 

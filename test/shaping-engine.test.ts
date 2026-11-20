@@ -335,6 +335,25 @@ test("a transport receives the request as the wire contract parsed it, without u
   assert.deepEqual((seen[0] as ShapingRequest).context.afterWork, { workflowId: "wf_1", name: "Review and merge" });
 });
 
+test("a named value scrubbed from a validation diagnostic marks the record redacted", async () => {
+  // An invalid fact keeps its name for validation; the name holds a named value.
+  const result = await run(configWith([shaper("g", "gather")]), () => ({
+    kind: "data",
+    data: { repo: { facts: { "by-sk-secret": 42 } } },
+    redact: (text: string) => text.replaceAll("sk-secret", "[redacted]"),
+    holdsNamed: (text: string) => text.includes("sk-secret"),
+  }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.equal(row.outcome, "invalid");
+  assert.equal((row.reason ?? "").includes("sk-secret"), false, "the diagnostic is scrubbed");
+  assert.equal(row.redacted, true, "and the record says a credential value was removed");
+  // A diagnostic holding no named value leaves the flag as the transport set it.
+  const clean = await run(configWith([shaper("g", "gather")]), () => ({
+    kind: "data", data: { repo: { facts: { plain: 42 } } }, redact: (text: string) => text, holdsNamed: () => false,
+  }), input(1));
+  assert.equal(clean.summary!.shapers[0]!.redacted, false);
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

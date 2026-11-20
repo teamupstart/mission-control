@@ -344,12 +344,19 @@ async function runShaping(
       if (run.signal.aborted) return stopped();
       return reply.kind === "timed_out" ? empty("timed_out", reply.reason, reply.redacted === true) : timedOut();
     }
-    const redacted = reply.redacted === true;
+    let redacted = reply.redacted === true;
     if (reply.kind !== "data") return empty(reply.kind, reply.reason, redacted);
 
     // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
     // transport handed the shaper before it is recorded, and before it is cut to length.
-    const scrub = reply.redact ?? ((text: string) => text);
+    // A diagnostic built here from the shaper's text can hold a named value the transport left in
+    // place, such as an invalid fact's name kept for validation. Removing it counts as redaction.
+    const redact = reply.redact ?? ((text: string) => text);
+    const holdsNamed = reply.holdsNamed ?? (() => false);
+    const scrub = (text: string): string => {
+      if (holdsNamed(text)) redacted = true;
+      return redact(text);
+    };
     let value = reply.data;
     if (typeof value === "string") {
       try { value = JSON.parse(value); }
@@ -370,8 +377,9 @@ async function runShaping(
     // The version is the shaper's text too, recorded and returned, so it is scrubbed as an
     // identifier (a named credential and any long value go, `v1.4.0` keeps an inherited "0"),
     // then held to its bound: a replacement can be longer than what it replaced.
+    if (result.version != null && holdsNamed(result.version)) redacted = true;
     const version = result.version == null ? null
-      : (reply.redact ? reply.redact(result.version, { identifier: true }) : result.version).slice(0, SHAPING_LIMITS.versionChars);
+      : redact(result.version, { identifier: true }).slice(0, SHAPING_LIMITS.versionChars);
     return {
       record: result.degraded
         ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)

@@ -284,10 +284,19 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
     if (changed.deadlineMs) limits.deadlineMs = deadlineMs;
     if (changed.totalBytes) limits.totalBytes = totalBytes;
     if (Object.keys(limits).length > 0) intent.limits = limits;
-    // Saved or refused, the fields go back to showing the daemon's config: a refusal is a
-    // roll back, with its reason below.
+    // Saved or refused, the submitted fields go back to showing the daemon's config: a refusal is
+    // a roll back, with its reason below. Only the values this save sent are cleared, and only
+    // if they are unchanged: the stream can free the form before the reply lands, and an edit
+    // made in that interval is a new draft, not part of this save.
+    const submitted = draft;
     await onSet(intent, "settings");
-    setDraft({});
+    setDraft((current) => {
+      const next = { ...current };
+      for (const field of Object.keys(submitted) as Array<keyof SettingsFields>) {
+        if (next[field] === submitted[field]) delete next[field];
+      }
+      return next;
+    });
   };
   return (
     <form className="shaping-settings" aria-label="Caller identity and budgets"

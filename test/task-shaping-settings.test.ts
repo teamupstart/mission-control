@@ -419,3 +419,25 @@ test("a registered row states its full transport, so two MCP shapers on one serv
   assert.match(row("lessons"), /Tool: get_lessons/);
   assert.match(row("lessons"), /Context: As a fourth argument, context/);
 });
+
+test("a write is confirmed by the outcome it asked for, not by the preview matching", () => {
+  // A removal that shadowed a folder shaper: the daemon keeps an off choice for the folder's id.
+  // The registration is gone, and that is the confirmation, whatever was kept for the id.
+  const removed = view({ shapers: [], overrides: { a: false }, order: ["a"] });
+  assert.equal(shapingIntentReflected(removed, { kind: "remove", id: "a" }), true);
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")] }), { kind: "remove", id: "a" }), false);
+  // A move into a full order draws nothing, so the unchanged view must not read as confirmed:
+  // the daemon's answer decides, and its refusal reaches the row.
+  const stale = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => `gone-${n}`);
+  const full = view({ shapers: [gatherer("a"), gatherer("b")], order: stale });
+  const move = { kind: "move", id: "b", after: null } as const;
+  assert.deepEqual(previewShapingIntent(full, move), full, "nothing drawn");
+  assert.equal(shapingIntentReflected(full, move), false);
+  // Once B is first among its stage's rows, the same move is confirmed.
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a"), gatherer("b")], order: ["b", "a"] }), move), true);
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a"), gatherer("b"), gatherer("c")], order: ["a", "b"] }),
+    { kind: "move", id: "c", after: "b" }), true);
+  // A switch is confirmed by the stored choice.
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")], overrides: { a: true } }), { kind: "enable", id: "a", enabled: true }), true);
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")], overrides: { a: false } }), { kind: "enable", id: "a", enabled: true }), false);
+});

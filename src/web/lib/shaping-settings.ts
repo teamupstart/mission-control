@@ -157,9 +157,32 @@ export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boo
   return canonicalJson(a) === canonicalJson(b);
 }
 
-/** Whether `view` already shows everything `intent` asked for. */
+/**
+ * Whether `view` shows the outcome `intent` asked for: what confirms a write. Each intent is
+ * checked against its own result, never against the preview, because the daemon may apply an
+ * intent with effects the preview cannot know - a removal that keeps a folder shaper's id off,
+ * or a move it makes room for - and a preview that drew nothing must not count as confirmation.
+ */
 export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingIntent): boolean {
-  return sameShapingView(previewShapingIntent(view, intent), view);
+  switch (intent.kind) {
+    case "remove":
+      // The registration is gone. What the daemon kept for a folder shaper of that id is its own.
+      return !view.shapers.some((entry) => entry.id === intent.id);
+    case "enable":
+      return view.overrides[intent.id] === intent.enabled;
+    case "move": {
+      // The shaper sits right after the named neighbour, or first, among its stage's rows.
+      const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
+      if (!group) return false;
+      const rows = group.rows.map((row) => row.id);
+      const at = rows.indexOf(intent.id);
+      return intent.after === null ? at === 0 : at > 0 && rows[at - 1] === intent.after;
+    }
+    case "upsert":
+    case "reorder":
+    case "settings":
+      return sameShapingView(previewShapingIntent(view, intent), view);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

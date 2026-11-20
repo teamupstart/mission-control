@@ -807,3 +807,40 @@ test("move places a shaper against the stored order, so moves from two windows i
   assert.equal(wrong.status, 400);
   assert.equal(((await wrong.json()) as { error: string }).error, "unknown_shaper");
 });
+
+test("a replacement written while the dry run resolves its checkout is not what runs", async () => {
+  const { Hono } = await import("hono");
+  const { registerShapingRoutes } = await import("../src/server/shaping/routes.ts");
+  const { resolveRepoRoot, insideWorkTree } = await import("../src/server/repos.ts");
+  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
+  assert.equal((await put({ kind: "upsert", shaper: fixture("snapshot", "gather", "ok") })).status, 200);
+  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
+  const revision = shapingEntryRevision(shown as never);
+  // While Git is asked about the checkout, another window replaces the shaper with one that
+  // answers degraded. The revision check already passed; the engine must run what it checked.
+  let replaced = false;
+  const routes = new Hono();
+  registerShapingRoutes(routes, {
+    checkoutProbes: {
+      resolveRepoRoot: async (path) => {
+        if (!replaced) {
+          replaced = true;
+          assert.equal(shaping.applyShapingIntent({ kind: "upsert", shaper: fixture("snapshot", "gather", "degraded") as never }).ok, true);
+        }
+        return resolveRepoRoot(path);
+      },
+      insideWorkTree,
+    },
+  });
+  const response = await routes.request("/api/shaping/test", {
+    method: "POST", headers, body: JSON.stringify({ id: "snapshot", repository, expect: revision }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(replaced, true, "the replacement landed mid-request");
+  const run = await response.json() as { summary: { shapers: Array<{ outcome: string }> }; entries: Array<{ body: string }> };
+  assert.equal(run.summary.shapers[0]!.outcome, "ok", "the definition that was checked ran, not the replacement");
+  assert.ok(run.entries.every((entry) => entry.body !== "fallback entry"));
+  // And the store now holds the replacement, which a fresh dry run with the old revision refuses.
+  const again = await dryRun({ id: "snapshot", repository, expect: revision });
+  assert.equal(again.status, 409);
+});

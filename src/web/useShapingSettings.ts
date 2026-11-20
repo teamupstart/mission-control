@@ -81,7 +81,16 @@ export function useShapingSettings(
           ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds. This shows its current settings; make the change again if it is missing.`
           : result.reason ?? result.error ?? "Could not save task shaping.");
       }
-      if (writing.current === request) setPending((current) => current && { ...current, accepted: true });
+      if (writing.current === request) {
+        if (result.config && !shapingIntentReflected(result.config, request)) {
+          // The daemon accepted it and answered with a config that does not show it the way this
+          // window expected. Its answer is the truth: stop waiting for a frame that will not come.
+          writing.current = null;
+          setPending(null);
+        } else {
+          setPending((current) => current && { ...current, accepted: true });
+        }
+      }
       return true;
     } catch (error) {
       // A frame already confirmed it: saved, whatever became of the reply.

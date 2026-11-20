@@ -74,7 +74,7 @@ export async function checkoutFor(
   return { ok: true, repoRoot };
 }
 
-export function registerShapingRoutes(app: Hono): void {
+export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: CheckoutProbes } = {}): void {
   const gate = requireFeature("task-shaping");
 
   app.get("/api/shaping", gate, async (c) => {
@@ -103,9 +103,13 @@ export function registerShapingRoutes(app: Hono): void {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind, expect } = parsed.data;
+    // One snapshot of the config, taken now, is both what the revision is checked against and what
+    // the engine runs. The checkout probes below await Git, and a replacement written during them
+    // must not be what runs, so the engine never reads the store again for this request.
+    const config = getShapingConfig();
     // Bound to the definition the sender showed: a replacement written meanwhile is never run
     // under the name of the shaper the operator chose.
-    if (expect !== undefined && registeredShaperRevision(getShapingConfig(), id) !== expect) {
+    if (expect !== undefined && registeredShaperRevision(config, id) !== expect) {
       return c.json({
         error: "shaper_changed",
         reason: `"${id}" changed in another window since it was shown here, so it was not run. Review it again first.`,
@@ -124,7 +128,7 @@ export function registerShapingRoutes(app: Hono): void {
     // ordinary folder is refused instead of running a gatherer there and reporting success. The
     // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
     // owner, which names the repository but is not the tree under test.
-    const checked = await checkoutFor(checkout);
+    const checked = await checkoutFor(checkout, options.checkoutProbes);
     if (!checked.ok) return c.json({ error: checked.error, reason: checked.reason }, checked.status);
     const repoRoot = checked.repoRoot;
     const result = await dryRunShaper(id, {
@@ -137,7 +141,7 @@ export function registerShapingRoutes(app: Hono): void {
       // Aborted when the client's connection closes before the reply, so a dry run nobody is
       // waiting for stops its shapers' process groups instead of running to their timeout.
       signal: c.req.raw.signal,
-    });
+    }, { config });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);
   });

@@ -545,6 +545,28 @@ test("saving one setting keeps another window's newer change to the fields left 
     await expect(window.budget).toHaveValue("48");
     await expect(window.save).toBeDisabled();
   }
+
+  // A save whose reply is held after it commits: the stream frees the form first, and an edit
+  // typed in that interval survives the late reply instead of being cleared with the saved draft.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    await held;
+    await route.fulfill({ response });
+  });
+  await here.identity.fill("second-window-save");
+  await here.save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("second-window-save");
+  await expect(here.budget).toBeEnabled();
+  await here.budget.fill("40");
+  release();
+  await page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await expect(here.budget).toHaveValue("40");
+  await expect(here.identity).toHaveValue("second-window-save");
+  await expect(here.save).toBeEnabled();
+  await page.unroute("**/api/shaping");
 });
 
 // A move is an intent the daemon applies to the order as stored. A shaper the list does not draw
@@ -577,6 +599,20 @@ test("a move keeps a hidden shaper's slot and composes with another window's mov
   expect(order.slice(0, 3)).toEqual(["b-notes", "hidden-x", "a-notes"]);
   expect(order).toEqual(expect.arrayContaining(["s2-notes", "s1-notes"]));
   expect(order.indexOf("s2-notes")).toBeLessThan(order.indexOf("s1-notes"));
+
+  // A move the daemon refuses because the order is full draws nothing, and that unchanged view is
+  // not taken for done: the refusal's reason reaches the row.
+  await putShaping(daemon, { kind: "reorder", order: Array.from({ length: 128 }, (_, n) => `gone-${n}`) });
+  await expect(gatherRows(page)).toHaveText(["A notes", "B notes"]);
+  await page.route("**/api/shaping", (route) => route.request().method() !== "PUT" ? route.fallback() : route.fulfill({
+    status: 400, contentType: "application/json",
+    body: JSON.stringify({ error: "order_full", reason: "The stored run order is full: it holds at most 128 shaper ids. This move needs 130." }),
+  }));
+  await page.getByRole("button", { name: "Move B notes up" }).click();
+  await expect(row(page, "B notes").getByRole("alert")).toHaveText("The stored run order is full: it holds at most 128 shaper ids. This move needs 130.");
+  await expect(gatherRows(page)).toHaveText(["A notes", "B notes"]);
+  await expect(page.getByRole("button", { name: "Move B notes up" })).toBeEnabled();
+  await page.unroute("**/api/shaping");
 
   // A save the daemon never answers, and never receives: after its bounded wait the panel stops
   // waiting, says so, and shows the daemon's settings again.

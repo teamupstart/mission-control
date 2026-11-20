@@ -2,7 +2,7 @@
 // the reply on stdout, a 256 KiB output cap, and a timeout that takes the whole process group.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,13 +74,31 @@ const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
   return done();
 };
 
-test("a selector that locks a directory inside its working directory still answers, and the directory is removed", async () => {
-  const reply = await callCommand(request("select"), shaper([FIXTURE, "lock-cwd"], { stage: "select" }), ctx());
-  assert.equal(reply.kind, "data", JSON.stringify(reply));
-  const cwd = JSON.parse((reply as { data: string }).data).guidance[0].body as string;
-  assert.match(cwd, /mission-shaper-/);
-  // Removal runs after the call settles, so it is awaited here rather than assumed.
-  assert.equal(await until(() => !existsSync(cwd)), true, "the locked tree was unlocked and removed");
+test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", async (t) => {
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
+  const outside = mkdtempSync(join(tmpdir(), "shaping-outside-"));
+  chmodSync(outside, 0o500);
+  let cwd = "";
+  try {
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "lock-cwd", outside], { stage: "select" }), ctx());
+    assert.equal(reply.kind, "data", JSON.stringify(reply));
+    cwd = JSON.parse((reply as { data: string }).data).guidance[0].body as string;
+    assert.match(cwd, /mission-shaper-/);
+    // Removal runs after the call settles, so its outcome is awaited rather than assumed.
+    assert.equal(await until(() => warnings.length === 1), true, "the locked tree is reported, not unlocked");
+    assert.match(String(warnings[0]![0]), /could not remove a selector's working directory/);
+    assert.equal(existsSync(cwd), true, "a tree the shaper locked is left behind");
+    assert.equal(statSync(outside).mode & 0o777, 0o500, "the link's target outside the tree keeps its permissions");
+    assert.equal(statSync(join(cwd, "locked")).mode & 0o777, 0o000, "nor is anything inside the tree unlocked");
+  } finally {
+    chmodSync(outside, 0o700);
+    rmSync(outside, { recursive: true, force: true });
+    if (cwd) {
+      chmodSync(join(cwd, "locked"), 0o700);
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
 });
 
 test("the call settles without waiting for a removal that never finishes", async (t) => {
@@ -110,7 +128,7 @@ test("a working directory that cannot be removed is logged and left, and the cal
     assert.equal(reply.kind, "data", "the shaper's answer is not lost to the cleanup");
     cwd = echoed(reply).cwd;
     assert.equal(await until(() => warnings.length === 1), true, "the failure is logged once");
-    assert.ok(removal.mock.callCount() >= 2, "removal is retried once after unlocking");
+    assert.equal(removal.mock.callCount(), 1, "removal is attempted once, with no permission change in between");
     assert.match(String(warnings[0]![0]), /could not remove a selector's working directory/);
   } finally {
     removal.mock.restore();

@@ -174,6 +174,24 @@ test("a credential is held only as a reference, so no secret text is ever stored
     "so it can never be written into app_config.shaping, the backup domain's payload");
 });
 
+test("an argument never hands over a credential as literal text; it is named in env instead", () => {
+  const command = (args: string[]) => ShaperSchema.safeParse({ id: "c", label: "C", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args, env: ["ACME_TOKEN"] } });
+  const stdio = (args: string[]) => ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: "guide-server", args } } });
+  for (const args of [["--token=sk-live-1"], ["--api-key", "sk-live-1"], ["api_key=sk-live-1"], ["-password", "hunter2"], ["--clientSecret=x"]]) {
+    const refused = command(args);
+    assert.equal(refused.success, false, args.join(" "));
+    assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);
+    assert.equal(stdio(args).success, false, `stdio ${args.join(" ")}`);
+  }
+  assert.deepEqual(command(["--verbose", "--api-key", "sk"]).error!.issues[0]!.path, ["transport", "args", 2], "the value is named");
+  for (const args of [["--json"], ["--token-file", "/etc/acme/token"], ["--key-path=/secrets/key"], ["--api-key-env=ACME_TOKEN"],
+    ["--token", "--verbose"], ["--repo", "billing-api"], ["--monkey=1"]]) {
+    assert.equal(command(args).success, true, args.join(" "));
+  }
+});
+
 test("header and environment references are checked for syntax, never resolved", () => {
   assert.deepEqual(shapingReferences("Bearer {env:ACME_TOKEN} for {caller.user}"), ["env:ACME_TOKEN", "caller.user"]);
   assert.deepEqual(shapingReferences("plain"), []);

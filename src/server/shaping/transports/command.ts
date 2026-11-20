@@ -170,30 +170,18 @@ export function redactReceived(text: string, values: readonly string[], dropBefo
   return out;
 }
 
-/** Give the owner back every permission on `dir` and each directory beneath it. Symlinks are never followed. */
-async function unlockTree(dir: string): Promise<void> {
-  await fsp.chmod(dir, 0o700);
-  for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) await unlockTree(join(dir, entry.name));
-  }
-}
-
 /**
  * Remove a selector's scratch directory, off the event loop. The call settles first and never
  * waits for this: a selector that left a large tree behind costs disk work in the background,
- * not latency for the dry run or for any other request. It never rejects. A directory the
- * shaper locked is unlocked and removed; one that cannot be removed at all is left behind and
- * logged.
+ * not latency for the dry run or for any other request. It never rejects.
+ *
+ * It never changes a permission. A directory the shaper locked is left behind and logged,
+ * rather than unlocked: a path inside the scratch tree can be swapped for a symlink between a
+ * read and a `chmod`, and Node has no `openat` to refuse that at the point of use, so an
+ * unlock could change permissions outside the tree. Removal itself does not follow symlinks.
  */
 export async function removeScratch(dir: string): Promise<void> {
   try {
-    await fsp.rm(dir, { recursive: true, force: true });
-    return;
-  } catch {
-    // Most often a directory the shaper took its own permissions off. Unlock and retry once.
-  }
-  try {
-    await unlockTree(dir);
     await fsp.rm(dir, { recursive: true, force: true });
   } catch (error) {
     console.warn("[shaping] could not remove a selector's working directory:", dir,

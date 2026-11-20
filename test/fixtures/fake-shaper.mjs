@@ -1,7 +1,7 @@
 // A `command` shaper for tests. Run as `node fake-shaper.mjs <mode> [args...]`: it reads the
 // shaping request from stdin and answers on stdout the way its mode says. No network, no tokens.
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [mode = "ok", ...rest] = process.argv.slice(2);
@@ -102,6 +102,8 @@ switch (mode) {
     // recursive removal of that directory fails, then answers normally.
     mkdirSync(join(process.cwd(), "locked", "inner"), { recursive: true });
     writeFileSync(join(process.cwd(), "locked", "inner", "file"), "x");
+    // And a link out of the tree, which cleanup must never follow or change.
+    if (rest[0]) symlinkSync(rest[0], join(process.cwd(), "outside"));
     chmodSync(join(process.cwd(), "locked"), 0o000);
     reply({ guidance: [{ id: "locked", body: process.cwd() }] });
     break;

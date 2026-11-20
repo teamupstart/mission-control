@@ -170,9 +170,11 @@ A `command` shaper is any program. Mission Control runs it once per call:
 
 - **argv, no shell.** `command` is an absolute path, a bare name found on the daemon's search
   path, or, for a shaper in the shapers folder, a `./` path inside its own folder. `args` are
-  passed exactly as written.
+  passed exactly as written, and stored and backed up the same way. An argument that hands
+  over a credential, such as `--token=…`, is refused: name the variable in `env` instead.
 - **Working directory.** A gatherer runs in the repository's worktree. A selector runs in an
-  empty directory of its own, removed after the call.
+  empty directory of its own, removed in the background after the call answers. A directory
+  your program locked is left behind and logged, never unlocked.
 - **Environment.** The child receives the daemon's ordinary environment, such as `HOME`, `LANG`
   and proxy settings, with the daemon's search path. Mission Control's own token, credentials
   and state directory are removed, and so is every variable whose name looks like a credential.

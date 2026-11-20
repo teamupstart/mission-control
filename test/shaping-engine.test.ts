@@ -14,7 +14,7 @@ import {
   type ShapingConfig,
   type ShapingRequest,
 } from "../src/shared/shaping.ts";
-import { dryRunShaper, shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
+import { dryRunShaper, runScope, shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
 import { SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportContext, type TransportReply } from "../src/server/shaping/transports/index.ts";
 
 type Handler = (request: ShapingRequest, shaper: Shaper, ctx: TransportContext) => Promise<TransportReply> | TransportReply;
@@ -266,6 +266,41 @@ test("the summary records origin and the SHA-256 of the canonical definition", a
   assert.equal(canonicalJson(reordered), canonicalJson(stored));
   assert.equal(result.summary!.shapers[0]!.origin, "registered");
   assert.equal(result.summary!.shapers[0]!.sha256, createHash("sha256").update(canonicalJson(stored)).digest("hex"));
+});
+
+test("cleanup a transport registers after its call was abandoned still runs", async () => {
+  let released = 0;
+  let registered = false;
+  const result = await run(configWith([shaper("late", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 2_000 } }), async (_r, _e, ctx) => {
+    // Ignores its signal and finishes acquiring its resource only after the engine gave up.
+    await sleep(400);
+    ctx.scope.defer(() => { released++; });
+    registered = true;
+    return data({});
+  }, input(1));
+  assert.equal(result.summary!.shapers[0]!.outcome, "timed_out", "the run did not wait for it");
+  for (let waited = 0; (!registered || released === 0) && waited < 3_000; waited += 25) await sleep(25);
+  assert.equal(registered, true);
+  assert.equal(released, 1, "a cleanup registered after the scope closed runs at once, exactly once");
+});
+
+test("runScope runs pending cleanups on close and later ones immediately, and logs failures", async (t) => {
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
+  const scope = runScope();
+  const order: string[] = [];
+  scope.defer(() => { order.push("before"); });
+  scope.defer(() => { throw new Error("boom"); });
+  assert.deepEqual([...order], [], "nothing runs while the run is live");
+  scope.close();
+  scope.close();
+  await sleep(10);
+  assert.deepEqual([...order], ["before"]);
+  assert.equal(scope.closed, true);
+  scope.defer(() => { order.push("after"); });
+  await sleep(10);
+  assert.deepEqual(order, ["before", "after"]);
+  assert.equal(warnings.length, 1, "a failing cleanup is logged, not thrown");
 });
 
 test("a transport can keep one value for the run, and its cleanup runs after the run", async () => {

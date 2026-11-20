@@ -412,13 +412,19 @@ When a call settles, the daemon closes its ends of the child's pipes, so a helpe
 started outside its process group cannot keep them open after the group is killed. A
 selector's scratch directory is removed in the background after the call has answered, never
 before it. A large tree left behind costs disk work, not the dry run's latency or the event
-loop's.
+loop's. Removal never changes a permission and never follows a symlink. A directory the
+shaper locked is left behind and logged, because a path in the tree could be swapped for a
+link between a read and a `chmod`. A cleanup a transport registers after its call was
+abandoned runs as soon as it is registered, so a late resource is still released.
 
 **No secret is stored.** A header whose name says it carries a credential, such as
 `authorization`, `x-api-key`, a `cookie` or anything with a `token`, `secret` or `key`
 segment, must hold its secret as a reference such as `{env:NAME}`. Besides references it may
 carry only an auth scheme, as in `Bearer {env:ACME_TOKEN}`. A URL may not carry a user name,
-a password or a credential-shaped query parameter. A definition that breaks these rules is
+a password or a credential-shaped query parameter. An argument may not hand over a credential
+as literal text, as in `--token=…` or `--api-key …`; name the variable in `env` instead.
+Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
+definition that breaks these rules is
 refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
 settings snapshot, hold the reference and never the value.
 

@@ -30,7 +30,7 @@ import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { discoverShapers } from "./discovery.ts";
 import { getShapingConfig } from "./index.ts";
-import { callTransport, SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportReply } from "./transports/index.ts";
+import { callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTransportCalls, type TransportReply } from "./transports/index.ts";
 
 /**
  * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
@@ -154,6 +154,36 @@ function replyError(value: unknown): string | null {
   return "The shaper returned an error.";
 }
 
+function runDeferred(cleanup: () => void | Promise<void>): void {
+  void Promise.resolve().then(cleanup).catch((error: unknown) => {
+    console.warn("[shaping] run cleanup failed:", error);
+  });
+}
+
+/**
+ * One run's scope. `close` runs every cleanup registered so far, and from then on `defer` runs
+ * a cleanup as soon as it is registered. A call the engine abandoned at its timeout can still
+ * be acquiring a resource when the run ends; whatever it registers afterwards is released,
+ * not left open.
+ */
+export function runScope(): ShapingRunScope & { close(): void; readonly closed: boolean } {
+  const pending: Array<() => void | Promise<void>> = [];
+  let closed = false;
+  return {
+    shared: new Map<string, unknown>(),
+    defer(cleanup) {
+      if (closed) runDeferred(cleanup);
+      else pending.push(cleanup);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const cleanup of pending.splice(0)) runDeferred(cleanup);
+    },
+    get closed() { return closed; },
+  };
+}
+
 function orderRepositories(repositories: readonly ShapeTaskRepository[]): ShapeTaskRepository[] {
   return [...repositories].sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
 }
@@ -171,8 +201,7 @@ async function runShaping(
   const onCancel = () => run.abort();
   input.signal?.addEventListener("abort", onCancel, { once: true });
   if (input.signal?.aborted) run.abort();
-  const cleanups: Array<() => void | Promise<void>> = [];
-  const scope = { shared: new Map<string, unknown>(), defer: (cleanup: () => void | Promise<void>) => { cleanups.push(cleanup); } };
+  const scope = runScope();
   const repositories = orderRepositories(input.context.repositories);
   const multiRepo = repositories.length > 1;
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
@@ -301,10 +330,9 @@ async function runShaping(
     clearTimeout(deadlineTimer);
     input.signal?.removeEventListener("abort", onCancel);
     run.abort();
-    // Cleanup never delays the launch, and a failing one is only logged.
-    void Promise.allSettled(cleanups.map((cleanup) => Promise.resolve().then(cleanup))).then((outcomes) => {
-      for (const outcome of outcomes) if (outcome.status === "rejected") console.warn("[shaping] run cleanup failed:", outcome.reason);
-    });
+    // Cleanup never delays the launch, and a failing one is only logged. Closing the scope also
+    // covers an abandoned call whose transport registers cleanup after this point.
+    scope.close();
   }
 
   // De-duplicate in pipeline order: one entry id per shaper, and one copy of any body.

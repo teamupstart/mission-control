@@ -325,13 +325,45 @@ function credentialValueIsReferenced(value: string): boolean {
   return /^\s*(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+)?$/.test(literal);
 }
 
-/** The credential rule over a whole definition's headers and URLs. */
+/** Name segments that say an argument names where a credential lives, not the credential itself. */
+const CREDENTIAL_LOCATOR_SEGMENTS = new Set(["file", "path", "dir", "name", "id", "url", "type", "env"]);
+
+function credentialArgumentName(name: string): boolean {
+  const segments = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return credentialBearingName(name) && !segments.some((segment) => CREDENTIAL_LOCATOR_SEGMENTS.has(segment));
+}
+
+/**
+ * The arguments that hand a credential over as literal text: `--token=abc`, `api_key=abc`, or a
+ * credential flag such as `--api-key` followed by its value. Arguments are stored and backed up
+ * as written and are never resolved, so a secret belongs in `env`, named, instead.
+ */
+function literalCredentialArguments(args: readonly string[]): number[] {
+  const found: number[] = [];
+  args.forEach((arg, index) => {
+    const assigned = /^-{0,2}([A-Za-z][A-Za-z0-9_.-]*)=(.+)$/.exec(arg);
+    if (assigned && credentialArgumentName(assigned[1]!)) found.push(index);
+    const flag = /^-{1,2}([A-Za-z][A-Za-z0-9_.-]*)$/.exec(arg);
+    const next = args[index + 1];
+    if (flag && credentialArgumentName(flag[1]!) && next !== undefined && !next.startsWith("-")) found.push(index + 1);
+  });
+  return found;
+}
+
+/** The credential rule over a whole definition's headers, URLs and arguments. */
 function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   const transport = (value as { transport?: Record<string, unknown> }).transport;
   if (!transport) return;
   const server = transport.type === "mcp" ? transport.server as Record<string, unknown> | undefined : undefined;
   const at = server ? ["transport", "server"] : ["transport"];
   const holder = server ?? transport;
+  const args = Array.isArray(holder.args) ? holder.args.filter((arg): arg is string => typeof arg === "string") : [];
+  for (const index of literalCredentialArguments(args)) {
+    ctx.addIssue({
+      code: "custom", path: [...at, "args", index],
+      message: "This argument hands over a credential as literal text, which would be stored and backed up. Name the variable in env instead, so the secret is passed from the daemon's environment.",
+    });
+  }
   const headers = (holder.headers ?? {}) as Record<string, string>;
   for (const [name, header] of Object.entries(headers)) {
     if (credentialBearingName(name) && !credentialValueIsReferenced(header)) {

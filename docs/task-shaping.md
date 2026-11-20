@@ -328,7 +328,7 @@ its turn one reaches the worker (`turnOne` in `src/server/harness/index.ts`):
 | Path | Used by | Ceiling |
 | --- | --- | --- |
 | Embedded driver | Every SDK runtime | None |
-| Pane paste | Claude and Codex in a terminal | None |
+| Pane paste | Claude and Codex in a terminal | None through tmux, WezTerm and the other backends that take the paste on stdin. On macOS, Ghostty and iTerm2 pass it to `osascript` as one argument under `ARG_MAX` |
 | Launch argument | Pi in a terminal | One argument (128 KiB on Linux, none on macOS) and `ARG_MAX` shared with every other argument and environment variable of the launch |
 
 On a launch argument, dispatch measures the larger turn-one variant as the argument carries it,
@@ -337,6 +337,16 @@ left. The record's `limit` then says how many bytes the section had and why, and
 is recorded as truncated, never as degraded. When `ARG_MAX` cannot be read, there is no safe room
 to promise, so a launch argument carries no section at all: the worker starts exactly as it would
 without shaping, and the record's `limit` says the combined limit could not be measured.
+
+A pane paste through Ghostty or iTerm2 travels inside an AppleScript, and its encoded size depends
+on the exact text (iTerm2 turns every newline into an expression of its own). A launch that may
+use one of them - either backend chosen, or an automatic choice on macOS, which can land on
+either - is checked once the shapers answer: the shaped turn one is encoded as both backends
+encode it and compared with `ARG_MAX` and the daemon's environment. If it does not fit, or
+`ARG_MAX` cannot be read, the whole section is dropped and turn one is sent without it. The
+shapers keep their outcomes, nothing is counted as delivered, the record is truncated, and its
+`limit` says why. That is how a shaper that answered can leave "No context was added" in the
+viewer. A live handover is checked the same way when the session's pane is Ghostty or iTerm2.
 
 ### While it runs
 

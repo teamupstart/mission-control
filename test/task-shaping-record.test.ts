@@ -38,6 +38,7 @@ const db = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { currentShaping } = await import("../src/shared/shaping.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const flags = await import("../src/server/feature-flags/index.ts");
 type TaskShaping = import("../src/shared/shaping.ts").TaskShaping;
 
 after(() => { db.closeDb(); rmSync(home, { recursive: true, force: true }); });
@@ -163,7 +164,7 @@ test("the record follows its session across a resume in the same episode, and ne
     promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
   });
   assert.equal(registry.bindTaskToWorkEpisode("resume", "first", episode("e1", "first")), true);
-  registry.commitTaskShaping("resume", record("first"), "text");
+  registry.commitTaskShaping("resume", "first", record("first"), "text");
   assert.equal(registry.getTask("resume")?.shaping?.sessionId, "first");
 
   // The same conversation, resumed into a new session: the record moves with it.
@@ -189,7 +190,7 @@ test("a hibernated task resumed into a new session of the same episode carries i
     promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
   });
   assert.equal(registry.bindTaskToWorkEpisode("hibernate", "before", episode("before")), true);
-  registry.commitTaskShaping("hibernate", record("before"), "text");
+  registry.commitTaskShaping("hibernate", "before", record("before"), "text");
   // The resume path: the successor's episode is recorded, then the task row and its binding are
   // written in one transaction by `persistResumedTask`, and published afterwards.
   db.replaceSessionWorkEpisode(episode("after"));
@@ -201,6 +202,38 @@ test("a hibernated task resumed into a new session of the same episode carries i
   assert.ok(currentShaping(registry.getTask("hibernate")!));
 });
 
+test("a resume whose shaping re-key fails still binds its successor, and hides the old record", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "rekey-fails", status: "running", sessionId: "before" }));
+  const episode = (sessionId: string) => ({
+    episodeId: "e-rekey", sessionId, agentSessionId: "agent-rekey", branch: null, prUrl: null, prHeadSha: null, mergedAt: null,
+    promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
+  });
+  assert.equal(registry.bindTaskToWorkEpisode("rekey-fails", "before", episode("before")), true);
+  registry.commitTaskShaping("rekey-fails", "before", record("before"), "text");
+  db.replaceSessionWorkEpisode(episode("after"));
+  const resumed = { ...registry.getTask("rekey-fails")!, sessionId: "after" };
+  // SQLite refuses the re-key itself; every other write in the resume succeeds.
+  const d = db.openDb();
+  d.exec(`CREATE TRIGGER refuse_shaping_rekey BEFORE UPDATE OF shaping ON tasks
+          BEGIN SELECT RAISE(ABORT, 'disk refused the re-key'); END;`);
+  const warn = console.warn;
+  const warnings: unknown[] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
+  try {
+    const displaced = db.inTransaction(() => registry.persistResumedTask(resumed, "after"));
+    registry.publishPersistedTask(resumed, displaced);
+  } finally {
+    console.warn = warn;
+    d.exec("DROP TRIGGER refuse_shaping_rekey");
+  }
+  assert.match(String(warnings[0]), /could not carry task rekey-fails's shaping record/);
+  assert.equal(db.getTask("rekey-fails")?.sessionId, "after", "the successor was bound");
+  assert.equal(db.taskWorkEpisodeForTask("rekey-fails")?.sessionId, "after", "to the same episode");
+  assert.equal(db.getTask("rekey-fails")?.shaping?.sessionId, "before", "the record still names the prior session");
+  assert.equal(currentShaping(registry.getTask("rekey-fails")!), null, "so no reader shows it for the successor");
+});
+
 test("a resume whose transaction rolls back leaves the record on the original session, in memory and on disk", () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "rollback-resume", status: "running", sessionId: "kept" }));
@@ -209,7 +242,7 @@ test("a resume whose transaction rolls back leaves the record on the original se
     promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
   });
   assert.equal(registry.bindTaskToWorkEpisode("rollback-resume", "kept", episode("kept")), true);
-  registry.commitTaskShaping("rollback-resume", record("kept"), "text");
+  registry.commitTaskShaping("rollback-resume", "kept", record("kept"), "text");
   db.replaceSessionWorkEpisode(episode("lost"));
   const resumed = { ...registry.getTask("rollback-resume")!, sessionId: "lost" };
   // The carry runs inside the transaction; a later write in it fails and everything rolls back.
@@ -233,31 +266,63 @@ test("a commit for a task deleted while its worker started writes nothing", () =
   assert.equal(db.getTask("deleted"), undefined);
 });
 
-test("task events and the snapshot carry only the current session's record", () => {
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "events", status: "running", sessionId: "first" }));
-  registry.commitTaskShaping("events", record("first"), "text");
+function setFlag(enabled: boolean): void {
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "task-shaping", enabled }).ok, true);
+}
+
+/** Every `task_upsert` record for `taskId` while `run` runs. */
+function eventRecords(registry: InstanceType<typeof Registry>, taskId: string, run: () => void): Array<TaskShaping | undefined> {
   const seen: Array<TaskShaping | undefined> = [];
   const onEvent = (event: { type: string; task?: { id: string; shaping?: TaskShaping } }) => {
-    if (event.type === "task_upsert" && event.task?.id === "events") seen.push(event.task.shaping);
+    if (event.type === "task_upsert" && event.task?.id === taskId) seen.push(event.task.shaping);
   };
   registry.on("event", onEvent);
   try {
-    // A redispatch onto another session: memory keeps the earlier record, the wire never does.
-    registry.upsertTask({ ...registry.getTask("events")!, sessionId: "second" });
+    run();
   } finally {
     registry.off("event", onEvent);
   }
+  return seen;
+}
+
+test("task events and the snapshot carry only the current session's record", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "events", status: "running", sessionId: "first" }));
+  registry.commitTaskShaping("events", "first", record("first"), "text");
+  // The current session's record does leave the daemon while the flag is on.
+  assert.deepEqual(eventRecords(registry, "events", () => registry.upsertTask({ ...registry.getTask("events")!, priority: "high" })),
+    [registry.getTask("events")?.shaping]);
+  assert.equal(registry.snapshot().tasks.find((task) => task.id === "events")?.shaping?.sessionId, "first");
+  // A redispatch onto another session: memory keeps the earlier record, the wire never does.
+  const seen = eventRecords(registry, "events", () => registry.upsertTask({ ...registry.getTask("events")!, sessionId: "second" }));
   assert.equal(registry.getTask("events")?.shaping?.sessionId, "first", "memory still holds it");
   assert.deepEqual(seen, [undefined], "the event does not carry a record that names another session");
   const snap = registry.snapshot().tasks.find((task) => task.id === "events");
   assert.equal(snap?.shaping, undefined, "and neither does the snapshot");
 });
 
+test("with the flag off, task events and the snapshot carry no record, and turning it on shows it again", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "flag-events", status: "running", sessionId: "s1" }));
+  registry.commitTaskShaping("flag-events", "s1", record("s1"), "text");
+  setFlag(false);
+  try {
+    const seen = eventRecords(registry, "flag-events", () => registry.upsertTask({ ...registry.getTask("flag-events")!, priority: "high" }));
+    assert.deepEqual(seen, [undefined], "an edit's event hides it");
+    assert.equal(registry.snapshot().tasks.find((task) => task.id === "flag-events")?.shaping, undefined, "and so does a reconnect's snapshot");
+    assert.equal(db.getTask("flag-events")?.shaping?.sessionId, "s1", "nothing was deleted");
+  } finally {
+    setFlag(true);
+  }
+  assert.equal(registry.snapshot().tasks.find((task) => task.id === "flag-events")?.shaping?.sessionId, "s1");
+});
+
 test("a failed commit for the same session hides the record it was meant to replace", () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "same-session", status: "running", sessionId: "kept" }));
-  registry.commitTaskShaping("same-session", record("kept"), "first text");
+  registry.commitTaskShaping("same-session", "kept", record("kept"), "first text");
   let calls = 0;
   registry.shapingCommitter = (taskId, summary, text) => {
     calls += 1;
@@ -266,13 +331,37 @@ test("a failed commit for the same session hides the record it was meant to repl
     return db.commitTaskShaping(taskId, summary, text);
   };
   try {
-    assert.equal(registry.commitTaskShaping("same-session", record("kept", "degraded"), ""), false);
+    assert.equal(registry.commitTaskShaping("same-session", "kept", record("kept", "degraded"), ""), false);
   } finally {
     registry.shapingCommitter = null;
   }
   assert.equal(registry.getTask("same-session")?.shaping, undefined, "the earlier delivery's context is not shown as this one's");
   assert.equal(db.getTask("same-session")?.shaping, undefined, "and is cleared on disk");
   assert.equal(db.getTaskShapingText("same-session"), null);
+});
+
+test("a failed unshaped commit to the same session hides that session's earlier record too", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "same-unshaped", status: "running", sessionId: "kept" }));
+  registry.commitTaskShaping("same-unshaped", "kept", record("kept"), "first text");
+  let calls = 0;
+  registry.shapingCommitter = (taskId, summary, text) => {
+    calls += 1;
+    // A handover no shaper applied to: its clearing write fails, the clean-up that follows succeeds.
+    if (calls === 1) throw new Error("disk full");
+    return db.commitTaskShaping(taskId, summary, text);
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(registry.commitTaskShaping("same-unshaped", "kept", null, ""), false);
+  } finally {
+    console.warn = warn;
+    registry.shapingCommitter = null;
+  }
+  assert.equal(calls, 2, "the clean-up ran although the launch carried no summary");
+  assert.equal(currentShaping(registry.getTask("same-unshaped")!), null, "the earlier delivery's context is not shown as this one's");
+  assert.equal(db.getTask("same-unshaped")?.shaping, undefined);
 });
 
 test("a restart reads the record back with the task", () => {

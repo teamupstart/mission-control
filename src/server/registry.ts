@@ -18,7 +18,8 @@ import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
-import { currentShaping, withCurrentShaping, type TaskShaping } from "@shared/shaping.ts";
+import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
+import { taskShapingForReads } from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -1353,7 +1354,7 @@ export class Registry extends EventEmitter {
       reviews: [...this.reviews.values()],
       // Memory keeps an earlier launch's record so a later publish can carry it forward; what
       // leaves the daemon carries only the record of the session the task is on now.
-      tasks: [...this.tasks.values()].map(withCurrentShaping),
+      tasks: [...this.tasks.values()].map(taskShapingForReads),
       personas: [...this.personas.values()],
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
@@ -2135,10 +2136,11 @@ export class Registry extends EventEmitter {
   }
 
   private deliverEvent(event: ServerEvent): void {
-    // A task leaves the daemon with only its current session's shaping record, as every task
-    // read does; memory may still hold an earlier launch's (see `withShaping`).
+    // A task leaves the daemon as every task read returns it: with only its current session's
+    // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
+    // (see `withShaping`).
     const e: ServerEvent = event.type === "task_upsert" && event.task.shaping !== undefined
-      ? { ...event, task: withCurrentShaping(event.task) }
+      ? { ...event, task: taskShapingForReads(event.task) }
       : event;
     this.emit("event", e);
     // The Line's one hook into the stores it folds over.
@@ -7684,18 +7686,20 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Settle a launch's shaping record once its turn one reached the worker: the summary
-   * (stamped with the session it was delivered to) and the delivered text, in one transaction.
-   * A commit that fails is logged and changes nothing in memory either, so the task keeps the
-   * record that names an earlier session - which `currentShaping` then shows nowhere. It never
-   * throws: a launch that reached its worker is not failed by its own bookkeeping.
+   * Settle a launch's shaping record once its turn one reached the worker: the summary,
+   * stamped here with `sessionId`, the session it was delivered to, and the delivered text, in
+   * one transaction. A null summary clears both. A commit that fails is logged and keeps a
+   * record naming an earlier session, which `currentShaping` then shows nowhere; one naming
+   * `sessionId` itself is hidden (`hideSupersededShaping`), whether or not this launch was
+   * shaped. It never throws: a launch that reached its worker is not failed by its own bookkeeping.
    */
-  commitTaskShaping(taskId: string, summary: TaskShaping | null, text: string): boolean {
+  commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
+    const summary = unstamped ? { ...unstamped, sessionId } : null;
     try {
       (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
-      this.hideSupersededShaping(taskId, summary?.sessionId ?? null);
+      this.hideSupersededShaping(taskId, sessionId);
       return false;
     }
     const current = this.tasks.get(taskId);
@@ -7725,7 +7729,14 @@ export class Registry extends EventEmitter {
     const live = this.tasks.get(taskId);
     const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== prior.sessionId) return null;
-    if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+    try {
+      if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+    } catch (error) {
+      // The successor still binds: the record keeps naming the prior session, so
+      // `currentShaping` hides it rather than show it for a conversation it no longer describes.
+      console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its successor session:`, error);
+      return null;
+    }
     this.carriedShaping.add(taskId);
     return { ...record, sessionId: toSessionId };
   }
@@ -7736,9 +7747,9 @@ export class Registry extends EventEmitter {
    * what readers see now, and try once more to clear it on disk; a reader never shows context
    * this delivery did not receive.
    */
-  private hideSupersededShaping(taskId: string, sessionId: string | null): void {
+  private hideSupersededShaping(taskId: string, sessionId: string): void {
     const current = this.tasks.get(taskId);
-    if (!sessionId || current?.shaping?.sessionId !== sessionId) return;
+    if (current?.shaping?.sessionId !== sessionId) return;
     try {
       (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, null, "");
     } catch {

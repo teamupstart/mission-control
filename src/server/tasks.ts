@@ -5377,7 +5377,7 @@ export class TaskManager {
     // The turn reached the session: only now does this handover's shaping record replace the
     // task's last one, stamped with the session it was delivered to. Settled whether or not
     // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
-    this.registry.commitTaskShaping(t.id, shaping.summary ? { ...shaping.summary, sessionId: s.id } : null, shaping.section);
+    this.registry.commitTaskShaping(t.id, s.id, shaping.summary, shaping.section);
     const cur = this.registry.getTask(t.id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({

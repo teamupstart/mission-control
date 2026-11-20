@@ -43,7 +43,7 @@ beforeEach(() => setFlag(true));
 /** A running task on `sessionId` whose stored record names `recordSession`. */
 function seed(id: string, sessionId: string, recordSession: string): void {
   registry.upsertTask(mkTask({ id, status: "running", sessionId }));
-  assert.equal(registry.commitTaskShaping(id, record(recordSession), "## Task context\n\nbody"), true);
+  assert.equal(registry.commitTaskShaping(id, recordSession, record(recordSession), "## Task context\n\nbody"), true);
 }
 
 const tasksRead = async () => (await (await app.request("/api/tasks", { headers })).json()) as Array<{ id: string; shaping?: TaskShaping }>;

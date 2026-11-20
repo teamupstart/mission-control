@@ -130,8 +130,10 @@ test("a shaped dispatch shows Shaping context, then the context its session rece
   writeFileSync(gate, "");
 
   // The worker's first prompt ends with the Task context section, after the operator's words.
-  await expect.poll(() => recordedUserTurns(daemon).find((turn) => turn.includes("Make charging idempotent.")) ?? "", { timeout: 60_000 })
+  const turnOne = () => recordedUserTurns(daemon).find((turn) => turn.includes("Make charging idempotent.")) ?? "";
+  await expect.poll(turnOne, { timeout: 60_000 })
     .toMatch(/Make charging idempotent\.[\s\S]*## Task context[\s\S]*### Acme guidance: Idempotent charges[\s\S]*### Acme guidance: Retry budget/);
+  const sentSection = turnOne().slice(turnOne().indexOf("## Task context"));
 
   await sessionRail(dashboard, title).click();
   const chip = dashboard.locator(".console-detail").getByRole("button", { name: "Context: 2 entries", exact: true });
@@ -145,7 +147,7 @@ test("a shaped dispatch shows Shaping context, then the context its session rece
   const delivered = viewer.getByRole("region", { name: "Delivered in turn one" });
   await expect(delivered).toContainText("## Task context");
   const deliveredText = await delivered.locator("pre").innerText();
-  expect(deliveredText).toMatch(/### Acme guidance: Idempotent charges\nCharge each key once in [^\n]+\n\n### Acme guidance: Retry budget\nBack off exponentially/);
+  expect(deliveredText.trim()).toBe(sentSection.trim());
   await expectContentClearsBorder(viewer);
   await shoot(dashboard, "context-viewer", viewer);
   await viewer.getByRole("button", { name: "Close" }).click();

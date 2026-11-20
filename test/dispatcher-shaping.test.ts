@@ -734,29 +734,115 @@ function heldSupervisor(registry: InstanceType<typeof Registry>) {
   return { supervisor: supervisor as typeof supervisor & SdkSupervisor, release, atStart };
 }
 
-test("a launch a later dispatch replaced never overwrites the record its successor delivered", async () => {
-  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
-  const repo = seedRepo("superseded");
-  const registry = new Registry();
-  registry.upsertTask(mkTask({ id: "superseded", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "codex" }));
-  const held = heldSupervisor(registry);
-  const dispatcher = new Dispatcher(registry, async () => {}, {
-    supervisor: held.supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
-    verifyMissionMcpTools: async () => ({ ok: true }),
-    shapeTask: standIn(`${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: First\nfirst launch`).shapeTask,
+/** A supervisor that records each start and holds it until the test releases them all. */
+function gatedSupervisor(registry: InstanceType<typeof Registry>) {
+  const starts: Parameters<SdkSupervisor["start"]>[0][] = [];
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const waiters: Array<{ count: number; resolve: () => void }> = [];
+  const supervisor = {
+    starts,
+    async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
+      starts.push(input);
+      for (const waiter of waiters) if (starts.length >= waiter.count) waiter.resolve();
+      await released;
+      return registry.registerSdkSession({ id: input.sessionId ?? `sdk:${++seq}`, agent: input.agent, name: input.name, cwd: input.cwd });
+    },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  const reached = (count: number) => new Promise<void>((resolve) => {
+    if (starts.length >= count) resolve();
+    else waiters.push({ count, resolve });
   });
-  const first = dispatcher.dispatch("superseded");
-  await held.atStart;
-  // The operator cancels it and dispatches again while its driver is still starting.
-  registry.upsertTask({ ...registry.getTask("superseded")!, status: "cancelled" });
-  const second = await sdkDispatch({ agent: "codex", repo, taskId: "superseded", intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
-  assertRunning(second.task);
-  const delivered = { record: getDurableTask("superseded")?.shaping, text: getTaskShapingText("superseded")?.text };
-  assert.equal(delivered.text, SECTION, "the successor's launch recorded its own context");
-  held.release();
-  await first;
-  assert.deepEqual(getDurableTask("superseded")?.shaping, delivered.record, "the replaced launch wrote nothing");
-  assert.equal(getTaskShapingText("superseded")?.text, SECTION);
+  return { supervisor: supervisor as typeof supervisor & SdkSupervisor, release, reached };
+}
+
+/** Both attempts of one task through the SAME dispatcher, as a cancel and a redispatch run them. */
+function sameDispatcher(taskId: string, repo: string, shapeTask: ShapeTask) {
+  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "codex" }));
+  const gate = gatedSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    supervisor: gate.supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }), shapeTask,
+  });
+  const redispatch = () => {
+    registry.upsertTask({ ...registry.getTask(taskId)!, status: "cancelled" });
+    registry.upsertTask({ ...registry.getTask(taskId)!, status: "dispatching", sessionId: null, worktreePath: null, branch: null });
+    return dispatcher.dispatch(taskId);
+  };
+  return { registry, gate, dispatcher, redispatch };
+}
+
+const FIRST_SECTION = `${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: First\nfirst launch`;
+
+test("a launch a later dispatch replaced never overwrites the record its successor delivered", async () => {
+  let calls = 0;
+  const first = standIn(FIRST_SECTION).shapeTask;
+  const second = standIn(SECTION).shapeTask;
+  const run = sameDispatcher("superseded", seedRepo("superseded"), (input, deps) => (++calls === 1 ? first : second)(input, deps));
+  const original = run.dispatcher.dispatch("superseded");
+  // The operator cancels and dispatches again while the first driver is still starting.
+  await run.gate.reached(1);
+  const replacement = run.redispatch();
+  await run.gate.reached(2);
+  run.gate.release();
+  await Promise.all([original, replacement]);
+  assertRunning(run.registry.getTask("superseded")!);
+  assert.equal(getTaskShapingText("superseded")?.text, SECTION, "only the successor's launch recorded its context");
+  assert.equal(currentShaping(getDurableTask("superseded")!)?.entries, 1);
+});
+
+test("a dispatch replaced while its shapers ran launches nothing, and leaves the successor's mark alone", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reachedShaping!: () => void;
+  const inShaping = new Promise<void>((resolve) => { reachedShaping = resolve; });
+  let calls = 0;
+  const second = standIn(SECTION).shapeTask;
+  const run = sameDispatcher("replaced-shaping", seedRepo("replaced-shaping"), async (input, deps) => {
+    if (++calls > 1) return second(input, deps);
+    reachedShaping();
+    await held;
+    return standIn(FIRST_SECTION).shapeTask(input, deps);
+  });
+  const original = run.dispatcher.dispatch("replaced-shaping");
+  await inShaping;
+  // Cancelled and dispatched again: the task is `dispatching` once more, under a new attempt.
+  const replacement = run.redispatch();
+  await run.gate.reached(1);
+  // The first attempt's shapers answer now, while its successor is still starting its driver.
+  release();
+  await Promise.race([original, run.gate.reached(2)]);
+  assert.equal(run.gate.supervisor.starts.length, 1, "the replaced attempt never reached a worker");
+  run.gate.release();
+  await Promise.all([original, replacement]);
+  assertRunning(run.registry.getTask("replaced-shaping")!);
+  assert.equal(run.registry.getTask("replaced-shaping")?.shapingContext, undefined, "no mark is left behind");
+  assert.equal(getTaskShapingText("replaced-shaping")?.text, SECTION);
+  // Each settled attempt releases its identity, so the map does not grow with every task.
+  assert.equal((run.dispatcher as unknown as { dispatchAttempts: Map<string, symbol> }).dispatchAttempts.size, 0);
+});
+
+test("a section the final check drops counts nothing as delivered, and keeps each shaper's outcome", async () => {
+  const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
+  const task = mkTask({ id: "final-check", status: "dispatching", repoRoot: seedRepo("final-check"), title: "Shaping", intent: "do it", agent: "claude" });
+  const shaped = await shapeLaunch({
+    task, runtime: "terminal", workflowName: () => null, trace: null, delivery: HARNESSES.claude.turnOne.terminal,
+    turnOnes: ["do it"], launch: null, stillDispatching: () => true, onShaping: () => {},
+    finalCheck: async () => "the pane paste would not fit, so no context was added",
+  }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
+  assert.equal(shaped.section, "");
+  assert.equal(shaped.summary?.state, "ok");
+  assert.equal(shaped.summary?.entries, 0, "the chip counts what reached turn one");
+  assert.equal(shaped.summary?.bytes, 0);
+  assert.equal(shaped.summary?.truncated, true);
+  assert.deepEqual(shaped.summary?.limit, { bytes: 0, reason: "the pane paste would not fit, so no context was added" });
+  assert.equal(shaped.summary?.shapers[0]?.outcome, "ok", "the shaper still answered");
+  assert.equal(shaped.summary?.shapers[0]?.entries, 0);
+  assert.equal(shaped.summary?.shapers[0]?.truncated, true);
 });
 
 test("a launch cancelled while its driver started records nothing", async () => {

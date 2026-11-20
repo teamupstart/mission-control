@@ -440,6 +440,10 @@ export class Dispatcher {
     // replaces it, and an attempt that is no longer current never writes the record.
     const attempt = Symbol(taskId);
     this.dispatchAttempts.set(taskId, attempt);
+    const currentAttempt = () => this.dispatchAttempts.get(taskId) === attempt;
+    // A replaced attempt may still be inside its shaping step, and it no longer raises or clears
+    // the task's "Shaping context" mark (see `onShaping`), so this one starts from none.
+    this.registry.setTaskShapingContext(taskId, false);
     // Only failures in the resource preflight/provisioning phase are safe ordinary backlog
     // retries. Earlier refusals describe a task or launch configuration that must change,
     // while anything after this phase may have crossed into an agent runtime.
@@ -895,7 +899,15 @@ export class Dispatcher {
       // byte-identical to one from before shaping. It never throws and never blocks the launch.
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
         agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
+        currentAttempt,
       });
+      // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
+      // a later attempt that owns it now: this one launches nothing and tears nothing down.
+      if (!currentAttempt()) {
+        cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
+        pendingAgentStateHome = null;
+        return;
+      }
       if (await this.abortIfSettled(taskId)) {
         cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
         pendingAgentStateHome = null;
@@ -1283,6 +1295,9 @@ export class Dispatcher {
         });
         await this.teardownTaskResources(taskId, cur, message);
       }
+    } finally {
+      // Settled: nothing of this attempt writes after here. A successor's entry is its own.
+      if (currentAttempt()) this.dispatchAttempts.delete(taskId);
     }
   }
 
@@ -2350,6 +2365,8 @@ export class Dispatcher {
       piHasMemory: boolean;
       /** The terminal backend this launch was configured for, or null for an automatic choice. */
       terminalBackend: string | null;
+      /** Whether this dispatch is still the task's current attempt. */
+      currentAttempt: () => boolean;
     },
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
@@ -2388,8 +2405,8 @@ export class Dispatcher {
             argMax: await (this.deps.argMax ?? platformArgMax)(),
           })
         : null,
-      stillDispatching: () => this.stillDispatching(taskId),
-      onShaping: (active) => this.registry.setTaskShapingContext(taskId, active),
+      stillDispatching: () => launch.currentAttempt() && this.stillDispatching(taskId),
+      onShaping: (active) => { if (launch.currentAttempt()) this.registry.setTaskShapingContext(taskId, active); },
       // A pane paste that travels as an `osascript` argument shares `ARG_MAX` with the daemon's
       // environment, and its size depends on the exact text, so the shaped turn is checked as
       // the AppleScript backends encode it before it is sent.
@@ -2418,7 +2435,7 @@ export class Dispatcher {
     if (this.dispatchAttempts.get(taskId) !== attempt) return;
     const task = this.registry.getTask(taskId);
     if (!task || (task.status !== "dispatching" && task.sessionId !== sessionId)) return;
-    this.registry.commitTaskShaping(taskId, shaping.summary ? { ...shaping.summary, sessionId } : null, shaping.section);
+    this.registry.commitTaskShaping(taskId, sessionId, shaping.summary, shaping.section);
   }
 
   /**

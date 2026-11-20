@@ -198,8 +198,18 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
     const shaped = recordLimit(run, allowance, config.limits.totalBytes);
     const unfit = shaped.section && input.finalCheck ? await input.finalCheck(shaped.section) : null;
     if (!unfit || !shaped.summary) return shaped;
+    // Nothing reached turn one, so nothing is counted as delivered: each shaper keeps its
+    // outcome, and an answer that had entries reads as truncated, as the record does.
     return {
-      summary: { ...shaped.summary, truncated: true, limit: { bytes: 0, reason: unfit.slice(0, SHAPING_LIMITS.reasonChars) } },
+      summary: {
+        ...shaped.summary,
+        entries: 0,
+        bytes: 0,
+        truncated: true,
+        limit: { bytes: 0, reason: unfit.slice(0, SHAPING_LIMITS.reasonChars) },
+        shapers: shaped.summary.shapers.map((shaper) =>
+          shaper.entries || shaper.bytes ? { ...shaper, entries: 0, bytes: 0, truncated: true } : shaper),
+      },
       section: "",
     };
   } catch (error) {

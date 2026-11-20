@@ -59,6 +59,7 @@ Mission Control's product reference is organized by feature below.
 - [Setup guide](setup-guide.html): install Mission Control, set this machine up from **Settings → Setup**, and keep the app current. Illustrated, for someone installing it for the first time.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
+- [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
 
 ## Support
 

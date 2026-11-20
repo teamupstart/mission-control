@@ -91,8 +91,22 @@ function nameSegments(name: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Git's own config-from-environment family: `GIT_CONFIG_COUNT=N` plus `GIT_CONFIG_KEY_<i>` and
+ * `GIT_CONFIG_VALUE_<i>` for every `i` below N.
+ *
+ * `GIT_CONFIG_KEY_<i>` names a config KEY - `core.editor`, `maintenance.auto` - never a
+ * credential, but its `KEY` segment is exactly what the name rule exists to catch. And the
+ * family is all or nothing: git handed a COUNT whose `KEY_0` was removed refuses to run at all
+ * ("missing config key GIT_CONFIG_KEY_0"), so an operator who exports one ordinary setting
+ * this way would have every git in every Command fail with a message nothing here explains.
+ */
+const GIT_CONFIG_KEY = /^GIT_CONFIG_KEY_\d+$/;
+const GIT_CONFIG_FAMILY = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+
 /** Whether this variable's NAME says it carries a credential. */
 export function credentialShapedName(name: string): boolean {
+  if (GIT_CONFIG_KEY.test(name)) return false;
   const lower = name.toLowerCase();
   if (CREDENTIAL_SUFFIX.test(lower)) return true;
   return nameSegments(name).some((segment) => CREDENTIAL_SEGMENTS.has(segment));
@@ -126,6 +140,26 @@ export function credentialShapedName(name: string): boolean {
  */
 export const MAKE_RECURSION_ENV_NAMES = ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"] as const;
 
+/** Whether every entry `GIT_CONFIG_COUNT` promises is present, or there is no COUNT at all. */
+function completeGitConfigFamily(env: NodeJS.ProcessEnv): boolean {
+  const count = env.GIT_CONFIG_COUNT;
+  if (count === undefined) return true;
+  // The spelling, not the number: `Number` reads "0.0", "1e0", "0x1" and "007" as integers,
+  // and git refuses every one of them at startup. Only a plain decimal is forwarded; any other
+  // spelling takes the family with it, which costs the Command those settings, not git.
+  if (!/^(?:0|[1-9][0-9]*)$/.test(count)) return false;
+  // Bounded before the loop as well as by it. The loop already stops at the first missing
+  // entry, so even a long digit string that converts to Infinity ends at once; this states the
+  // limit outright. A complete family needs a KEY and a VALUE variable per entry, so a count
+  // larger than the environment itself can never be complete, and nothing is walked to prove it.
+  const n = Number(count);
+  if (!Number.isSafeInteger(n) || n * 2 > Object.keys(env).length) return false;
+  for (let i = 0; i < n; i++) {
+    if (env[`GIT_CONFIG_KEY_${i}`] === undefined || env[`GIT_CONFIG_VALUE_${i}`] === undefined) return false;
+  }
+  return true;
+}
+
 export function scrubCheckEnv(
   env: NodeJS.ProcessEnv,
   daemonToken: string,
@@ -157,6 +191,12 @@ export function scrubCheckEnv(
     // that quotes it is as good as one that is it.
     if (scrubValues && value.includes(secret)) continue;
     out[name] = value;
+  }
+  // A `GIT_CONFIG_VALUE_<i>` that quotes the token was removed above, and git refuses a COUNT
+  // with any entry missing. Removing the whole family costs the Command those settings; keeping
+  // the rest would cost it git.
+  if (!completeGitConfigFamily(out)) {
+    for (const name of Object.keys(out)) if (GIT_CONFIG_FAMILY.test(name)) delete out[name];
   }
   return agentSubprocessEnv(out);
 }

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, builtinWorkflowVersionId } from "../src/shared/builtin-workflow.ts";
 import type { PlanIdentity } from "../src/shared/managed-plans.ts";
@@ -36,13 +37,12 @@ after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
   const id = randomUUID(), repo = join(home, id);
-  mkdirSync(repo); git(repo, "init", "-q", "-b", "main");
-  git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial");
+  const baseSha = seedGitRepo(repo, { branch: "main", files: {}, message: "initial", name: "Test", email: "test@example.com", storeIdentity: false });
   const registry = new Registry();
   registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null, terminals: [], startedAt: 1 }]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: id, cwd: repo, transcriptPath: null, env: {} });
   const session = registry.getSession(id)!;
-  const task = mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha: git(repo, "rev-parse", "HEAD"), workflowId: workflow ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : null,
+  const task = mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha, workflowId: workflow ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : null,
     planPolicy: { version: 2, storage: "local", commitPlanHtml: true }, planInputs: [] });
   registry.upsertTask(task);
   const personas = new PersonaManager(registry), workflows = new WorkflowManager(registry, personas.store);

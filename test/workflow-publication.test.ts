@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { tmpdir } from "node:os";
 import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
 import { captureWorkflowPublication } from "../src/server/workflows/publication.ts";
@@ -21,13 +22,12 @@ function git(root: string, ...args: string[]): string {
 }
 function repo(): string {
   const root = join(home, String(++serial));
-  mkdirSync(root);
-  git(root, "init", "-q");
-  git(root, "config", "user.name", "Test");
-  git(root, "config", "user.email", "test@example.invalid");
-  writeFileSync(join(root, "source.ts"), "export const answer = 42;\n");
-  git(root, "add", ".");
-  git(root, "commit", "-qm", "initial");
+  seedGitRepo(root, {
+    files: { "source.ts": "export const answer = 42;\n" },
+    message: "initial",
+    name: "Test",
+    email: "test@example.invalid",
+  });
   return root;
 }
 const reportPath = "docs/reports/result/report.html";

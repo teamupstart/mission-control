@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { cachedGitTree } from "./helpers/git-fixture.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
@@ -39,7 +40,10 @@ function commit(cwd: string, file: string, text: string, message: string): strin
 
 /** origin (bare), a "remote author" clone that pushes, and the operator's main checkout. */
 function fixture(): { origin: string; author: string; checkout: string } {
-  const root = mkdtempSync(join(home, "repo-"));
+  return cachedGitTree("stacking", mkdtempSync(join(home, "repo-")), buildFixture);
+}
+
+function buildFixture(root: string): { origin: string; author: string; checkout: string } {
   const origin = join(root, "origin.git");
   git(root, "init", "-q", "--bare", "-b", "main", origin);
   const author = join(root, "author");

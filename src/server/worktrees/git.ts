@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
@@ -112,6 +112,25 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
   return registrations;
 }
 
+/**
+ * The trimmed contents of the checkout's own HEAD file, or null when it cannot be read. A
+ * linked worktree's `.git` is a file naming its private git dir, relative paths included.
+ */
+async function headFile(path: string): Promise<string | null> {
+  try {
+    const dotGit = join(path, ".git");
+    let gitDir = dotGit;
+    if ((await lstat(dotGit)).isFile()) {
+      const pointer = (await readFile(dotGit, "utf8")).trim();
+      if (!pointer.startsWith("gitdir: ")) return null;
+      gitDir = resolve(path, pointer.slice("gitdir: ".length));
+    }
+    return (await readFile(join(gitDir, "HEAD"), "utf8")).trim();
+  } catch {
+    return null;
+  }
+}
+
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
   private readonly execute: typeof run;
@@ -204,17 +223,32 @@ export class NativeWorktreeGit implements WorktreeGit {
     path: string,
     status: RunResult,
   ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
-    const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
-      ok: true, value: { dirty: true, scratch: [] },
-    };
     if (status.stdout === "") return { ok: true, value: { dirty: false, scratch: [] } };
     // NUL records keep quoted, non-ASCII and newline-bearing filenames unambiguous.
     // Any tracked record (including a rename's first record) blocks before path filtering.
-    if (!status.stdout.endsWith("\0")) return dirty;
-    const scratch: string[] = [];
+    if (!status.stdout.endsWith("\0")) return { ok: true, value: { dirty: true, scratch: [] } };
+    const untracked: string[] = [];
     for (const record of status.stdout.slice(0, -1).split("\0")) {
-      const relative = record.slice(3);
-      if (!record.startsWith("?? ") || !isConductorScratchPath(relative)) return dirty;
+      if (!record.startsWith("?? ")) return { ok: true, value: { dirty: true, scratch: [] } };
+      untracked.push(record.slice(3));
+    }
+    return this.scratchOnly(path, untracked);
+  }
+
+  /**
+   * Clean unless an untracked path is anything but disposable scratch. Every path listed is
+   * untracked; the caller has already answered "dirty" for any tracked change.
+   */
+  private async scratchOnly(
+    path: string,
+    untracked: readonly string[],
+  ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
+    const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
+      ok: true, value: { dirty: true, scratch: [] },
+    };
+    const scratch: string[] = [];
+    for (const relative of untracked) {
+      if (!isConductorScratchPath(relative)) return dirty;
       // Never treat symlinks, directories named like files, or unreadable entries as scratch.
       const parts = relative.split("/");
       let current = path;
@@ -237,31 +271,85 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (!identity) {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
-    const [head, status, detached] = await Promise.all([
-      this.observe(["-C", path, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> => {
-        if (commandFailed(result)) return failure("git rev-parse HEAD", result);
-        const sha = result.stdout.trim();
-        if (!/^[0-9a-f]{40}$/.test(sha)) {
-          return { ok: false, reason: "git rev-parse HEAD did not resolve to a full commit id", outcomeUnknown: true };
-        }
-        return { ok: true, value: sha };
-      }),
-      this.status(path),
-      this.detachedAt(path),
-    ]);
-    if (!head.ok) return head;
-    if (!status.ok) return status;
-    if (!detached.ok) return detached;
+    // One read answers all three questions. Every pool observation inspects every slot, so
+    // this used to be three git processes per slot per refresh - `rev-parse HEAD`,
+    // `symbolic-ref --quiet HEAD` and `status` - for answers `status --branch` already carries.
+    // `--no-ahead-behind` keeps it from walking history toward an upstream it does not need.
+    const read = await this.observe(
+      ["-C", path, "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "--untracked-files=all"],
+      15_000,
+      (status) => commandFailed(status) ? failure("git status", status) : this.inspectionOf(path, status.stdout),
+    );
+    if (!read.ok) return read;
     return {
       ok: true,
       value: {
         path: await canonical(path),
-        head: head.value,
-        dirty: status.value.dirty,
+        head: read.value.head,
+        dirty: read.value.dirty,
         commonDirectory: identity.gitCommonDirectory,
-        detached: detached.value,
+        detached: read.value.detached,
       },
     };
+  }
+
+  /**
+   * HEAD's commit, whether HEAD is detached, and whether the tree is dirty, from one
+   * `status --porcelain=v2 --branch -z`.
+   *
+   * The headers carry what the two separate probes used to: `# branch.oid` is the commit
+   * (`(initial)` on an unborn branch, which names none - a refusal, as `rev-parse HEAD`
+   * was), and `# branch.head` is the branch or `(detached)`. Both gate a destructive or
+   * granting transition, so a header that is missing or malformed is Git not having
+   * answered - unknown, never read as "detached" or as a commit - exactly the line the
+   * symbolic-ref probe drew. Entries follow: `?` is untracked; any other record (`1`, `2`,
+   * `u`) is a tracked change and makes the tree dirty before any path is considered.
+   */
+  private async inspectionOf(
+    path: string,
+    stdout: string,
+  ): Promise<GitResult<{ head: string; detached: boolean; dirty: boolean }>> {
+    const unanswered = (what: string): GitResult<never> => ({
+      ok: false,
+      reason: `git status --branch did not report ${what}`,
+      outcomeUnknown: true,
+    });
+    if (!stdout.endsWith("\0")) return unanswered("a complete record");
+    let oid: string | null = null;
+    let branch: string | null = null;
+    let tracked = false;
+    const untracked: string[] = [];
+    const records = stdout.slice(0, -1).split("\0");
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index]!;
+      if (record.startsWith("# branch.oid ")) oid = record.slice("# branch.oid ".length);
+      else if (record.startsWith("# branch.head ")) branch = record.slice("# branch.head ".length);
+      else if (record.startsWith("# ")) continue;
+      else if (record.startsWith("? ")) untracked.push(record.slice(2));
+      else {
+        tracked = true;
+        // A rename's original path is the record after it; it is not an entry of its own.
+        if (record.startsWith("2 ")) index++;
+      }
+    }
+    if (oid === null) return unanswered("HEAD's commit");
+    if (branch === null || branch === "") return unanswered("whether HEAD is detached");
+    if (oid === "(initial)") {
+      return { ok: false, reason: "git status: HEAD names no commit yet", outcomeUnknown: false };
+    }
+    if (!/^[0-9a-f]{40}$/.test(oid)) return unanswered("HEAD as a full commit id");
+    // `(detached)` is also a legal branch name, and status prints it identically. The HEAD
+    // file settles it without another process: a detached HEAD holds a commit, a branch a ref.
+    if (branch === "(detached)") {
+      const head = await headFile(path);
+      if (head === null) return unanswered("whether HEAD is detached");
+      if (head.startsWith("ref: ")) branch = head.slice("ref: ".length);
+    }
+    const status = tracked
+      ? { ok: true as const, value: { dirty: true, scratch: [] } }
+      : await this.scratchOnly(path, untracked);
+    if (!status.ok) return status;
+    return { ok: true, value: { head: oid, detached: branch === "(detached)", dirty: status.value.dirty } };
   }
 
   async add(

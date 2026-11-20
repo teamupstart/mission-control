@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   symlinkSync,
   unlinkSync,
@@ -30,7 +31,7 @@ import {
 import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
-import type { RunResult } from "../src/server/util/exec.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import {
   provisionWorktree,
@@ -157,6 +158,39 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
   assert.deepEqual(cleared.repositories["/one/.git"], { enabled: false, maxSlots: 4 });
 });
 
+/** A linked worktree of `clone` at its HEAD, detached, beside the clone. */
+function mkLinkedDetached(clone: string, name: string): string {
+  const path = join(clone, "..", name);
+  gitIn(clone, "worktree", "add", "-q", "--detach", path);
+  return realpathSync(path);
+}
+
+test("inspection reads HEAD, detachment and dirtiness from real git in one status read", async () => {
+  const { clone } = repository("mission-native-inspect-");
+  const detached = mkLinkedDetached(clone, "detached");
+  const calls: string[][] = [];
+  const git = new NativeWorktreeGit(async (bin, args, options) => {
+    calls.push(args);
+    return run(bin, args, options);
+  });
+  const clean = await git.inspect(detached);
+  assert.ok(clean.ok, clean.ok ? "" : clean.reason);
+  assert.deepEqual(
+    { head: clean.value.head, detached: clean.value.detached, dirty: clean.value.dirty },
+    { head: gitIn(detached, "rev-parse", "HEAD"), detached: true, dirty: false },
+  );
+  assert.equal(calls.length, 1, "one git process per inspection");
+
+  // `(detached)` is a legal branch name, and status prints it exactly as it prints a detached
+  // HEAD. A slot on that branch holds a branch, which is what gates its lease.
+  gitIn(detached, "switch", "-q", "-c", "(detached)");
+  writeFileSync(join(detached, "keep.txt"), "changed\n");
+  const named = await git.inspect(detached);
+  assert.ok(named.ok, named.ok ? "" : named.reason);
+  assert.equal(named.value.detached, false);
+  assert.equal(named.value.dirty, true);
+});
+
 test("native Git operations fail closed when a subprocess outcome is unknown", async () => {
   const { clone, sha } = repository("mission-native-git-unknown-");
   const identity = worktreeRepositoryIdentity(clone);
@@ -191,20 +225,48 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
-  const inspectSteps: Record<string, RegExp> = {
-    "rev-parse": /git rev-parse HEAD/,
-    status: /git status/,
-    // A detached-HEAD probe that never answered is not "detached". It gates the lease, so
-    // it fails the whole inspection rather than defaulting either way.
-    "symbolic-ref": /git symbolic-ref HEAD/,
-  };
-  for (const [unknownProbe, step] of Object.entries(inspectSteps)) {
-    const inspected = await new NativeWorktreeGit(async (_bin, args) => {
-      if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
-      return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
-    }, noPause).inspect(clone);
-    assertUnknown(inspected, step);
+  // Inspection is one `status --porcelain=v2 --branch` read. A read that died, and one that
+  // answered without the header a verdict needs, are both unknown: a HEAD nobody reported is
+  // neither a commit nor "detached". Detachment gates the lease, so it fails the whole
+  // inspection rather than defaulting either way.
+  const header = (oid: string, head: string) => `# branch.oid ${oid}\0# branch.head ${head}\0`;
+  assertUnknown(await new NativeWorktreeGit(async () => unknown(header(sha, "(detached)")), noPause).inspect(clone), /git status/);
+  for (const [stdout, step] of [
+    [`# branch.head (detached)\0`, /HEAD's commit/],
+    [`# branch.oid ${sha}\0`, /whether HEAD is detached/],
+    [header(sha.slice(0, 12), "(detached)"), /full commit id/],
+    [`# branch.oid ${sha}\0# branch.head (detached)`, /complete record/],
+  ] as const) {
+    assertUnknown(await new NativeWorktreeGit(async () => known(stdout), noPause).inspect(clone), step);
   }
+  const unborn = await new NativeWorktreeGit(async () => known(header("(initial)", "main")), noPause).inspect(clone);
+  assert.equal(unborn.ok, false, "an unborn HEAD names no commit to lease");
+  if (!unborn.ok) assert.equal(unborn.outcomeUnknown, false);
+  // A real detached linked worktree, because a `(detached)` header is confirmed against HEAD.
+  const detachedTree = mkLinkedDetached(clone, "mission-native-git-unknown-detached");
+  const answered = await new NativeWorktreeGit(async () =>
+    known(`${header(sha, "(detached)")}? .pipeline/DONE\0`), noPause).inspect(detachedTree);
+  assert.ok(answered.ok);
+  assert.equal(answered.value.head, sha);
+  assert.equal(answered.value.detached, true);
+  // `(detached)` is also a legal branch name, so that header is only believed once the
+  // checkout's own HEAD file confirms it. A HEAD file that cannot be read settles nothing:
+  // the inspection is unknown, never "detached", because detachment gates the lease.
+  const privateHead = join(gitIn(detachedTree, "rev-parse", "--absolute-git-dir"), "HEAD");
+  renameSync(privateHead, `${privateHead}.moved`);
+  try {
+    assertUnknown(
+      await new NativeWorktreeGit(async () => known(header(sha, "(detached)")), noPause).inspect(detachedTree),
+      /whether HEAD is detached/,
+    );
+  } finally {
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
+  const changed = await new NativeWorktreeGit(async () =>
+    known(`${header(sha, "feature")}1 .M N... 100644 100644 100644 ${sha} ${sha} keep.txt\0`), noPause).inspect(clone);
+  assert.ok(changed.ok);
+  assert.equal(changed.value.detached, false);
+  assert.equal(changed.value.dirty, true, "a tracked change is dirty before any path is considered");
 
   const added = await new NativeWorktreeGit(async () => unknown()).add(
     identity,

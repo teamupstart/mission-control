@@ -17,6 +17,7 @@ import {
   type SnapshotDiffDeps,
 } from "../src/server/git/ensemble-snapshot.ts";
 import { run, stubRun } from "../src/server/util/exec.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 // What is at stake: taking a picture of an agent's work without touching the work.
 //
@@ -50,19 +51,17 @@ function indexBytes(dir: string): Buffer {
  */
 function mkRepoWithMember(name: string): { repo: string; member: string; baseSha: string } {
   const repo = join(tmp, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  git(repo, "config", "user.email", "t@test");
-  git(repo, "config", "user.name", "t");
-  writeFileSync(join(repo, ".gitignore"), "cache/\n");
-  writeFileSync(join(repo, "keep.txt"), "base\n");
-  writeFileSync(join(repo, "staged.txt"), "before staging\n");
-  writeFileSync(join(repo, "unstaged.txt"), "before editing\n");
-  writeFileSync(join(repo, "doomed.txt"), "about to be deleted\n");
-  writeFileSync(join(repo, "moves.txt"), "this file gets renamed\n");
-  git(repo, "add", "-A");
-  git(repo, "commit", "-qm", "base");
-  const baseSha = git(repo, "rev-parse", "HEAD");
+  const baseSha = seedGitRepo(repo, {
+    branch: "main",
+    files: {
+      ".gitignore": "cache/\n",
+      "keep.txt": "base\n",
+      "staged.txt": "before staging\n",
+      "unstaged.txt": "before editing\n",
+      "doomed.txt": "about to be deleted\n",
+      "moves.txt": "this file gets renamed\n",
+    },
+  });
 
   const member = join(tmp, `${name}-member`);
   git(repo, "worktree", "add", "-q", "-b", `member/${name}`, member, baseSha);

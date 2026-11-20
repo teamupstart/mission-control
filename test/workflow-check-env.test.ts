@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -174,6 +175,100 @@ test("credentialShapedName is the name rule on its own", () => {
   assert.equal(credentialShapedName("PATH"), false);
   // The one that matters most: a variable this repository has never heard of.
   assert.equal(credentialShapedName("SOME_FUTURE_TOOL_TOKEN"), true);
+});
+
+test("git's GIT_CONFIG_COUNT family reaches a Command whole, so git can still start", () => {
+  // `GIT_CONFIG_KEY_0` has a `KEY` segment and names a config key, not a credential. Dropping
+  // it while COUNT survived made every git in the Command exit "missing config key".
+  const family = { GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "maintenance.auto", GIT_CONFIG_VALUE_0: "false",
+    GIT_CONFIG_KEY_1: "core.editor", GIT_CONFIG_VALUE_1: "true" };
+  const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", ...family }, TOKEN);
+  for (const [name, value] of Object.entries(family)) assert.equal(scrubbed[name], value, name);
+  assert.equal(credentialShapedName("GIT_CONFIG_KEY_0"), false);
+  assert.equal(credentialShapedName("GIT_CONFIG_KEYS"), true, "only git's exact spelling is exempt");
+
+  const result = spawnSync("git", ["config", "--get", "maintenance.auto"], { env: scrubbed, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "false");
+});
+
+test("an inherited GIT_CONFIG family that is already incomplete is removed whole", () => {
+  // COUNT promises two entries and the environment carries one and a half: git refuses to
+  // start under that ("missing config value"), whoever left it that way. The family goes; the
+  // rest of the environment does not.
+  for (const missing of ["GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"]) {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true",
+      GIT_CONFIG_KEY_1: "maintenance.auto", GIT_CONFIG_VALUE_1: "false",
+    };
+    delete env[missing];
+    const scrubbed = scrubCheckEnv(env, TOKEN);
+    for (const name of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"]) {
+      assert.equal(scrubbed[name], undefined, `${name} survived although ${missing} was never there`);
+    }
+    assert.equal(scrubbed.HOME, "/home/me");
+    assert.equal(scrubbed.LANG, "en_US.UTF-8");
+    assert.equal(spawnSync("git", ["--version"], { env: scrubbed }).status, 0, "git starts under what remains");
+  }
+});
+
+test("an inherited GIT_CONFIG_COUNT that git cannot read as a count removes the whole family", () => {
+  // Including spellings JavaScript's `Number` reads as integers and git still refuses.
+  for (const count of ["two", "-1", "1.5", "0.0", "1e0", "0x1", "007"]) {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8",
+      GIT_CONFIG_COUNT: count, GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true",
+    };
+    // The premise, asserted: any git that reads config refuses this count outright.
+    assert.equal(spawnSync("git", ["config", "--list"], { env, encoding: "utf8" }).status, 128, count);
+    const scrubbed = scrubCheckEnv(env, TOKEN);
+    for (const name of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) {
+      assert.equal(scrubbed[name], undefined, `${name} survived a GIT_CONFIG_COUNT of ${JSON.stringify(count)}`);
+    }
+    assert.equal(scrubbed.HOME, "/home/me");
+    assert.equal(scrubbed.LANG, "en_US.UTF-8");
+    const listed = spawnSync("git", ["config", "--list"], { env: scrubbed, encoding: "utf8" });
+    assert.equal(listed.status, 0, `git reads its config under what remains: ${listed.stderr}`);
+  }
+});
+
+test("an oversized inherited GIT_CONFIG_COUNT is refused promptly and removes the whole family", { timeout: 5_000 }, () => {
+  // Every one of these is a plain decimal that no environment could satisfy: the first
+  // converts to Infinity, the second is past the safe-integer range. Each must be refused
+  // quickly, with the family gone and git able to start.
+  for (const count of ["9".repeat(400), "9007199254740993", "4294967296", "1000000"]) {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8",
+      GIT_CONFIG_COUNT: count, GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true",
+    };
+    const started = Date.now();
+    const scrubbed = scrubCheckEnv(env, TOKEN);
+    assert.ok(Date.now() - started < 1_000, `a count of ${count.length} digits was iterated`);
+    for (const name of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) {
+      assert.equal(scrubbed[name], undefined, `${name} survived a count of ${count.length} digits`);
+    }
+    assert.equal(scrubbed.HOME, "/home/me");
+    const listed = spawnSync("git", ["config", "--list"], { env: scrubbed, encoding: "utf8" });
+    assert.equal(listed.status, 0, `git reads its config under what remains: ${listed.stderr}`);
+  }
+});
+
+test("a GIT_CONFIG value that quotes the daemon token takes its whole family with it", () => {
+  // The value rule must still win - and a COUNT left behind with a missing entry is a git that
+  // refuses to start, so the family goes as one.
+  const scrubbed = scrubCheckEnv({
+    PATH: "/usr/bin",
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${TOKEN}`,
+    GIT_CONFIG_KEY_1: "core.editor", GIT_CONFIG_VALUE_1: "true",
+  }, TOKEN);
+  for (const name of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"]) {
+    assert.equal(scrubbed[name], undefined, name);
+  }
+  assert.ok(!Object.values(scrubbed).some((value) => value?.includes(TOKEN)));
+  assert.equal(spawnSync("git", ["--version"], { env: scrubbed }).status, 0);
 });
 
 test("a Command never inherits make's recursion state from whatever launched the daemon", () => {

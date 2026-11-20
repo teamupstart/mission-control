@@ -9636,12 +9636,12 @@ export class Registry extends EventEmitter {
    * The one exception to the implicit grant is a task kind that launches uninvited
    * (`TASK_KIND_BEHAVIOR[kind].foremanInvite`, false for residents): its SDK session
    * resolves to `null` until the operator invites Foreman, which writes `'operator'`.
-   * The kind comes from, in order: a task explicitly bound to this session (its
-   * `sessionId` names it), then the task the runtime was launched for, then whatever the
-   * card's task chip shows. The chip alone is not enough: before the launch task binds it
-   * can fall back to a DIFFERENT task by working directory, and a resident must not
-   * inherit that task's implicit grant on its first frame. `resyncSessionTask` re-resolves
-   * it whenever the chip moves.
+   * Only two facts can override the SDK default: a task explicitly bound to this session
+   * (its `sessionId` names it), then the task the runtime was launched for. A chip matched
+   * only by working directory never decides, in either direction - it may be a DIFFERENT
+   * task sharing the directory, so a resident chip must not strip an unrelated session's
+   * grant, and a non-resident chip must not give a resident one before its own task binds.
+   * `resyncSessionTask` re-resolves it whenever the chip moves.
    */
   private foremanInviteFor(s: Session): ForemanInvite | null {
     const row = this.invites.get(noteKeyFor(s));
@@ -9651,7 +9651,10 @@ export class Registry extends EventEmitter {
     return kind && !TASK_KIND_BEHAVIOR[kind].foremanInvite ? null : "sdk";
   }
 
-  /** The task kind whose `foremanInvite` decides an SDK session's implicit grant. */
+  /**
+   * The task kind whose `foremanInvite` decides an SDK session's implicit grant, or
+   * undefined when nothing ties the session to a task and the SDK default stands.
+   */
   private inviteTaskKindFor(s: Session): Task["kind"] | undefined {
     const chip = s.task ? this.tasks.get(s.task.id) : undefined;
     if (chip?.sessionId === s.id) return chip.kind;
@@ -9659,7 +9662,7 @@ export class Registry extends EventEmitter {
     // Captured at registration; refreshed from the cache when the row was not loadable then.
     const launchKind = launch ? (launch.kind ?? this.tasks.get(launch.taskId)?.kind ?? null) : null;
     if (launch && launch.kind === null && launchKind !== null) launch.kind = launchKind;
-    return launchKind ?? s.task?.kind;
+    return launchKind ?? undefined;
   }
 
   /**

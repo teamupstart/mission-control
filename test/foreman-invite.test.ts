@@ -293,6 +293,23 @@ test("a directory-matched task never outranks a resident's launch task before th
   assert.deepEqual(frames.map((f) => f.foremanInvite).filter((v) => v !== null), [], "no frame ever carried an invite");
 });
 
+test("a resident task matched only by directory never strips an unrelated SDK session's grant", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/unrelated-${n}`;
+  // An unbound resident task whose worktree is the cwd of an SDK session launched for no task.
+  registry.upsertTask(mkTask({
+    id: `resident-dir-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "running",
+    repoRoot: cwd, worktreePath: null, provider: null, homeName: null, sessionId: null,
+  }));
+  const id = `sdk:unrelated-${n}`;
+  const frames = upserts(registry, id);
+  registry.registerSdkSession({ id, agent: "claude", name: "embedded", cwd });
+  assert.equal(registry.getSession(id)?.task?.kind, "resident", "the chip came from the shared directory");
+  assert.equal(registry.getSession(id)?.foremanInvite, "sdk", "only a binding or the launch task overrides the SDK default");
+  assert.deepEqual([...new Set(frames.map((f) => f.foremanInvite))], ["sdk"], "and no frame dropped it");
+});
+
 test("a resident stays uninvited after its launch task is pruned from the task cache", () => {
   const registry = new Registry();
   const n = ++seq;

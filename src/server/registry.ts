@@ -5262,16 +5262,8 @@ export class Registry extends EventEmitter {
     const episode = sessionWorkEpisodeFor(session.id);
     if (!episode || episode.awaitingAgentRebind) throw new Error("Successor work episode is not ready");
     const at = Date.now();
-    // The conversation moves runtimes and keeps what it was given at launch: the record that
-    // named the outgoing session now names this one, in the database before the task row.
-    const prior = taskWorkEpisodeForTask(task.id);
-    const carried = prior?.episodeId === episode.episodeId && task.shaping?.sessionId === prior.sessionId
-      && prior.sessionId !== session.id && dbRekeyTaskShaping(task.id, prior.sessionId, session.id);
-    const shaping = carried && task.shaping ? { ...task.shaping, sessionId: session.id } : null;
-    // The in-memory copy too: publishing carries the record forward from memory, never from
-    // the row a caller hands it (see `withShaping`).
-    const live = shaping ? this.tasks.get(task.id) : undefined;
-    if (live && shaping) this.tasks.set(task.id, { ...live, shaping });
+    // The conversation moves runtimes and keeps what it was given at launch.
+    const shaping = this.carryShapingToSuccessor(task.id, session.id, episode.episodeId);
     const next = { ...task, ...(shaping ? { shaping } : {}),
       ...homeRecord(home), sessionId: session.id,
       terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
@@ -5295,6 +5287,9 @@ export class Registry extends EventEmitter {
     const displaced = dbUpsertTask(task);
     const episode = sessionWorkEpisodeFor(sessionId);
     if (episode && !episode.awaitingAgentRebind) {
+      // The resumed conversation keeps what it was given at launch. Read before the binding
+      // below moves, because the outgoing binding is what names the session being replaced.
+      this.carryShapingToSuccessor(task.id, sessionId, episode.episodeId);
       dbBindTaskWorkEpisode({ taskId: task.id, sessionId, episodeId: episode.episodeId,
         agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
         prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
@@ -7665,6 +7660,27 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
     if (next.sessionId) this.resyncSessionTask(next.sessionId);
     return true;
+  }
+
+  /**
+   * Inside a caller's transaction that is about to bind `taskId` to `toSessionId` in
+   * `episodeId`: when the task's current binding is the same episode under another session -
+   * the same conversation continuing - re-key the shaping record that named that session, in
+   * the database and in memory, and return it. Null when nothing moves.
+   *
+   * Memory is updated here rather than at publish because publishing carries the record
+   * forward from memory, never from the row a caller hands it (see `withShaping`).
+   */
+  private carryShapingToSuccessor(taskId: string, toSessionId: string, episodeId: string): TaskShaping | null {
+    const prior = taskWorkEpisodeForTask(taskId);
+    if (!prior || prior.episodeId !== episodeId || prior.sessionId === toSessionId) return null;
+    const live = this.tasks.get(taskId);
+    const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
+    if (!record || record.sessionId !== prior.sessionId) return null;
+    if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+    const shaping = { ...record, sessionId: toSessionId };
+    if (live) this.tasks.set(taskId, { ...live, shaping });
+    return shaping;
   }
 
   /** Test seam for a commit that fails. Production always takes the database function. */

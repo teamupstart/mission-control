@@ -134,6 +134,26 @@ test("the record follows its session across a resume in the same episode, and ne
   assert.equal(currentShaping(registry.getTask("resume")!), null);
 });
 
+test("a hibernated task resumed into a new session of the same episode carries its record", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "hibernate", status: "running", sessionId: "before" }));
+  const episode = (sessionId: string) => ({
+    episodeId: "e-hib", sessionId, agentSessionId: "agent-hib", branch: null, prUrl: null, prHeadSha: null, mergedAt: null,
+    promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
+  });
+  assert.equal(registry.bindTaskToWorkEpisode("hibernate", "before", episode("before")), true);
+  registry.commitTaskShaping("hibernate", record("before"), "text");
+  // The resume path: the successor's episode is recorded, then the task row and its binding are
+  // written in one transaction by `persistResumedTask`, and published afterwards.
+  db.replaceSessionWorkEpisode(episode("after"));
+  const resumed = { ...registry.getTask("hibernate")!, sessionId: "after" };
+  const displaced = db.inTransaction(() => registry.persistResumedTask(resumed, "after"));
+  registry.publishPersistedTask(resumed, displaced);
+  assert.equal(db.getTask("hibernate")?.shaping?.sessionId, "after", "durably");
+  assert.equal(registry.getTask("hibernate")?.shaping?.sessionId, "after", "and in what readers see");
+  assert.ok(currentShaping(registry.getTask("hibernate")!));
+});
+
 test("a restart reads the record back with the task", () => {
   db.upsertTask(mkTask({ id: "restart", status: "running", sessionId: "live" }));
   db.commitTaskShaping("restart", record("live"), "text", 1);

@@ -353,17 +353,18 @@ test("a JSON body that carries a credential is refused, and a stored one never r
   shaping.reloadShaping();
 });
 
-test("a curl credential grouped after a switch is refused, and a stored one never reaches a snapshot", async () => {
+test("a curl credential grouped after a switch, or dash-led after a long option, is refused, and a stored one never reaches a snapshot", async () => {
   const curl = (args: string[]) => ({ kind: "upsert", shaper: { id: "grouped", label: "Grouped", stage: "gather",
     transport: { type: "command", command: "/usr/bin/curl", args: [...args, "https://context.example/shape"] } } });
-  for (const args of [["-sH", "Authorization: Bearer sk-live-grouped-1"], ["-svuname:pw-grouped-2"], ["-sSLd", "token=sk-live-grouped-3"]]) {
+  for (const args of [["-sH", "Authorization: Bearer sk-live-grouped-1"], ["-svuname:pw-grouped-2"], ["-sSLd", "token=sk-live-grouped-3"],
+    ["--user", "-name:pw-grouped-4"], ["--header", "-X-Api-Key: sk-live-grouped-5"]]) {
     const refused = await put(curl(args));
     assert.equal(refused.status, 400, args.join(" "));
     assert.match(await refused.text(), /Name the variable in env instead/);
   }
   assert.equal((await put(curl(["-sSL"]))).status, 200, "switches alone are fine");
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "stored-grouped", label: "Stored", stage: "gather",
-    transport: { type: "command", command: "/usr/bin/curl", args: ["-sH", "Authorization: Bearer sk-live-grouped-stored", "-svuname:pw-grouped-stored", "https://context.example/x"] } }] });
+    transport: { type: "command", command: "/usr/bin/curl", args: ["-sH", "Authorization: Bearer sk-live-grouped-stored", "-svuname:pw-grouped-stored", "--user", "-dash:pw-grouped-stored-long", "https://context.example/x"] } }] });
   shaping.reloadShaping();
   const held = JSON.stringify(shaping.getShapingConfig());
   assert.equal(held.includes("sk-live-grouped-stored") || held.includes("pw-grouped-stored"), false, "the daemon's config holds no secret");

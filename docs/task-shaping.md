@@ -211,8 +211,9 @@ All three routes are behind the flag and answer 404 while it is off.
   `app_config.shaping` value: `caller`, `limits`, `shapers`, `overrides` and `order`.
   `discovered` and `references` are empty until the folder and the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
-  - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. A new one
-    is stored off.
+  - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
+    way it is stored off: a choice to run it applies to the definition the operator reviewed,
+    so a replacement is switched on again with `enable` after it has been dry-run.
   - `{ "kind": "remove", "id": "..." }`.
   - `{ "kind": "enable", "id": "...", "enabled": true }` stores the operator's choice.
   - `{ "kind": "reorder", "order": ["...", "..."] }` sets the run order within each stage.

@@ -293,6 +293,18 @@ test("curl's attached cookie is refused and stripped, and -b stays an ordinary f
     assert.equal(run("/usr/bin/curl", args).success, true, `grouped ${args.join(" ")}`);
   }
   assert.equal(run("/usr/local/bin/shaper", ["-sH", "x"]).success, true, "another program's -sH is its own flag");
+  // A long option that takes a value takes the next argument even when it starts with a dash.
+  for (const args of [["--user", "-name:pass"], ["--header", "-X-Api-Key: sk-l1"], ["--data", "-token=sk-l2"], ["--cookie", "-sid=1"],
+    ["--proxy", "-https://u:p@proxy.example"], ["--oauth2-bearer", "-sk-l3"],
+    // curl's own secret-taking flags: a key passphrase and a certificate password.
+    ["--pass", "hunter2"], ["--proxy-pass=hunter2"], ["--cert", "client.pem:hunter2"], ["-E", "client.pem:hunter2"], ["-sEclient.pem:pw"]]) {
+    assert.equal(run("/usr/bin/curl", args).success, false, `long ${args.join(" ")}`);
+  }
+  for (const args of [["--user-agent", "-shaper"], ["--header"], ["--cert", "client.pem"], ["--cert", "pkcs11:token=dev"],
+    ["-E", "client.pem"]]) {
+    assert.equal(run("/usr/bin/curl", args).success, true, `long ${args.join(" ")}`);
+  }
+  assert.equal(run("/usr/local/bin/shaper", ["--user", "-v"]).success, true, "another program's --user does not swallow a flag");
   // A proxy URL of any scheme, alone, as a flag's value, or attached to curl's -x.
   for (const args of [["--proxy", "socks5://u:p@proxy.example:1080"], ["--proxy=socks5h://u:p@proxy.example"], ["-x", "socks4a://u@proxy.example"],
     ["socks5://u:p@proxy.example"], ["--preproxy", "ftp://u:p@files.example"]]) {
@@ -520,7 +532,7 @@ test("a repeated stored id is unsupported; the first entry owns it", () => {
   assert.deepEqual(resolveShapers(stored, [], task).map((entry) => entry.shaper.stage), ["gather"]);
 });
 
-test("upsert stores a new shaper off, replaces an existing one in place, and is bounded", () => {
+test("upsert stores a new shaper off, replaces an existing one in place and off, and is bounded", () => {
   let stored = apply(config({ overrides: { fresh: true } }), { kind: "upsert", shaper: command("fresh") });
   assert.deepEqual(stored.overrides, {}, "a new registered shaper is off whatever an old choice said");
   assert.deepEqual(resolveShapers(stored, [], task), []);
@@ -528,7 +540,14 @@ test("upsert stores a new shaper off, replaces an existing one in place, and is 
   stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
   stored = apply(stored, { kind: "upsert", shaper: command("fresh", "select") });
   assert.deepEqual(stored.shapers.map((entry) => [entry.id, entry.stage]), [["fresh", "select"], ["second", "gather"]]);
-  assert.equal(stored.overrides.fresh, true, "an edit keeps the operator's choice");
+  assert.equal(Object.hasOwn(stored.overrides, "fresh"), false, "a replacement is stored off: the choice was for the old definition");
+  assert.deepEqual(resolveShapers(stored, [], task).map((entry) => entry.shaper.id), [], "and does not run until switched on again");
+  // A replacement that changes only the executable is still a definition nobody switched on.
+  stored = apply(stored, { kind: "enable", id: "second", enabled: true });
+  stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
+  stored = apply(stored, { kind: "upsert", shaper: command("second", "gather", { transport: { type: "command", command: "/usr/local/bin/other" } }) });
+  assert.equal(Object.hasOwn(stored.overrides, "second"), false);
+  assert.equal(stored.overrides.fresh, true, "and another id's choice is untouched by it");
   const full = config({ shapers: Array.from({ length: SHAPING_LIMITS.shapers }, (_, i) => command(`s-${i}`)) });
   const refused = applyShapingIntent(full, { kind: "upsert", shaper: command("one-more") });
   assert.equal(!refused.ok && refused.error, "too_many_shapers");

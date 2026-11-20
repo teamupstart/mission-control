@@ -443,7 +443,9 @@ credential header (`-H "Authorization: …"`, `--header`), a credential flag suc
 field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
 any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), a cookie (`-b`, `--cookie`), any of
 these as a curl short option grouped after switches, read the way curl reads it (`-sH "Authorization: …"`,
-`-svuname:pass`, `-bname=value`), or
+`-svuname:pass`, `-bname=value`), a curl long option's next argument even when it starts with a
+dash (`--user -name:pass`), curl's key passphrase (`--pass`, `--proxy-pass`) and certificate
+password (`--cert file:password`, `-E file:password`), or
 a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
 query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
 `env` instead.

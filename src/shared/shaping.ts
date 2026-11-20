@@ -396,6 +396,21 @@ const ATTACHED_FLAGS = new Set(["H", "u", "U", "d", "F"]);
  * flag of its own, and reading it the way curl does would refuse it wrongly.
  */
 const CURL_VALUE_SHORT_FLAGS = new Set("AbcCdDeEFHKmoPQrtTuUwxXyYz");
+/**
+ * curl's long options, among those this check judges, that take a value. curl gives such an
+ * option the next argument whatever it looks like, so `--user -name:pass` and
+ * `--header "-X-Api-Key: x"` hand over their value even though it starts with a dash.
+ */
+const CURL_VALUE_LONG_FLAGS = new Set([
+  "header", "proxy-header", "user", "proxy-user", "oauth2-bearer", "pass", "proxy-pass",
+  "data", "data-raw", "data-binary", "data-urlencode", "data-ascii", "form", "form-string", "json",
+  "cookie", "proxy", "preproxy", "url", "cert", "proxy-cert", "tlsuser", "proxy-tlsuser",
+  "tlspassword", "proxy-tlspassword", "login-options", "sasl-authzid",
+]);
+/** curl's flags whose value is a secret whatever it is called: a private key's passphrase. */
+const CURL_CREDENTIAL_VALUE_FLAGS = new Set(["pass", "proxy-pass"]);
+/** curl's client-certificate flags, which take `file:password` (`-E`, `--cert`). */
+const CURL_CERT_FLAGS = new Set(["E", "cert", "proxy-cert"]);
 
 /** Whether a command names curl, by its file name, wherever it is installed. */
 function isCurl(command: unknown): boolean {
@@ -429,6 +444,7 @@ function argumentParts(
     // included, and must not decide whether the argument is recognised.
     const equals = body.indexOf("=");
     if (equals > 0) return { name: body.slice(0, equals), value: body.slice(equals + 1), at: index };
+    if (curl && CURL_VALUE_LONG_FLAGS.has(body)) return { name: body, value: next, at: index + 1 };
     return { name: body, value: following, at: index + 1 };
   }
   if (arg.startsWith("-") && arg.length > 1) {
@@ -512,7 +528,9 @@ function urlCarriesCredential(value: string): boolean {
  *   body, or a field holding one, that names one, `--json '{"token":"x"}'`;
  * - a cookie, `-b session=x`;
  * - for curl, any of these as a short option grouped after switches, `-sH "Authorization: x"`,
- *   `-svuname:pass`, `-bsession=x`, `-xsocks5://user:pass@host`, read as curl reads them;
+ *   `-svuname:pass`, `-bsession=x`, `-xsocks5://user:pass@host`, read as curl reads them, and
+ *   as a long option's next argument even when it starts with a dash, `--user -name:pass`;
+ * - for curl, a key passphrase, `--pass x`, and a certificate password, `--cert file:x`, `-E file:x`;
  * - a URL with a user name, a password or a credential query parameter, alone or as a value.
  */
 function literalCredentialArguments(args: readonly string[], command?: unknown): number[] {
@@ -542,7 +560,12 @@ function literalCredentialArguments(args: readonly string[], command?: unknown):
       if (header && credentialBearingName(header)) found.add(parts.at);
       return;
     }
-    if (CREDENTIAL_VALUE_FLAGS.has(name)) found.add(parts.at);
+    if (curl && CURL_CERT_FLAGS.has(name)) {
+      // `file:password`, where a PKCS#11 URI's own colon is no password.
+      if (/:/.test(parts.value) && !/^pkcs11:/i.test(parts.value)) found.add(parts.at);
+      return;
+    }
+    if (CREDENTIAL_VALUE_FLAGS.has(name) || (curl && CURL_CREDENTIAL_VALUE_FLAGS.has(name))) found.add(parts.at);
     else if (USERINFO_FLAGS.has(name)) { if (parts.value.includes(":")) found.add(parts.at); }
     else if (credentialArgumentName(name)) found.add(parts.at);
   });
@@ -909,19 +932,18 @@ export function applyShapingIntent(
           return refuse("too_many_shapers", `At most ${SHAPING_LIMITS.shapers} shapers can be registered.`);
         }
         shapers.push(stored.data);
-        // A new registered shaper is off until the operator switches it on, whatever an earlier
-        // choice for the same id said.
-        delete overrides[parsed.data.id];
       } else {
         const existing = classifyShaper(shapers[at]!, definitions);
         if (existing.kind === "unsupported" && !credentialsWereRemoved(shapers[at]!)) {
           return refuse("unsupported_shaper", `"${parsed.data.id}" is stored in a form this build does not understand, so it can only be switched off or removed. ${existing.reason}`);
         }
-        // A replacement for an entry whose credential was removed is a new definition the
-        // operator has not yet switched on, so it is stored off like a new one.
-        if (existing.kind === "unsupported") delete overrides[parsed.data.id];
         shapers[at] = stored.data;
       }
+      // Every upsert stores off for its id, a replacement as much as a new definition: a choice
+      // to run applies to the definition the operator reviewed, not to whatever is written over
+      // it later with a different command, arguments or transport, nor to a discovered shaper
+      // that happened to hold the id.
+      delete overrides[parsed.data.id];
       break;
     }
     case "remove": {

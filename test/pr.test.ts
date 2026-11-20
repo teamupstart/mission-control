@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import type { BranchSnapshot } from "../src/server/github/branch-update.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
@@ -121,6 +122,46 @@ test("branch snapshots use four workers and reconcile each shared PR URL once", 
   }
   assert.equal(peak, 4, "GitHub and subprocess load stays bounded");
   assert.deepEqual(reads.sort(), urls.sort(), "two sessions sharing a PR cause only one snapshot read");
+});
+
+test("a work-episode reset during either snapshot prevents a stale branch update", async () => {
+  for (const resetDuringRead of [0, 1, 2]) {
+    const reg = new Registry();
+    const id = `episode-update-${resetDuringRead}`;
+    const url = `https://github.com/o/r/pull/${100 + resetDuringRead}`;
+    reg.applyDiscovery([disco({ syntheticId: id, agentSessionId: `agent-${id}` })]);
+    const episode = reg.workEpisodeForSession(id)!;
+    reg.reconcilePrs(new Map([[id, match({ url, episodeId: episode.episodeId, agentSessionId: `agent-${id}`,
+      createdAt: Date.now(), headSha: "a".repeat(40), worktreeHeadSha: "a".repeat(40) })]]), new Set());
+    const before = reg.getSession(id)!;
+    const ready: BranchSnapshot = {
+      state: "OPEN", isDraft: false, headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40),
+      baseRefName: "main", mergeStateStatus: "BEHIND", mergeable: "MERGEABLE", reviewDecision: "APPROVED",
+      commits: { nodes: [{ commit: { oid: "a".repeat(40), statusCheckRollup: { contexts: {
+        pageInfo: { hasNextPage: false }, nodes: [{ __typename: "StatusContext", context: "ci", state: "SUCCESS" }],
+      } } } }] },
+    };
+    const writes: string[] = [];
+    let reads = 0;
+    await pollBranchUpdates(reg, () => true, {
+      enabled: () => true,
+      read: async () => {
+        if (++reads === resetDuringRead) reg.resetWorkEpisode(id);
+        return ready;
+      },
+      update: async (_url, _cwd, head) => { writes.push(head); return null; },
+    });
+    assert.equal(reads, resetDuringRead === 1 ? 1 : 2);
+    assert.deepEqual(writes, resetDuringRead ? [] : [ready.headRefOid]);
+    if (resetDuringRead) {
+      assert.notEqual(reg.recordedWorkEpisodeForSession(id)?.episodeId, episode.episodeId);
+      const after = reg.getSession(id)!;
+      for (const field of ["agentSessionId", "cwd", "gitBranch", "prUrl"] as const) {
+        assert.equal(after[field], before[field], `${field} alone cannot detect the episode reset`);
+      }
+      assert.equal(after.prBranchUpdates?.[url]?.status, undefined, "the old episode cannot publish Updating branch");
+    }
+  }
 });
 
 test("a merged PR flips the chip to merged and lingers while on the branch", () => {

@@ -1641,7 +1641,12 @@ export function prChipView(session: Session): PrChipView | null {
 }
 
 /** Shared by every PR presentation, including each attached repository. */
-export function PrBranchUpdateStatus({ session, url, detailed = false }: { session: Session; url: string; detailed?: boolean }): React.JSX.Element | null {
+export function PrBranchUpdateStatus(props: { session: Session; url: string; detailed?: boolean }): React.JSX.Element {
+  // A replacement URL gets fresh state; a prior request can only finish on its unmounted instance.
+  return <BranchUpdateStatus key={props.url} {...props} />;
+}
+
+function BranchUpdateStatus({ session, url, detailed = false }: { session: Session; url: string; detailed?: boolean }): React.JSX.Element | null {
   const enabled = useFeatureFlag("automatic-pr-branch-update");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);

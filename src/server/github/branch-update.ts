@@ -95,6 +95,8 @@ export async function reconcileBranchUpdate(
   const known = db.prepare(`SELECT * FROM pr_branch_update_attempts
     WHERE pr_url = ? AND head_sha = ? AND base_sha = ?`).get(...args) as Attempt | undefined;
   if (known) {
+    // GitHub's current answer supersedes stale feedback, but the claim still prevents retries.
+    if (pr.mergeStateStatus === "CLEAN") { publish(null); return; }
     if (known.status === "updating" && (pr.mergeable === "CONFLICTING" || Date.now() - known.attempted_at > 120_000)) {
       known.status = pr.mergeable === "CONFLICTING" ? "conflict" : "blocked";
       known.reason = pr.mergeable === "CONFLICTING" ? "GitHub reports conflicts with the target branch." :
@@ -141,7 +143,8 @@ export async function pollBranchUpdates(registry: Registry, active: () => boolea
   }
   const identities = new Map(targets.map(t => {
     const session = registry.getSession(t.id);
-    return [t.id, { agentSessionId: session?.agentSessionId, cwd: session?.cwd, branch: session?.gitBranch }];
+    return [t.id, { agentSessionId: session?.agentSessionId, cwd: session?.cwd, branch: session?.gitBranch,
+      episodeId: registry.recordedWorkEpisodeForSession(t.id)?.episodeId }];
   }));
   const grouped = new Map<string, typeof targets>();
   for (const target of targets) grouped.set(target.url, [...(grouped.get(target.url) ?? []), target]);
@@ -154,6 +157,7 @@ export async function pollBranchUpdates(registry: Registry, active: () => boolea
         const s = registry.getSession(id);
         const identity = identities.get(id);
         return !!s && s.state !== "exited" && s.agentSessionId === identity?.agentSessionId &&
+          registry.recordedWorkEpisodeForSession(id)?.episodeId === identity?.episodeId &&
           s.cwd === identity?.cwd && s.gitBranch === identity?.branch && (s.prUrl === url || !!s.task?.repoPrs.some(pr => pr.prUrl === url));
       };
       try { await reconcileBranchUpdate(url, owners[0]!.cwd,

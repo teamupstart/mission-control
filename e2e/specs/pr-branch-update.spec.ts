@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
+import type { Session } from "../../src/shared/types.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
@@ -130,7 +131,7 @@ test("manual-merge PR updates once, follows the new checks/review, and offers co
   const capture = async (name: string) => {
     if (!process.env.MC_E2E_EVIDENCE) return;
     mkdirSync(artifactsDir("pr-branch-update"), { recursive: true });
-    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `review-${name}`), fullPage: true, animations: "disabled" });
+    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `round9-${name}`), fullPage: true, animations: "disabled" });
   };
   await capture("updating.png");
   pr.headRefOid = "c".repeat(40); pr.branchUpdate.mergeStateStatus = "BLOCKED";
@@ -169,6 +170,14 @@ test("manual-merge PR updates once, follows the new checks/review, and offers co
   await resolve.click();
   await expect(recovery.getByRole("button", { name: "Sent to session" })).toBeDisabled();
   await expectConflictPromptReceived(daemon, session, PR_URL);
+  pr.branchUpdate.mergeStateStatus = "CLEAN"; script();
+  await expect(header.locator(".pr-branch-update")).toHaveCount(0);
+  await expect(recovery).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".tooltip")).toHaveCount(0);
+  await capture("refusal-cleared.png");
+  pr.branchUpdate.mergeStateStatus = "BEHIND"; script();
+  await expect(header.getByText("Branch update conflicts", { exact: true })).toBeVisible();
   expect(writes()).toHaveLength(2);
   expect(calls().some(c => c.argv[0] === "pr" && c.argv[1] === "merge")).toBe(false);
   await flag(false);
@@ -225,7 +234,7 @@ test("an attached repository PR gets its own guarded update and progress beside 
     if (!process.env.MC_E2E_EVIDENCE) return;
     mkdirSync(artifactsDir("pr-branch-update"), { recursive: true });
     await page.mouse.move(0, 0);
-    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `review-${name}`), fullPage: true, animations: "disabled" });
+    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `round9-${name}`), fullPage: true, animations: "disabled" });
   };
   await capture("attached-updating.png");
   attached.headRefOid = "c".repeat(40);
@@ -256,4 +265,72 @@ test("an attached repository PR gets its own guarded update and progress beside 
   await capture("attached-board-conflict.png");
   await attachedRow.getByRole("button", { name: "Send to session to resolve" }).click();
   await expectConflictPromptReceived(daemon, session, attachedUrl);
+});
+
+type BranchUpdateTestWindow = Window & { branchUpdateTestStream: EventSource };
+
+for (const oldStatus of [200, 409]) test(`a late ${oldStatus} recovery response cannot change the replacement attached PR`, async ({ dashboard: page, daemon }) => {
+  const dispatched = await dispatch(page, daemon, daemon.secondRepo);
+  const flag = await fetch(`${daemon.baseURL}/api/feature-flags`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "automatic-pr-branch-update", enabled: true }),
+  });
+  expect(flag.ok).toBe(true);
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, config?: EventSourceInit) {
+        super(url, config);
+        if (String(url) === "/events") (window as BranchUpdateTestWindow).branchUpdateTestStream = this;
+      }
+    };
+  });
+  await page.reload();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const owner = (await api<Session[]>(daemon, "/api/sessions")).find(s => s.id === dispatched.id)!;
+  expect(owner.task?.repoPrs).toHaveLength(2);
+  const oldUrl = "https://github.com/acme/second-repo/pull/1547";
+  const nextUrl = "https://github.com/acme/second-repo/pull/1548";
+  // Script only the UI race: the production event consumer receives a replacement URL
+  // for the same session and repository row while its HTTP response is still pending.
+  const showPr = async (url: string) => page.evaluate(session => {
+    const stream = (window as BranchUpdateTestWindow).branchUpdateTestStream;
+    stream.close();
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "session_upsert", session }) }));
+  }, {
+    ...owner, task: { ...owner.task!, repoPrs: owner.task!.repoPrs.map(pr => pr.primary ? pr : { ...pr, prUrl: url, prState: "open" as const }) },
+    prBranchUpdates: { [url]: { status: "conflict" as const, reason: "Merge conflict updating attached branch" } },
+  });
+  const pending: Route[] = [];
+  await page.route(`**/api/sessions/${encodeURIComponent(owner.id)}/inject`, route => { pending.push(route); });
+  const row = page.locator(".task-repo-prs > span").filter({ has: page.getByRole("link", { name: /second-repo/ }) });
+  await showPr(oldUrl);
+  await row.getByRole("button", { name: "Send to session to resolve" }).click();
+  await expect.poll(() => pending.length).toBe(1);
+  await expect(row.getByRole("button", { name: "Sending…" })).toBeDisabled();
+  await showPr(nextUrl);
+  await expect(row.getByRole("link")).toHaveAttribute("href", nextUrl);
+  await expect(row.getByRole("button", { name: "Send to session to resolve" })).toBeEnabled();
+  await row.getByRole("button", { name: "Send to session to resolve" }).click();
+  await expect.poll(() => pending.length).toBe(2);
+  expect(pending[0]!.request().postDataJSON().text).toContain(oldUrl);
+  expect(pending[1]!.request().postDataJSON().text).toContain(nextUrl);
+  const oldResponse = page.waitForResponse(response => response.request().postDataJSON()?.text?.includes(oldUrl));
+  await pending[0]!.fulfill({ status: oldStatus, json: { ok: oldStatus === 200, error: "Old PR delivery refused" } });
+  await (await oldResponse).finished();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(row.getByRole("button", { name: "Sending…" })).toBeDisabled();
+  await expect(row.getByRole("button", { name: "Sent to session" })).toHaveCount(0);
+  await expect(row.getByRole("alert")).toHaveCount(0);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(artifactsDir("pr-branch-update"), { recursive: true });
+    await page.mouse.move(0, 0);
+    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `round9-late-${oldStatus}.png`), fullPage: true, animations: "disabled" });
+  }
+  await pending[1]!.fulfill({ status: 409, json: { error: "Current PR delivery refused" } });
+  await expect(row.getByRole("alert")).toHaveText("Current PR delivery refused");
+  await row.getByRole("button", { name: "Send to session to resolve" }).click();
+  await expect.poll(() => pending.length).toBe(3);
+  await pending[2]!.fulfill({ status: 200, json: { ok: true } });
+  await expect(row.getByRole("button", { name: "Sent to session" })).toBeDisabled();
 });

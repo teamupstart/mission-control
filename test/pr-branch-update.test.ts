@@ -169,6 +169,24 @@ test("missing checks hold; accepted but unconfirmed updates become a visible blo
   assert.match(f.published.at(-1)!.reason!, /not confirmed/);
 });
 
+test("CLEAN clears a stored refusal without forgetting the attempted commit pair", async () => {
+  for (const status of ["blocked", "conflict"] as const) {
+    openDb().exec("DELETE FROM pr_branch_update_attempts");
+    const f = fixture(); let writes = 0;
+    const refusal = { status, reason: "GitHub refused the update" };
+    f.deps.update = async () => { writes++; return refusal; };
+    await f.tick();
+    f.current = snapshot({ mergeStateStatus: "UNKNOWN" });
+    await f.tick(); assert.deepEqual(f.published.at(-1), refusal);
+    f.current = snapshot({ mergeStateStatus: "CLEAN" });
+    await f.tick(); assert.equal(f.published.at(-1), null);
+    closeDb();
+    await f.tick(); assert.equal(f.published.at(-1), null);
+    f.current = snapshot();
+    await f.tick(); assert.equal(writes, 1, "clearing stale feedback must not authorize another write");
+  }
+});
+
 
 for (const outcome of [
   { label: "non-conflict GitHub refusal", reason: "Resource not accessible by integration (HTTP 403)", unknown: false },

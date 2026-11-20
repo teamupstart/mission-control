@@ -270,8 +270,9 @@ shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `ar
 `http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
 `{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
 reference: a header such as `authorization` or `x-api-key` that is not empty holds an
-`{env:NAME}` reference, with at most an auth scheme before it (`Bearer {env:ACME_TOKEN}`). A
-lone word is refused as the secret itself, with or without trailing whitespace. A URL carries no user name,
+`{env:NAME}` reference and nothing literal. `Authorization` and `Proxy-Authorization` may put
+`Bearer`, `Basic`, `Token` or `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other
+leading word is refused as part of the secret. A URL carries no user name,
 password or credential-shaped query parameter. A definition with literal secret text is
 refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
 is `unavailable`.

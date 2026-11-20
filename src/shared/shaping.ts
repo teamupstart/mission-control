@@ -99,6 +99,8 @@ export function clipUtf8(value: string, maxBytes: number): string {
 export function cutAtLineBoundary(value: string, maxBytes: number): string {
   if (utf8Length(value) <= maxBytes) return value;
   const clipped = clipUtf8(value, maxBytes);
+  // The limit can land exactly on a line's end: then every line in `clipped` is whole.
+  if (value[clipped.length] === "\n") return clipped;
   const newline = clipped.lastIndexOf("\n");
   return newline > 0 ? clipped.slice(0, newline) : clipped;
 }
@@ -315,18 +317,28 @@ export function credentialBearingName(name: string): boolean {
     || /(token|secret|password|passwd|apikey|credentials?)$/.test(name.toLowerCase());
 }
 
+/** Headers that carry an HTTP authentication scheme before their credential. */
+const SCHEME_HEADERS = new Set(["authorization", "proxy-authorization"]);
+/** The schemes such a header may name. Any other leading word is treated as the secret itself. */
+export const SHAPING_AUTH_SCHEMES = ["Bearer", "Basic", "Token", "Digest"] as const;
+
 /**
  * A credential-bearing value may hold its secret only as a reference, resolved at call time.
- * Empty is fine. Anything else is an optional auth scheme such as `Bearer`, then nothing but
- * references, at least one of them `{env:NAME}`: a lone word, with or without whitespace after
- * it, is the secret itself rather than a scheme. The config holds no secret text, so no settings
- * snapshot can carry one.
+ * Empty is fine. Otherwise it is references only, at least one of them `{env:NAME}`. Only an
+ * `Authorization` or `Proxy-Authorization` header may put a scheme before them, and only one of
+ * `SHAPING_AUTH_SCHEMES`: any other leading word, such as a key prefix, is literal secret text.
+ * The config holds no secret text, so no settings snapshot can carry one.
  */
-export function credentialValueIsReferenced(value: string): boolean {
+export function credentialValueIsReferenced(name: string, value: string): boolean {
   if (value.trim() === "") return true;
-  const shape = /^\s*(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+)?((?:\{[^{}]*\})+)\s*$/.exec(value);
+  const shape = /^\s*(?:([A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*)\s+)?((?:\{[^{}]*\})+)\s*$/.exec(value);
   if (!shape) return false;
-  const references = shapingReferences(shape[1]!);
+  const scheme = shape[1];
+  if (scheme !== undefined) {
+    if (!SCHEME_HEADERS.has(name.toLowerCase())) return false;
+    if (!SHAPING_AUTH_SCHEMES.some((known) => known.toLowerCase() === scheme.toLowerCase())) return false;
+  }
+  const references = shapingReferences(shape[2]!);
   return references !== null && references.some((reference) => reference.startsWith("env:"));
 }
 
@@ -375,7 +387,7 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   if (isRecord(holder.headers)) {
     const headers: Record<string, unknown> = { ...holder.headers };
     for (const [name, value] of Object.entries(headers)) {
-      if (credentialBearingName(name) && !(typeof value === "string" && credentialValueIsReferenced(value))) {
+      if (credentialBearingName(name) && !(typeof value === "string" && credentialValueIsReferenced(name, value))) {
         headers[name] = "";
         changed = true;
       }
@@ -428,7 +440,7 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   }
   const headers = (holder.headers ?? {}) as Record<string, string>;
   for (const [name, header] of Object.entries(headers)) {
-    if (credentialBearingName(name) && !credentialValueIsReferenced(header)) {
+    if (credentialBearingName(name) && !credentialValueIsReferenced(name, header)) {
       ctx.addIssue({
         code: "custom", path: [...at, "headers", name],
         message: `The "${name}" header carries a credential, so its secret must be a reference such as {env:NAME}, never literal text. It is resolved at call time and never stored or backed up.`,

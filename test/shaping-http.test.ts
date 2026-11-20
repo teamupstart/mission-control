@@ -218,6 +218,7 @@ test("a literal credential is refused, so a settings snapshot holds only the ref
   assert.equal(refused.status, 400);
   assert.match(await refused.text(), /must be a reference such as \{env:NAME\}/);
   assert.equal((await put(remote("sk-live-lone-word "))).status, 400, "a lone word with trailing whitespace is a secret, not a scheme");
+  assert.equal((await put(remote("sk-live-prefix {env:ACME_CONTEXT_TOKEN}"))).status, 400, "nor is a token-shaped prefix before a reference");
   assert.equal((await put(remote("Bearer {env:ACME_CONTEXT_TOKEN}"))).status, 200);
   const backupStore = new SettingsBackupStore(join(home, "snapshots-credentials"));
   const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
@@ -236,11 +237,11 @@ test("an entry stored by another path cannot carry a literal credential into a s
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{
     id: "future", label: "Future", stage: "route",
     transport: { type: "grpc", url: "https://user:pw-literal@context.example/x",
-      headers: { authorization: "Bearer sk-live-bypass", "x-api-key": "sk-live-trailing " } },
+      headers: { authorization: "Bearer sk-live-bypass", "x-api-key": "sk-live-trailing ", "x-auth-token": "sk-live-prefix {env:X}" } },
   }] });
   shaping.reloadShaping();
   const held = JSON.stringify(shaping.getShapingConfig());
-  assert.equal(held.includes("sk-live-bypass") || held.includes("pw-literal") || held.includes("sk-live-trailing"), false,
+  assert.equal(held.includes("sk-live-bypass") || held.includes("pw-literal") || held.includes("sk-live-trailing") || held.includes("sk-live-prefix"), false,
     "the daemon's config holds no secret, a lone word with trailing whitespace included");
   const backupStore = new SettingsBackupStore(join(home, "snapshots-bypass"));
   const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
@@ -250,7 +251,7 @@ test("an entry stored by another path cannot carry a literal credential into a s
   const saved = await service.ensureDailySnapshot();
   assert.equal(saved.status, "ready");
   const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
-  assert.equal(snapshot.includes("sk-live-bypass") || snapshot.includes("pw-literal") || snapshot.includes("sk-live-trailing"), false, "nor does the snapshot");
+  assert.equal(snapshot.includes("sk-live-bypass") || snapshot.includes("pw-literal") || snapshot.includes("sk-live-trailing") || snapshot.includes("sk-live-prefix"), false, "nor does the snapshot");
   assert.equal(snapshot.includes('"future"'), true, "the unsupported entry itself is still kept");
   // A snapshot that itself carries a literal credential, as a hand-edited or foreign one could,
   // is restored as the parsed value: the row the restore writes holds no secret either.

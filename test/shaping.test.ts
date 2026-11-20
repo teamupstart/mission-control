@@ -167,12 +167,22 @@ test("a credential is held only as a reference, so no secret text is ever stored
   // A lone word is the secret itself, not an auth scheme, with or without whitespace after it,
   // and a credential header needs an {env:NAME} reference, not only a caller one.
   for (const value of ["sk-live-abc ", "sk-live-abc", "  sk-live-abc\t", "Bearer ", "Bearer {caller.user}", "{caller.user}"]) {
-    assert.equal(credentialValueIsReferenced(value), false, JSON.stringify(value));
+    assert.equal(credentialValueIsReferenced("authorization", value), false, JSON.stringify(value));
     assert.equal(http({ authorization: value }).success, false, JSON.stringify(value));
   }
-  for (const value of ["", "   ", "{env:A}", " Bearer {env:A} ", "Bearer {env:A}{caller.user}"]) {
-    assert.equal(credentialValueIsReferenced(value), true, JSON.stringify(value));
+  for (const value of ["", "   ", "{env:A}", " Bearer {env:A} ", "Bearer {env:A}{caller.user}", "basic {env:A}", "TOKEN {env:A}", "Digest {env:A}"]) {
+    assert.equal(credentialValueIsReferenced("authorization", value), true, JSON.stringify(value));
   }
+  // A leading word that is not a known scheme is a literal prefix of the secret: refused, and
+  // an API-key header takes references alone, with no scheme at all.
+  for (const [name, value] of [["authorization", "sk-live {env:A}"], ["authorization", "ghp_abc123 {env:A}"],
+    ["proxy-authorization", "Custom {env:A}"], ["x-api-key", "Bearer {env:A}"], ["x-api-key", "sk {env:A}"],
+    ["x-auth-token", "Token {env:A}"]] as const) {
+    assert.equal(credentialValueIsReferenced(name, value), false, `${name}: ${value}`);
+    assert.equal(http({ [name]: value }).success, false, `${name}: ${value}`);
+  }
+  assert.equal(credentialValueIsReferenced("Proxy-Authorization", "Basic {env:A}"), true);
+  assert.equal(credentialValueIsReferenced("x-api-key", "{env:A}"), true);
   assert.equal(http({ "x-acme-user-id": "operator@example.test", accept: "application/json" }).success, true,
     "a header that carries no credential may hold literal text");
   assert.equal(http({}, "https://user:pass@context.example/shape").success, false, "no userinfo in a URL");
@@ -440,6 +450,9 @@ test("bytes are measured and cut in UTF-8, on character and line boundaries", ()
   assert.equal(clipUtf8("aé€😀", 6), "aé€");
   assert.equal(clipUtf8("😀😀", 5), "😀");
   assert.equal(cutAtLineBoundary("one\ntwo\nthree", 9), "one\ntwo");
+  assert.equal(cutAtLineBoundary("one\ntwo\nthree", 7), "one\ntwo", "a line that ends exactly at the limit is kept");
+  assert.equal(cutAtLineBoundary("one\ntwo\nthree", 6), "one");
+  assert.equal(cutAtLineBoundary("a€\nb", 4), "a€", "the same holds when the limit lands after a multi-byte character");
   assert.equal(cutAtLineBoundary("no line breaks here", 5), "no li");
   assert.equal(cutAtLineBoundary("short", 100), "short");
 });

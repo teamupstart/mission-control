@@ -152,17 +152,55 @@ test("the request carries the complete collected input; local paths only to loca
       taskId: "t_123", title: "Retry failed charges", kind: "ship", harness: "claude", runtime: "sdk",
       afterWork: { workflowId: "wf_1", name: "Review and merge" }, labels: ["payments"], priority: "high",
       repositories: [
-        { name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
-        { name: "ledger", role: "additional", branch: "task/retry", baseSha: "def456", path: "/work/ledger" },
+        { slot: "repo-01", name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
+        { slot: "repo-02", name: "ledger", role: "additional", branch: "task/retry", baseSha: "def456", path: "/work/ledger" },
       ],
+      target: "repo-01",
       caller: { user: "declared-user", agent: "claude", conversation: "t_123" },
     },
     limits: { maxBytes: 16384, deadlineMs: local.limits.deadlineMs },
   });
   const far = seen.get("remote ledger")!;
+  assert.equal(far.context.target, "repo-02", "the target is the slot of the repository the call is about");
   assert.equal(far.repo.path, undefined, "a remote shaper never gets a local path");
   assert.ok(far.context.repositories.every((repo) => repo.path === undefined));
   assert.equal(JSON.stringify(far).includes("/work/"), false);
+});
+
+test("slots follow the primary, then attachment order, whatever order dispatch listed them in", async () => {
+  const seen: ShapingRequest[] = [];
+  const listed = input(1);
+  listed.context.repositories = [
+    { name: "docs", role: "additional", branch: null, baseSha: null, path: "/work/docs" },
+    { name: "billing-api", role: "primary", branch: null, baseSha: null, path: "/work/billing-api" },
+    { name: "ledger", role: "additional", branch: null, baseSha: null, path: "/work/ledger" },
+  ];
+  await run(configWith([shaper("s", "select")]), (request) => { seen.push(request); return data({ guidance: [] }); }, listed);
+  assert.deepEqual(seen[0]!.context.repositories.map((repo) => [repo.slot, repo.name]),
+    [["repo-01", "billing-api"], ["repo-02", "docs"], ["repo-03", "ledger"]]);
+  assert.deepEqual(seen.map((request) => [request.repo.name, request.context.target]),
+    [["billing-api", "repo-01"], ["docs", "repo-02"], ["ledger", "repo-03"]], "each call names its own repository's slot");
+  for (const request of seen) assert.equal(ShapingRequestSchema.safeParse(request).success, true);
+});
+
+test("two attached worktrees of one repository get requests that differ only in context.target", async () => {
+  const seen: ShapingRequest[] = [];
+  const twins = input(1);
+  twins.context.repositories = [
+    { name: "billing-api", role: "primary", branch: "main", baseSha: "abc123", path: "/work/billing-api" },
+    { name: "billing-api", role: "additional", branch: "main", baseSha: "abc123", path: "/work/billing-api" },
+  ];
+  const result = await run(configWith([shaper("s", "select")]), (request) => {
+    seen.push(request);
+    return data({ guidance: [{ id: "same-id", body: `for ${request.context.target}` }] });
+  }, twins);
+  assert.equal(seen.length, 2);
+  const [first, second] = seen;
+  assert.deepEqual([first!.context.target, second!.context.target], ["repo-01", "repo-02"]);
+  assert.deepEqual({ ...first, context: { ...first!.context, target: "" } }, { ...second, context: { ...second!.context, target: "" } },
+    "nothing else tells them apart");
+  // De-duplicated per slot, not per name: each worktree keeps its entry.
+  assert.deepEqual(result.entries.map((entry) => entry.body), ["for repo-01", "for repo-02"]);
 });
 
 test("each call's timeout is the smaller of the shaper's and the time left in the step", async () => {

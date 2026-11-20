@@ -12,6 +12,7 @@ import {
   SHAPING_SECTION_PREAMBLE,
   shaperIsLocal,
   shapingEntryHeading,
+  shapingSlot,
   ShapingRequestSchema,
   ShapingResultSchema,
   summariseShaping,
@@ -57,7 +58,8 @@ export interface ShapeTaskRepository {
 export interface ShapeTaskInput {
   /** The operator's prompt, verbatim. */
   task: string;
-  context: Omit<ShapingContext, "repositories" | "caller"> & { repositories: readonly ShapeTaskRepository[] };
+  // Slots and the call's target are the engine's to assign, from the order dispatch collected.
+  context: Omit<ShapingContext, "repositories" | "caller" | "target"> & { repositories: readonly ShapeTaskRepository[] };
   /** Aborted when the task is cancelled while it is being shaped. */
   signal?: AbortSignal;
   /**
@@ -205,8 +207,14 @@ export function runScope(): ShapingRunScope & { close(): void; readonly closed: 
   };
 }
 
-function orderRepositories(repositories: readonly ShapeTaskRepository[]): ShapeTaskRepository[] {
-  return [...repositories].sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
+/**
+ * The primary first, then the rest in attachment order (the sort is stable), each with its slot
+ * (D17): `repo-01` for the primary, then `repo-02` onward.
+ */
+function orderRepositories(repositories: readonly ShapeTaskRepository[]): Array<ShapeTaskRepository & { slot: string }> {
+  return [...repositories]
+    .sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"))
+    .map((repo, position) => ({ ...repo, slot: shapingSlot(position) }));
 }
 
 async function runShaping(
@@ -233,14 +241,15 @@ async function runShaping(
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
   const facts = repositories.map((): ShapingFacts | null => null);
   const summaries = repositories.map((): string | null => null);
-  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository; result: CallResult }> = [];
+  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository & { slot: string }; result: CallResult }> = [];
 
-  const contextFor = (local: boolean): ShapingContext => ({
+  const contextFor = (local: boolean, target: string): ShapingContext => ({
     ...input.context,
     repositories: repositories.map((repo) => ({
-      name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
+      slot: repo.slot, name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
       ...(local && repo.path ? { path: repo.path } : {}),
     })),
+    target,
     caller: {
       user: config.caller.user || null,
       agent: input.context.harness,
@@ -282,7 +291,7 @@ async function runShaping(
         ...(stage !== "gather" && summaries[repoIndex] ? { summary: summaries[repoIndex]! } : {}),
       },
       ...(entry.shaper.version ? { version: entry.shaper.version } : {}),
-      context: contextFor(local),
+      context: contextFor(local, repo.slot),
       limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
     };
     // The request is checked against the wire schema before any transport sees it. Input the
@@ -428,7 +437,8 @@ async function runShaping(
         // De-duplicated per repository, and only against entries the budget keeps: the same id
         // from the same shaper, or an identical body from any shaper, is injected once for that
         // repository. Two repositories whose entries share an id both reach the section.
-        keys: [`id\u0000${repo.name}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.name}\u0000${item.body}`],
+        // Keyed by slot, not name: two attached worktrees of one repository are separate here.
+        keys: [`id\u0000${repo.slot}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.slot}\u0000${item.body}`],
       });
     }
   }

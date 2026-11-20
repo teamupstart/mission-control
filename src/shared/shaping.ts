@@ -1297,7 +1297,19 @@ const FactValueSchema = z.union([
 export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), FactValueSchema, SHAPING_LIMITS.facts);
 export type ShapingFacts = z.output<typeof ShapingFactsSchema>;
 
+/**
+ * A repository's slot within one task (D17): `repo-01` for the primary, then `repo-02` onward in
+ * attachment order. It tells two attached worktrees of one repository apart, which a name cannot.
+ */
+export const ShapingSlotSchema = z.string().regex(/^repo-\d{2}$/, { message: "A slot is repo-NN." });
+
+/** The slot at a position in the ordered list: the primary first, then attachment order. */
+export function shapingSlot(position: number): string {
+  return `repo-${String(position + 1).padStart(2, "0")}`;
+}
+
 export const ShapingRepositoryRefSchema = z.object({
+  slot: ShapingSlotSchema,
   name: z.string().min(1).max(256),
   role: z.enum(["primary", "additional"]),
   branch: z.string().max(256).nullable(),
@@ -1319,6 +1331,8 @@ export const ShapingContextSchema = z.object({
   labels: z.array(z.string().max(128)).max(64),
   priority: z.string().max(64).nullable(),
   repositories: z.array(ShapingRepositoryRefSchema).max(SHAPING_LIMITS.repositories),
+  /** The slot of the repository this call is about (D17), one of `repositories`. */
+  target: ShapingSlotSchema,
   caller: z.object({
     user: z.string().max(256).nullable(),
     agent: z.string().max(64).nullable(),

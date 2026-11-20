@@ -26,6 +26,8 @@ import {
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
+  shapingSlot,
+  ShapingRequestSchema,
   shapingConfigView,
   TaskShapingSchema,
   ShaperSchema,
@@ -664,6 +666,20 @@ test("an entry whose truncation marker cannot fit its cap is dropped, never kept
 test("a label, which heads every injected entry, cannot hold NUL", () => {
   assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Ac\u0000me" }).success, false);
   assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Acme" }).success, true);
+});
+
+test("a request's context names each repository's slot and the call's target", () => {
+  assert.deepEqual([0, 1, 9, 31].map(shapingSlot), ["repo-01", "repo-02", "repo-10", "repo-32"]);
+  const base = { protocol: 1, stage: "select", task: "t", repo: { name: "r" }, limits: { maxBytes: 1024, deadlineMs: 100 },
+    context: { taskId: null, title: "", kind: "ship", harness: null, runtime: null, afterWork: null, labels: [], priority: null,
+      repositories: [{ slot: "repo-01", name: "r", role: "primary", branch: null, baseSha: null }], target: "repo-01",
+      caller: { user: null, agent: null, conversation: null } } };
+  assert.equal(ShapingRequestSchema.safeParse(base).success, true);
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: { ...base.context, target: "billing-api" } }).success, false, "a target is a slot");
+  const { target: _target, ...noTarget } = base.context;
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: noTarget }).success, false, "and is required");
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: { ...base.context,
+    repositories: [{ name: "r", role: "primary", branch: null, baseSha: null }] } }).success, false, "so is each slot");
 });
 
 test("a build that knows a later stage reads the same entry as known", () => {

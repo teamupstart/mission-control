@@ -66,7 +66,8 @@ The request:
     "harness": "claude", "runtime": "sdk",
     "afterWork": { "workflowId": "wf_1", "name": "Review and merge" },
     "labels": ["payments"], "priority": "high",
-    "repositories": [{ "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123", "path": "/abs/path/to/worktree" }],
+    "repositories": [{ "slot": "repo-01", "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123", "path": "/abs/path/to/worktree" }],
+    "target": "repo-01",
     "caller": { "user": "declared-user", "agent": "claude", "conversation": "t_123" }
   },
   "limits": { "maxBytes": 16384, "deadlineMs": 5000 }
@@ -77,6 +78,10 @@ The request:
   `context`, and every shaper receives all of it.
 - `repo.facts` and `repo.summary` are absent in a gather request. Producing them is a
   gatherer's job.
+- Each `context.repositories` entry has a `slot`: `repo-01` for the primary, then `repo-02`
+  onward in attachment order. `context.target` is the slot of the repository this call is about,
+  so a shaper can tell two attached worktrees of one repository apart, where `repo.name` is the
+  same for both.
 - `repo.path` and the paths in `context.repositories` go to local shapers only. A remote
   shaper never receives a local path.
 - `version` is present when the shaper's config pins one.

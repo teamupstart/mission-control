@@ -35,7 +35,8 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
     repo: { name: "billing-api", path: worktree },
     context: {
       taskId: "t_1", title: "Retry", kind: "ship", harness: "claude", runtime: "sdk", afterWork: null,
-      labels: [], priority: null, repositories: [{ name: "billing-api", role: "primary", branch: null, baseSha: null, path: worktree }],
+      labels: [], priority: null, repositories: [{ slot: "repo-01", name: "billing-api", role: "primary", branch: null, baseSha: null, path: worktree }],
+      target: "repo-01",
       caller: { user: null, agent: "claude", conversation: "t_1" },
     },
     limits: { maxBytes: 16384, deadlineMs: 5000 },

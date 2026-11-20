@@ -26,6 +26,7 @@ import {
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
+  shapedByDefault,
   shapingSlot,
   ShapingRequestSchema,
   shapingConfigView,
@@ -702,6 +703,28 @@ test("a reason survives an outcome tie, so a redaction note in one repository is
     kept: [], truncatedShapers: new Set(), at: 1, durationMs: 1, multiRepo: true })!;
   assert.deepEqual([summary.shapers[0]!.outcome, summary.shapers[0]!.redacted], ["ok", true]);
   assert.equal(summary.shapers[0]!.reason, "ledger: An entry was dropped because its id contained the value of TOKEN.");
+});
+
+test("empty kinds means every harness-launched kind; a resident is shaped only when listed, a wake turn never", async () => {
+  const { HARNESS_LAUNCHED_TASK_KINDS } = await import("../src/shared/task.ts");
+  const { TASK_KINDS } = await import("../src/shared/types.ts");
+  const unlisted = command("unlisted");
+  const residentOnly = command("resident-only", "gather", { kinds: ["resident"] });
+  const stored = config({ shapers: [unlisted, residentOnly], overrides: { unlisted: true, "resident-only": true } });
+  const repositories = [{ name: "billing-api" }];
+  const resolvedFor = (kind: string, turn?: "launch" | "iteration") => ids(resolveShapers(stored, [], { kind, repositories, ...(turn ? { turn } : {}) }));
+  for (const kind of TASK_KINDS) {
+    const harness = (HARNESS_LAUNCHED_TASK_KINDS as readonly string[]).includes(kind);
+    assert.equal(resolvedFor(kind).includes("unlisted"), harness, `${kind}: an unlisted shaper runs only on a harness launch`);
+  }
+  assert.deepEqual(resolvedFor("resident"), ["resident-only"], "a resident launch runs only the shaper that lists it");
+  assert.deepEqual(resolvedFor("pipeline"), [], "a pipeline launch is not shaped by default");
+  assert.deepEqual(resolvedFor("not-a-kind"), [], "nor is a kind this build does not know");
+  assert.deepEqual(resolvedFor("resident", "iteration"), [], "a resident's wake turn is never shaped, even by a shaper that lists it");
+  assert.deepEqual(resolvedFor("ship", "iteration"), []);
+  assert.deepEqual(resolvedFor("ship", "launch"), ["unlisted"], "an explicit launch is shaped as before");
+  assert.equal(shapedByDefault("ship"), true);
+  assert.equal(shapedByDefault("resident"), false);
 });
 
 test("a build that knows a later stage reads the same entry as known", () => {

@@ -303,8 +303,10 @@ A shaper, as stored and as written in a manifest:
 }
 ```
 
-`kinds` and `repositories` are optional filters. Empty means every kind that launches through
-`composeTurnOne`, and every repository. Two more routes sit behind the flag:
+`kinds` and `repositories` are optional filters. Empty `kinds` means every kind whose
+`TASK_KIND_BEHAVIOR.launch` is `harness`, and empty `repositories` every repository. A resident
+launch is shaped only when a shaper lists the resident kind explicitly, and a resident iteration
+(a wake turn) is never shaped (Jordan, 2026-11-20). Two more routes sit behind the flag:
 `POST /api/shaping/test` runs one shaper against a repository the operator picks and returns
 the outcome, the latency and what would be injected. `GET /api/tasks/:id/shaping` returns one
 task's record and delivered text.

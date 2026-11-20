@@ -264,10 +264,12 @@ let db: DatabaseSync | undefined;
 //     and nothing writes any of it while the `headless-mode` flag is off.
 // 37: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
 //     backfill: no task was hibernated before it existed.
-// 38: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
+// 38: enable CodeRabbit follow-up (`shipping.codeRabbitAutoResolve`) once, preserving every
+//     other Shipping setting and any later opt-out.
+// 39: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
 //     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
 //     table, with no backfill: no launch was shaped before they existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 38;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3480,6 +3482,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   migrateTelemetry(d);
   migrate(d);
   migrateMockupsSkill(d);
+  migrateCodeRabbitFollowUp(d);
   markDatabaseSchemaCurrent(d);
 }
 
@@ -3502,6 +3505,85 @@ function migrateMockupsSkill(d: DatabaseSync): void {
   // Startup reconciliation owns symlinks and advances the generation if they change.
   d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
     .run(entry.key);
+}
+
+/**
+ * One rollout of CodeRabbit follow-up's default-on, not a default applied again on every
+ * upgrade. Every Shipping save wrote the old schema default, so a stored `false` from before
+ * schema 38 cannot be told apart from "never chose" and is switched on. A stored `false`
+ * written after this upgrade is an opt-out and survives every later start.
+ */
+function migrateCodeRabbitFollowUp(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 38) return;
+  const entry = APP_CONFIG_ENTRIES.shipping;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  let stored: unknown;
+  try {
+    stored = JSON.parse(row.value);
+  } catch {
+    return;
+  }
+  if (!entry.schema.safeParse(stored).success) return;
+  // Only an explicit stored `false` changes. An absent key already reads as the new default,
+  // and writing it would rewrite a row that holds nothing to migrate.
+  if ((stored as Record<string, unknown>).codeRabbitAutoResolve !== false) return;
+  // The schema ignores unknown properties, so a valid blob can carry one nested arbitrarily
+  // deep - deeper than SQLite's JSON functions accept, and deeper than `JSON.stringify` can
+  // recurse. A throw here aborts startup before the schema is marked current, so every restart
+  // would hit it again. So the stored text is edited in place: only the top-level value changes,
+  // and every other byte, known property or not, is kept.
+  const next = withTopLevelLiteral(row.value, "codeRabbitAutoResolve", "false", "true");
+  if (next === null) return;
+  d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, entry.key);
+}
+
+/**
+ * Replace one top-level member's literal value in a JSON object's text, without recursion.
+ *
+ * A single pass tracks nesting depth and string escapes, so it is safe at any depth. The last
+ * top-level occurrence of `key` is the one `JSON.parse` keeps, so that is the one replaced.
+ * Returns null when that member's value is not exactly `from`, or when the edited text does
+ * not parse back with the new value; the caller then writes nothing.
+ */
+function withTopLevelLiteral(text: string, key: string, from: string, to: string): string | null {
+  let depth = 0;
+  let target = -1;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\"") {
+      const start = i;
+      for (i += 1; i < text.length && text[i] !== "\""; i += text[i] === "\\" ? 2 : 1);
+      const token = text.slice(start, i + 1);
+      i += 1;
+      if (depth !== 1) continue;
+      let j = i;
+      while (j < text.length && /\s/.test(text[j]!)) j += 1;
+      if (text[j] !== ":") continue;
+      let name: unknown;
+      try { name = JSON.parse(token); } catch { return null; }
+      if (name !== key) continue;
+      for (j += 1; j < text.length && /\s/.test(text[j]!); j += 1);
+      target = j;
+      continue;
+    }
+    if (ch === "{" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === "]") depth -= 1;
+    i += 1;
+  }
+  if (target < 0 || text.slice(target, target + from.length) !== from) return null;
+  const next = text.slice(0, target) + to + text.slice(target + from.length);
+  try {
+    if ((JSON.parse(next) as Record<string, unknown>)[key] !== JSON.parse(to)) return null;
+  } catch {
+    return null;
+  }
+  return next;
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */

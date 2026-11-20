@@ -76,7 +76,10 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    total it may fill as an argument and reads no config, so a later step outside shaping can
    call it with what the shaping stages left (decision 12 in `phased-plan.md`).
    `resolveShapers` returns known shapers
-   only, and implements the whole enablement and ordering rule now, including for a
+   only, and implements the whole enablement and ordering rule now. An empty `kinds` means
+   every kind whose `TASK_KIND_BEHAVIOR.launch` is `harness` (`shapedByDefault`), so a resident
+   launch is shaped only when a shaper lists the resident kind, and a resolve input with
+   `turn: "iteration"`, a resident's wake turn, resolves to nothing (Jordan, 2026-11-20). The rule also covers a
    discovered list that stays empty until Phase 4. A stored choice in `overrides`, on or off,
    always wins. With no stored choice, a registered shaper is off, and a discovered one runs
    unless its manifest says `"enabled": false`. `shaperIsLocal(shaper)` says whether a shaper
@@ -138,7 +141,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 ## Tests and verification
 
 - `test/shaping.test.ts`: every pure function and every intent; the enablement table in
-  `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
+  `plan.md`, row for row; a shaper with no `kinds` serving every harness-launched kind but not a
+  resident launch, one listing the resident kind serving it, and a wake turn resolving nothing; an entry with an unknown stage or transport id that survives a
   parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
   written by `upsert`; an `upsert` over an id whose stored choice is on, left there by a
   discovered shaper, which leaves it off; a literal credential in a credential-looking

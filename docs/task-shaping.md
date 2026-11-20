@@ -41,8 +41,10 @@ the same steps for every enabled shaper.
    reason, never an error: Mission Control carries on.
 5. Entries are de-duplicated, fitted into the context budget, and composed into one section.
 
-A selector's `kinds` and `repositories` filters narrow where it runs. Empty means every kind
-and every repository.
+A selector's `kinds` and `repositories` filters narrow where it runs. Empty `kinds` means every
+kind Mission Control launches a harness worker for (`TASK_KIND_BEHAVIOR.launch` is `harness`):
+a resident launch is shaped only when a shaper lists the resident kind, and a resident's wake
+turns are never shaped. Empty `repositories` means every repository.
 
 ## The contract
 

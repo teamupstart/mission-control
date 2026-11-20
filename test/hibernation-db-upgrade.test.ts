@@ -18,8 +18,8 @@ const dbPath = join(home, "harness.db");
 const columns = (d: DatabaseSync, table: string) =>
   (d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
 
-test("a schema 36 database upgrades to current with the hibernation column and keeps its tasks", () => {
-  // At least 37: a later schema step leaves this upgrade as it was.
+test("a schema 36 database upgrades through 37 with the hibernation column and keeps its tasks", () => {
+  // Later schemas build on 37; a 36 file goes all the way to the current one.
   assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 37);
   // Build the current schema with a task in it, then take schema 37 away again: what a 36 file
   // looked like.

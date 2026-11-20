@@ -301,12 +301,18 @@ test("completed health can serve continued arrivals while a newer probe is pendi
   let second: ReturnType<typeof missionToolsAvailability> | undefined;
   try {
     await waitForBridgeProbe(probes, 1, first);
+    // The newer probe takes its sequence synchronously inside this call, so it is pending from
+    // here on whether or not its bridge has started. Waiting for that start before releasing the
+    // first probe would stretch the first one's 15-second handshake budget across a second cold
+    // `node` start, which under full-suite contention outlasts it.
     second = missionToolsAvailability("pi");
-    await waitForBridgeProbe(probes, 2, second);
     writeFileSync(firstRelease, "released");
     assert.equal((await first).available, true);
     const arrivals = await Promise.all(Array.from({ length: 4 }, () => missionToolsAvailability("pi")));
     assert.ok(arrivals.every(result => result.available));
+    // An arrival that probed would have logged its bridge before it resolved, so once the newer
+    // probe's own bridge is in, exactly two means no arrival probed.
+    await waitForBridgeProbe(probes, 2, second);
     assert.equal(readFileSync(probes, "utf8"), "xx", "continued arrivals reuse the completed result while the newer probe is pending");
   } finally {
     writeFileSync(firstRelease, "released"); writeFileSync(secondRelease, "released");

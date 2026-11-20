@@ -369,7 +369,6 @@ import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
-  type StandingInstructionsDelivery,
   type StandingInstructionsResponse,
 } from "@shared/standing-instructions.ts";
 import {

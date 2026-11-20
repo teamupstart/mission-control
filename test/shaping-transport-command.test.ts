@@ -243,15 +243,17 @@ test("a wall-clock jump while a call starts does not end it early", async () => 
 test("a reply's redactor treats a version as an identifier: named values go, short inherited ones stay", async () => {
   const names = ["SHAPER_FIXTURE_ZERO", "SHAPER_FIXTURE_SHORT"] as const;
   const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-  process.env.SHAPER_FIXTURE_ZERO = "0";
-  process.env.SHAPER_FIXTURE_SHORT = "x9";
+  // Values no runner's environment holds, so an inherited "4" or "0" elsewhere cannot change
+  // what these assertions see.
+  process.env.SHAPER_FIXTURE_ZERO = "ʘ";
+  process.env.SHAPER_FIXTURE_SHORT = "фq";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SHORT"] }), ctx(30_000));
     assert.equal(reply.kind, "data");
     const redact = (reply as { redact: (text: string, options?: { identifier?: boolean }) => string }).redact;
-    assert.equal(redact("v1.4.0", { identifier: true }), "v1.4.0", "an inherited 0 is no credential in a version");
-    assert.equal(redact("v1.4.0 at 0"), "v1.4.[redacted] at [redacted]", "a reason still drops it as a whole token");
-    assert.equal(redact("v2-x9", { identifier: true }), "v2-[redacted]", "a named value goes, however short");
+    assert.equal(redact("r-ʘ", { identifier: true }), "r-ʘ", "a short inherited value is no credential in a version");
+    assert.equal(redact("seen ʘ."), "seen [redacted].", "a reason still drops it as a whole token");
+    assert.equal(redact("r-фq-build", { identifier: true }), "r-[redacted]-build", "a named value goes, however short");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];

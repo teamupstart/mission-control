@@ -189,6 +189,33 @@ test("a slow call is abandoned at its timeout, and the others' entries are kept"
   assert.deepEqual(result.entries.map((entry) => entry.id), ["kept"]);
 });
 
+test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
+  // 33 attached repositories, one more than a request's context may name.
+  const many = input(1);
+  many.context.repositories = Array.from({ length: 33 }, (_, i) => ({
+    name: `repo-${i}`, role: i === 0 ? "primary" : "additional", branch: null, baseSha: null, path: `/work/repo-${i}`,
+  })) as ShapeTaskInput["context"]["repositories"];
+  let calls = 0;
+  const result = await run(configWith([shaper("g", "gather")]), () => { calls++; return data({ guidance: [] }); }, many);
+  assert.equal(calls, 0, "no transport saw a request a strict shaper would refuse");
+  const records = result.summary!.shapers;
+  assert.ok(records.length > 0);
+  for (const record of records) {
+    assert.equal(record.outcome, "failed");
+    assert.match(record.reason ?? "", /outside the shaping protocol's bounds, so this shaper was not called\. context\.repositories: /);
+  }
+  // At the bound, every request is valid and sent.
+  const bounded = input(1);
+  bounded.context.repositories = many.context.repositories.slice(0, 32);
+  let sent = 0;
+  await run(configWith([shaper("g", "gather")]), (request) => {
+    sent++;
+    assert.equal(ShapingRequestSchema.safeParse(request).success, true);
+    return data({ guidance: [] });
+  }, bounded);
+  assert.equal(sent, 32);
+});
+
 test("a call cut short by the step deadline gets a whole-millisecond deadline that a strict shaper accepts", async () => {
   // A selector's own timeout exceeds what is left of the step once gather has taken a fraction
   // of a millisecond more than a whole number, so its deadline comes from the step.

@@ -12,6 +12,7 @@ import {
   SHAPING_SECTION_PREAMBLE,
   shaperIsLocal,
   shapingEntryHeading,
+  ShapingRequestSchema,
   ShapingResultSchema,
   summariseShaping,
   utf8Length,
@@ -267,6 +268,15 @@ async function runShaping(
       context: contextFor(local),
       limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
     };
+    // The request is checked against the wire schema before any transport sees it. Input the
+    // caller collected can exceed the protocol's bounds, such as more repositories than a
+    // request may name, and a shaper that validates its requests would refuse every call.
+    const wire = ShapingRequestSchema.safeParse(request);
+    if (!wire.success) {
+      const issue = wire.error.issues[0];
+      const at = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+      return empty("failed", `The task's context is outside the shaping protocol's bounds, so this shaper was not called. ${at}${issue?.message ?? "The request is not valid."}`);
+    }
 
     // The call's own deadline is exact: its signal is aborted at `timeoutMs`, and a reply that
     // arrives after it contributes nothing. The short grace that follows only lets a transport

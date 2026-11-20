@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -193,6 +193,21 @@ test("a working-tree check Git never answered is unknown, never reported as a ba
   assert.equal(await insideWorkTree(repository, overflowed), "unknown");
   const neverStarted = async () => ({ code: null, stdout: "", stderr: "spawn git ENOENT", outcomeUnknown: false, overflowed: false }) as never;
   assert.equal(await insideWorkTree(repository, neverStarted), "unknown", "nor is a check that never started");
+});
+
+test("a repository check Git never answers is 503, never an invalid checkout", async () => {
+  const { checkoutFor } = await import("../src/server/shaping/routes.ts");
+  const silent = async () => "unknown" as const;
+  // Root resolution fails because Git did not answer: a second probe says so.
+  const duringRoot = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: silent });
+  assert.deepEqual([duringRoot.ok, !duringRoot.ok && duringRoot.status, !duringRoot.ok && duringRoot.error], [false, 503, "repository_check_failed"]);
+  // Root resolved, then the working-tree check went unanswered.
+  const duringTree = await checkoutFor(repository, { resolveRepoRoot: async () => repository, insideWorkTree: silent });
+  assert.deepEqual([duringTree.ok, !duringTree.ok && duringTree.status], [false, 503]);
+  // Git answered no: still 400, for an ordinary folder and for a bare repository.
+  const rejected = await checkoutFor(plainFolder, { resolveRepoRoot: async () => null, insideWorkTree: async () => "not-worktree" });
+  assert.deepEqual([!rejected.ok && rejected.status, !rejected.ok && rejected.error], [400, "unknown_repository"]);
+  assert.deepEqual(await checkoutFor(repository), { ok: true, repoRoot: realpathSync(repository) }, "the real probes accept the checkout");
 });
 
 test("a dry run refuses a bare repository and accepts a linked worktree", async () => {

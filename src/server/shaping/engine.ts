@@ -30,6 +30,7 @@ import {
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { discoverShapers } from "./discovery.ts";
+import { withoutNul } from "./references.ts";
 import { getShapingConfig } from "./index.ts";
 import {
   callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
@@ -155,30 +156,6 @@ interface CallResult {
   summary: string | null;
   /** The reply said it was truncated as a whole, whether or not any entry says so. */
   truncated: boolean;
-}
-
-/**
- * Remove every NUL from the strings of a decoded reply, in place. A key holding one is dropped
- * with its value rather than renamed, so two keys can never merge into one: no key the result
- * schema defines holds NUL, and a fact named with one would reach the selectors. Walked with a
- * stack, so no nesting overflows it.
- */
-function stripNul(value: unknown): void {
-  const pending: unknown[] = [value];
-  while (pending.length > 0) {
-    const node = pending.pop();
-    if (!node || typeof node !== "object") continue;
-    const record = node as Record<string, unknown>;
-    for (const key of Object.keys(record)) {
-      if (!Array.isArray(record) && key.includes("\u0000")) { delete record[key]; continue; }
-      const item = record[key];
-      if (typeof item === "string") {
-        if (item.includes("\u0000")) record[key] = item.replaceAll("\u0000", "");
-      } else if (item && typeof item === "object") {
-        pending.push(item);
-      }
-    }
-  }
 }
 
 function bounded(reason: string): string {
@@ -370,7 +347,7 @@ async function runShaping(
     }
     // No NUL from a shaper reaches anything built from its reply. Phase 2 appends the section to
     // a launch argument, and an argument holding NUL refuses to start the worker at all.
-    stripNul(value);
+    withoutNul(value);
     const error = replyError(value);
     if (error !== null) return empty("failed", scrub(error), redacted);
     const parsed = ShapingResultSchema.safeParse(value);

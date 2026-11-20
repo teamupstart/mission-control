@@ -37,6 +37,40 @@ function limitBody(maxSize: number) {
   return bodyLimit({ maxSize, onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413) });
 }
 
+/** The Git probes a dry run's repository check makes, so a test can stand in for either. */
+export interface CheckoutProbes {
+  resolveRepoRoot: typeof resolveRepoRoot;
+  insideWorkTree: typeof insideWorkTree;
+}
+
+/**
+ * Whether `repository` is a working tree a dry run may use, and the repository it belongs to.
+ * Git rejecting the path is a 400. Git never answering is a 503, whether during root resolution
+ * or the working-tree check, so a valid checkout is never refused as an invalid one. A bare
+ * repository resolves but has no working tree for a gatherer to run in.
+ */
+export async function checkoutFor(
+  repository: string,
+  probes: CheckoutProbes = { resolveRepoRoot, insideWorkTree },
+): Promise<{ ok: true; repoRoot: string } | { ok: false; status: 400 | 503; error: string; reason: string }> {
+  const unanswered = (what: string) => ({
+    ok: false as const, status: 503 as const, error: "repository_check_failed", reason: `Git did not answer whether ${what}. Try again.`,
+  });
+  const repoRoot = await probes.resolveRepoRoot(repository);
+  // `resolveRepoRoot` answers null both when Git rejects the path and when Git never answered.
+  // A second probe tells them apart.
+  if (!repoRoot) {
+    if ((await probes.insideWorkTree(repository)) === "unknown") return unanswered("the path is a Git checkout");
+    return { ok: false, status: 400, error: "unknown_repository", reason: "The path is not inside a Git checkout." };
+  }
+  const tree = await probes.insideWorkTree(repository);
+  if (tree === "unknown") return unanswered("the path is a working tree");
+  if (tree === "not-worktree") {
+    return { ok: false, status: 400, error: "unknown_repository", reason: "The path is a bare repository, with no working tree to run a shaper in." };
+  }
+  return { ok: true, repoRoot };
+}
+
 export function registerShapingRoutes(app: Hono): void {
   const gate = requireFeature("task-shaping");
 
@@ -69,17 +103,9 @@ export function registerShapingRoutes(app: Hono): void {
     // ordinary folder is refused instead of running a gatherer there and reporting success. The
     // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
     // owner, which names the repository but is not the tree under test.
-    const repoRoot = await resolveRepoRoot(repository);
-    if (!repoRoot) return c.json({ error: "unknown_repository", reason: "The path is not inside a Git checkout." }, 400);
-    // A bare repository resolves too, but has no working tree for a gatherer to run in. A check
-    // Git never answered is reported as such, never as a bare repository.
-    const tree = await insideWorkTree(repository);
-    if (tree === "unknown") {
-      return c.json({ error: "repository_check_failed", reason: "Git did not answer whether the path is a working tree. Try again." }, 503);
-    }
-    if (tree === "not-worktree") {
-      return c.json({ error: "unknown_repository", reason: "The path is a bare repository, with no working tree to run a shaper in." }, 400);
-    }
+    const checked = await checkoutFor(repository);
+    if (!checked.ok) return c.json({ error: checked.error, reason: checked.reason }, checked.status);
+    const repoRoot = checked.repoRoot;
     let checkout = repository;
     try { checkout = realpathSync(repository); } catch { /* Keep the path as given. */ }
     const result = await dryRunShaper(id, {

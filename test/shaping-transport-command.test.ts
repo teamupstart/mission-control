@@ -386,6 +386,42 @@ test("a scrubbed field never grows past its schema limit, so a reply at its limi
   assert.equal((scrubbed.data as typeof reply).repo.facts.owner, "oooo[TOKEN redacted]", "a field well within its limit keeps the whole marker");
 });
 
+test("a named value split by a NUL is still found, so stripping the NUL can never rejoin it", () => {
+  const resolved = [{ name: "TOKEN", value: "s3cret-passed" }];
+  const reply = { guidance: [{ id: "e", body: "use s3cret-\u0000passed here" }, { id: "by-s3cret-pa\u0000ssed", body: "keyed by it" }],
+    repo: { facts: { owner: "s3c\u0000ret-passed" } } };
+  const scrubbed = scrubResolved(reply, resolved);
+  assert.equal(scrubbed.redacted, true);
+  const text = JSON.stringify(scrubbed.data);
+  assert.equal(text.includes("s3cret-passed") || text.includes("\\u0000"), false, "no NUL is left to strip, and no credential behind one");
+  const data = scrubbed.data as typeof reply;
+  assert.deepEqual(data.guidance.map((entry) => entry.id), ["e"], "an id holding the value behind a NUL is dropped too");
+  assert.equal(data.guidance[0]!.body, "use [TOKEN redacted] here");
+  assert.equal(data.repo.facts.owner, "[TOKEN redacted]");
+});
+
+test("redacting many targets that share a short value stays bounded", () => {
+  // 32 named variables with one two-character value, over 256 KiB of it: every offset matches.
+  const resolved = Array.from({ length: 32 }, (_, i) => ({ name: `VAR_${i}`, value: "aa" }));
+  const reply = { guidance: [{ id: "e", body: "a".repeat(256 * 1024) }] };
+  const started = Date.now();
+  const scrubbed = scrubResolved(reply, resolved);
+  const elapsed = Date.now() - started;
+  const body = (scrubbed.data as typeof reply).guidance[0]!.body;
+  assert.equal(body.startsWith("[VAR_0, VAR_1"), true, "one span, naming every variable that holds the value");
+  assert.equal(body.includes("a]") || body.endsWith("a"), false);
+  // About 13 ms here; the per-match version took about 700 ms and 600 MB of heap on this input.
+  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+});
+
+test("a field already over its limit is left for the schema to refuse, not clipped into validity", () => {
+  const reply = { guidance: [{ id: "e", title: "t".repeat(513), body: "nothing named here" }] };
+  const scrubbed = scrubResolved(structuredClone(reply), [{ name: "TOKEN", value: "x9" }]);
+  assert.equal(scrubbed.redacted, false, "nothing was removed");
+  assert.equal((scrubbed.data as typeof reply).guidance[0]!.title.length, 513);
+  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so the engine still refuses it");
+});
+
 test("a reply holding no named value is returned byte for byte", async () => {
   const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx());
   assert.equal(reply.kind, "data");

@@ -10,6 +10,30 @@ export function referenceStatus(_config: ShapingConfig): ShapingReferenceStatus 
   return {};
 }
 
+/**
+ * Remove every NUL from the strings of a decoded reply, in place, and drop any key that holds
+ * one together with its value, so two keys can never merge. Walked with a stack, so no nesting
+ * overflows it. The engine applies the same rule to every reply; a transport that redacts
+ * applies it first, so what it checks is what the engine will keep.
+ */
+export function withoutNul(value: unknown): void {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (!Array.isArray(record) && key.includes("\u0000")) { delete record[key]; continue; }
+      const item = record[key];
+      if (typeof item === "string") {
+        if (item.includes("\u0000")) record[key] = item.replaceAll("\u0000", "");
+      } else if (item && typeof item === "object") {
+        pending.push(item);
+      }
+    }
+  }
+}
+
 /** A secret a transport handed a shaper, and the name it is reported under. */
 export interface ResolvedValue {
   name: string;
@@ -38,7 +62,9 @@ function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit
   // is cut back to that bound, so a reply that was valid never becomes invalid because something
   // was removed from it. Only the tail is cut, and nothing of the value is left in it. A field
   // within its bound is left whole.
-  return limit !== undefined && next.length > limit ? next.slice(0, limit) : next;
+  // A field already over its limit is left for the schema to refuse: only a replacement that
+  // pushed a field within its limit over it is clipped.
+  return limit !== undefined && text.length <= limit && next.length > limit ? next.slice(0, limit) : next;
 }
 
 /**
@@ -79,6 +105,9 @@ function holdsResolved(text: string, resolved: readonly ResolvedValue[]): Resolv
 export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[]): ScrubbedReply {
   const values = resolved.filter(({ value }) => value.length > 0).sort((a, b) => b.value.length - a.value.length);
   if (values.length === 0 || data === null || typeof data !== "object") return { data, redacted: false, notes: [] };
+  // NUL first: the engine removes it from every string later, so a value split by a NUL here
+  // would pass every check below and be joined back into the credential afterwards.
+  withoutNul(data);
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;

@@ -9,8 +9,10 @@ function alphanumeric(char: string | undefined): boolean {
 }
 
 /**
- * Every start offset of `value` in `text`, overlapping occurrences included: a search that
- * resumed after each match would step over a second copy that begins inside the first.
+ * Call `found` with every start offset of `value` in `text`, overlapping occurrences included: a
+ * search that resumed after each match would step over a second copy that begins inside the
+ * first. Nothing is collected, so a value matched at every offset of a large text costs no
+ * allocation per match.
  *
  * Knuth-Morris-Pratt, so the scan is linear in the text and the value whatever they hold. A
  * search that restarted at each match, such as `indexOf` from the next offset, compares a long
@@ -18,9 +20,8 @@ function alphanumeric(char: string | undefined): boolean {
  * repeated character over a 256 KiB diagnostic is billions of comparisons on the event loop.
  * A whole-token match is the same scan with the characters on either side checked afterwards.
  */
-export function occurrences(text: string, value: string, wholeToken: boolean): number[] {
-  const starts: number[] = [];
-  if (value.length === 0 || value.length > text.length) return starts;
+export function forEachOccurrence(text: string, value: string, wholeToken: boolean, found: (start: number) => void): void {
+  if (value.length === 0 || value.length > text.length) return;
   // fallback[i]: the length of the longest proper prefix of value[0..i] that is also its suffix.
   const fallback = new Int32Array(value.length);
   for (let i = 1, k = 0; i < value.length; i++) {
@@ -33,11 +34,10 @@ export function occurrences(text: string, value: string, wholeToken: boolean): n
     if (text[i] === value[k]) k++;
     if (k === value.length) {
       const start = i - value.length + 1;
-      if (!wholeToken || (!alphanumeric(text[start - 1]) && !alphanumeric(text[i + 1]))) starts.push(start);
+      if (!wholeToken || (!alphanumeric(text[start - 1]) && !alphanumeric(text[i + 1]))) found(start);
       k = fallback[k - 1]!;
     }
   }
-  return starts;
 }
 
 /** One value to remove, how it must stand to count, and the label its replacement names. */
@@ -54,6 +54,10 @@ export interface RedactionTarget {
  * are removed over their combined extent and no fragment of either survives a later pass.
  * `render` writes the replacement from the labels of every target the span covers.
  *
+ * Bounded however the targets repeat: targets that share a value are searched once, and each
+ * match only bumps a counter in a typed array the length of the text, so no record is kept per
+ * match and nothing is sorted. Labels are tracked as bits, one per distinct label.
+ *
  * `dropBefore` discards unmatched text in front of that offset: a value whose start was cut off
  * by a bounded buffer lives there, as a piece no search can recognise.
  */
@@ -63,33 +67,56 @@ export function redactSpans(
   render: (labels: readonly string[]) => string,
   dropBefore = 0,
 ): string {
-  const spans: Array<{ start: number; end: number; label: string }> = [];
+  // One search per value. A value is whole-token only if every target naming it is.
+  const byValue = new Map<string, { wholeToken: boolean; labels: Set<string> }>();
   for (const target of targets) {
-    for (const start of occurrences(text, target.value, target.wholeToken)) {
-      spans.push({ start, end: start + target.value.length, label: target.label });
-    }
+    if (target.value.length === 0) continue;
+    const entry = byValue.get(target.value);
+    if (entry) { entry.wholeToken &&= target.wholeToken; entry.labels.add(target.label); }
+    else byValue.set(target.value, { wholeToken: target.wholeToken, labels: new Set([target.label]) });
   }
-  if (spans.length === 0 && dropBefore <= 0) return text;
-  spans.sort((a, b) => a.start - b.start);
+  const labelList = [...new Set(targets.map((target) => target.label))];
+  const labelBit = new Map(labelList.map((label, at) => [label, at]));
+  // depth[i] > 0 inside a match. Labels as bit words per start offset, only when there is more
+  // than one label to tell apart.
+  const depth = new Int32Array(text.length + 1);
+  const words = Math.ceil(labelList.length / 32);
+  const marks = labelList.length > 1 ? new Uint32Array(text.length * words) : null;
+  let matched = false;
+  for (const [value, { wholeToken, labels }] of byValue) {
+    const bits = [...labels].map((label) => labelBit.get(label)!);
+    forEachOccurrence(text, value, wholeToken, (start) => {
+      depth[start]! += 1;
+      depth[start + value.length]! -= 1;
+      if (marks) for (const bit of bits) marks[start * words + (bit >> 5)]! |= 1 << (bit & 31);
+      matched = true;
+    });
+  }
+  if (!matched && dropBefore <= 0) return text;
   let out = "";
-  let cursor = 0;
+  let covered = 0;
+  let runStart = 0;
+  const spanBits = new Uint32Array(Math.max(1, words));
   const keep = (from: number, to: number) => {
     const at = Math.max(from, dropBefore);
     if (to > at) out += text.slice(at, to);
   };
-  for (let i = 0; i < spans.length;) {
-    const start = spans[i]!.start;
-    let end = spans[i]!.end;
-    const labels = new Set<string>();
-    while (i < spans.length && spans[i]!.start <= end) {
-      end = Math.max(end, spans[i]!.end);
-      labels.add(spans[i]!.label);
-      i++;
-    }
-    keep(cursor, start);
-    out += render([...labels]);
-    cursor = end;
+  const emit = () => {
+    if (!marks) { out += render(labelList); return; }
+    const labels = labelList.filter((_, at) => (spanBits[at >> 5]! & (1 << (at & 31))) !== 0);
+    out += render(labels);
+    spanBits.fill(0);
+  };
+  for (let at = 0; at <= text.length; at++) {
+    const wasCovered = covered > 0;
+    covered += depth[at]!;
+    const isCovered = at < text.length && covered > 0;
+    if (isCovered && marks) for (let w = 0; w < words; w++) spanBits[w]! |= marks[at * words + w]!;
+    if (isCovered === wasCovered) continue;
+    if (wasCovered) emit();
+    else keep(runStart, at);
+    runStart = at;
   }
-  keep(cursor, text.length);
+  if (covered <= 0 && runStart < text.length) keep(runStart, text.length);
   return out;
 }

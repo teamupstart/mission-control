@@ -2,7 +2,7 @@
 // `$.state` contract mirrors the shared schemas, and `build:mod` produces an installable folder.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -52,6 +52,35 @@ test("each pane tab draws not implemented for every placement, and the fake reco
     }
   }
   assert.equal(fake.views.length, tabs.length * placements.length);
+});
+
+test("build:mod refuses an output directory outside dist/ and the temp directory, even through a symlink", () => {
+  // Only throwaway targets are ever handed over: a sentinel in the gitignored .tmp/, a symlink to it
+  // from the temp directory, and a path that does not exist. A broken guard could delete the sentinel.
+  mkdirSync(join(root, ".tmp"), { recursive: true });
+  const sentinel = mkdtempSync(join(root, ".tmp", "mod-guard-"));
+  writeFileSync(join(sentinel, "keep.txt"), "keep");
+  const linkDir = mkdtempSync(join(tmpdir(), "mission-mod-guard-"));
+  symlinkSync(sentinel, join(linkDir, "escape"));
+  const refused = (out: string): boolean => {
+    try {
+      execFileSync(process.execPath, ["--import", "tsx", "scripts/build-mod.ts"], {
+        cwd: root, env: { ...process.env, MISSION_MOD_OUT_DIR: out }, stdio: "pipe",
+      });
+      return false;
+    } catch (error) {
+      return /refusing to replace it/.test(String((error as { stderr?: Buffer }).stderr));
+    }
+  };
+  try {
+    assert.equal(refused(sentinel), true);
+    assert.equal(refused(join(linkDir, "escape")), true);
+    assert.equal(refused(join(root, ".tmp", "mod-guard-does-not-exist")), true);
+    assert.equal(readFileSync(join(sentinel, "keep.txt"), "utf8"), "keep");
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(sentinel, { recursive: true, force: true });
+  }
 });
 
 test("the skeleton registers no hook, so an installed P2 build changes nothing in a session", () => {

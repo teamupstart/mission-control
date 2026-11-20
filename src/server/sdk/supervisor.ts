@@ -884,6 +884,9 @@ export class SdkSupervisor {
     turn: SdkTurn,
     beforeSend?: () => string | null,
   ): Promise<"started" | null> {
+    // Not idle for this purpose until its task is bound (`holdsDelivery`): the caller keeps the
+    // row for the next idle transition, which the binding produces.
+    if (this.unboundWakes.has(id)) return Promise.resolve(null);
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
@@ -1226,6 +1229,15 @@ export class SdkSupervisor {
   /** A woken session's task is bound to it: from here on its end is an ordinary one. */
   wakeBound(id: string): void {
     this.unboundWakes.delete(id);
+  }
+
+  /**
+   * Whether queued turns must wait: a woken driver has not yet shown it reopened its task's
+   * conversation. `PendingTurnManager` holds rows on this rather than having a send refused, so
+   * nothing is retried in a loop; the binding's `session_upsert` releases them.
+   */
+  holdsDelivery(id: string): boolean {
+    return this.unboundWakes.has(id);
   }
 
   /**

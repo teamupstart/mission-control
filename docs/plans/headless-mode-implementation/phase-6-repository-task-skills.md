@@ -2,7 +2,7 @@
 
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
-**1. Outcome.** A repository can add `.claude/skills/{kind}/SKILL.md`, and its text is added to a worker's first prompt for every origin, never replacing Mission Control's own.
+**1. Outcome.** A repository can add `.claude/skills/{kind}/SKILL.md`, and its text is added, when `headless-mode` is on, to a worker's first prompt for every origin, never replacing Mission Control's own.
 
 **2. Entry and dependencies.** Direct prerequisite: P2.
 
@@ -16,7 +16,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **7. Tests.** Prompt composition for each kind with and without a skill, ordering, oversize and symlink cases, and an assertion that the prompt for a repository without a skill is byte-identical to today's.
 
-**8. Merge and exit.** Behavior is flag-independent for repositories with no skill; with a skill and the flag off it still applies to the dashboard only if that was already true, so gate it behind `headless-mode` to keep the old behavior.
+**8. Merge and exit.** Behavior is flag-independent for repositories with no skill; with the flag off no skill text is added to any prompt, which keeps today's behavior.
 
 **9. Handoff.** Nothing downstream depends on it except docs (P17) and the full loop (P18).
 

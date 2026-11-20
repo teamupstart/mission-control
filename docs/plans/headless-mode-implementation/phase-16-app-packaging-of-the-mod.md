@@ -6,7 +6,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **2. Entry and dependencies.** Direct prerequisite: P14 (`src/server/mod-stage.ts`).
 
-**3. Scope.** One entry in `electron-builder.yml` (named in the pull request) and one stage call at app start. Non-goals: any other release, signing or CI change; the mod is not published to claude-code-extensions (D44).
+**3. Scope.** One entry in `electron-builder.yml` (named in the pull request) and one stage call at app start in `src/main/index.ts`. Non-goals: any other release, signing or CI change; the mod is not published to claude-code-extensions (D44).
 
 **4. Findings.** `electron-builder.yml` is a controlled path: change only what this task requires. `asar` must stay off and `skills/` must stay out of `dist` (CLAUDE.md boundaries). Staging publishes by rename, never by copying onto the published path.
 
@@ -14,7 +14,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **6. Data and API.** None.
 
-**7. Tests.** A test that the stage call runs once and is a no-op with the flag off; a test that an app-staged build with a newer version makes doctor's `mod-current` report stale and `mctl setup` bring it current, using P14's fake `claude` runner; the existing packaging and smoke checks; `npm run package` where the machine supports it, with its result attached to the pull request.
+**7. Tests.** A test that the stage call runs once and is a no-op with the flag off; a test that an app-staged build with a newer version makes doctor's `mod-current` report stale and `mctl setup` bring it current, using P2's fake `claude` runner as P14 extended it; the existing packaging and smoke checks; `npm run package` where the machine supports it, with its result attached to the pull request.
 
 **8. Merge and exit.** The packaged app contains the mod outside `asar`, and a newer staged build is picked up by `mctl setup`; the diff touches `electron-builder.yml` by one entry only.
 

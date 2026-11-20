@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 13). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 16). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -18,6 +18,8 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 13). Spec: C
 - Review repairs (revision 11): S4 has a mergeable fallback; P14 uses one confirmation threshold (documentation alone never permits fail); P5 merges after P3 and P8 after P5; the plan carries a producer to consumer audit table.
 - Review repairs (revision 12): plan 6.8 holds script-derived producer to consumer and spike tables; every unordered pair has a stated reason; P7's `codex` step has a defined interim before P14's commands exist.
 - Review repairs (revision 13): the chat poll interval is stated once (1.5 s, or 3 s under S23); the runtime and Focus test (guard 1) is P5's, with guards 2 and 3 in P1 and all three repeated in P18.
+- Review repairs (revision 14): the S19 fallback is P8's inert path (no daemon change is planned); an unanswered S23 uses 3 s and 30 rows; spikes run on throwaway kits; six merge waves with the order inside each stated.
+- Review repairs (revision 15): two fresh-context reviews were run before saving and every finding was fixed in the same revision; the deviations table of `plan.md` section 9 records each frozen criterion the plan no longer matches literally.
 - Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
 ## 2. Findings from the repository
@@ -32,12 +34,12 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 13). Spec: C
 
 1. First re-read the spec version and sha256 above. If the spec moved past 18, stop and report.
 2. Everything lands behind the `headless-mode` preview flag. Flag-off tests prove no behavior change.
-3. Do not touch `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs`. Nothing under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports the first two.
+3. Do not touch `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs`. Nothing under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports `src/server/terminal/`, and only P9's `chat.ts` imports `sendText` (not `focus` or `raiseThrough`) from `src/server/actions.ts`.
 4. Tests use `node:test` with the fakes in `test/helpers/home-dispatch-fakes.ts`; no model tokens; UI changes to the dashboard need a Playwright spec, and the mod pane is covered by fake-host tests.
 5. One owner per file (spec 8.1). A contract change after P1 only adds, in its own `contract:` commit.
 6. No em dash in prose. Do not hand-edit generated files. Do not commit evidence artifacts.
 7. Open a reviewable pull request to `main` through the pull-request skill, and follow it until CI is green. Its merge releases dependents.
-8. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging if none exists. The merge gates are S10 or S11 (the launcher part of P11), S16 (P9 and P12) and S27 (P7).
+8. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging the gated part if none exists (the whole phase, except that for P11 it is the launcher part only, and the rest of P11 then merges with the launcher switched off). The merge gates are S10 or S11 (the launcher part of P11), S16 (P9 and P12) and S27 (P7). Negative answers: if S10 and S11 both failed, the rest of P11 merges with the launcher off and the owner decides; if S16 and its `chat_first` fallback both fail, P9 and P12 wait for the owner; if S27 is false, record `CODEX_AUTH_MTIME_RELIABLE = false` and P7 merges with that behavior. An unrecorded hard gate also holds every phase that has the gated phase as a prerequisite.
 9. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. The soft spikes are S4, S5, S8, S12, S14, S15, S17 to S26 (S18 and S19 included).
 
 ## 4. Sizing and phase count
@@ -65,13 +67,15 @@ Estimate, gross non-test production lines (documentation lines for P17):
 | P17 | 600 to 1,000 (docs) |
 | P18 | 400 to 700 (integration tests and checks) |
 
-Total about 11,000 to 18,500 production lines plus documentation. That is far above the 200-line single-phase threshold, and no mid-tier model can do it in one task. The phase count follows the approved plan and the spec's work packages, which are ownership boundaries (one owner per file) that let up to 14 agents work in parallel.
+Total about 11,000 to 18,500 production lines plus documentation. That is far above the 200-line single-phase threshold, and no mid-tier model can do it in one task. The phase count follows the approved plan and the spec's work packages, which are ownership boundaries (one owner per file) that let up to five phases run in parallel (wave 2). The 1,500-line cap of spec 8.1 rule 5 is advisory for these phases: P4, P12 and P14 estimate above it, each has one owner for its files, and the owner may split one if its pull request passes the cap, which adds a phase and a task.
 
 Deviations from the "fewest phases" rubric, stated so they can be challenged:
 
 - **P6** is about 200 to 350 lines. It stays separate because it owns the hot file `composeTurnOne`, which the task-shaping plan also edits, so it needs its own rebase and review.
 - **P16** is under 200 lines. It stays separate because it changes a controlled release file (`electron-builder.yml`) and should be reviewed alone.
 - **P17** (docs) and **P18** (integration proof) are not merged into earlier phases because the spec makes one owner of `docs/` and because the full-loop proof needs every user-facing package already on `main`. Each earlier phase still ships its own tests.
+
+The run's frozen acceptance criteria that the plan no longer matches literally are recorded in the deviations table of `plan.md` section 9.
 
 ## 5. Phase table
 
@@ -141,15 +145,15 @@ flowchart TD
   P17 --> P18
 ```
 
-Concurrency: after P2, P3 and P6 run together; P4, P5 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
+The merge order is in six waves, with the required order inside each wave, in plan 6.2. Concurrency: after P2, P3 and P6 run together; P4, P5 and P7 follow P3. P8 follows P3, P4 and P5, P9 follows P3 and P4, and P10 follows P4, so they run together once those have merged. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
 ## 7. Cross-phase contracts
 
 - P1 owns every shared schema, route stub and schema 36. Later phases fill stubs and never change a stub's shape. Stub owners are listed in P1 section 9 (routes) and P2 section 9 (CLI commands, setup steps, mod flows and pane).
-- P2 owns the fakes. Later phases extend them additively.
-- P3 owns home-session rules (spec 7.2); P4, P9 and P7 call them and never re-implement them.
+- P2 owns the fake daemon and the fake `claude`; each later phase adds its own fixture file and one registration line, and never edits P2's file otherwise.
+- P3 owns home-session rules (spec 7.2); P4, P5, P7, P8 and P9 call them and never re-implement them.
 - P4 owns `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); P12 asks P4's owner for changes.
-- P8 owns `src/mod/register.ts`, `host.ts`; P11 and P12 add flows and panes with one registration line each.
+- P8 owns `src/mod/register.ts`, `host.ts` and `types/index.d.ts`; P11 and P12 add flows and panes with one registration line each; whichever of P11 and P12 merges second rebases, and the merge is mechanical.
 - P14 owns `scripts/install-service.mjs` and the setup-step files except `agents.ts` (P15) and `codex.ts` (P7).
 - Subagent lines: P1 declares `subagents` on inbox items and on the transcript response; P4 creates `src/server/home-dispatch/subagent-state.ts` and fills the inbox counts; P9 fills the transcript lines from it; P12 reserves two slots in `src/mod/pane/header.tsx`; P15 owns `src/shared/subagent-lines.ts` (`subagentLines`) and fills both slots, editing nothing else in the pane.
 - P13 owns `src/cli/commands/claude.ts` and resolves `claude` from `PATH`; P14 owns `src/cli/claude-cli.ts` and the one edit that makes `mctl claude` call it.

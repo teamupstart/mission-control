@@ -8,7 +8,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **3. Scope.** The commands `mctl get`, `mctl describe`, `mctl logs` (including `mctl logs -f`), `mctl status` and `mctl config`: `src/cli/client.ts`, `src/cli/commands/get.ts`, `describe.ts`, `logs.ts`, `status.ts`, `config.ts`. Non-goals: `run`, `claude`, `daemon` (P13), `setup` and `doctor` (P14).
 
-**4. Findings.** `main` has no `src/cli/`; P2 supplies the registry. An `mctl` caller is a `cli` caller: it may read any home-dispatched task of its repository and nothing else (spec 7.23). `mctl logs -f` follows the stream route and exits when the task ends. The client reads the token through the shared path helper.
+**4. Findings.** `main` has no `src/cli/`; P2 supplies the registry. An `mctl` caller is a `cli` caller: it may read any home-dispatched task of its repository, or of every repository for the inbox read with `repo=*` (spec 7.7), and nothing else (spec 7.23). `mctl logs -f` follows the stream route and exits when the task ends. The client reads the token through the shared path helper.
 
 **5. Steps.** Read spec 7.13. Implement the client with the `cli` surface header, then each read command against the inbox, config and transcript shapes. Print refusal text as written.
 
@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** All read commands work against the fake; against the 501 stub `mctl logs` and `mctl logs -f` print the not-available message and exit 1; flag off, `mctl` reports the feature off.
 
-**9. Handoff.** P13 and P14 reuse `client.ts`. Do not change its function signatures without a `contract:` note.
+**9. Handoff.** P13 and P14 reuse `src/cli/client.ts`. Do not change its function signatures without a `contract:` note.
 
 **10. Cross-phase audit.** `client.ts` owned only here; P13 and P14 import it. No overlap with P4.

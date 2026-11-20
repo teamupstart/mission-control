@@ -20,4 +20,4 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **9. Handoff.** The feature is ready for alpha. Default-on and retirement of the flag are separate pull requests under `docs/feature-flags.md`.
 
-**10. Cross-phase audit.** Adds tests only. Confirms every source-plan requirement and decision has an owning phase: guards (P1, P18), checks (P14, P8), gates (P7, P9, P11, P12), S28a and S28b (scout tasks outside the phases).
+**10. Cross-phase audit.** Adds tests only. Confirms every source-plan requirement and decision has an owning phase: guards (P1 for guards 2 and 3, P5 for guard 1, P18 repeats all three), checks (P14, P8), gates (P7, P9, P11, P12), S28a and S28b (scout tasks outside the phases).

@@ -6,7 +6,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **2. Entry and dependencies.** Direct prerequisite: P2.
 
-**3. Scope.** `src/server/home-dispatch/sessions.ts`, `launcher.ts`, and the `dispatchIntentFor` body (spec 7.2, 7.4, 7.20 detector). Registration answer fields: `offerLauncher`, `counts`, `daemonVersion`, `minModApi`, `dashboardUrl`. Worker versus home rule, repository scoping and the `cli` caller rules. Non-goals: dialogs, drafts, the mod's use of the answer.
+**3. Scope.** `src/server/home-dispatch/sessions.ts`, `launcher.ts`, and the `dispatchIntentFor` body (spec 7.2, 7.4, 7.20 detector). Registration answer fields: `offerLauncher`, `counts`, `daemonVersion`, `minModApi`, `dashboardUrl`. Worker versus home rule, repository scoping and the `cli` caller rules. Non-goals: dialogs, drafts, the mod's use of the answer. The registration answer's `counts` is a zero for every state until P4 merges, and P4 fills it from the inbox (same shape); P3 tests the interim.
 
 **4. Findings.** Only SDK launches set `MISSION_SESSION_ID`, so a client-side worker check is never enough and the daemon's rule is the authority (L29). After `/clear` the session id changes (L2). Entrypoint `cli` versus `sdk-cli` decides interactivity (L6). Home-dispatched tasks must be created through the dashboard path with no runtime override (Focus guard 1, tested in P5).
 

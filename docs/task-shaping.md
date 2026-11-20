@@ -137,11 +137,12 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 | The whole section (`limits.totalBytes`) | 32 KiB | 64 KiB |
 
 - A call's timeout is the smaller of its own and the time left in the step. Its signal is
-  aborted at exactly that timeout, and a reply that arrives later is `timed_out` and contributes
-  nothing, however much step time is left. At the step's deadline, calls still running are
-  abandoned and recorded as `timed_out`. Entries that already arrived are kept.
-- One entry is at most 16 KiB. The budget is filled in stage order, then list order, then the
-  order a shaper returned its entries. An entry that does not fit is cut at the last line
+  aborted at exactly that timeout, and any reply that arrives later, success or failure, is
+  `timed_out` and contributes nothing, however much step time is left. At the step's deadline,
+  calls still running are abandoned and recorded as `timed_out`. Entries that already arrived
+  are kept.
+- One entry is at most 16 KiB, its heading included. The budget is filled in stage order, then
+  list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
   left is dropped. Both are recorded.
 - The same entry id from the same shaper is injected once, and so is an identical body from two

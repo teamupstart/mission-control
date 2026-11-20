@@ -1166,7 +1166,8 @@ export function allocateBudget<T extends BudgetItem>(
     const full = utf8Length(item.body);
     const groupUsed = groups.get(item.group) ?? 0;
     const room = Math.min(totalBytes - used, item.groupBytes - groupUsed) - overhead;
-    const cap = Math.min(room, limits.entryBytes);
+    // The per-entry cap covers the whole entry as charged, heading and separators included.
+    const cap = Math.min(room, limits.entryBytes - overhead);
     let body = item.body;
     let omittedBytes = 0;
     if (full > cap) {

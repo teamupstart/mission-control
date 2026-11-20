@@ -88,22 +88,25 @@ export interface ShapeTaskDeps {
   enabled?: boolean;
 }
 
-const EMPTY_RUN: ShapingRun = Object.freeze({ summary: null, section: "", entries: [] }) as ShapingRun;
+/** A fresh empty run for every caller: nothing a caller does to one can leak into the next. */
+function emptyRun(): ShapingRun {
+  return { summary: null, section: "", entries: [] };
+}
 
 /** Shape one task. Resolves to an empty run when the flag is off or no shaper applies. */
 export async function shapeTask(input: ShapeTaskInput, deps: ShapeTaskDeps = {}): Promise<ShapingRun> {
   try {
-    if (!(deps.enabled ?? featureEnabled("task-shaping"))) return EMPTY_RUN;
+    if (!(deps.enabled ?? featureEnabled("task-shaping"))) return emptyRun();
     const config = deps.config ?? getShapingConfig();
     const discovered = deps.discovered ?? await discoverShapers();
     const resolved = resolveShapers(config, discovered, {
       kind: input.context.kind, repositories: input.context.repositories,
     });
-    if (resolved.length === 0) return EMPTY_RUN;
+    if (resolved.length === 0) return emptyRun();
     return await runShaping(resolved, input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS);
   } catch (error) {
     console.warn("[shaping] the shaping step failed unexpectedly:", error);
-    return EMPTY_RUN;
+    return emptyRun();
   }
 }
 
@@ -285,9 +288,14 @@ async function runShaping(
     }
     const late = Date.now() - callStart > timeoutMs;
     if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
+    // The call's deadline applies to every reply, not only to data. A busy event loop can let a
+    // transport settle after the deadline before the overdue timer runs: whatever it says then
+    // is a timeout, keeping the transport's own timeout diagnostic when it gave one.
+    if (late) {
+      if (run.signal.aborted) return stopped();
+      return reply.kind === "timed_out" ? empty("timed_out", reply.reason) : timedOut();
+    }
     if (reply.kind !== "data") return empty(reply.kind, reply.reason);
-    // Data that arrived after the call's deadline is not accepted, however much step time is left.
-    if (late) return run.signal.aborted ? stopped() : timedOut();
 
     // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
     // transport handed the shaper before it is recorded, and before it is cut to length.

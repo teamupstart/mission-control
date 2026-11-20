@@ -285,6 +285,30 @@ test("a reply that arrives after its call's timeout contributes nothing, though 
   assert.deepEqual(events.slice(0, 2), ["aborted", "replied"], "the call's signal is aborted at its own deadline, before the late reply");
 });
 
+test("every empty run is a fresh value, so a caller cannot change the next one", async () => {
+  const first = await shapeTask(input(1), { config: configWith([]), discovered: [], enabled: false });
+  first.entries.push({ shaperId: "x", label: "X", stage: "select", repo: "r", id: "leaked", title: null, path: null, body: "leaked", truncated: false, omittedBytes: 0 });
+  const second = await shapeTask(input(1), { config: configWith([]), discovered: [], enabled: false });
+  assert.deepEqual(second, { summary: null, section: "", entries: [] });
+  assert.notEqual(second.entries, first.entries);
+});
+
+test("a failure reported after the call's deadline is a timeout; the transport's own timeout reason is kept", async () => {
+  const config = configWith([shaper("late-failure", "select", { timeoutMs: 100 }), shaper("late-timeout", "select", { timeoutMs: 100 })],
+    { limits: { deadlineMs: 5_000 } });
+  const result = await run(config, async (_r, entry) => {
+    // A busy event loop modelled directly: the reply settles inside the grace, after the deadline.
+    await sleep(125);
+    return entry.id === "late-failure"
+      ? { kind: "failed", reason: "exit 1" }
+      : { kind: "timed_out", reason: "The guidance service did not answer in time." };
+  }, input(1));
+  assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
+    ["late-failure", "timed_out", "Timed out after 0.1 s."],
+    ["late-timeout", "timed_out", "The guidance service did not answer in time."],
+  ]);
+});
+
 test("a validation diagnostic is redacted whole before it is cut, so no fragment of a value survives", async () => {
   const secret = "SECRET-VALUE-0123456789-abcdef";
   // The diagnostic's path carries this shaper-chosen key, and the value sits across the

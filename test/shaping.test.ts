@@ -511,6 +511,10 @@ test("the budget: whole entries, a cut at a line boundary with a marker, a dropp
 
   const overhead = allocateBudget([{ group: "g", groupBytes: 16_384, body: line(5), overhead: 100 }], 32_768);
   assert.equal(overhead.bytes, utf8Length(line(5)) + 100, "a heading's bytes are charged, never cut");
+  // With shaper and section budgets above 16 KiB, the entry cap still covers heading and body together.
+  const roomy = allocateBudget([{ group: "g", groupBytes: 65_536, body: line(300), overhead: 200 }], 65_536);
+  assert.ok(roomy.kept[0]!.bytes <= SHAPING_LIMITS.entryBytes, `the whole entry is at most 16 KiB (${roomy.kept[0]!.bytes})`);
+  assert.ok(utf8Length(roomy.kept[0]!.body) <= SHAPING_LIMITS.entryBytes - 200);
 
   // The total is an argument: a later step is allocated from what the stages left.
   const remainder = allocateBudget([{ group: "lessons", groupBytes: Infinity, body: line(30) }], 32_768 - 31_000);

@@ -21,6 +21,7 @@ import {
   NEEDS_REVISION_OPTION,
   reviewShapeOf,
   revisionHashFor,
+  taskOwningSession,
   type ReviewShape,
 } from "./approval.ts";
 import { resolveCaller, taskOriginOf, type ResolvedCaller } from "./caller.ts";
@@ -57,11 +58,21 @@ function toReceipt(row: ReceiptRow): HomeDispatchReceipt {
   return HomeDispatchReceiptSchema.parse({ reviewId: row.review_id, taskId: row.task_id, sent: row.sent, at: row.created_at });
 }
 
-/** The task a review belongs to: the task bound to the session that asked it. */
-function taskOfReview(deps: Pick<HomeDispatchDeps, "registry">, review: ReviewItem | undefined, receipt: ReceiptRow | undefined): Task | undefined {
-  if (receipt) return deps.registry.getTask(receipt.task_id);
-  if (!review) return undefined;
-  return deps.registry.listTasks().find((t) => t.sessionId === review.sessionId);
+/**
+ * The task a review belongs to. A settled review's receipt names the task it was answered for;
+ * otherwise it is the task that owns the session that asked (`taskOwningSession`), and a session
+ * with two active tasks is ambiguous rather than guessed.
+ */
+function taskOfReview(
+  deps: Pick<HomeDispatchDeps, "registry">,
+  review: ReviewItem | undefined,
+  receipt: ReceiptRow | undefined,
+): { task: Task } | { ambiguous: true } | undefined {
+  if (receipt) {
+    const task = deps.registry.getTask(receipt.task_id);
+    return task ? { task } : undefined;
+  }
+  return review ? taskOwningSession(deps, review.sessionId) : undefined;
 }
 
 function actorFor(resolved: ResolvedCaller, approving: boolean): ReviewActor {
@@ -194,8 +205,10 @@ function answer(
 
   const review = deps.registry.getReview(body.reviewId);
   const prior = receiptRow(body.reviewId);
-  const task = taskOfReview(deps, review, prior);
-  if (!task) return refuse(404, "no such review");
+  const owner = taskOfReview(deps, review, prior);
+  if (!owner) return refuse(404, "no such review");
+  if ("ambiguous" in owner) return refuse(409, "more than one active task shares this review's session, so it cannot be answered from here; answer it in the dashboard");
+  const { task } = owner;
 
   const origin = taskOriginOf(task.id);
   const residentVisible = caller.surface === "home-session" && visibleResidents(deps, caller.repoRoot).has(task.id);

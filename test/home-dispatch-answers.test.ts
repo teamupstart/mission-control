@@ -27,7 +27,7 @@ const { HomeDispatchReceiptSchema } = await import("../src/shared/home-dispatch.
 const { isApprovingActor } = await import("../src/shared/review-item.ts");
 const { receiptLine, HOME_DISPATCH_CHAT_FIRST_TEXT } = await import("../src/shared/home-dispatch-inbox.ts");
 const { mkTask, mkMuxHandle } = await import("./helpers/session-fixture.ts");
-const { revisionHashFor } = await import("../src/server/home-dispatch/approval.ts");
+const { revisionHashFor, taskOwningSession } = await import("../src/server/home-dispatch/approval.ts");
 const { PLAN_APPROVAL_DECISION } = await import("../src/shared/managed-plans.ts");
 
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
@@ -152,6 +152,45 @@ test("a retry from the same session returns its receipt; another session gets 40
   const other = await answer(peer, body);
   assert.equal(other.status, 409, "settled by someone else");
   assert.equal((openDb().prepare(`SELECT count(*) AS n FROM home_dispatch_receipts WHERE review_id = ?`).get(review.id) as { n: number }).n, 1);
+});
+
+test("tasks sharing a worker session: the review belongs to the active one, and two active ones are ambiguous", async () => {
+  const h = await homeIn("shared-session");
+  const shared = addTask("t-old", h.repo, "home-session", { status: "done", completedAt: 5, updatedAt: 5 });
+  addTask("t-new", h.repo, "home-session", { status: "running", sessionId: shared, updatedAt: 9_000 });
+  const review = reviews.create(shared, "input", "Q", "Keep?", [QUESTION]);
+  const body = { action: "answer", reviewId: review.id, option: "Keep" };
+
+  const inbox = await (await app.request(`/dispatch/inbox?session=${h.sessionId}`, { headers })).json() as
+    { items: Array<{ taskId: string; pending?: unknown }> };
+  assert.equal(inbox.items.find((i) => i.taskId === "t-new")?.pending !== undefined, true, "the active task shows the question");
+  assert.equal(inbox.items.find((i) => i.taskId === "t-old")?.pending, undefined, "the earlier task that shares the session does not");
+
+  const wrong = await answer(h, { ...body, taskId: "t-old" });
+  assert.equal(wrong.status, 409, "naming the earlier task is refused, not recorded against it");
+  assert.equal(row(review.id).status, "pending");
+  const ok = await answer(h, { ...body, taskId: "t-new" });
+  assert.equal(ok.status, 200);
+  assert.equal((await receiptOf(ok)).taskId, "t-new", "the receipt names the task that owns the review");
+
+  // The registry itself unbinds the earlier task when a second claims a session, so the answer
+  // follows whichever task owns it now, and naming the displaced one is refused.
+  const twin = addTask("t-twin-a", h.repo, "home-session");
+  addTask("t-twin-b", h.repo, "home-session", { sessionId: twin });
+  const twinReview = reviews.create(twin, "input", "Q2", "Which?", [QUESTION]);
+  const displaced = await answer(h, { action: "answer", reviewId: twinReview.id, taskId: "t-twin-a", option: "Keep" });
+  assert.equal(displaced.status, 409);
+  assert.equal(row(twinReview.id).status, "pending");
+  const current = await answer(h, { action: "answer", reviewId: twinReview.id, taskId: "t-twin-b", option: "Keep" });
+  assert.equal((await receiptOf(current)).taskId, "t-twin-b");
+});
+
+test("taskOwningSession refuses to guess when two active tasks claim one session", () => {
+  const t = (id: string, status: string) => ({ id, status, sessionId: "s-shared", updatedAt: 1 });
+  const deps = (tasks: unknown[]) => ({ registry: { listTasks: () => tasks, taskForSession: () => undefined } }) as never;
+  assert.deepEqual(taskOwningSession(deps([t("a", "running"), t("b", "dispatching")]), "s-shared"), { ambiguous: true });
+  assert.deepEqual(taskOwningSession(deps([t("a", "running"), t("b", "done")]), "s-shared"), { task: t("a", "running") });
+  assert.equal(taskOwningSession(deps([]), "s-shared"), undefined);
 });
 
 test("a receipt that cannot be written settles nothing, so the retry still works and then has its receipt", async () => {

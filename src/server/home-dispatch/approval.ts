@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { managedPlanPreview, PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION } from "@shared/managed-plans.ts";
 import type { HomeDispatchInboxItem } from "@shared/home-dispatch.ts";
-import type { PlanDecision, ReviewItem } from "@shared/types.ts";
+import { isActiveTask } from "@shared/task-status.ts";
+import type { PlanDecision, ReviewItem, Task } from "@shared/types.ts";
 import { openDb } from "../db.ts";
+import type { HomeDispatchDeps } from "./stub.ts";
 
 // Owner: P4. What a pending review looks like to a home session (spec 7.7), and the revision hash
 // every approval must name (7.8, 7.9). Pure reads: nothing here changes a review.
@@ -153,6 +155,23 @@ export function pendingFor(review: ReviewItem, resident: boolean): InboxPending 
         decisions: shape.decisions,
       };
   }
+}
+
+/**
+ * The one task a session's review belongs to. A review names only its session, so the association
+ * is the registry's own rule for a card (`taskForSession`): the session's active task, else its
+ * newest bound one. A session with two ACTIVE tasks has no single owner for its question, so it is
+ * reported as ambiguous instead of guessed, and nothing is answered or listed against either task.
+ * Every reader of "which task is this review for" (the inbox, the answers route) calls this.
+ */
+export function taskOwningSession(
+  deps: Pick<HomeDispatchDeps, "registry">,
+  sessionId: string,
+): { task: Task } | { ambiguous: true } | undefined {
+  const active = deps.registry.listTasks().filter((t) => t.sessionId === sessionId && isActiveTask(t.status));
+  if (active.length > 1) return { ambiguous: true };
+  const task = active[0] ?? deps.registry.taskForSession(sessionId, null);
+  return task ? { task } : undefined;
 }
 
 /** The text a refused action on a `dashboard-only` item carries (7.8). */

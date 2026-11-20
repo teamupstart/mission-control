@@ -14,7 +14,7 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { activeAgentCount } from "../foreman/backlog-machine.ts";
-import { pendingFor } from "./approval.ts";
+import { pendingFor, taskOwningSession } from "./approval.ts";
 import { resolveCaller, taskOrigins, type ResolvedCaller } from "./caller.ts";
 import { reviewerRowsFor, runChecksFor } from "./reviewers.ts";
 import { canReadTask, type TaskOrigin } from "./sessions.ts";
@@ -167,7 +167,10 @@ export function buildInbox(
       continue;
     }
     const session = task.sessionId ? deps.registry.getSession(task.sessionId) : undefined;
-    const pending = firstPending(deps, task.sessionId);
+    // A review belongs to the one task that owns its session; a task that merely shares the session
+    // (an earlier one) never shows the question, and an ambiguous session shows it on neither.
+    const owner = task.sessionId ? taskOwningSession(deps, task.sessionId) : undefined;
+    const pending = owner && "task" in owner && owner.task.id === task.id ? firstPending(deps, task.sessionId) : undefined;
     // A resident run is in the inbox only while it has a request; the Residents tab lists the rest.
     if (resident && !pending) continue;
     const run = task.sessionId ? runs.get(task.sessionId) : undefined;

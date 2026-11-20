@@ -601,7 +601,10 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
-  private readonly pendingInspectorFeedbackRefreshes = new Set<string>();
+  private readonly inspectorFeedbackRefreshes = new Map<string, {
+    pending: boolean;
+    observationAfter: number;
+  }>();
   /**
    * The run whose ONE canonical compaction is in flight, and what it will produce.
    *
@@ -3422,22 +3425,23 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string): Promise<void> {
+  private reobserveGatePullRequest(runId: string, prKey: string): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
-    if (!reobserve) return Promise.resolve();
+    if (!reobserve) return Promise.resolve(false);
     const task = Promise.resolve().then(() => reobserve(prKey))
       .catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
       }))
       .then((result) => {
-        if (result.ok) return;
+        if (result.ok) return true;
         const run = this.store.getRun(runId);
-        if (!run || runIsTerminal(run)) return;
+        if (!run || runIsTerminal(run)) return false;
         this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, error: result.error });
         this.publishRun(runId);
+        return false;
       });
-    this.trackBackgroundTask(task);
+    this.trackBackgroundTask(task.then(() => {}));
     return task;
   }
 
@@ -4377,10 +4381,16 @@ export class WorkflowManager {
     refreshPreparedFeedback = false,
   ): void {
     if (refreshPreparedFeedback) {
-      if (this.pendingInspectorFeedbackRefreshes.has(runId)) return;
-      this.pendingInspectorFeedbackRefreshes.add(runId);
+      if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
+      const run = this.store.getRun(runId);
+      const prKey = run ? this.gateState(run)?.prKey : null;
+      this.inspectorFeedbackRefreshes.set(runId, {
+        pending: true,
+        observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
+      });
     }
     const task = this.withGateLock(runId, async () => {
+      let keepRefreshHold = true;
       try {
         if (refreshPreparedFeedback) {
           const run = this.store.getRun(runId);
@@ -4389,13 +4399,19 @@ export class WorkflowManager {
           if (delivery && prKey) {
             // Inspector's read publishes an observation whose evaluation queues behind
             // this lock. Revalidate delivery eligibility there after the read completes.
-            await this.reobserveGatePullRequest(runId, prKey);
-          }
+            keepRefreshHold = !await this.reobserveGatePullRequest(runId, prKey);
+          } else keepRefreshHold = false;
           return;
         }
         await this.evaluateInspectorGate(runId, event);
       } finally {
-        if (refreshPreparedFeedback) this.pendingInspectorFeedbackRefreshes.delete(runId);
+        if (refreshPreparedFeedback) {
+          const refresh = this.inspectorFeedbackRefreshes.get(runId);
+          // Failure releases the read slot, not the packet. A later successful read or
+          // positively newer poll may lift the hold; queued cached signals cannot.
+          if (!keepRefreshHold) this.inspectorFeedbackRefreshes.delete(runId);
+          else if (refresh) refresh.pending = false;
+        }
       }
     })
       .catch((error) => {
@@ -4499,7 +4515,8 @@ export class WorkflowManager {
     observation: InspectionUpdated | null,
   ): Promise<boolean> {
     // A recovery request must finish its fresh read before even an already-queued signal can send.
-    if (this.pendingInspectorFeedbackRefreshes.has(run.id)) return false;
+    const refresh = this.inspectorFeedbackRefreshes.get(run.id);
+    if (refresh?.pending) return false;
     if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked"
         || state.waitReason !== "findings" || !state.targetHeadSha
         || state.targetHeadSha !== state.failedHeadSha || !state.prKey) return false;
@@ -4519,11 +4536,13 @@ export class WorkflowManager {
     if (!ledger || ledger.state !== "open" || observed?.observedState !== "OPEN"
         || !observed.observedHeadSha || observed.observedAt === null
         || observed.observedAt < state.enteredAt) return false;
+    if (refresh && observed.observedAt <= refresh.observationAfter) return false;
     const superseded = observed.observedHeadSha !== state.failedHeadSha;
     const restored = this.store.recoverInspectorFeedback(delivery.id, state, {
       ...state, lastObservedAt: observed.observedAt, observedHeadSha: observed.observedHeadSha,
     }, superseded);
     if (!restored) return false;
+    this.inspectorFeedbackRefreshes.delete(run.id);
     this.publishRun(run.id);
     if (!superseded) {
       await this.deliverPrepared(delivery.id, false);
@@ -5530,7 +5549,7 @@ export class WorkflowManager {
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
       if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
-        this.scheduleGateEvaluation(run.id, null);
+        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
         continue;
       }
       if (delivery.kind === "evidence_capture_repair") {

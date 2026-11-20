@@ -2548,6 +2548,73 @@ test("session return refreshes unsent Inspector feedback once and holds queued s
   }
 });
 
+for (const trigger of ["session", "recheck"] as const) {
+  for (const recovery of ["retry-same-head", "poll-new-head"] as const) {
+    test(`failed feedback refresh holds queued signals: ${trigger}, ${recovery}`, async () => {
+      let release!: () => void;
+      const reading = new Promise<void>((resolve) => { release = resolve; });
+      let reads = 0;
+      const seeded = await seed({ policy: "inspector_only", deliveryMode: "live",
+        reobservePullRequest: async (prKey) => {
+          reads += 1;
+          if (reads === 1) {
+            await reading;
+            return { ok: false, error: "scripted read failure" };
+          }
+          return reobserveInspectorPr(seeded.registry, prKey);
+        },
+      });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        const oldAt = Date.now();
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: seeded.head, observedState: "OPEN", observedAt: oldAt,
+        }, oldAt);
+        session.state = "idle";
+        if (trigger === "session") seeded.registry.setSessionPause(session.id, null);
+        else recheck(seeded, "hold-on-failure");
+        await waitFor(() => reads === 1, "fresh read did not start");
+        signal(seeded, seeded.head, oldAt);
+        release();
+        await settleGate(seeded);
+        assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+        assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+        assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+        assert.deepEqual(seeded.injected, []);
+        // Clearing the scheduling marker must not authorize another cached observation.
+        signal(seeded, seeded.head, oldAt);
+        await settleGate(seeded);
+        assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+        if (recovery === "retry-same-head") {
+          scriptGitHub("OPEN", seeded.head);
+          recheck(seeded, "retry-success");
+          await settleGate(seeded);
+          assert.equal(reads, 2, "failure must still allow another refresh");
+          assert.equal(seeded.store.getDelivery(packet.id)!.state, "delivered");
+          assert.deepEqual(seeded.injected, [packet.payload]);
+        } else {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+          const freshAt = Date.now() + 1;
+          updateInspectorPr(seeded.key, {
+            observedHeadSha: "polled-new-head", observedState: "OPEN", observedAt: freshAt,
+            headSha: "polled-new-head", cleanReviewHeadSha: "polled-new-head",
+          }, freshAt);
+          signal(seeded, "polled-new-head", freshAt);
+          await settleGate(seeded);
+          assert.equal(phaseOf(seeded), "completed/complete");
+          assert.equal(seeded.store.getDelivery(packet.id)!.state, "cancelled");
+          assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+          assert.deepEqual(seeded.injected, []);
+        }
+      } finally {
+        release();
+        scriptGitHub(null);
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
 for (const policy of ["inspector_only", "restart_workflow"] as const) {
   for (const answer of ["unchanged", "clean", "pending", "outage"] as const) {
     test(`explicit feedback recheck waits for fresh facts: ${policy}, ${answer}`, async () => {
@@ -2895,28 +2962,65 @@ for (const guard of ["uncertain", "sending", "delivered", "refused", "preview", 
   });
 }
 
-test("startup reconciles a blocked unsent packet using the durable observed head", async () => {
+for (const answer of ["unchanged", "newer", "outage"] as const) {
+test(`startup refreshes a blocked unsent packet before recovery: ${answer}`, async () => {
   const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
   const { packet, session } = await blockUnsentFeedback(seeded);
   await seeded.manager.stop();
   session.state = "idle";
-  db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
-  updateInspectorPr(seeded.key, { observedHeadSha: "restart-head", observedState: "OPEN",
-    observedAt: Date.now(), headSha: "restart-head", cleanReviewHeadSha: "restart-head" }, Date.now());
+  if (answer === "newer") {
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+  }
+  updateInspectorPr(seeded.key, { observedHeadSha: seeded.head, observedState: "OPEN",
+    observedAt: Date.now(), headSha: answer === "newer" ? "restart-head" : seeded.head,
+    cleanReviewHeadSha: answer === "newer" ? "restart-head" : null }, Date.now());
+  let release!: () => void;
+  const reading = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  scriptGitHub(answer === "outage" ? null : "OPEN", answer === "newer" ? "restart-head" : seeded.head);
   const manager = new WorkflowManager(seeded.registry, seeded.store, {
     resolveCommit: async (_root, head) => head,
-    inject: async () => { assert.fail("must not send superseded feedback"); },
+    reobservePullRequest: async (prKey) => {
+      reads += 1;
+      await reading;
+      return reobserveInspectorPr(seeded.registry, prKey);
+    },
+    inject: async (_session, payload) => {
+      seeded.injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
   });
+  seeded.manager = manager;
   try {
     manager.start();
-    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "startup stayed blocked");
-    assert.equal(seeded.store.getDelivery(packet.id)?.state, "cancelled");
-    assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
-    assert.equal(inspectorOnlyRounds(seeded), 1);
+    await waitFor(() => reads === 1, "startup did not request fresh PR facts");
+    assert.equal(seeded.store.getDelivery(packet.id)?.state, "prepared");
+    assert.deepEqual(seeded.injected, []);
+    release();
+    await settleGate(seeded);
+    if (answer === "newer") {
+      assert.equal(phaseOf(seeded), "completed/complete");
+      assert.equal(seeded.store.getDelivery(packet.id)?.state, "cancelled");
+      assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
+      assert.equal(inspectorOnlyRounds(seeded), 1);
+      assert.deepEqual(seeded.injected, []);
+    } else if (answer === "unchanged") {
+      assert.equal(seeded.store.getDelivery(packet.id)?.state, "delivered");
+      assert.deepEqual(seeded.injected, [packet.payload]);
+    } else {
+      assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+      assert.equal(seeded.store.getDelivery(packet.id)?.state, "prepared");
+      assert.equal(seeded.store.getDelivery(packet.id)?.deliveredAt, null);
+      assert.deepEqual(seeded.injected, []);
+    }
   } finally {
+    release();
+    scriptGitHub(null);
     await manager.stop();
   }
 });
+}
 
 
 for (const kind of ["evidence_capture_repair", "persona_feedback", "pr_handoff", "inspector_feedback"] as const) {

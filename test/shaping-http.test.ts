@@ -328,7 +328,8 @@ test("an entry stored by another path cannot carry a literal credential into a s
 test("a JSON body that carries a credential is refused, and a stored one never reaches a snapshot", async () => {
   const curl = (args: string[]) => ({ kind: "upsert", shaper: { id: "json-body", label: "JSON body", stage: "gather",
     transport: { type: "command", command: "/usr/bin/curl", args: ["-s", ...args, "https://context.example/shape"] } } });
-  for (const args of [["--json", '{"api_key":"sk-live-json-1"}'], ["-d", '{"auth":{"password":"pw-json-2"}}'], ["--data-raw={\"token\":\"sk-live-json-3\"}"]]) {
+  for (const args of [["--json", '{"api_key":"sk-live-json-1"}'], ["-d", '{"auth":{"password":"pw-json-2"}}'], ["--data-raw={\"token\":\"sk-live-json-3\"}"],
+    ["--json", '{"token":"sk-live-json-dup","token":""}']]) {
     const refused = await put(curl(args));
     assert.equal(refused.status, 400, args.join(" "));
     assert.match(await refused.text(), /Name the variable in env instead/);
@@ -336,7 +337,7 @@ test("a JSON body that carries a credential is refused, and a stored one never r
   assert.equal((await put(curl(["--json", '{"query":"billing"}']))).status, 200, "a body without a credential is fine");
   // Stored past the API's check, as a restore or another build could: read back without it.
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "stored-json", label: "Stored", stage: "gather",
-    transport: { type: "command", command: "/usr/bin/curl", args: ["--json", '{"auth":{"password":"pw-json-stored"}}', "https://context.example/x"] } }] });
+    transport: { type: "command", command: "/usr/bin/curl", args: ["--json", '{"auth":{"password":"pw-json-stored"}}', "--data", '{"token":"pw-json-stored-dup","token":""}', "https://context.example/x"] } }] });
   shaping.reloadShaping();
   assert.equal(JSON.stringify(shaping.getShapingConfig()).includes("pw-json-stored"), false, "the daemon's config holds no secret");
   const backupStore = new SettingsBackupStore(join(home, "snapshots-json-body"));

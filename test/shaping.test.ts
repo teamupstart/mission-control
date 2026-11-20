@@ -340,7 +340,10 @@ test("an argument never hands over a credential as literal text; it is named in 
     // JSON bodies naming a credential, at any depth, attached, in a form field, or malformed.
     ["--json", "{\"api_key\":\"sk-14\"}"], ["-d", "{\"auth\":{\"password\":\"pw\"}}"], ["--data-raw=[{\"token\":42}]"],
     ["-d{\"client_secret\":\"sk-15\"}"], ["--data", "{\"token\":{\"value\":\"sk-16\"}}"], ["-F", "meta={\"apiKey\":\"sk-17\"}"],
-    ["--json", "{\"token\": \"sk-18\""], ["--data", "{'password': 'pw'}"]]) {
+    ["--json", "{\"token\": \"sk-18\""], ["--data", "{'password': 'pw'}"],
+    // A repeated key: JSON.parse keeps only the empty last one, the stored text keeps both.
+    ["--json", "{\"token\":\"sk-19\",\"token\":\"\"}"], ["-d", "{\"auth\":{\"password\":\"pw\"},\"auth\":{}}"],
+    ["--json", "[{\"api_key\":7,\"api_key\":null}]"], ["--json", "{\"a\":{\"token\":\"sk-20\",\"token\":false}}"]]) {
     const refused = command(args);
     assert.equal(refused.success, false, args.join(" "));
     assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);
@@ -353,7 +356,8 @@ test("an argument never hands over a credential as literal text; it is named in 
     ["sort", "-u"], ["https://context.example/x?page=2"], ["-v"],
     ["-d", "name=value"], ["--data", "{\"q\":1}"], ["-debug=1"],
     ["--json", "{\"token\":\"\",\"password\":null,\"use_token\":true}"], ["--json", "{\"auth\":{\"type\":\"bearer\"},\"token_file\":\"/etc/t\"}"],
-    ["--json", "{\"q\":\"a token in prose\"}"], ["-d", "@body.json"], ["-backup=x"], ["-b", "cookies.txt"], ["--proxy", "https://proxy.example"]]) {
+    ["--json", "{\"q\":\"a token in prose\"}"], ["-d", "@body.json"],
+    ["--json", "{\"q\":1,\"q\":2,\"note\":\"\\\"token\\\": in a string\"}"], ["--json", "{\"auth\":{\"type\":\"bearer\"},\"auth\":{\"type\":\"basic\"}}"], ["-backup=x"], ["-b", "cookies.txt"], ["--proxy", "https://proxy.example"]]) {
     assert.equal(command(args).success, true, args.join(" "));
   }
 });

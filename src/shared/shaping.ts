@@ -479,28 +479,60 @@ function looksLikeJson(text: string): boolean {
 function jsonCarriesCredential(text: string): boolean {
   const body = text.trim();
   if (!looksLikeJson(body)) return false;
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(body);
+    // Only a gate: valid JSON is judged by its text below, every member occurrence included.
+    JSON.parse(body);
   } catch {
     const keys = body.matchAll(/(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*:\s*(?!""|''|null\b|true\b|false\b)[^\s,}\]]/g);
     return Array.from(keys).some((match) => credentialArgumentName(match[2]!));
   }
-  // Walked with a stack, not recursion, so no nesting depth can overflow it. Everything under a
-  // credential-named key is credential, `{"password":{"value":"x"}}`, except what a locator name
-  // such as `type` or `env` holds: `{"auth":{"type":"bearer"}}` hands over nothing.
-  const pending: Array<{ value: unknown; credential: boolean }> = [{ value: parsed, credential: false }];
-  while (pending.length > 0) {
-    const { value, credential } = pending.pop()!;
-    if (typeof value === "number" || (typeof value === "string" && value.trim() !== "")) {
-      if (credential) return true;
-      continue;
+  return jsonMembersCarryCredential(body);
+}
+
+/**
+ * Whether valid JSON text gives a credential-named member a value, judged over the text itself
+ * rather than over what `JSON.parse` builds: the parsed object keeps only the last of a
+ * repeated key, so `{"token":"sk-1","token":""}` would look empty while the argument stored and
+ * backed up still holds `sk-1`. Every occurrence of every member counts.
+ *
+ * Everything under a credential-named key is credential, `{"password":{"value":"x"}}`, except
+ * what a locator name such as `type` or `env` holds: `{"auth":{"type":"bearer"}}` hands over
+ * nothing. A non-empty string or a number is a secret; an empty string, null or a boolean is
+ * not. Scanned with an explicit stack, so no nesting depth can overflow it, in one pass.
+ */
+function jsonMembersCarryCredential(text: string): boolean {
+  type Frame = { object: boolean; credential: boolean; key: string | null };
+  const stack: Frame[] = [];
+  /** Whether a value in the current position sits under a credential. */
+  const underCredential = (): boolean => {
+    const frame = stack[stack.length - 1];
+    if (!frame) return false;
+    if (!frame.object) return frame.credential;
+    const key = frame.key ?? "";
+    return credentialArgumentName(key) || (frame.credential && !credentialLocatorName(key));
+  };
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]!;
+    if (char === "{" || char === "[") {
+      stack.push({ object: char === "{", credential: underCredential(), key: null });
+    } else if (char === "}" || char === "]") {
+      stack.pop();
+    } else if (char === ",") {
+      const frame = stack[stack.length - 1];
+      if (frame?.object) frame.key = null;
+    } else if (char === "\"") {
+      let end = at + 1;
+      while (end < text.length && text[end] !== "\"") end += text[end] === "\\" ? 2 : 1;
+      const decoded = JSON.parse(text.slice(at, end + 1)) as string;
+      at = end;
+      const frame = stack[stack.length - 1];
+      if (frame?.object && frame.key === null) frame.key = decoded;
+      else if (decoded.trim() !== "" && underCredential()) return true;
+    } else if (char === "-" || (char >= "0" && char <= "9")) {
+      while (at + 1 < text.length && /[0-9eE+.-]/.test(text[at + 1]!)) at++;
+      if (underCredential()) return true;
     }
-    if (Array.isArray(value)) { for (const item of value) pending.push({ value: item, credential }); continue; }
-    if (!isRecord(value)) continue;
-    for (const [key, inner] of Object.entries(value)) {
-      pending.push({ value: inner, credential: credentialArgumentName(key) || (credential && !credentialLocatorName(key)) });
-    }
+    // Whitespace, ":", true, false and null carry nothing.
   }
   return false;
 }

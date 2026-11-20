@@ -188,6 +188,26 @@ test("a slow call is abandoned at its timeout, and the others' entries are kept"
   assert.deepEqual(result.entries.map((entry) => entry.id), ["kept"]);
 });
 
+test("a wall-clock jump during the step neither discards an on-time reply nor skips the select stage", async () => {
+  const realNow = Date.now;
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")], { limits: { timeoutMs: 2_000, deadlineMs: 5_000 } });
+  const called: string[] = [];
+  try {
+    const result = await run(config, async (request, entry) => {
+      called.push(`${entry.id} ${request.repo.name}`);
+      // An hour's correction forward while the gatherer works, as NTP or a sleeping laptop can.
+      if (entry.id === "g") Date.now = () => realNow.call(Date) + 3_600_000;
+      await sleep(20);
+      return data({ guidance: [{ id: `${entry.id}/${request.repo.name}`, body: "answered on time" }] });
+    }, input(1));
+    assert.deepEqual(called, ["g billing-api", "s billing-api"], "the selector still ran");
+    assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok", "ok"], "and neither reply was judged late");
+    assert.ok(result.summary!.durationMs < 5_000, `the step took ${result.summary!.durationMs} ms by the monotonic clock`);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("the step deadline bounds both stages; a selector with no time left is timed_out uncalled", async () => {
   const config = configWith([shaper("g", "gather", { timeoutMs: 30_000 }), shaper("s", "select")], { limits: { deadlineMs: 300 } });
   const called: string[] = [];

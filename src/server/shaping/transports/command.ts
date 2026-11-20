@@ -273,7 +273,8 @@ async function withTimeout<T>(pending: Promise<T>, ms: number, signal: AbortSign
 }
 
 export const callCommand: ShapingTransport<"command"> = async (request, shaper, ctx) => {
-  const started = Date.now();
+  // Monotonic, like the engine's budget: a wall-clock correction must not end a call early.
+  const started = performance.now();
   const transport = shaper.transport;
   const env = shaperCommandEnv(process.env, transport.env, readToken());
 
@@ -309,7 +310,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   );
   if (executable === "late") { cleanup(); return { kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)} while locating "${transport.command}".` }; }
   if (!executable) { cleanup(); return { kind: "unavailable", reason: `The command "${transport.command}" was not found.` }; }
-  const remaining = ctx.timeoutMs - (Date.now() - started);
+  const remaining = ctx.timeoutMs - (performance.now() - started);
   if (remaining <= 0 || ctx.signal.aborted) {
     cleanup();
     return { kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` };
@@ -419,7 +420,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       reapGroup(child);
       // The drain never outlasts the call: a reply that arrived on time is returned on time,
       // with a margin so it reaches the engine before the deadline it enforces.
-      const left = started + ctx.timeoutMs - Date.now() - EXIT_DEADLINE_MARGIN_MS;
+      const left = started + ctx.timeoutMs - performance.now() - EXIT_DEADLINE_MARGIN_MS;
       timers.push(setTimeout(() => complete(code, signal), Math.max(0, Math.min(EXIT_DRAIN_MS, left))));
     });
     child.once("close", (code, signal) => complete(code, signal));

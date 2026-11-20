@@ -142,6 +142,9 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
   `timed_out` and contributes nothing, however much step time is left. At the step's deadline,
   calls still running are abandoned and recorded as `timed_out`. Entries that already arrived
   are kept.
+- Every budget and lateness check counts elapsed time on the monotonic clock, so a wall-clock
+  correction during the step neither ends a call early nor skips a stage. The wall clock only
+  stamps when the step started.
 - One entry is at most 16 KiB, its heading included. The budget is filled in stage order, then
   list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB

@@ -224,6 +224,22 @@ test("an inherited value and a short named value are redacted from a failure rea
   }
 });
 
+test("a wall-clock jump while a call starts does not end it early", async () => {
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow.call(Date) + offset;
+  try {
+    // The call reads its start synchronously; the clock then moves an hour forward before it
+    // resolves the executable, so a budget counted on the wall clock is gone before the spawn.
+    const pending = callCommand(request(), shaper([FIXTURE, "ok"]), ctx(30_000));
+    offset = 3_600_000;
+    const reply = await pending;
+    assert.equal(reply.kind, "data", JSON.stringify(reply));
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("a short named credential printed inside a word is still redacted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SHORT;
   process.env.SHAPER_FIXTURE_SHORT = "x9";

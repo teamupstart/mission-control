@@ -200,8 +200,13 @@ async function runShaping(
   config: ShapingConfig,
   transports: ShapingTransportCalls,
 ): Promise<ShapingRun> {
+  // Elapsed time and every budget come from the monotonic clock, so a wall-clock correction
+  // during the step neither discards an on-time reply nor skips a stage with time left. The
+  // wall clock only stamps the record, and the epoch deadline handed to transports.
   const startedAt = Date.now();
+  const startedMono = performance.now();
   const deadline = startedAt + config.limits.deadlineMs;
+  const deadlineMono = startedMono + config.limits.deadlineMs;
   const run = new AbortController();
   const deadlineTimer = setTimeout(() => run.abort(), config.limits.deadlineMs);
   const onCancel = () => run.abort();
@@ -230,17 +235,17 @@ async function runShaping(
 
   const callOne = async (stage: ShapingStage, entry: ResolvedShaper, repoIndex: number): Promise<CallResult> => {
     const repo = repositories[repoIndex]!;
-    const callStart = Date.now();
+    const callStart = performance.now();
     const record = (outcome: ShapingOutcome, reason: string | null, version: string | null = null): ShapingCallRecord => ({
       shaper: entry.shaper, origin: entry.origin, sha256: hashes.get(entry.shaper.id) ?? null, repo: repo.name,
-      outcome, reason: reason === null ? null : bounded(reason), durationMs: Date.now() - callStart, version,
+      outcome, reason: reason === null ? null : bounded(reason), durationMs: Math.round(performance.now() - callStart), version,
     });
     const empty = (outcome: ShapingOutcome, reason: string): CallResult => ({ record: record(outcome, reason), entries: [], facts: null, summary: null, truncated: false });
     const stopped = () => input.signal?.aborted
       ? empty("failed", "The task was cancelled while it was being shaped.")
       : empty("timed_out", "The shaping step ran out of time before this call could finish.");
 
-    const left = deadline - callStart;
+    const left = deadlineMono - callStart;
     const timeoutMs = Math.min(entry.shaper.timeoutMs ?? config.limits.timeoutMs, left);
     // A call that would start with no usable budget is not started at all: the step's deadline
     // and an earlier call's own timeout fall due together, and either can fire first.
@@ -291,7 +296,7 @@ async function runShaping(
       if (onStop) run.signal.removeEventListener("abort", onStop);
       call.abort();
     }
-    const late = Date.now() - callStart > timeoutMs;
+    const late = performance.now() - callStart > timeoutMs;
     if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
     // The call's deadline applies to every reply, not only to data. A busy event loop can let a
     // transport settle after the deadline before the overdue timer runs: whatever it says then
@@ -409,7 +414,7 @@ async function runShaping(
     kept: allocation.kept.map((slot) => ({ shaperId: slot.item.group, bytes: slot.bytes, truncated: slot.truncated })),
     truncatedShapers,
     at: startedAt,
-    durationMs: Date.now() - startedAt,
+    durationMs: Math.round(performance.now() - startedMono),
     multiRepo,
   });
   return { summary: summary && { ...summary, bytes: utf8Length(section) }, section, entries };

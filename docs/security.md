@@ -441,7 +441,8 @@ as literal text: a credential-named flag (`--token=…`, `--api-key …`), a hea
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
 field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
-any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), a cookie (`-b`, `--cookie`), any of
+any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), judged over every
+occurrence of a repeated key rather than only the last one `JSON.parse` keeps, a cookie (`-b`, `--cookie`), any of
 these as a curl short option grouped after switches, read the way curl reads it (`-sH "Authorization: …"`,
 `-svuname:pass`, `-bname=value`), a curl long option's next argument even when it starts with a
 dash (`--user -name:pass`), curl's key passphrase (`--pass`, `--proxy-pass`) and certificate

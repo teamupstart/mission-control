@@ -26,7 +26,7 @@ import { listRepos, resolveRepoRoot } from "../repos.ts";
 import { prepareTaskRepositories } from "../task-repository-preparation.ts";
 import { TaskDependencyError, TaskEffortUnsupportedError, TaskPersonaError } from "../tasks.ts";
 import { getWorkflowPolicy } from "../workflows/config.ts";
-import { newPlanPolicy } from "../plans/store.ts";
+import { defaultPlanStorage } from "./options.ts";
 import { requireHomeSession, type HomeSessionRow } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 
@@ -130,19 +130,10 @@ async function resolveRepoSelector(selector: string, session: HomeSessionRow): P
   return { ok: true, repoRoot: matches[0]! };
 }
 
-function planStorage(): "repository" | "local" {
-  try {
-    return newPlanPolicy(undefined).storage;
-  } catch (error) {
-    if (error instanceof PlanStoreError) return "repository";
-    throw error;
-  }
-}
-
 /** The summary the mod shows the person (7.6). Everything on it is derived from the draft. */
 function summarize(deps: HomeDispatchDeps, draft: Draft): HomeDispatchDraftSummary {
   const effective = draft.workflowId === undefined
-    ? kindAfterWork(draft.kind, getWorkflowPolicy().kindWorkflowDefaults, planStorage())
+    ? kindAfterWork(draft.kind, getWorkflowPolicy().kindWorkflowDefaults, defaultPlanStorage())
     : draft.workflowId;
   const applies = hasReviewableDiff(draft.kind);
   const named = effective ? deps.workflows?.list().find((workflow) => workflow.id === effective)?.name : undefined;
@@ -199,7 +190,7 @@ export const createDraftHandler: HomeDispatchHandler = (deps): Handler => async 
     kind: body.kind,
     workflowId,
     words: body.words ?? "",
-    context: body.context?.trim() ? body.context : null,
+    context: body.context?.trim() || null,
     changedAt: Date.now(),
     confirming: false,
   };
@@ -240,7 +231,7 @@ export const updateDraftHandler: HomeDispatchHandler = (deps): Handler => async 
   if (workflowId !== undefined) draft.workflowId = workflowId;
   draft.repoRoot = repoRoot;
   if (body.words !== undefined) draft.words = body.words;
-  if (body.context !== undefined) draft.context = body.context.trim() ? body.context : null;
+  if (body.context !== undefined) draft.context = body.context.trim() || null;
   draft.changedAt = Date.now();
   return c.json(summarize(deps, draft));
 };

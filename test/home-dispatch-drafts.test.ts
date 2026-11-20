@@ -565,3 +565,12 @@ test("a pre-creation refusal releases the claim so the same draft can be confirm
   assert.deepEqual(dispatched, []);
   assert.equal((await confirm(draft.draftId, "backlog")).status, 200, "the draft was not left claimed");
 });
+
+test("context is stored trimmed on create and on update", async () => {
+  await register("s1", repo);
+  const created = (await createDraft({ kind: "scout", words: "x", context: "\n  see client.ts \n" })).body;
+  assert.equal(created.context, "see client.ts");
+  assert.equal(created.brief, "x\n\n## Context Claude added\nsee client.ts");
+  const updated = await (await post("/dispatch/drafts/" + created.draftId, { sessionId: "s1", context: "  other  \n" })).json() as any;
+  assert.equal(updated.context, "other");
+});

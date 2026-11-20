@@ -29,7 +29,7 @@ async function workspaceRepos(): Promise<string[]> {
 }
 
 /** Where a new plan would be stored. A skills config the store refuses leaves the repository default. */
-function defaultPlanStorage(): "repository" | "local" {
+export function defaultPlanStorage(): "repository" | "local" {
   try {
     return newPlanPolicy(undefined).storage;
   } catch (error) {

@@ -346,6 +346,10 @@ export class HibernationManager {
           : `its driver did not report reopening the conversation within ${Math.round(confirmMs / 1000)} seconds`,
       );
     }
+    // The wait above is long enough for the checkout to be replaced in, so its identity is
+    // read again at the last moment before the task is bound, as the terminal path does.
+    const replacedWhileWaiting = checkoutMismatch(record.checkout);
+    if (replacedWhileWaiting) return this.putBackToSleep(taskId, session, replacedWhileWaiting);
     const rival = this.rivalFor(session, record);
     if (rival) return this.putBackToSleep(taskId, session, `its conversation was opened in "${rival.name}" while it was resuming`);
     return this.bindResumed(current, session, record, {});
@@ -398,6 +402,9 @@ export class HibernationManager {
         );
       }
     }
+    // Confirmed gone or closed: the only place a recorded launch is let go of. Every failure
+    // before this point kept it (see `resumeFailed`).
+    if (stranded) this.forgetLaunch(task.id);
     const source: ResumeSource = {
       id: record.sessionId,
       agent: task.agent,
@@ -611,13 +618,17 @@ export class HibernationManager {
    * Record why Resume failed on the still-hibernated task, so the Backlog can say so - with the
    * launch it could not close, when there is one, so the next Resume deals with it first.
    */
-  private resumeFailed(taskId: string, reason: string, launch: TaskHibernationLaunch | null = null): HibernationResult {
+  private resumeFailed(taskId: string, reason: string, launch?: TaskHibernationLaunch): HibernationResult {
     const current = this.registry.getTask(taskId);
     const at = this.now();
     if (current?.status === "hibernated" && current.hibernation) {
+      // A launch an earlier attempt could not close outlives every later failure - a missing
+      // checkout, a refused relaunch - until `resumeTerminal` confirms it gone or closed. A
+      // failure that replaced it would let the next Retry launch beside an agent still running.
+      const kept = launch ?? current.hibernation.failure?.launch ?? null;
       this.registry.upsertTask({
         ...current,
-        hibernation: { ...current.hibernation, failure: { reason, at, launch } },
+        hibernation: { ...current.hibernation, failure: { reason, at, launch: kept } },
         updatedAt: at,
       });
     }
@@ -626,6 +637,18 @@ export class HibernationManager {
       status: 409,
       error: `Could not resume: ${reason}. The task stays hibernated with its worktree and conversation kept.`,
     };
+  }
+
+  /** Let go of a recorded launch once `resumeTerminal` has confirmed it gone or closed. */
+  private forgetLaunch(taskId: string): void {
+    const current = this.registry.getTask(taskId);
+    const failure = current?.hibernation?.failure;
+    if (current?.status !== "hibernated" || !current.hibernation || !failure?.launch) return;
+    this.registry.upsertTask({
+      ...current,
+      hibernation: { ...current.hibernation, failure: { ...failure, launch: null } },
+      updatedAt: this.now(),
+    });
   }
 
   /** A stop that failed left the agent running: give the task its session back. */

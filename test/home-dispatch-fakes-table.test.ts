@@ -70,6 +70,15 @@ for (const c of DAEMON_CASES) {
   });
 }
 
+test("fake host table: the token option makes the host agree or disagree with a daemon's token", async () => {
+  const daemon = createFakeDaemon({ token: "other-token" });
+  const status = async (token?: string) =>
+    (await createFakeModHost({ daemon, token }).host.fetch("/dispatch/config")).status;
+  assert.equal(await status(), 401, "the default token does not match a daemon with another token");
+  assert.equal(await status("other-token"), 200);
+  assert.equal(await status("wrong"), 401);
+});
+
 test("fake daemon table: a second listen is refused and the first listener stays usable", async () => {
   const daemon = createFakeDaemon({ token: null });
   const { url } = await daemon.listen();

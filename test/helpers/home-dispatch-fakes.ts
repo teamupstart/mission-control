@@ -477,6 +477,8 @@ export interface FakeModHostOptions {
   /** Routes `fetch` to this daemon in process. Without one, `fetch` rejects. */
   daemon?: FakeDaemon;
   initialState?: Partial<ModState>;
+  /** The `x-harness-token` the host sends. Default `FAKE_TOKEN`; set it to match, or mismatch, a daemon built with another token. */
+  token?: string;
   /** What `paneOpen` reports as `isPlaced`. Default true. */
   placed?: boolean;
 }
@@ -541,7 +543,7 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
       out.fetches.push({ path, init });
       if (!options.daemon) throw new Error("fake host has no daemon");
       const reply = await options.daemon.handle(init?.method ?? "GET", path, init?.body, {
-        "x-harness-token": FAKE_TOKEN,
+        "x-harness-token": options.token ?? FAKE_TOKEN,
         "x-harness-surface": "mod",
       });
       return { status: reply.status, text: reply.text };

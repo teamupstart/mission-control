@@ -6,7 +6,7 @@
 | Spec | Commonroom, workspace Meta Harness, spec `d2cdf331-4f03-4c77-957d-246cfde0017c`, **version 18**, 236,444 characters, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`. The spec, not this plan, is the contract: where they differ, the current spec version wins. |
 | Base | `main` at `c2b873f6f`. It has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`, no preview flag in `src/shared/feature-flag-registry.ts`, and database schema 35 (`CURRENT_DATABASE_SCHEMA_VERSION`). |
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
-| Revision | 3. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in Commonroom, not in a repository file. Revision 3 adds the phased implementation files beside this plan (`phased-plan.md` and `phase-*.md`), records in 6.7 how the phases are scheduled, and fixes the leftover "results file" wording in the S23 row. |
+| Revision | 4. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. |
 
 ## 1. Read this first: the brief and the spec disagree on the version
 
@@ -91,7 +91,7 @@ A headless user cannot jump from the pane to a worker's terminal pane. They chat
 
 ## 5. Spikes, run first
 
-The spec's WP0 says the spikes need a person at a terminal, and says to record answers in the spec. This plan does not edit the spec, and by the owner's decision it adds no results file to the repository. Each spike is run by a person and opens no pull request. Its answer is written up and the owner posts it to Commonroom. A gated phase task reads the recorded answer before it merges, and its pull request names the spike it relied on.
+The spec's WP0 says the spikes need a person at a terminal, and says to record answers in the spec. This plan does not edit the spec, and by the owner's decision it adds no results file to the repository. No spike opens a pull request. The person-run spikes (they need a managed Mac, several terminals or the desktop app) are written up by the person who ran them. The two agent-run spikes, S28a and S28b, are scout tasks whose final report is the write-up. In both cases the owner posts the answer to Commonroom. A gated phase task reads the recorded answer before it merges, and its pull request names the spike it relied on.
 
 ### 5.1 The gates and what they block
 
@@ -101,7 +101,7 @@ The spec's WP0 says the spikes need a person at a terminal, and says to record a
 | S16 | Does a message through `/dispatch/tasks/{id}/send` reach a worker waiting on `request_input`; else does `chat_first` work? | WP16, WP17 | **Merge gate** | Owner decides how chat works |
 | S27 | Does every `codex login` and `logout` change `auth.json`'s mtime? | WP18 | **Merge gate**, but either answer has a defined behavior (7.25) | Record `CODEX_AUTH_MTIME_RELIABLE = false` |
 | S14, S17 | Do `marketplace add` and `install --scope user` run without prompts, here and on a managed Upstart Mac? | WP7, WP13 | Soft | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
-| S18 | Does `/reload-plugins` load a restaged build with no `plugin update`? | WP7, WP13 | Soft | Load only at session start, and document it |
+| S18 | Does `/reload-plugins` load a restaged build with no `plugin update`, and does a fresh session after restaging show the new installed version in `claude plugin list`? | WP7, WP13 | Soft | Loading at session start is not enough on its own: P14 detects a stale installed version and reinstalls (6.5, `mod-current`) |
 | S19 | Does a mod one `modApi` behind or ahead stay fully inert? | WP13 | Soft | The daemon hides the capability |
 | S20 | Does `claude` detection find every install place, including from a LaunchAgent? | WP7 | Soft | Add the place, or `MISSION_CLAUDE_BIN` |
 | S21 | Does the Esc, refuse, reopen-after-150-ms pattern keep the keyboard in iTerm2, Terminal.app, tmux and herdr, docked and inline, ten times? | WP17 | Soft | Esc hands the keyboard back; only Back returns to the list |
@@ -115,7 +115,7 @@ The spec's WP0 says the spikes need a person at a terminal, and says to record a
 | Spike | Setup | Pass when | Evidence to record |
 |---|---|---|---|
 | S17 | A managed Upstart Mac with the real policy. Stage a build at `{stateDir}/mod/`. | `marketplace add` and `install --scope user` finish with no prompt; the mod loads in a terminal session, a desktop-app local session and a terminal worker | The commands, exit codes, `claude plugin list`, the policy files read, which of the 6.5 switches the policy sets and what each stopped, and what each surface showed |
-| S18 | Stage build A, install, open a session. Stage build B over it by rename. | `/reload-plugins` loads B with no `plugin update`; `claude plugin list` shows the right version; an open `$.ui.ask` survives | The two build versions and what `/reload-plugins` printed |
+| S18 | Stage build A, install, open a session. Stage build B over it by rename. | `/reload-plugins` loads B with no `plugin update`; `claude plugin list` shows B's version, in the same session after reload and in a fresh session; an open `$.ui.ask` survives | The two build versions, what `/reload-plugins` printed, and the installed version string `claude plugin list` shows before restaging, after reload and in a fresh session |
 | S19 | Run mods with `modApi` one below `minModApi` and one above the daemon's | Exactly one notice; no dialog, tool, status entry, band or toast | A screen recording or transcript for each |
 | S20 | Detect `claude` from a shell install, Homebrew, the native installer, the desktop app's embedded CLI if any, and from the app and LaunchAgent with a minimal `PATH` | Each finds the same `claude`; the first version that loads mods is recorded for Q20 | The detection output per place, with the version |
 | S21 | Run the Esc pattern ten times in each of iTerm2, Terminal.app, tmux and herdr, docked and inline | Ten of ten keep the keyboard in the pane in every cell, or the failing cells are listed | A table of 8 cells by 10 runs |
@@ -147,8 +147,8 @@ This is the second explicit item in the request. The spec's section 12.2 says Mi
 
 | Stage | When | Method | Output |
 |---|---|---|---|
-| S28a | Now, on `main`, beside the other spikes | Read-only code trace of questions 1, 4 and 5, plus a fake-agent run of an ordinary dashboard task to see exactly what `retroSummary` counts | A written result in the S28a task's final report, with file and line pointers, which the owner posts to Commonroom |
-| S28b | After the inbox (WP2b) and chat routes (WP16) merge | A no-token run on the fakes in `e2e/fixtures/fake-agents.ts`: dispatch a home task, answer a question through `/dispatch/answers`, chat through `/send`, finish it, and read `retroSummary` and the retro routes | Answers to questions 2, 3 and 6, a go or no-go on adding an additive retro item to the pane, and the list of fields FR-06 must add |
+| S28a | Now, on `main`, beside the other spikes. A scout task (6.7). | Read-only code trace of questions 1, 4 and 5, plus a fake-agent run of an ordinary dashboard task to see exactly what `retroSummary` counts | A written result in the S28a task's final report, with file and line pointers, which the owner posts to Commonroom |
+| S28b | After the inbox (WP2b) and chat routes (WP16) merge. A scout task (6.7). | A no-token run on the fakes in `e2e/fixtures/fake-agents.ts`: dispatch a home task, answer a question through `/dispatch/answers`, chat through `/send`, finish it, and read `retroSummary` and the retro routes | A written result in the S28b task's final report, which the owner posts to Commonroom: answers to questions 2, 3 and 6, a go or no-go on adding an additive retro item to the pane, and the list of fields FR-06 must add |
 
 **Guardrails.** S28 writes no endpoint, table or pane item. It may recommend one additive field for a later `contract:` commit (8.1 rule 3). It records Q-style open items for the FR-06 owner rather than answering them.
 
@@ -160,27 +160,27 @@ One pull request each, to `main`, behind `headless-mode`; P0 opens none. Work pa
 
 | Phase | Work package | Goal | Starts after | Merges after | Gates |
 |---|---|---|---|---|---|
-| P0 | WP0 | Spikes S4 to S27 and S28a, run by a person at a terminal with no pull request and no scheduled task (6.7); each answer is posted to Commonroom by the owner | none | none | none |
+| P0 | WP0 | Person-run spikes S4 to S27, with no pull request and no scheduled task (6.7); S28a is a scout task; each answer is posted to Commonroom by the owner | none | none | none |
 | P1 | WP1a | The preview flag, shared contracts, schema 36, route stubs (501 while on), regenerated route oracle, flag-off tests, the Settings row browser assertion, and the Focus guard tests of 4.2 | none | none | none |
 | P2 | WP1b | The CLI command registry, the mod and pane skeleton, `npm run build:mod`, the `PluginState` contract, and the fakes in `test/helpers/home-dispatch-fakes.ts` | P1 | P1 | none |
 | P3 | WP2a | Home sessions, the registration answer, the launcher decision, the intent detector | P2 | P2 | none |
-| P4 | WP2b | The read-only inbox, `blocked` state, `needsYouOrder`, `workflowStages`, `residentLoopLabel`, answers and receipts, plan approval, config view, reviewer rows | P2 | P2 | none |
+| P4 | WP2b | The read-only inbox, `blocked` state, `needsYouOrder`, `workflowStages`, `residentLoopLabel`, answers and receipts, plan approval, config view, reviewer rows. Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
 | P5 | WP3 | Dialog pages, drafts, the banner builder, the shared `kindAfterWork` | P2 | P2 | none |
 | P6 | WP8 | Repository task skills in `composeTurnOne` | P2 | P2 | none |
 | P7 | WP18 | Codex readiness, `GET /dispatch/readiness`, the Codex setup step and doctor checks, the flag-gated fail-fast reviewer gate | P2 | P2 | **S27 recorded**; S24 to S26 |
-| P8 | WP13 | Mod core: adapter, `ModHost`, poll, toasts, the band and its `1` button, the status entry, the banner, and the `mod-calls` smoke check (6.5) | P2 | P3, P4, S14 | none |
+| P8 | WP13 | Mod core: adapter, `ModHost`, poll, toasts, the band and its `1` button, the status entry, the banner, the real `paneOpen` and `paneClose` host calls with a placeholder pane view until P12, and the `mod-calls` smoke check (6.5) | P2 | P3, P4, S14 | none |
 | P9 | WP16 | Residents and chat routes, including the transcript stream | P2 | P3, P4 | **S16** |
 | P10 | WP6a | `mctl` client and read commands | P2 | P4 | none |
-| P11 | WP14 | Dispatch flows, `start_dispatch`, the intent nudge, the confirm summary's Codex line | P2 | P8, P5, P7 | **S10 or S11**; S8, S12, S15 |
-| P12 | WP17 | The pane: four tabs, item views, two-press approval, chat and follow, Residents, reviewer rows | P2 | P8, P9 | **S16**; S21, S22, S23 |
+| P11 | WP14 | Dispatch flows, `start_dispatch`, the intent nudge, the confirm summary's Codex line. The `inbox`, `check`, `pane` and task-id arguments call P8's `paneOpen`, which shows a placeholder until P12 lands (6.3). | P2 | P8, P5, P7 | **S10 or S11**; S8, S12, S15 |
+| P12 | WP17 | The pane: four tabs, item views, two-press approval, chat and follow, Residents, reviewer rows. Placements are dock and inline; the widget placement is v1.1 and falls back to the inline view (6.6). It replaces P8's placeholder. | P2 | P8, P9 | **S16**; S21, S22, S23 |
 | P13 | WP6b | `mctl run`, `mctl claude` (no workspace, no launcher prompt), `mctl daemon` | P2 | P10, P5 | none |
-| P14 | WP7 | `mctl setup` and `doctor` (every step except agents and Codex), `claude` detection, the "Mods can load" step and its checks (6.5), mod staging and install, the Foreman LaunchAgent | P2 | P8, P10 | S5, S14, S17, S18, S20 |
+| P14 | WP7 | `mctl setup` and `doctor` (every step except agents and Codex), `claude` detection, the "Mods can load" step and its checks (6.5), mod staging, install and the stale-version reinstall, the Foreman LaunchAgent | P2 | P8, P10 | S5, S14, S17, S18, S20 |
 | P15 | WP11 | Subagent lines for the pane, the agents setup step and doctor check | P2 | P11, P12, P14 | S4 |
 | P16 | WP15 | Packaging: the built mod ships outside `asar`, and the app stages it at start | P2 | P14 | none |
 | P17 | WP9 | Docs | P2 (drafting) | P14, P15, P12, P7 | none |
 | P18 | WP12 | The full-loop test, the flag-off sweep, the no-multiplexer check, the context check, the live walkthrough | P2 | all | none |
 
-Plus **S28b**, which the owner dispatches after P4 and P9 merge and which ends with a written result (6.7).
+Plus two scout tasks that open no pull request: **S28a** (starts with the plan) and **S28b** (after P4 and P9 merge). Each ends with a written final report (6.7).
 
 Deviation from the spec: WP1 is split into P1 and P2 along its file list. It lands the flag, schema, every route, the CLI registry, the mod and pane skeleton, the build, and the fakes; the spec itself caps a pull request near 1,500 lines (8.1 rule 5) and WP1's file list is likely to pass it. P1 is contracts and server seams; P2 is the CLI, mod, pane and fakes. One owner per file is kept. The owner chose the split (section 8).
 
@@ -191,7 +191,7 @@ flowchart TD
   P0[P0 Spikes] -.-> P8
   P1[P1 WP1a contracts, flag, stubs] --> P2[P2 WP1b CLI, mod, pane skeleton, fakes]
   P2 --> P3[P3 WP2a sessions]
-  P2 --> P4[P4 WP2b inbox]
+  P3 --> P4[P4 WP2b inbox]
   P2 --> P5[P5 WP3 dialogs, drafts]
   P2 --> P6[P6 WP8 repo skills]
   P2 --> P7[P7 WP18 Codex readiness]
@@ -226,11 +226,12 @@ Merge waves, in which phases inside a wave merge in any order:
 | Wave | Phases |
 |---|---|
 | 1 | P1, then P2 |
-| 2 | P3, P4, P5, P6, P7 |
-| 3 | P8, P9, P10 |
-| 4 | P11, P12, P13, P14 |
-| 5 | P15, P16 |
-| 6 | P17, then P18 |
+| 2 | P3, P5, P6, P7 |
+| 3 | P4 (after P3) |
+| 4 | P8, P9, P10 |
+| 5 | P11, P12, P13, P14 |
+| 6 | P15, P16 |
+| 7 | P17, then P18 |
 
 ### 6.3 Per-phase notes that the phase files must carry
 
@@ -240,8 +241,12 @@ Merge waves, in which phases inside a wave merge in any order:
 - **P5, P6.** P6 owns `composeTurnOne` in `src/server/dispatcher.ts`. The task-shaping plan's Phase 2 also edits `composeTurnOne` (spec 12.2), so P6 must be rebased onto whichever lands first, and its pull request names the other plan.
 - **P7.** Owns the one flag-gated change to `src/server/workflows/engine.ts` and `src/server/llm/provider-failure.ts`. The pull request calls it out, adds a test that with the flag off every reviewer path keeps today's retries (Q25), and merges only after S27's answer is recorded as `CODEX_AUTH_MTIME_RELIABLE`.
 - **P9 and P12.** Neither merges until S16 and its `chat_first` fallback are recorded. If both fail, they wait for the owner (8.1 rule 8).
+- **P4.** Merges after P3. The inbox, answers and approval routes call P3's home-session predicate, so there is no interim state in which they run without it.
+- **P8 and P11, the pane-open handoff.** P8 implements the real `paneOpen` and `paneClose` host calls (open id `mission`, focus, size, close) and draws a placeholder view reading `The Mission Control pane is not available in this build yet.` P11's `inbox`, `check`, `pane` and task-id arguments call `paneOpen` with the tab or task id and nothing else, so they work before P12 lands and show the placeholder. P11's exit check: with the fake host, each argument records one `paneOpen` with the right target, and no argument errors while the placeholder is in place. P12 replaces the placeholder and changes no call signature.
 - **P11.** The launcher part merges only when S10 or S11 passes; otherwise the rest of P11 merges with the launcher switched off.
 - **P14 and P16, D44.** The mod ships only inside Mission Control. No pull request opens in claude-code-extensions. `src/server/mod-stage.ts` publishes by writing a sibling folder and renaming it, never by copying onto the published path (the rule CLAUDE.md sets for native addons). P16 changes `electron-builder.yml` by one named entry, and keeps `asar` off. `npm run smoke` runs `claude plugin validate dist/mod/mission-control` when `claude` is installed.
+- **P14 and P16, upgrading an installed mod.** Staging a new build does not by itself change what `claude plugin list` shows, and the install step skips anything already listed. P14 therefore compares the installed version with the staged `plugin.json` version after staging, and if they differ it reinstalls (`claude plugin uninstall`, then marketplace add if needed, then install), never `claude plugin update` (D47). If the reinstall fails, setup keeps the old install, prints the cause and exits 1, and doctor reports `mod-current` failed. P14 tests this against a fake `claude` runner with a stale installed version. P16 adds a test that an app-staged newer build makes doctor report the mod stale and `mctl setup` bring it current. S18 supplies the real-world evidence.
+- **P12, placements.** Dock and inline only. The widget placement (the desktop app's small form) is v1.1 (6.6): when Claude Code reports `widget`, the pane draws the inline form, and no widget-specific layout, task or test exists in this plan.
 - **P12.** The pane is drawn inside Claude Code, so Playwright cannot drive it. Its proof is the fake-host `node:test` files named in 7.22 and `claude plugin test` run locally, with output attached to the pull request (Q17). A Playwright spec is required only for a dashboard UI change, which is P1's Settings row.
 - **P17.** Docs list the pane, its keys, the `1` first-key note and residents, and say the pane's cost leaves out review calls (Q26). They also carry the mods troubleshooting section of 6.5.
 - **P18.** The no-multiplexer check asserts nothing in headless mode requires tmux or herdr, and the Focus checks of 4.2 run again against the whole stack.
@@ -266,6 +271,7 @@ Source: local plan `8065dbe0-950a-4572-b358-8e5b5489e69b`, revision 2, folded in
 | `mods-traffic` | Not `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set on a version below 2.1.288 | fail |
 | `mods-can-load` | `claude plugin test` in an empty temporary folder says mods can load | fail |
 | `mod-enabled` | `claude plugin list` shows `mission-control@mission-control` installed and enabled at user scope; setup installs or re-enables it, doctor fails | fail in doctor |
+| `mod-current` | The version `claude plugin list` shows for `mission-control@mission-control` equals the staged `plugin.json` version. On a difference, setup reinstalls (6.3) and re-checks in a fresh `claude` invocation; doctor only reports | fail in doctor; setup fails only if the reinstall does not bring it current |
 | `mod-calls` | `claude plugin validate {stateDir}/mod/mission-control` lists only allowed calls (`$.http.fetch`, `$.ui.*`, `$.session.append`, `$.command.register`, `$.tool.register`, `$.prompt.fill`, `$.state`, `$.clock`, `$.env.get`) | fail; also run by `npm run smoke` (P8) |
 
 **Where it lives.** A second narrow allowlist beside `MANAGED_ENV_KEYS` in `src/server/environment/claude-managed.ts`, which exists on `main` today. A new probe module in `src/server/environment/`, and a step file in `src/cli/setup-steps/` that P14 owns. The probes read files read-only, run `claude` through the executable registry, and spend no model tokens. Nothing in the dashboard calls them.
@@ -287,7 +293,9 @@ WP4, WP5a, WP5b and WP10 (withdrawn); FR-05 v2 shaping, context injection, skill
 
 ### 6.7 How the phases are scheduled
 
-`phased-plan.md` and the `phase-*.md` files beside this plan carry the detail. Eighteen backlog tasks are scheduled, one per phase P1 to P18, each depending on this planning session and on its direct merge prerequisites. Two things are deliberately not tasks: the person-run spikes of P0, and S28b. A spike needs a person at a terminal, and a task that opens no pull request would never merge and so never release its dependents. Gated phases therefore carry their gate in the task text (6.4), and the owner dispatches S28b after P4 and P9 merge.
+`phased-plan.md` and the `phase-*.md` files beside this plan carry the detail. Eighteen backlog implementation tasks are scheduled, one per phase P1 to P18, each depending on this planning session and on its direct merge prerequisites. Two more backlog tasks are scout tasks, which end with a final report and open no pull request: S28a (depends only on this planning session) and S28b (depends on P4 and P9 as well). Their reports are the written results the S28 rows promise, and the owner posts them to Commonroom. Nothing depends on a scout task, because a task that opens no pull request cannot release dependents.
+
+The person-run spikes of P0 are not tasks: they need a managed Mac, several terminals or the desktop app. Each is written up by the person who runs it and posted to Commonroom by the owner. Gated phases carry their gate in the task text (6.4) and read that posted answer.
 
 ## 7. Risks
 
@@ -310,6 +318,7 @@ WP4, WP5a, WP5b and WP10 (withdrawn); FR-05 v2 shaping, context injection, skill
 | R15 | The user expects a pane-to-terminal jump | Medium for tmux users. | Section 4.3 states the loss; the dashboard link and Focus remain. |
 | R16 | P14 builds the 6.5 checks from a plan that is not in the spec, and from documentation facts nobody has observed | Medium. A check could fail a working machine, for example a wrong version floor. | P14 cites the check names, S17 and S20 confirm the floor and each switch before P14 merges, warns are used where a fact is unproven, and the owner lands the checks in the spec under new ids. |
 | R17 | A gate answer lives only in a task report and Commonroom, so a phase task can miss or misread it | Medium. A gated pull request could merge on a stale or absent answer. | 6.4: the phase task names the spike in its text, quotes the recorded answer in its pull request, and stops if none exists. |
+| R18 | An installed mod stays on an old build after a new one is staged, because install skips anything already listed | Medium. The pane or daemon routes could disagree with the mod (`modApi` inert path), and nothing says why. | `mod-current` check, a version probe after staging, reinstall with a stated failure path, tests in P14 and P16, and S18 evidence (6.3, 6.5). |
 
 ## 8. Decisions adopted
 
@@ -321,3 +330,15 @@ Asked as selectable decisions on revision 1, and recorded here. Choices that dif
 4. **S28 scope.** Adopted: two stages, S28a now on `main` and S28b after the inbox and chat routes merge (5.3).
 5. **Where spike answers live.** Adopted, **differing from the recommendation**: task reports and Commonroom only, with no results file in the repository (5 and 6.4).
 6. **Phased follow-up.** Adopted: create the phased implementation plan, once this revision is approved.
+
+## 9. Repairs after the Plan Validation review (revision 4)
+
+| Finding | Repair | Where |
+|---|---|---|
+| Widget placement is out of v1 (6.6) but P12 listed it | P12 builds dock and inline only; `widget` falls back to inline | 6.1, 6.3, phase 12 |
+| Spike reports had two recording paths, and S28a promised a task report while 6.7 said no task | S28a and S28b are scout tasks whose final reports carry the results; person-run spikes are written up by the person; all are posted to Commonroom; no repository file | 5, 5.3, 6.1, 6.7 |
+| P4 consumed P3's home-session predicate but could merge first | P4 merges after P3 and the graph, waves and tasks say so | 6.1, 6.2, 6.3, phase 4 |
+| P11's pane arguments called P12's open, with only a stub before it | P8 implements `paneOpen` with a placeholder view; P11 calls only `paneOpen`; P11 has an exit check for the interim state; P12 replaces the placeholder | 6.1, 6.3, phases 8, 11, 12 |
+| No path for an installed mod to receive a restaged build | `mod-current` check, version probe after staging, reinstall (never `plugin update`) with a failure path, tests in P14 and P16, S18 extended | 5.1, 5.2, 6.3, 6.5, R18, phases 14 and 16 |
+
+No recorded human decision changed. Decision 5 (spike answers in task reports and Commonroom) is kept: reports are task reports where an agent ran the spike, and Commonroom posts everywhere.

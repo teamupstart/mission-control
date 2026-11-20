@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** Registration answer is real behind the flag; flag off is unchanged; tests pass.
 
-**9. Handoff.** P4, P9, P7 and P8 call the home-session predicate and must not re-implement it. P11 uses the detector and launcher decision.
+**9. Handoff.** P4 merges after this phase and, with P9, P7 and P8, calls the home-session predicate; none may re-implement it. P11 uses the detector and launcher decision.
 
 **10. Cross-phase audit.** Registration shape matches P1 and the fake daemon in P2. No overlap with P4 (inbox) or P5 (drafts).

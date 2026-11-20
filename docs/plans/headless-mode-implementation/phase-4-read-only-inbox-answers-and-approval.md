@@ -4,7 +4,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **1. Outcome.** `GET /dispatch/inbox` returns every item that needs the person, `POST /dispatch/answers` answers them with receipts, and plan and review approvals work with a revision hash.
 
-**2. Entry and dependencies.** Direct prerequisite: P2. It consumes P3's home-session predicate when that lands; build against the P2 fakes until then.
+**2. Entry and dependencies.** Direct prerequisite: P3 (which itself follows P2). The inbox, answers and approval routes call P3's home-session predicate, so this phase merges only after P3. You may start against the P2 fakes, but rebase on P3 and use the real predicate before merging.
 
 **3. Scope.** `src/server/home-dispatch/inbox.ts`, `reviewers.ts`, `answers.ts`, `approval.ts`, `config.ts`; `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); the `home-approval:` changes in `loadHumanResolvedReviews` and plan publication. Inbox items carry `pending`, `run` (with `reviewers` through `reviewerRowsFor`, `agent`, `runtime`), `pr`, `canMessage`, resident requests, the `blocked` state, `needsYouOrder` (age, not type) and `revisionHash`. Non-goals: chat and resident actions (P9), the pane (P12).
 

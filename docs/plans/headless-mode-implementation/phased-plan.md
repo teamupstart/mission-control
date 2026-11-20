@@ -1,14 +1,15 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 3). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 4). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
 - Jordan's constraint: dropping WP10 leaves the existing Focus feature untouched; three guards live in P1 and P18; the owner clarifies D50 in the spec.
 - WP1 is two pull requests, P1 and P2.
 - The "mods can load" checks are folded into P14 (WP7) and P8 (the `mod-calls` smoke check), as plan-local requirements without spec ids.
-- S28 (FR-06 ledger and retro trigger) runs in two stages; it is not a scheduled phase.
-- Spike answers live in Commonroom, with no results file in the repository.
+- S28 (FR-06 ledger and retro trigger) runs in two stages as two scout tasks that open no pull request; they are not phases.
+- Spike answers live in task reports and Commonroom, with no results file in the repository.
+- Review repairs (revision 4): widget placement is out of v1; P4 merges after P3; P8 owns `paneOpen` with a placeholder view that P12 replaces; P14 probes the installed mod version and reinstalls a stale build.
 
 ## 2. Findings from the repository
 
@@ -69,7 +70,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P1 `phase-1-contracts-flag-and-server-seams` | WP1a | none | none |
 | P2 `phase-2-cli-mod-pane-skeleton-and-fakes` | WP1b | P1 | none |
 | P3 `phase-3-home-sessions-and-launcher-decision` | WP2a | P2 | none |
-| P4 `phase-4-read-only-inbox-answers-and-approval` | WP2b | P2 | none |
+| P4 `phase-4-read-only-inbox-answers-and-approval` | WP2b | P3 | none |
 | P5 `phase-5-dispatch-options-drafts-and-banner` | WP3 | P2 | none |
 | P6 `phase-6-repository-task-skills` | WP8 | P2 | none |
 | P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P2 | S27 recorded; S24 to S26 |
@@ -93,7 +94,7 @@ P18 lists P6, P13, P16 and P17 directly because every other phase is already a t
 flowchart TD
   P1 --> P2
   P2 --> P3
-  P2 --> P4
+  P3 --> P4
   P2 --> P5
   P2 --> P6
   P2 --> P7
@@ -125,7 +126,7 @@ flowchart TD
   P17 --> P18
 ```
 
-Concurrency: after P2, P3 to P7 run together. After P3 and P4, P8, P9 and P10 run together (P10 needs only P4). P11 to P14 run together once their prerequisites land. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
+Concurrency: after P2, P3, P5, P6 and P7 run together; P4 follows P3. After P4, P8, P9 and P10 run together. P11 to P14 run together once their prerequisites land. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
 ## 7. Cross-phase contracts
 
@@ -135,6 +136,8 @@ Concurrency: after P2, P3 to P7 run together. After P3 and P4, P8, P9 and P10 ru
 - P4 owns `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); P12 asks P4's owner for changes.
 - P8 owns `src/mod/register.ts`, `host.ts`; P11 and P12 add flows and panes with one registration line each.
 - P14 owns `scripts/install-service.mjs` and the setup-step files except `agents.ts` (P15) and `codex.ts` (P7).
+- P8 owns `paneOpen` and `paneClose` with a placeholder view; P12 replaces the view and changes no signature.
+- P14 owns the installed-version probe and stale-build reinstall; P16 relies on it.
 - Home-dispatched tasks are created through the dashboard path with no runtime override (Focus guard 1).
 
 ## 8. Final verification

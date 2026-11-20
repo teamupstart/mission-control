@@ -14,9 +14,9 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **6. Data and API.** None.
 
-**7. Tests.** A test that the stage call runs once and is a no-op with the flag off; the existing packaging and smoke checks; `npm run package` where the machine supports it, with its result attached to the pull request.
+**7. Tests.** A test that the stage call runs once and is a no-op with the flag off; a test that an app-staged build with a newer version makes doctor's `mod-current` report stale and `mctl setup` bring it current, using P14's fake `claude` runner; the existing packaging and smoke checks; `npm run package` where the machine supports it, with its result attached to the pull request.
 
-**8. Merge and exit.** The packaged app contains the mod outside `asar`; the diff touches `electron-builder.yml` by one entry only.
+**8. Merge and exit.** The packaged app contains the mod outside `asar`, and a newer staged build is picked up by `mctl setup`; the diff touches `electron-builder.yml` by one entry only.
 
 **9. Handoff.** P18's live walkthrough exercises the packaged app.
 

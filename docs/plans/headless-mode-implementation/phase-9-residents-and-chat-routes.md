@@ -1,6 +1,6 @@
 # Phase 9: Residents and chat routes (WP16)
 
-> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Answers use P4 routes; chat and residents are not in the loop; needs hard spike S16. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+> **DEFERRED (minimal Claude-session plan, revision 18).** Not scheduled. Reason: Chat and the Residents tab are not in the loop, and the live residents and transcript wrapper routes they need do not exist yet; needs hard spike S16. The text below is the previous plan, kept as history. Re-scope it before reviving it.
 
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.23, 7.24.
 

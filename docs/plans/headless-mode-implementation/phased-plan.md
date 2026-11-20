@@ -1,90 +1,90 @@
-# FR-05 headless mode: minimal Claude-session E2E plan (phased)
+# FR-05 headless mode: minimal Claude-session E2E plan (phased, revision 18)
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 17, section 0 is the minimal plan). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 20, sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`. The repository wins over the spec where they differ.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 18, section 0 is the minimal plan). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 20, sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`. Design: the round 2 design artifact (claude.ai artifact `2dJEKTxXd9Hzi9zDgDayZo`) and its spike review. The repository wins over the spec where they differ.
 
-Goal: one real end-to-end test. A person drives Mission Control from a Claude Code session with the mod installed and no dashboard open: dispatches a task from the conversation, is signalled when something needs them (toast, status entry, band), answers or approves from a dialog, and the task runs to a result. The mod is the display. Everything else is deferred (section 6).
+Goal: one real end-to-end test. A person opens Claude Code in a repository with the mod installed and no dashboard open. **The Mission Control pane shows their tasks as Claude launches.** They dispatch a task from the conversation, are signalled when something needs them (toast, status entry, band), answer or approve in the pane's Needs you tab, and the task runs to a result that the pane shows. The mod is the display. Everything else is deferred (section 6).
 
 ## 1. State of main
 
 | Phase | State | Note |
 |---|---|---|
-| P1, P2, P3 | merged | flag, contracts, CLI and mod skeleton, fakes, home sessions |
-| P4 | merged (#1580) | read-only inbox, receipted answers, plan approval. Includes the optional `shaping` field (verified in plan.md 0.4). Its original backlog task shows cancelled; the PR is what counts. |
+| P1, P2, P3 | merged | flag, contracts, CLI and mod and pane skeleton, fakes, home sessions |
+| P4 | merged (#1580) | read-only inbox, receipted answers, plan approval, `shaping` field (verified in plan.md 0.4). Its original backlog task shows cancelled; the PR is what counts. |
 | P5 | in review (#1582) | dispatch options, drafts, banner builder. Treated as built. |
 | P6 | in flight (#1565) | repository task skills. Not in this chain; merges on its own. |
 
 ## 2. Kept phases
 
-Everything lands behind the `headless-mode` preview flag, one pull request per phase, to `main`. No stacked branches: each phase branches from `main`. A later phase waits for its parent to merge, then runs `git rebase --onto origin/main <old base>`. Up to five phases run in parallel; this chain peaks at three.
+One pull request per phase, to `main`, behind the `headless-mode` flag. No stacked branches: each phase branches from `main`. A later phase waits for its parent to merge, then runs `git rebase --onto origin/main <old base>`. Up to five phases run in parallel; this chain peaks at three.
 
 | Phase | File | Minimum scope | Starts after | Merges after | Gate |
 |---|---|---|---|---|---|
-| P8 | `phase-8-mod-core-and-glance-layer.md` | mod adapter, host, daemon client, flag following, inbox poll, toasts, band, status entry, `mod-calls` smoke check | P5 merged | P5 | none |
-| P11a | `phase-11-mod-dispatch-flows-and-tool.md` | `/mission-dispatch` (fast path, description, confirm), `start_dispatch` tool, launcher part gated | P8 merged | P8 | S10 or S11 for the launcher part only |
-| P11b | `phase-11b-mod-answer-and-approve-dialogs.md` | the `needs you` dialog: read an item, answer, approve or request changes on a plan, see the result | P8 merged | P8 | none |
-| P14 | `phase-14-setup-doctor-and-mod-install.md` | `mctl setup` and `mctl doctor` reduced to: find `claude`, stage and install the mod, version probe, daemon and flag check; plus the Claude-session loop proof | P8 merged | P11a, P11b | none (S17, S18 soft) |
+| P8 | `phase-8-mod-core-and-glance-layer.md` | mod adapter, host, client, flag following, inbox poll, toasts, band with its `1` button, status entry, banner, the real `paneOpen` and `paneClose`, **opens the pane at session start**, `mod-calls` smoke check | P5 merged | P5 | none (S14, S18, S19 soft) |
+| P11 | `phase-11-mod-dispatch-flows-and-tool.md` | `/mission-dispatch` (fast path, description, confirm), `inbox`, `check` and `pane` arguments, `start_dispatch` tool, launcher part gated | P8 merged | P8 | S10 or S11 for the launcher part only |
+| P12 | `phase-12-mission-control-pane.md` | the pane, cut to two tabs: **Needs you** (first) and **Tasks**; answer, approve and request changes in the pane; docked and inline forms | P8 merged | P8 | none (S21, S22 soft) |
+| P14 | `phase-14-setup-doctor-and-mod-install.md` | `mctl setup` and `mctl doctor` reduced to: find `claude`, stage and install the mod, version probe, daemon and flag check; plus the Claude-session loop proof | P8 merged | P11 and P12 | none (S17, S18 soft) |
 
 Dependency graph:
 
 ```mermaid
 flowchart TD
   P5[P5 in review] --> P8
-  P8 --> P11a
-  P8 --> P11b
+  P8 --> P11
+  P8 --> P12
   P8 --> P14
-  P11a --> P14
-  P11b --> P14
+  P11 --> P14
+  P12 --> P14
 ```
 
-P14 starts with P11a and P11b (it only needs P8 for staging and install) and merges last. Its install work needs nothing from them; the loop proof commit waits until both have merged, then P14 rebases with `git rebase --onto origin/main <old base>` and adds the proof. P14 is the last kept phase and owns the acceptance test (plan.md 0.3).
+P14 starts with P11 and P12 (staging and install need only P8) and merges last. Its loop proof commit waits until both have merged, then P14 rebases with `git rebase --onto origin/main <old base>`. P14 is the last kept phase and owns the acceptance test (plan.md 0.3). The earlier draft of this plan used dialogs instead of the pane; the design review shows the pane works and a second overlay pane does not, so the dialogs phase is withdrawn.
 
 ## 3. What the person can do after each merged phase
 
-- After P5 (built, not visible to a person): the daemon can build dispatch dialog pages, keep drafts and a banner. No mod UI.
-- After P8: with the mod loaded by hand (`claude --plugin-dir dist/mod/mission-control`, or the fake host), the mod follows the flag, registers the session, polls the inbox, shows toasts, the band with its `1` button and a quiet status entry, and the banner. Nothing to click yet.
-- After P11a: the person types `/mission-dispatch`, picks or describes work, confirms, and a task starts. The model can also call `start_dispatch` mid-conversation. The glance layer from P8 signals when that task needs them.
-- After P11b: the person answers a worker's question or approves a plan from a dialog, and reads the finished result. The loop is complete for a hand-loaded mod.
-- After P14: `mctl setup` installs the mod on a clean machine, `mctl doctor` says what is wrong, and the automated loop test runs. This is the real end-to-end state.
+- After P5 (built, not visible): the daemon can build dialog pages, drafts and a banner.
+- After P8: with the mod loaded by hand (`claude --plugin-dir dist/mod/mission-control`, or the fake host), Claude launches with the banner and the pane open to a placeholder, and the mod follows the flag, polls the inbox, and shows toasts, the band with `1`, and the status entry.
+- After P12: the pane shows what is happening as Claude launches: Needs you (waiting, blocked) first, then Tasks (running, ready, queued, with the workflow stage line). They answer a question, approve a plan (two presses, with the revision on the button) or request changes, in the pane.
+- After P11: `/mission-dispatch` and the `start_dispatch` tool start a task; `/mission-dispatch inbox`, `check` and `pane` open the pane. The loop is complete for a hand-loaded mod.
+- After P14: `mctl setup` installs the mod on a clean machine, `mctl doctor` names what is wrong, and the automated loop test runs. This is the real end-to-end state.
 
 ## 4. Rules for every phase
 
 1. Re-read the spec version and sha256 above. If the spec moved past 20, stop and report.
 2. Behind the `headless-mode` preview flag; flag-off tests prove no behavior change.
 3. Do not touch `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs`. Nothing under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports `src/server/terminal/`.
-4. Tests use `node:test` and the fakes in `test/helpers/home-dispatch-fakes.ts`; no model tokens. The mod is drawn inside Claude Code, so its proof is fake-host tests plus `claude plugin test` run locally with output attached to the pull request.
+4. Tests use `node:test` and the fakes in `test/helpers/home-dispatch-fakes.ts`; no model tokens. The pane is drawn inside Claude Code, so its proof is fake-host tests plus `claude plugin test` run locally with output attached to the pull request.
 5. One owner per file. A contract change only adds, in its own `contract:` commit.
 6. No em dash in prose. No generated-file edits. No evidence artifacts committed.
 7. Open a reviewable pull request through the pull-request skill and follow it to green CI.
-8. A hard gate is satisfied only by the owner's answer posted to Commonroom. The only hard gate left is S10 or S11 for P11a's launcher part: without it the launcher stays off and the rest of P11a merges. Soft spikes never block a merge; the pull request says which answers it used or that none was recorded.
+8. A hard gate is satisfied only by the owner's answer posted to Commonroom. The only hard gate left is S10 or S11 for P11's launcher part: without it the launcher stays off and the rest of P11 merges. Soft spikes never block a merge; the pull request says which answers it used or that none was recorded.
+9. Design rules from the spike review: no Alt+I and no second overlay pane (neither works in Claude Code 2.1.329); one pane, with Needs you as its first tab; the band's digit `1` button, `/mission-dispatch inbox` and `ctrl+x tab` then a letter reach it; the status entry is set only while something needs the person; plan approval is a focused button confirmed with Enter showing the revision; a visible Back button beside Esc.
 
 ## 5. Sizing
 
 | Phase | Estimate (gross non-test lines) |
 |---|---|
-| P8 | 700 to 1,100 |
-| P11a | 500 to 800 |
-| P11b | 500 to 800 |
+| P8 | 800 to 1,200 |
+| P11 | 600 to 900 |
+| P12 | 900 to 1,400 |
 | P14 | 600 to 1,000 |
 
-About 2,300 to 3,700 lines in four pull requests, down from about 6,700 to 10,900 lines in eight in the full plan.
+About 2,900 to 4,500 lines in four pull requests, down from about 6,700 to 10,900 lines in eight.
 
 ## 6. Later iterations (deferred, not deleted)
 
-| Phase | Reason deferred |
+| Phase or part | Reason deferred |
 |---|---|
 | P6 repository task skills | In flight on its own (#1565); the loop works without repository skills. |
-| P7 Codex readiness and fail-fast | The loop does not depend on Codex reviews; P11a's confirm omits the Codex line. Needs hard spike S27. |
-| P9 residents and chat routes | Answers use P4's receipted routes; chatting with workers and residents is not in the loop. Needs hard spike S16. |
+| P7 Codex readiness and fail-fast | The loop does not need Codex; P11's confirm omits the Codex line. Needs hard spike S27. |
+| P9 residents and chat routes | Chat and follow in the pane, and the Residents tab, need transcript wrappers and a live residents route that do not exist; not in the loop. Needs hard spike S16. |
+| P12 Workflows and Residents tabs, chat, follow | The pane ships with Needs you and Tasks; the other tabs follow P9 and the review field on inbox items. |
 | P10 mctl client and read commands | The mod is the display; `mctl` reads are a second surface. P14 talks to `/api/health` directly. |
-| P12 Mission Control pane | Dialogs replace the pane for the loop (P11b). The pane is the richer second iteration. |
 | P13 mctl run, claude and daemon | Terminal entry points, not the Claude-session loop. P14 owns its own `claude` detection in `src/cli/claude-cli.ts`. |
-| P15 subagents and agents step | A nicety on top of the pane and flows. |
+| P15 subagents and agents step | A nicety on top of the pane. |
 | P16 app packaging of the mod | The person installs with `mctl setup` from a built tree; shipping inside the app comes later. |
-| P17 docs | Written once the shape settles; each kept phase updates its own section of `docs/`. |
+| P17 docs | Written once the shape settles; each kept phase documents its own part. |
 | P18 full loop and flag-off sweep | Replaced by P14's loop proof; the full sweep follows the later iterations. |
 
 The old phase files stay in this folder with a DEFERRED banner. Their numbers are not reused.
-
 
 ---
 

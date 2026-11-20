@@ -584,27 +584,24 @@ test("GitHub Inspector is a category of its own: its panel shows, the others don
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌕<\/span>GitHub Inspector/);
 });
 
-// Ships off, and ships not-live. A static render runs no effects, so this is the
-// pre-poll state - which is exactly the state a first-run user sees, and it must not
-// show a mode that would post anything.
-test("the GitHub Inspector panel's defaults are the off position", () => {
+// A static render runs no effects, so the controls are waiting for the daemon's config.
+test("the GitHub Inspector panel keeps its master switch disabled before the daemon answers", () => {
   const html = render("inspector");
-  // No checked master toggle, and no live-mode warning banner.
+  const toggle = html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0];
+  assert.ok(toggle, "the GitHub Inspector panel has a master switch");
+  assert.match(toggle, /disabled/);
   assert.doesNotMatch(html, /inspector-live-warn/);
-  assert.match(html, /Dry run - review and record findings, post nothing/);
 });
 
-// The same pre-poll render, from the other direction. Those defaults are the SAFE
-// posture, and presenting them as the daemon's answer is how an operator reads "off, dry
-// run, no repos" as fact while the stored config is enabled and live and the daemon is
-// merely restarting. Disabled inputs are not a statement about what is running.
+// During startup or a restart, the stored status and repository grants are unknown.
 test("with no answer from the daemon, the GitHub Inspector panel says so rather than showing defaults as fact", () => {
   const html = render("inspector");
   assert.match(html, /inspector-unknown/);
-  assert.match(html, /is unknown/);
+  assert.match(html, /Unknown - the daemon has not answered/);
+  assert.match(html, /GitHub Inspector settings are unavailable until the daemon responds/);
   assert.doesNotMatch(
     html,
-    /No repos yet - GitHub Inspector won't post anywhere/,
+    /GitHub Inspector may post reviews in no repositories yet/,
     "an unanswered panel must not assert an empty allowlist",
   );
 });

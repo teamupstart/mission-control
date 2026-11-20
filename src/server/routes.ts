@@ -1,5 +1,6 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
-import { applyFeatureFlagIntent, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -296,7 +297,8 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -1879,6 +1881,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  // Headless mode (FR-05): every `/dispatch/*` route, gated by the `headless-mode` flag.
+  registerHomeDispatchRoutes(app, deps, requireLoopback);
+
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
 
@@ -1908,7 +1913,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 

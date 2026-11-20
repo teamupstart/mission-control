@@ -255,9 +255,15 @@ let db: DatabaseSync | undefined;
 //     no question offered or used a snooze before these existed.
 // 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
 //     '[]' with no backfill: no run attached a repository before this existed.
-// 36: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
+// 36: headless mode (FR-05). Where a task came from (`tasks.origin_surface`, `origin_repo`,
+//     `origin_session_id`), the home sessions that registered (`home_dispatch_sessions`), the
+//     receipt of each answer given from one (`home_dispatch_receipts`) and what repository task
+//     skill text a launch included (`session_standing_instructions.repo_task_skills`). New
+//     tables and nullable columns with no backfill: no task has an origin before this existed,
+//     and nothing writes any of it while the `headless-mode` flag is off.
+// 37: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
 //     backfill: no task was hibernated before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 37;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -343,6 +349,34 @@ export function databaseMigratedOnOpen(): boolean {
   return ranMigrationOnOpen;
 }
 
+const CREATE_APP_CONFIG = `
+  CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`;
+
+function createAppConfig(d: DatabaseSync): void {
+  const fresh = databaseSchemaVersion(d) === 0 && !d.prepare("SELECT 1 FROM sqlite_schema LIMIT 1").get();
+  if (!fresh) {
+    d.exec(CREATE_APP_CONFIG);
+    return;
+  }
+
+  // Commit the first table and the install default together. An interrupted first start
+  // either retries as a fresh database or resumes with the default already recorded.
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    d.exec(CREATE_APP_CONFIG);
+    d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
+      .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
+    d.exec("COMMIT;");
+  } catch (error) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw error;
+  }
+}
+
 /**
  * The one forward-upgrade contract for both the live database and disposable restore
  * verification. Callers must provide a database they own and may mutate.
@@ -380,6 +414,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
+  createAppConfig(d);
   d.exec(`
     CREATE TABLE IF NOT EXISTS pr_branch_update_attempts (
       pr_url TEXT NOT NULL,
@@ -966,11 +1001,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       plan_id TEXT NOT NULL, revision INTEGER NOT NULL, receipt TEXT NOT NULL,
       PRIMARY KEY(plan_id, revision)
     );
-    CREATE TABLE IF NOT EXISTS app_config (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
     -- Operational identity for daemon-owned native worktree pools. Policy does not live
     -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
     -- The physical Git common directory is the pool identity, not a remote URL, so two local
@@ -3511,6 +3541,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateHomeDispatch(d);
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -5140,6 +5171,45 @@ function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
     ...LEGACY_OBSERVATION_QUARANTINE_REASONS,
     ...LEGACY_OBSERVATION_QUARANTINE_PREFIXES.flatMap((prefix) => [prefix.length, prefix]),
   );
+}
+
+/**
+ * Schema 36: headless mode's tables and columns (spec 2.4). Idempotent, because `migrate` runs
+ * on every start. The table is created before any index on it, and a column is added before any
+ * index that names it, so an upgraded database never indexes a column it does not have yet.
+ */
+function migrateHomeDispatch(d: DatabaseSync): void {
+  addColumn(d, "tasks", "origin_surface", "TEXT");
+  addColumn(d, "tasks", "origin_repo", "TEXT");
+  addColumn(d, "tasks", "origin_session_id", "TEXT");
+  addColumn(d, "session_standing_instructions", "repo_task_skills", "TEXT");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS home_dispatch_sessions (
+      session_id          TEXT PRIMARY KEY,
+      harness             TEXT NOT NULL,
+      cwd                 TEXT NOT NULL,
+      repo_root           TEXT,
+      client_version      TEXT,
+      start_source        TEXT,
+      entrypoint          TEXT,
+      launcher_offered_at INTEGER,
+      launcher_disabled   INTEGER NOT NULL DEFAULT 0,
+      started_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_sessions_repo
+      ON home_dispatch_sessions(repo_root);
+    -- One row per answer, keyed by the review it settled, so a retry finds its own receipt.
+    CREATE TABLE IF NOT EXISTS home_dispatch_receipts (
+      review_id  TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      session_id TEXT,
+      surface    TEXT NOT NULL,
+      sent       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_receipts_age
+      ON home_dispatch_receipts(created_at);
+  `);
 }
 
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {

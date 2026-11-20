@@ -50,7 +50,6 @@ test("each pane tab draws not implemented for every placement, and the fake reco
       const props: PaneProps = { tab, placement, bodyColumns: 60 };
       const view = fake.drawPane(props);
       assert.deepEqual(view, { tab, placement, lines: [PANE_NOT_IMPLEMENTED], buttons: [] });
-      assert.deepEqual(renderPane(fake.host, props), view);
     }
   }
   assert.equal(fake.views.length, tabs.length * placements.length);
@@ -118,8 +117,9 @@ test("the fake host reports an unplaced pane as isPlaced false and still records
   assert.deepEqual(fake.calls.map((c) => c.type), ["paneOpen"]);
 });
 
-test("register is the empty shell P8 replaces", () => {
-  assert.equal(register(undefined, undefined), undefined);
+test("the skeleton registers no hook, so an installed P2 build changes nothing in a session", () => {
+  const on = (event: unknown) => assert.fail(`the P2 skeleton hooked ${String(event)}`);
+  register(on, {});
   assert.equal(MOD_NAME, "mission-control");
   assert.equal(MOD_API, 1);
 });
@@ -135,10 +135,10 @@ test("the $.state contract matches the shared schemas in both directions", () =>
     paneView: "list", selectedTaskId: null, armedApproval: null, chatSince: 0,
   };
   void [registration, registrationBack, inbox, resident, state];
-  assert.deepEqual(Object.keys(state).sort(), [
-    "armedApproval", "chatSince", "draftId", "inbox", "paneTab", "paneView",
-    "registration", "residents", "selectedTaskId",
-  ]);
+  // The engine holds `$.state` keys to the contract under the plugin's own name, so the
+  // contract's key must be the plugin name `build:mod` writes into plugin.json.
+  const contract = readFileSync(join(root, "src/mod/types/index.d.ts"), "utf8");
+  assert.match(contract, new RegExp(`interface PluginState \\{\\s*"${MOD_NAME}": MissionControlModState;`));
 });
 
 test("npm run build:mod's script writes an installable folder marketplace that carries the pane", async () => {

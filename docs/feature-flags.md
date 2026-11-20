@@ -2,8 +2,8 @@
 
 The flag core stores one set of operator choices for this machine. The registry includes
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
-and [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview)
-as previews.
+[Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
+and **Headless mode** (`headless-mode`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -19,6 +19,11 @@ Codex resident profiles. Turning it off prevents new saves and launches in that 
 runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
 **Pinned at launch** when the preview is off.
 
+**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
+a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
+answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
+route answers 404 and the `home-dispatch-v1` health capability is absent.
+
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
 off**, **Turn them on too**, or **Cancel**. Cancel and Escape write nothing. Turning the master
@@ -31,8 +36,10 @@ update channel.
 
 ## Definition and resolution
 
-Declare flags in `src/shared/feature-flag-registry.ts`. It exports only `FEATURE_FLAGS` and
-`RETIRED_FEATURE_FLAG_IDS`, so a test build can substitute the data without replacing logic.
+Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAGS`,
+`RETIRED_FEATURE_FLAG_IDS` and one `<FLAG>_ID` constant for each flag whose gates need to name it
+(today `HEADLESS_MODE_FLAG_ID`), so a gate imports the id instead of respelling it. It holds data
+only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
 at most 64 characters. `FeatureFlagId` is derived from the tuple.
 

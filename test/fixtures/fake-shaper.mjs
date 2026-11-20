@@ -107,6 +107,14 @@ switch (mode) {
     });
     break;
   }
+  case "deep-leak": {
+    // A reply well within the cap that repeats the value, beside an unknown field nested far
+    // deeper than any recursive serialiser can follow.
+    const value = process.env[rest[0]] ?? "<unset>";
+    const deep = `${"[".repeat(100_000)}${"]".repeat(100_000)}`;
+    process.stdout.write(`{"guidance":[{"id":"clean","body":"a clean entry with ${value}"}],"extra":${deep}}`);
+    break;
+  }
   case "version-leak":
     // A version string that repeats the value it was handed, on an otherwise good reply.
     reply({ version: `v2-${process.env[rest[0]] ?? "<unset>"}`, guidance: [{ id: "v", body: "versioned entry" }] });

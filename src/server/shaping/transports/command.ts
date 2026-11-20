@@ -422,7 +422,16 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     child.once("error", (error) => {
       if (child.pid === undefined) finish({ kind: "unavailable", reason: `The command could not start: ${error.message}` });
     });
+    // Runs from child-process callbacks, where a throw would escape every handler and could stop
+    // the daemon: whatever goes wrong while building the answer settles the call as failed.
     const complete = (code: number | null, signal: NodeJS.Signals | null): void => {
+      try {
+        answer(code, signal);
+      } catch (error) {
+        finish({ kind: "failed", reason: `The reply could not be processed: ${error instanceof Error ? error.name : "error"}.` });
+      }
+    };
+    const answer = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (ending === "timed_out") return finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
       if (ending === "overflow") return finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
       if (code === 0) {
@@ -434,8 +443,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
         const scrubbed = scrubResolved(decoded, namedValues);
         return finish({
           kind: "data",
-          // The bytes as written when nothing was removed, otherwise the scrubbed reply.
-          data: scrubbed.redacted ? JSON.stringify(scrubbed.data) : text,
+          // The bytes as written when nothing was removed. Otherwise the scrubbed reply as the
+          // decoded value it already is: serialising it again could throw on deep nesting, and
+          // the engine validates a decoded value just as it does text.
+          data: scrubbed.redacted ? scrubbed.data : text,
           ...(scrubbed.redacted ? { redacted: true } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),

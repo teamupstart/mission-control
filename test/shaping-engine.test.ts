@@ -9,6 +9,7 @@ import {
   ShaperSchema,
   ShapingConfigSchema,
   ShapingRequestSchema,
+  ShapingResultSchema,
   SHAPING_SECTION_PREAMBLE,
   utf8Length,
   type Shaper,
@@ -16,6 +17,7 @@ import {
   type ShapingRequest,
 } from "../src/shared/shaping.ts";
 import { dryRunShaper, runScope, shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
+import { scrubResolved } from "../src/server/shaping/references.ts";
 import { SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportContext, type TransportReply } from "../src/server/shaping/transports/index.ts";
 
 type Handler = (request: ShapingRequest, shaper: Shaper, ctx: TransportContext) => Promise<TransportReply> | TransportReply;
@@ -248,6 +250,18 @@ test("no NUL from a shaper reply reaches an entry, the section or a selector's r
   assert.equal(result.section.includes("\u0000"), false, "the section can be a launch argument");
   const select = seen.find((request) => request.stage === "select")!;
   assert.deepEqual([select.repo.summary, select.repo.facts], ["summary", { lang: "typescript" }]);
+});
+
+test("redaction never turns a valid reply invalid: drop notes stop at the result's notes bound", async () => {
+  const notes = Array.from({ length: 16 }, (_, i) => `note ${i}`);
+  const reply = { guidance: [{ id: "drop-sk-secret", body: "x" }, { id: "clean", body: "a clean entry" }], notes, degraded: true };
+  const scrubbed = scrubResolved(structuredClone(reply), [{ name: "ACME_TOKEN", value: "sk-secret" }]);
+  assert.equal(scrubbed.redacted, true);
+  assert.equal((scrubbed.data as { notes: string[] }).notes.length, 16, "the reply's own notes already fill the bound");
+  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, true, "so the scrubbed reply still validates");
+  const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data", data: scrubbed.data, redacted: true }), input(1));
+  assert.deepEqual(result.entries.map((entry) => entry.id), ["clean"], "its clean entry still counts");
+  assert.equal(result.summary!.shapers[0]!.redacted, true);
 });
 
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {

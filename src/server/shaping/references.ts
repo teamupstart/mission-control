@@ -1,4 +1,4 @@
-import type { ShapingConfig, ShapingReferenceStatus } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
 
 /**
  * Whether each `{env:NAME}` a shaper references is set in the daemon's environment, never its
@@ -93,6 +93,13 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
       }
     }
   }
-  if (notes.length > 0) root.notes = [...(Array.isArray(root.notes) ? root.notes : []), ...notes];
+  // A drop's note joins the reply's own notes only while they stay within the result schema's
+  // bound: a reply that was valid must not become invalid because something was removed from
+  // it. The record's `redacted` mark says so either way.
+  if (notes.length > 0) {
+    const own = Array.isArray(root.notes) ? root.notes : [];
+    const room = Math.max(0, SHAPING_LIMITS.replyNotes - own.length);
+    if (room > 0) root.notes = [...own, ...notes.slice(0, room)];
+  }
   return { data: root, redacted };
 }

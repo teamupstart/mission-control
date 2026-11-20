@@ -46,9 +46,14 @@ function ctx(timeoutMs = 10_000, extra: Partial<TransportContext> = {}): Transpo
     scope: { shared: new Map(), defer() {} }, root: null, trace: null, ...extra,
   } as TransportContext;
 }
+/** A data reply decoded: the text as written, or the value a scrubbed reply already is. */
+function decoded(reply: Awaited<ReturnType<typeof callCommand>>): any {
+  const data = (reply as { data: unknown }).data;
+  return typeof data === "string" ? JSON.parse(data) : data;
+}
 function echoed(reply: Awaited<ReturnType<typeof callCommand>>) {
   assert.equal(reply.kind, "data", JSON.stringify(reply));
-  const body = JSON.parse(JSON.parse((reply as { data: string }).data).guidance[0].body);
+  const body = JSON.parse(decoded(reply).guidance[0].body);
   return body as { argv: string[]; cwd: string; env: Record<string, string | null>; envKeys: string[]; request: ShapingRequest };
 }
 
@@ -318,9 +323,8 @@ test("a named credential the shaper echoes in its reply's content is scrubbed be
     const reply = await callCommand(request(), shaper([FIXTURE, "guidance-leak", "SHAPER_FIXTURE_SECRET"], { env: ["SHAPER_FIXTURE_SECRET"] }), ctx());
     assert.equal(reply.kind, "data");
     assert.equal((reply as { redacted?: boolean }).redacted, true);
-    const data = (reply as { data: string }).data;
-    assert.equal(data.includes("s3cret-passed-value"), false, "no copy survives anywhere in the reply");
-    const parsed = JSON.parse(data) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes: string[] };
+    assert.equal(JSON.stringify(decoded(reply)).includes("s3cret-passed-value"), false, "no copy survives anywhere in the reply");
+    const parsed = decoded(reply) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes: string[] };
     assert.deepEqual(parsed.guidance.map((entry) => entry.id), ["kept"], "an entry whose id held the value is dropped, never renamed");
     assert.deepEqual(parsed.guidance[0], { id: "kept", title: "token [SHAPER_FIXTURE_SECRET redacted]",
       body: "use [SHAPER_FIXTURE_SECRET redacted] to sign in", path: "docs/[SHAPER_FIXTURE_SECRET redacted].md" });
@@ -329,6 +333,20 @@ test("a named credential the shaper echoes in its reply's content is scrubbed be
     assert.equal(parsed.repo.summary, "summary with [SHAPER_FIXTURE_SECRET redacted]");
     assert.equal(parsed.notes.length, 2, "each drop leaves a note");
     assert.match(parsed.notes.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("a redacted reply with a deeply nested unknown field settles, and its clean entries still count", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "deep-leak", "SHAPER_FIXTURE_SECRET"], { env: ["SHAPER_FIXTURE_SECRET"] }), ctx());
+    assert.equal(reply.kind, "data", "the call settles; nothing is serialised again");
+    assert.equal((reply as { redacted?: boolean }).redacted, true);
+    assert.deepEqual(decoded(reply).guidance, [{ id: "clean", body: "a clean entry with [SHAPER_FIXTURE_SECRET redacted]" }]);
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;

@@ -45,6 +45,8 @@ export const SHAPING_LIMITS = {
   summaryBytes: 4 * KIB,
   /** Entries one reply may carry. */
   replyEntries: 32,
+  /** Notes one reply may carry. */
+  replyNotes: 16,
   /** Text one reply may carry in any one string, before Mission Control applies its caps. */
   replyText: 256 * KIB,
   /** The bound on a reason recorded for an outcome. */
@@ -1357,7 +1359,7 @@ export const ShapingResultSchema = z.object({
     facts: ShapingFactsSchema.optional(),
     summary: z.string().max(SHAPING_LIMITS.replyText).optional(),
   }).optional(),
-  notes: z.array(z.string().max(1000)).max(16).optional(),
+  notes: z.array(z.string().max(1000)).max(SHAPING_LIMITS.replyNotes).optional(),
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 

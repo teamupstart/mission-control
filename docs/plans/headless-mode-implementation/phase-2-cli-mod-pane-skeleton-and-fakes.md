@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** `npm run build:mod` works; every stub says `not implemented`; fakes are importable by later phases; flag-off behavior unchanged.
 
-**9. Handoff.** P3 to P7 start from these stubs. Later phases replace stubs and never change a stub's shape. P8 owns `register.ts` and `host.ts` afterward; P14 owns setup-step bodies except `agents` (P15) and `codex` (P7).
+**9. Handoff.** P3 to P7 start from these stubs. Later phases replace stubs and never change a stub's shape. Stub owners: `mctl get`, `describe`, `logs`, `status`, `config` P10; `mctl run`, `claude`, `daemon` P13; `mctl setup`, `doctor` and the setup-step bodies P14, except the `agents` step P15 and the `codex` step P7; mod `flows/*` P11; mod `pane/*` P12. P8 owns `register.ts` and `host.ts` afterward; P14 owns setup-step bodies except `agents` (P15) and `codex` (P7).
 
 **10. Cross-phase audit.** Matches P1's schemas; no file is also owned by P1. The pane skeleton is consumed by P12, the fakes by every later phase.

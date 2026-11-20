@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** Dispatch works end to end against the fakes; launcher gated by the recorded S10 or S11 answer. Interim pane behavior: with the fake host each of `inbox`, `check`, `pane` and a task id records one `paneOpen` with the right target, and none errors while P8's placeholder view is the pane.
 
-**9. Handoff.** P15 adds subagent lines; P12 replaces P8's placeholder view behind the same `paneOpen` calls.
+**9. Handoff.** P15 owns subagent lines end to end (formatter, producer, field and the header slot fill in P12's pane); P12 replaces P8's placeholder view behind the same `paneOpen` calls.
 
 **10. Cross-phase audit.** Registration lines do not collide with P12's. The Codex line matches P7's `CodexReadiness`.

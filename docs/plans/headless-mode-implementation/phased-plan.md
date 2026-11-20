@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 6). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 8). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -12,6 +12,8 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 6). Spec: Co
 - Review repairs (revision 4): widget placement is out of v1; P4 merges after P3; P8 owns `paneOpen` with a placeholder view that P12 replaces; P14 probes the installed mod version and reinstalls a stale build.
 - Review repairs (revision 5): P7 merges after P3; P10's `logs` has defined interim behavior until P9 lands; P13's launcher handoff is defined (`mctl claude` starts plain Claude until P11 and P14); P17 merges after P13; a failed mod reinstall has an honest recovery path, with no rollback claimed.
 - Review repairs (revision 6): P15 owns the one pane edit for subagent lines (the slot P12 reserves); S28a answers its questions on `main` and S28b's later findings land additively; P17 merges after P6 and P16.
+- Review repairs (revision 7): P15 also owns the producer of each task's `subagentLines` (daemon derivation, an additive field on the inbox `run` and tasks read, and an end-to-end test); P14 owns the one edit that makes the already-merged `mctl claude` use the shared `claude` detection (P14 now merges after P13).
+- Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
 ## 2. Findings from the repository
 
@@ -82,7 +84,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P11 `phase-11-mod-dispatch-flows-and-tool` | WP14 | P8, P5, P7 | S10 or S11 |
 | P12 `phase-12-mission-control-pane` | WP17 | P8, P9 | S16; S21 to S23 |
 | P13 `phase-13-mctl-run-claude-daemon` | WP6b | P10, P5 | none |
-| P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10 | S5, S14, S17, S18, S20 |
+| P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10, P13 | S5, S14, S17, S18, S20 |
 | P15 `phase-15-subagents-and-agents-step` | WP11 | P11, P12, P14 | S4 |
 | P16 `phase-16-app-packaging-of-the-mod` | WP15 | P14 | none |
 | P17 `phase-17-docs` | WP9 | P14, P15, P12, P7, P13, P6, P16 | none |
@@ -114,6 +116,7 @@ flowchart TD
   P5 --> P13
   P8 --> P14
   P10 --> P14
+  P13 --> P14
   P11 --> P15
   P12 --> P15
   P14 --> P15
@@ -131,17 +134,18 @@ flowchart TD
   P17 --> P18
 ```
 
-Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P14 run together once their prerequisites land. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
+Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
 ## 7. Cross-phase contracts
 
-- P1 owns every shared schema, route stub and schema 36. Later phases fill stubs and never change a stub's shape.
+- P1 owns every shared schema, route stub and schema 36. Later phases fill stubs and never change a stub's shape. Stub owners are listed in P1 section 9 (routes) and P2 section 9 (CLI commands, setup steps, mod flows and pane).
 - P2 owns the fakes. Later phases extend them additively.
 - P3 owns home-session rules (spec 7.2); P4, P9 and P7 call them and never re-implement them.
 - P4 owns `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); P12 asks P4's owner for changes.
 - P8 owns `src/mod/register.ts`, `host.ts`; P11 and P12 add flows and panes with one registration line each.
 - P14 owns `scripts/install-service.mjs` and the setup-step files except `agents.ts` (P15) and `codex.ts` (P7).
-- P12 reserves the `subagentLines` slot in `src/mod/pane/header.tsx`; P15 owns the formatter and fills that slot, and edits nothing else in the pane.
+- P12 reserves the `subagentLines` slot in `src/mod/pane/header.tsx`; P15 owns the formatter, the producer of `subagentLines` and the additive field that carries it, and fills that slot, and edits nothing else in the pane.
+- P13 owns `src/cli/commands/claude.ts` and resolves `claude` from `PATH`; P14 owns `src/cli/claude-cli.ts` and the one edit that makes `mctl claude` call it.
 - P8 owns `paneOpen` and `paneClose` with a placeholder view; P12 replaces the view and changes no signature.
 - P14 owns the installed-version probe and stale-build reinstall; P16 relies on it.
 - Home-dispatched tasks are created through the dashboard path with no runtime override (Focus guard 1).

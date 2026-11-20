@@ -10,7 +10,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **4. Findings.** `mctl claude` no longer adds a prompt or a workspace (D40, D50); the launcher opens on its own through the mod. `mctl run` creates tasks through the dashboard path with no runtime override (Focus guard 1). `mctl` never answers, approves, cancels or sends (D8). The daemon runs without the app via `install-service`, but Foreman is started only by the app (L25).
 
-**5. Steps.** Read spec 7.13. Implement `run` over P5's draft flow, `claude` as a thin launcher that finds `claude` with P14's detection when available (otherwise `PATH`), and `daemon` start, stop and status through the existing service paths.
+**5. Steps.** Read spec 7.13. Implement `run` over P5's draft flow, `claude` as a thin launcher that finds `claude` on `PATH` (P14 later swaps in its shared detection in one edit, see its section 5), and `daemon` start, stop and status through the existing service paths.
 
 **6. Data and API.** Uses P5 draft routes. No new routes.
 
@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** The three commands work; before P11 and P14 merge `mctl claude` starts a plain Claude session; flag off reports the feature off.
 
-**9. Handoff.** P14 may reuse `claude`'s detection helper; keep its signature stable.
+**9. Handoff.** Keep `claude.ts` to one place where the `claude` binary is resolved, so P14 can replace it with its shared detection in one edit.
 
-**10. Cross-phase audit.** `src/cli/claude-cli.ts` belongs to P14; this phase imports it only after P14 lands, so until then it uses `PATH`.
+**10. Cross-phase audit.** `src/cli/claude-cli.ts` belongs to P14 and does not exist when this phase merges, so this phase imports nothing from it and resolves `claude` from `PATH`. P14 owns the one follow-up edit that makes `mctl claude` use the shared detection.

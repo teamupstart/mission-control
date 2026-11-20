@@ -6,7 +6,7 @@
 | Spec | Commonroom, workspace Meta Harness, spec `d2cdf331-4f03-4c77-957d-246cfde0017c`, **version 18**, 236,444 characters, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`. The spec, not this plan, is the contract: where they differ, the current spec version wins. |
 | Base | `main` at `c2b873f6f`. It has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`, no preview flag in `src/shared/feature-flag-registry.ts`, and database schema 35 (`CURRENT_DATABASE_SCHEMA_VERSION`). |
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
-| Revision | 6. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. |
+| Revision | 8. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. |
 
 ## 1. Read this first: the brief and the spec disagree on the version
 
@@ -174,8 +174,8 @@ One pull request each, to `main`, behind `headless-mode`; P0 opens none. Work pa
 | P11 | WP14 | Dispatch flows, `start_dispatch`, the intent nudge, the confirm summary's Codex line. The `inbox`, `check`, `pane` and task-id arguments call P8's `paneOpen`, which shows a placeholder until P12 lands (6.3). | P2 | P8, P5, P7 | **S10 or S11**; S8, S12, S15 |
 | P12 | WP17 | The pane: four tabs, item views, two-press approval, chat and follow, Residents, reviewer rows, and a reserved `subagentLines` header slot that P15 fills. Placements are dock and inline; the widget placement is v1.1 and falls back to the inline view (6.6). It replaces P8's placeholder. | P2 | P8, P9 | **S16**; S21, S22, S23 |
 | P13 | WP6b | `mctl run`, `mctl claude` (starts Claude with no workspace and no added prompt; the launcher is P11's and appears once P11 and P14 are in, 6.3), `mctl daemon` | P2 | P10, P5 | none |
-| P14 | WP7 | `mctl setup` and `doctor` (every step except agents and Codex), `claude` detection, the "Mods can load" step and its checks (6.5), mod staging, install and the stale-version reinstall, the Foreman LaunchAgent | P2 | P8, P10 | S5, S14, S17, S18, S20 |
-| P15 | WP11 | The subagent line formatter and its one pane edit (filling P12's reserved header slot, with a rendered-pane test), the agents setup step and doctor check | P2 | P11, P12, P14 | S4 |
+| P14 | WP7 | `mctl setup` and `doctor` (every step except agents and Codex), `claude` detection (and the one edit that makes P13's `mctl claude` use it), the "Mods can load" step and its checks (6.5), mod staging, install and the stale-version reinstall, the Foreman LaunchAgent | P2 | P8, P10, P13 | S5, S14, S17, S18, S20 |
+| P15 | WP11 | The subagent line formatter, the daemon producer of each task's `subagentLines` (an additive field on the inbox `run` and tasks read), its one pane edit (filling P12's reserved header slot, with a rendered-pane test and an end-to-end event-to-header test), the agents setup step and doctor check | P2 | P11, P12, P14 | S4 |
 | P16 | WP15 | Packaging: the built mod ships outside `asar`, and the app stages it at start | P2 | P14 | none |
 | P17 | WP9 | Docs | P2 (drafting) | P14, P15, P12, P7, P13, P6, P16 | none |
 | P18 | WP12 | The full-loop test, the flag-off sweep, the no-multiplexer check, the context check, the live walkthrough | P2 | all | none |
@@ -209,6 +209,7 @@ flowchart TD
   P5 --> P13
   P8 --> P14[P14 WP7 setup, doctor, install]
   P10 --> P14
+  P13 --> P14
   P11 --> P15[P15 WP11 subagents]
   P12 --> P15
   P14 --> P15
@@ -232,7 +233,7 @@ Merge waves, in which phases inside a wave merge in any order:
 | 2 | P3, P5, P6 |
 | 3 | P4 and P7 (both after P3) |
 | 4 | P8, P9, P10 |
-| 5 | P11, P12, P13, P14 |
+| 5 | P11, P12, P13, then P14 (P14 after P13) |
 | 6 | P15, P16 |
 | 7 | P17, then P18 |
 
@@ -240,7 +241,7 @@ Merge waves, in which phases inside a wave merge in any order:
 
 - **Every phase.** Behind `headless-mode`; flag-off tests prove no behavior change; no edit to `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs` (D43, 4.2); tests use `node:test` and the fakes; no em dash in prose; no model tokens in any test.
 - **P1.** Registers the flag as `preview`. Because it is the first real flag, it owes a Playwright assertion against the shipped registry that its Settings row appears and that toggling it changes a second window without reloading (`docs/feature-flags.md`, "Three pull requests per flag"). Uses schema 36 because `main` is at 35. Regenerates the route oracle and the diff adds only `/dispatch/*` entries.
-- **P2.** Fakes serve the inbox, residents and transcript shapes. Later phases replace stubs and never change a stub's shape.
+- **P2.** Fakes serve the inbox, residents and transcript shapes. Later phases replace stubs and never change a stub's shape. Route stub owners: registration answer P3; options and drafts P5; inbox, answers, approval and config P4; residents, transcript and send P9; readiness P7. CLI and mod stub owners: `mctl get`, `describe`, `logs`, `status`, `config` P10; `run`, `claude`, `daemon` P13; `setup`, `doctor` and step bodies P14 (the `agents` step P15, the `codex` step P7); mod `flows/*` P11; `pane/*` P12. The one planned later field, `subagentLines`, is owned by P15.
 - **P5, P6.** P6 owns `composeTurnOne` in `src/server/dispatcher.ts`. The task-shaping plan's Phase 2 also edits `composeTurnOne` (spec 12.2), so P6 must be rebased onto whichever lands first, and its pull request names the other plan.
 - **P7.** Merges after P3, whose home-session rules the readiness route applies. Owns the one flag-gated change to `src/server/workflows/engine.ts` and `src/server/llm/provider-failure.ts`. The pull request calls it out, adds a test that with the flag off every reviewer path keeps today's retries (Q25), and merges only after S27's answer is recorded as `CODEX_AUTH_MTIME_RELIABLE`.
 - **P9 and P12.** Neither merges until S16 and its `chat_first` fallback are recorded. If both fail, they wait for the owner (8.1 rule 8).
@@ -248,12 +249,13 @@ Merge waves, in which phases inside a wave merge in any order:
 - **P8 and P11, the pane-open handoff.** P8 implements the real `paneOpen` and `paneClose` host calls (open id `mission`, focus, size, close) and draws a placeholder view reading `The Mission Control pane is not available in this build yet.` P11's `inbox`, `check`, `pane` and task-id arguments call `paneOpen` with the tab or task id and nothing else, so they work before P12 lands and show the placeholder. P11's exit check: with the fake host, each argument records one `paneOpen` with the right target, and no argument errors while the placeholder is in place. P12 replaces the placeholder and changes no call signature.
 - **P10, `mctl logs` before P9.** The transcript routes are P1 stubs that answer 501 until P9 lands. `mctl logs` and `mctl logs -f` then print `the transcript routes are not available in this build yet`, exit 1 and do not retry. P10's tests cover that state against a daemon whose routes answer 501, and the real routes need no change to `mctl` once P9 merges.
 - **P13, the launcher handoff.** `mctl claude` starts Claude with no workspace and no added prompt. The launcher is P11's and appears on its own once P11 and P14 (the mod install) are in, so before then `mctl claude` starts a plain Claude session. P13's exit check asserts that with a fake `claude` runner and no mod installed; the launcher's own acceptance belongs to P11.
+- **P13 and P14, `claude` detection.** P14 merges after P13. P13 resolves `claude` from `PATH` in one place in `src/cli/commands/claude.ts`. P14 creates the shared detection (`src/cli/claude-cli.ts`) and owns the one edit that makes `mctl claude` call it, tested with the fake `claude` runner (a `MISSION_CLAUDE_BIN` override and a binary outside `PATH` are both found). Whichever of the two is open when the other lands rebases onto it.
 - **P11.** The launcher part merges only when S10 or S11 passes; otherwise the rest of P11 merges with the launcher switched off.
 - **P14 and P16, D44.** The mod ships only inside Mission Control. No pull request opens in claude-code-extensions. `src/server/mod-stage.ts` publishes by writing a sibling folder and renaming it, never by copying onto the published path (the rule CLAUDE.md sets for native addons). P16 changes `electron-builder.yml` by one named entry, and keeps `asar` off. `npm run smoke` runs `claude plugin validate dist/mod/mission-control` when `claude` is installed.
 - **P14 and P16, upgrading an installed mod.** Staging a new build does not by itself change what `claude plugin list` shows, and the install step skips anything already listed. P14 therefore compares the installed version with the staged `plugin.json` version after staging, and if they differ it reinstalls (`claude plugin uninstall`, then marketplace add if needed, then install), never `claude plugin update` (D47). There is no rollback: uninstalling removes the old install and the staged folder already holds the new build. If the install after the uninstall fails, setup retries once. If it still fails, the mod may be left uninstalled, so setup prints the cause and the two recovery commands (`claude plugin marketplace add {stateDir}/mod`, `claude plugin install mission-control@mission-control --scope user`), finishes the other steps and exits 1, and doctor reports `mod-enabled` failed. The daemon keeps working and a session without the mod shows nothing. P14 tests the upgrade, and the double-failure path, against a fake `claude` runner with a stale installed version. P16 adds a test that an app-staged newer build makes doctor report the mod stale and `mctl setup` bring it current. S18 supplies the real-world evidence.
 - **P12, placements.** Dock and inline only. The widget placement (the desktop app's small form) is v1.1 (6.6): when Claude Code reports `widget`, the pane draws the inline form, and no widget-specific layout, task or test exists in this plan.
 - **P12.** The pane is drawn inside Claude Code, so Playwright cannot drive it. Its proof is the fake-host `node:test` files named in 7.22 and `claude plugin test` run locally, with output attached to the pull request (Q17). A Playwright spec is required only for a dashboard UI change, which is P1's Settings row.
-- **P15 and P12, subagent lines.** P12 reserves one `subagentLines` slot in `src/mod/pane/header.tsx` and renders nothing in it. P15 creates `src/shared/subagent-lines.ts`, fills that slot and edits nothing else in the pane. P15's test renders the pane header with the fake host at 40, 71 and 120 columns, with and without lines, and P12's tests must still pass.
+- **P15 and P12, subagent lines.** P12 reserves one `subagentLines` slot in `src/mod/pane/header.tsx` and renders nothing in it. P15 creates `src/shared/subagent-lines.ts`, the daemon producer `src/server/home-dispatch/subagent-lines.ts` that derives each task's lines from the `SubagentStart` and `SubagentStop` events the daemon already records, and one additive `contract:` field `subagentLines` on the inbox `run` and the tasks read (P1 and P4 carry no such field and stay unchanged). It fills the slot and edits nothing else in the pane. P15's tests render the pane header with the fake host at 40, 71 and 120 columns, with and without lines, and prove end to end that a task's recorded events reach its rendered header; P12's tests must still pass.
 - **P17.** Docs list the pane, its keys, the `1` first-key note and residents, and say the pane's cost leaves out review calls (Q26). They also carry the mods troubleshooting section of 6.5.
 - **P18.** The no-multiplexer check asserts nothing in headless mode requires tmux or herdr, and the Focus checks of 4.2 run again against the whole stack.
 
@@ -337,7 +339,7 @@ Asked as selectable decisions on revision 1, and recorded here. Choices that dif
 5. **Where spike answers live.** Adopted, **differing from the recommendation**: task reports and Commonroom only, with no results file in the repository (5 and 6.4).
 6. **Phased follow-up.** Adopted: create the phased implementation plan, once this revision is approved.
 
-## 9. Repairs after the Plan Validation review (revisions 4 to 6)
+## 9. Repairs after the Plan Validation review (revisions 4 to 8)
 
 Revision 4:
 
@@ -367,5 +369,18 @@ Revision 6, after the third review round:
 | P15 promised subagent lines in the pane with no pane edit, and P12 merges first | P12 reserves a header slot; P15 owns the formatter and the one slot fill, with a rendered-pane test | 6.1, 6.3, phases 12 and 15 |
 | S28 said it ran before WP1 froze contracts, but S28b runs after P4 and P9 | S28a does not gate P1 and answers questions 1, 4, 5 and a first reading of 6; S28b answers 2, 3 and the rest of 6 later; later findings are additive under 8.1 rule 3 | 5.3, R9 |
 | P17 documents P3 to P16 but could merge before P6 and P16 | P6 and P16 are now prerequisites of P17; graph, table, phase 17 and the task updated | 6.1, 6.2, phase 17 |
+
+Revision 7, after the fourth review round:
+
+| Finding | Repair | Where |
+|---|---|---|
+| No phase produced each task's `subagentLines` for the slot P12 reserves | P15 owns the daemon producer, the additive `subagentLines` field and an end-to-end event-to-header test; P1 and P4 stay unchanged | 6.1, 6.3, phase 15 |
+| P13 merged before P14 and nothing made `mctl claude` use the shared detection afterward | P13 resolves `claude` from `PATH` in one place; P14 owns the one edit that switches it to the shared detection, with a test | 6.1, 6.3, phases 13 and 14 |
+
+Revision 8, after a sweep requested by the operator's Shepherd for the same class of gap:
+
+| Gap | Repair | Where |
+|---|---|---|
+| Stubs, slots and optional fields without a named owner, field or completing phase | P1 and P2 list the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read (`run.subagentLines`, `run.reviewers`, `run.agent`); P15 names the source of the subagent events; P11's handoff says P15 owns subagent lines end to end | 6.3, phases 1, 2, 11, 12, 15 |
 
 No recorded human decision changed. Decision 5 (spike answers in task reports and Commonroom) is kept: reports are task reports where an agent ran the spike, and Commonroom posts everywhere.

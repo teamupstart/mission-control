@@ -19,7 +19,6 @@ import {
   type Shaper,
   type ShapingConfigView,
   type ShapingIntent,
-  type ShapingOrigin,
   type ShapingReferenceStatus,
   type ShapingStage,
   type UnsupportedShaperView,
@@ -30,15 +29,10 @@ export function isUnsupportedShaper(entry: Shaper | UnsupportedShaperView): entr
   return "unsupported" in entry;
 }
 
-/**
- * One row of the list. Shaped for both origins from the start, so the shapers folder adds
- * rows, not a second row type: a discovered shaper carries `origin: "discovered"`, its folder
- * in `path`, and a scan's complaint in `problem`.
- */
+/** One registered shaper's row in the list. */
 export interface ShapingListRow {
   id: string;
   label: string;
-  origin: ShapingOrigin;
   /** The definition, or null for an entry that cannot run. */
   shaper: Shaper | null;
   /**
@@ -48,8 +42,6 @@ export interface ShapingListRow {
   on: boolean;
   /** Why it cannot run, or null when it can. */
   problem: string | null;
-  /** The folder a discovered shaper was found in. Null for a registered one. */
-  path: string | null;
 }
 
 /** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
@@ -69,14 +61,14 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
   view.shapers.forEach((entry, position) => {
     if (isUnsupportedShaper(entry)) {
       unsupported.push({
-        id: entry.id, label: entry.label, origin: "registered", shaper: null,
-        on: view.overrides[entry.id] === true, problem: entry.unsupported, path: null,
+        id: entry.id, label: entry.label, shaper: null,
+        on: view.overrides[entry.id] === true, problem: entry.unsupported,
       });
       return;
     }
     known.push({
-      id: entry.id, label: entry.label, origin: "registered", shaper: entry, stage: entry.stage, position,
-      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, path: null,
+      id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
+      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null,
     });
   });
   known.sort(compareShapingOrder(view.order));

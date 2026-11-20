@@ -154,9 +154,11 @@ See [Feature flags](feature-flags.md).
 `overrides` and `order`, where each shaper this build understands appears in full and an entry it
 cannot run appears only as `{ id, label, unsupported }`. Its raw stored envelope never leaves the
 daemon. The event and the reconnect snapshot's `shaping` field are both behind the `task-shaping`
-flag: while it is off the snapshot has no `shaping` field, no frame is sent, and nothing reads the
-stored shapers. Turning the flag on sends the current config, so an open window fills Settings >
-Task shaping with no reload, and turning it off sends `{ config: null }`, which clears it.
+flag. While it is off, the snapshot has no `shaping` field, no frame carries a config, and nothing
+reads the stored shapers; the only frame is `{ config: null }`. That clearing frame is sent when
+the flag turns off, so every open window drops the config, and once at daemon start when the flag
+is already off. Repeats are suppressed. Turning the flag on sends the current config, so an open
+window fills Settings > Task shaping with no reload.
 `MissionState.shaping` is the only browser owner, null before the snapshot and while the flag is
 off. `wireShapingConfigEvents` in `src/server/shaping/events.ts` is the one bridge, wired once at
 daemon start, so every write through the shaping store and every settings restore reaches open

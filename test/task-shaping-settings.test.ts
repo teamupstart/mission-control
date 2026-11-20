@@ -121,15 +121,16 @@ test("rows carry data-anchor task-shaping/<id> and no data-testid", () => {
   assert.doesNotMatch(html, /data-testid/);
 });
 
-test("the list groups unsupported entries last and shapes rows for both origins", () => {
+test("the list groups shapers by stage and lists an unsupported entry last, with its reason", () => {
   const groups = shapingList(view({ shapers: [unsupported, gatherer("a"), remote] }));
   // One group per stage in the tuple, whatever stages a later build appends, then the unsupported ones.
   assert.deepEqual(groups.map((group) => group.stage), [...SHAPING_STAGES, null]);
-  const [row] = groups[2]!.rows;
-  assert.deepEqual({ ...row, shaper: null }, {
-    id: "future", label: "Future shaper", origin: "registered", shaper: null, on: false,
-    problem: "stage: This build does not support the stage this entry names.", path: null,
-  });
+  assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a"]);
+  assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
+  assert.deepEqual(groups[2]!.rows, [{
+    id: "future", label: "Future shaper", shaper: null, on: false,
+    problem: "stage: This build does not support the stage this entry names.",
+  }]);
 });
 
 test("moving a shaper rewrites only its stage and keeps every other stored id in place", () => {

@@ -100,11 +100,10 @@ export function TaskShapingView({
           <div className="shaping-row-title">
             <strong>{entry.label}</strong>
             <code className="shaping-row-id">{entry.id}</code>
-            <span className="shaping-chip">{entry.origin === "registered" ? "Registered" : "Found on disk"}</span>
+            <span className="shaping-chip">Registered</span>
             {shaper && <span className="shaping-chip">{TRANSPORT_LABEL[shaper.transport.type]}</span>}
           </div>
           {shaper && <p className="shaping-row-reach">{shaperReachSummary(shaper)}</p>}
-          {entry.path && <p className="shaping-row-path">{entry.path}</p>}
           {environment.length > 0 && (
             <ul className="shaping-env" aria-label={`Environment variables ${entry.label} names`}>
               {environment.map(({ name, status }) => (
@@ -138,7 +137,7 @@ export function TaskShapingView({
               </Tooltip>
             </>
           )}
-          {entry.origin === "registered" && (confirmRemove ? (
+          {confirmRemove ? (
             <>
               <Tooltip label="Keep this shaper">
                 <button type="button" className="btn btn-ghost" onClick={() => setRemoving(null)}>Keep</button>
@@ -153,7 +152,7 @@ export function TaskShapingView({
               <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy}
                 onClick={() => setRemoving(entry.id)}>Remove</button>
             </Tooltip>
-          ))}
+          )}
           <Tooltip label={!canSwitch
             ? "This build cannot run it, so it cannot be switched on."
             : entry.problem !== null

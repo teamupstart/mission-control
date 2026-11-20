@@ -1,0 +1,128 @@
+# Work unit id - Phase 2: Flag, launch environment and dashboard row
+
+## Outcome
+
+With the `work-unit-id` preview switched on, every agent Mission Control launches for a
+task has `WORK_UNIT_ID` in its environment, so MCP config that references it sends the
+`x-work-unit-id` header. The session detail shows the id with a copy control. With the
+preview off, launches and the dashboard are exactly as they are today.
+
+## Entry criteria and dependencies
+
+- Phase 1 is merged.
+
+## Scope
+
+- The preview flag and the one function that gates emission.
+- `WORK_UNIT_ID` on every launch path, and removal of an inherited value everywhere.
+- The "Work unit" row in the session detail, with its browser spec.
+- The config guide for MCP server owners.
+
+Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP config
+(decision D2), residents' pinned remote servers.
+
+## Repository findings
+
+- `src/server/agent-trace-context.ts` is the model: a pure module, imported by both SDK
+  adapters, that removes inherited variables and sets the launch's own.
+- Its users are `harness/claude/sdk.ts` (the `env` built for `query()`, reused by the
+  in-session relaunch) and `codexAppServerEnv` in `harness/codex/sdk-deps.ts`.
+  `sdk/supervisor.ts` passes `traceContext` in `spec.launch` for a new launch and for a
+  restore, and has the task id at both.
+- `SdkLaunchOptions` (`harness/types.ts`) carries no task. Pi runs in the daemon's
+  process; its tool environment is `toolEnv` in `harness/pi/sdk-deps.ts`.
+- Terminal launches: `Dispatcher.dispatch` passes an extra environment to `spawnUniquely`,
+  which `isolatedAgentArgv` (`agent-subprocess-env.ts`) writes as `export` lines in a
+  wrapper script. The two pipeline hosts are in `dispatchPipeline`. Managed resume builds
+  its environment in `harness/resume.ts`. Runtime transfer is
+  `session-transfers/coordinator.ts`.
+- `agentSubprocessEnv` copies the inherited environment, applies `extraEnv`, then removes
+  only state-home and token names.
+- `ConsoleDetail.tsx` draws a `dl.detail-sub` of `kv` rows (path, branch), shown when
+  `bandHasContent`. `session.task` is a `TaskSummary`, built in `src/server/registry.ts`.
+  `useCopyFeedback` in `src/web/lib/clipboard.ts` is the copy helper.
+- `e2e/fixtures/fake-claude.mjs` records a fixed list of environment fields per invocation.
+  `fake-codex.mjs` records argv and cwd.
+- Exact-equality tests on the environment exist: `test/claude-sdk-adapter.test.ts` and
+  `test/agent-trace-propagation.test.ts`.
+
+## Steps
+
+1. **Flag.** In `src/shared/feature-flag-registry.ts` add `WORK_UNIT_ID_FLAG_ID =
+   "work-unit-id"`, stage `preview`, label "Work unit id", with a description that says it
+   tags a task's sessions with one id so its traces and MCP calls can be found together.
+2. **The gate.** In `src/server/work-unit.ts` add `activeWorkUnitId(task)`: the task's id
+   when the flag is on and the id is well formed, otherwise null. Everything this plan
+   emits goes through it.
+3. **The helper.** A pure module beside `agent-trace-context.ts` with
+   `withWorkUnit(env, id)`: delete `WORK_UNIT_ID`, then set it when `id` is given.
+4. **Never inherit.** `agentSubprocessEnv` removes `WORK_UNIT_ID` from the inherited
+   environment before it applies `extraEnv`. That covers terminal launches, resume,
+   workflow checks and one-shot model calls, none of which may carry the daemon's own.
+5. **Embedded launches.** Add `workUnitId` to `SdkLaunchOptions`. `supervisor.start` and
+   the restore path fill it from the task through `activeWorkUnitId`. Apply `withWorkUnit`
+   where each adapter applies `withAgentTraceContext`: the Claude adapter, the Codex
+   app-server environment, and Pi's `toolEnv`.
+6. **Terminal launches.** `Dispatcher.dispatch` adds the variable to the extra environment
+   it hands `spawnUniquely`. Do the same for both pipeline hosts, for managed resume from
+   the session's task, and for runtime transfer.
+7. **Dashboard.** Add `workUnitId` to `TaskSummary`. In `ConsoleDetail`, add a `kv` row:
+   term "work unit", the id in `dd.mono`, and a button named "Copy work unit id" that uses
+   `useCopyFeedback`. Show it only when `useFeatureFlag(WORK_UNIT_ID_FLAG_ID)` is on and
+   the task has an id. `bandHasContent` must count it.
+8. **Fakes.** `fake-claude.mjs`, `fake-codex.mjs` and `fake-pi.mjs` record
+   `workUnitId: process.env.WORK_UNIT_ID ?? null`.
+9. **Docs.** In `docs/work-units.md` add "The launch environment" and "MCP servers the
+   worker calls": the four config lines from the plan's section 5, the rule that Claude
+   Code needs `${WORK_UNIT_ID:-}` and that a server treats an empty value as absent, and
+   the limits (cloud connectors, Pi, pinned residents). Name the flag in
+   `docs/feature-flags.md` and the variable in `docs/configuration.md`.
+
+## Data, API and compatibility
+
+- No schema change. `TaskSummary.workUnitId` is additive on the event stream.
+- The variable is set whether or not telemetry is on: it identifies the work.
+- One-shot model calls and workflow check commands get no id. They are not sessions.
+- Flag off: `activeWorkUnitId` is null, so no launch differs from today by one byte.
+- Turning the flag off affects new launches only. A running agent keeps its environment.
+
+## Tests and verification
+
+- Unit: `withWorkUnit` sets, replaces and removes; `agentSubprocessEnv` drops an inherited
+  value and keeps a launch's own; `activeWorkUnitId` is null with the flag off and for a
+  malformed id; the supervisor passes the field on launch and on restore; the Claude, Codex
+  and Pi environments carry it; the wrapper script has the `export` line; resume carries
+  it. Update the exact-equality tests only for the cases that now carry a value.
+- `e2e/specs/work-unit-id.spec.ts`, with the fake agents:
+  - flag on, one embedded and one terminal task: each recorded invocation has that task's
+    id, and the two ids differ;
+  - the session detail shows "work unit" with the id, and the copy button reports success;
+  - flag off: no row, and the recorded value is null.
+  Select by role and label. Add no `data-testid`.
+- The row changes the detail band's height, so run `npm run test:electron`.
+- `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
+  `npm run test:e2e`.
+
+## Merge and exit criteria
+
+- Flag on: every launch path for a task-bound session sets `WORK_UNIT_ID` to the task's
+  id, and a session with no task has none.
+- No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
+- Flag off: launches and the session detail are unchanged.
+- The row shows and copies the id, covered by the browser spec.
+- The guide tells a config owner exactly what to write for each agent.
+
+## Handoff
+
+Phases 3 and 4 may rely on `WORK_UNIT_ID_FLAG_ID` and `activeWorkUnitId(task)`. They must
+not add a second gate or read the flag another way.
+
+## Cross-phase audit
+
+- Phase 1: this phase adds to `src/server/work-unit.ts` and to `TaskSummary`, and changes
+  nothing Phase 1 wrote.
+- Phase 3: touches no launch path and no file listed here except `docs/work-units.md`,
+  where it adds its own section.
+- Phase 4: uses `activeWorkUnitId` at the dispatch seam. The shaper transports set their
+  own environment for shaper processes; this phase does not touch them.
+- Source plan: owns D2, R5, and the environment half of R4.

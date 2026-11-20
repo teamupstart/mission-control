@@ -2,11 +2,11 @@ import { mkdirSync } from "node:fs";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-test("empty panel, live master, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
+test("preview panel, live master, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const tabs = await page.getByRole("tab").allTextContents();
   expect(tabs.findIndex(text => text.includes("Feature flags"))).toBe(tabs.findIndex(text => text.includes("Setup")) + 1);
-  await expect(page.getByText("No preview features right now. New ones appear here.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Automatic PR branch updates: off" })).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());

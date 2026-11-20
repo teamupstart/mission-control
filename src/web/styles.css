@@ -11632,6 +11632,9 @@ span.task-outcome:hover {
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
    merged. A merged chip lingers until the session leaves the PR's branch. */
+.detail-pr-update { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 22px; border-bottom: 1px solid var(--border); }
+.pr-branch-update { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.pr-branch-update-reason { max-width: 28em; overflow-wrap: anywhere; }
 .pr-chip {
   flex: none;
   display: inline-flex;

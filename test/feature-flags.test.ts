@@ -67,9 +67,9 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagsConfigSchema.safeParse({ overrides: { ["a".repeat(64)]: true } }).success, true);
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
-test("shipped registry is empty, data-only, and disjoint from append-only tombstones", () => {
+test("shipped registry is data-only, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "RETIRED_FEATURE_FLAG_IDS"]);
-  assert.deepEqual(registry.FEATURE_FLAGS, []);
+  assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
   assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);

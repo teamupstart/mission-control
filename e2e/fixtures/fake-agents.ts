@@ -143,6 +143,7 @@ export interface FakePullRequest {
    * failure. Omitted means that read finds no pull request, and the failure stands.
    */
   checkContexts?: unknown[];
+  branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
@@ -756,6 +757,21 @@ if (argv[0] === "--version") {
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
   } : null } } }));
+ } else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeStateStatus"))) {
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr?.branchUpdate ? {
+    state: pr.state, isDraft: pr.branchUpdate.isDraft ?? false, headRefOid: pr.headRefOid,
+    baseRefOid: pr.branchUpdate.baseRefOid, baseRefName: "main", mergeable: "MERGEABLE",
+    mergeStateStatus: pr.branchUpdate.mergeStateStatus, reviewDecision: pr.branchUpdate.reviewDecision ?? null,
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts ?? [] } } } }] },
+  } : null } } }));
+} else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").endsWith("/update-branch")) {
+  const number = argv[3].split("/").at(-2);
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === number);
+  if (pr?.branchUpdate?.refusal) { process.stderr.write(pr.branchUpdate.refusal); process.exitCode = 1; }
+  else process.stdout.write(JSON.stringify({ message: "Updating pull request branch." }));
 } else if (command.startsWith("api graphql") && argv.some((a) => a.includes("statusCheckRollup"))) {
   // The branch poller confirming a re-run before it clears a failure: the head commit's checks
   // with their app and event. Answered for the checkout it was run in, like \`pr list\`.

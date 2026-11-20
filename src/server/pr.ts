@@ -1,3 +1,5 @@
+import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { pollBranchUpdates } from "./github/branch-update.ts";
 import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrState } from "@shared/types.ts";
@@ -586,21 +588,31 @@ export function startPrPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
+  let running = false;
+  let wake = false;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
+    if (running) { wake = true; return; }
+    if (timer) clearTimeout(timer);
+    running = true;
+    wake = false;
     try {
       await pollAndReconcilePrs(registry, queryPr, queryPrUrl, urlState);
+      if (!stopped) await pollBranchUpdates(registry, () => !stopped);
     } catch (err) {
       console.error("[pr] poll failed:", err);
     }
+    running = false;
     if (stopped) return;
-    timer = unref(setTimeout(tick, PR_POLL_MS));
+    timer = unref(setTimeout(tick, wake ? 0 : PR_POLL_MS));
   };
 
+  const unsubscribe = onFeatureFlagsChanged(() => { void tick(); });
   void tick();
   return () => {
     stopped = true;
+    unsubscribe();
     if (timer) clearTimeout(timer);
   };
 }

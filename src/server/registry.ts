@@ -2926,6 +2926,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prBranchUpdates: prev?.prBranchUpdates,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,
@@ -5405,6 +5406,21 @@ export class Registry extends EventEmitter {
    * with it). Everything else is a candidate - the poller decides which actually
    * warrant a `gh` call, and any candidate left without a match is cleared.
    */
+  /** Publish only while this session still owns the URL observed by the updater. */
+  setPrBranchUpdate(id: string, url: string, update: import("@shared/pr-branch-update.ts").PrBranchUpdate | null): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const owned = session.prUrl === url || session.task?.repoPrs?.some(pr => pr.prUrl === url);
+    if (!owned) return;
+    const updates = { ...session.prBranchUpdates };
+    if (update) updates[url] = update;
+    else delete updates[url];
+    if (JSON.stringify(updates) === JSON.stringify(session.prBranchUpdates ?? {})) return;
+    const next = { ...session, prBranchUpdates: updates };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+  }
+
   prPollTargets(): {
     id: string;
     cwd: string;
@@ -11079,6 +11095,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  prBranchUpdates: byJson,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,

@@ -16,7 +16,11 @@ import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 
 /** A file larger than this is skipped before any byte of it is read. */
 export const REPO_TASK_SKILL_MAX_FILE_BYTES = 4 * 1024 * 1024;
-/** The most one repository contributes, measured on the stripped, trimmed body. */
+/**
+ * The most BODY one repository contributes, measured on the stripped, trimmed body (spec 7.15).
+ * A cut body is followed by a one-line `[truncated: ...]` marker, which is not part of the
+ * measured body, so a truncated block is this plus the marker's few dozen bytes.
+ */
 export const REPO_TASK_SKILL_MAX_BODY_BYTES = 32 * 1024;
 
 /** One attached repository: its main checkout (for naming) and the worktree this task runs in. */

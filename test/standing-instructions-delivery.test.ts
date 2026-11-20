@@ -771,11 +771,24 @@ test("a malformed stored skill record reads back as null without losing the row"
   put("not-an-object", JSON.stringify("a string"));
   put("json-null", "null");
   put("empty-column", null);
+  // Elements with the wrong shape are dropped; well-formed and merely unfamiliar ones survive.
+  put(
+    "bad-elements",
+    JSON.stringify({
+      included: [{}, { repo: "a", kind: "ship", path: "p", bytes: "12", truncated: false }, { repo: "a", kind: "future-kind", path: "p", bytes: 1, truncated: false }],
+      skipped: [null, { repo: "a", kind: "ship", path: "p" }, { repo: "a", kind: "ship", path: "p", reason: "future-reason" }],
+    }),
+  );
   for (const key of ["malformed-json", "missing-arrays", "not-an-object", "json-null", "empty-column"]) {
     const row = getStandingInstructions(key);
     assert.equal(row?.text, "kept text", key + ": the row is still read");
     assert.equal(row?.repoTaskSkills, null, key + ": the record is null");
   }
+  const mixed = getStandingInstructions("bad-elements")?.repoTaskSkills;
+  assert.deepEqual(mixed, {
+    included: [{ repo: "a", kind: "future-kind", path: "p", bytes: 1, truncated: false }],
+    skipped: [{ repo: "a", kind: "ship", path: "p", reason: "future-reason" }],
+  });
 });
 
 test("a RESUME that falls back to prose corrects the snapshot, so the next assignment replays", async () => {

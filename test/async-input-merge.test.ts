@@ -47,6 +47,16 @@ function fleet(id: string, closeFails = { times: 0 }, scout?: { ready: boolean }
       if (closeFails.times > 0) { closeFails.times--; throw new Error("the review store refused the write"); }
       reviews.closeQuestionsForMerge(sessionId, featureEnabled("async-input"));
     },
+    closure: (sessionId) => {
+      const closure = reviews.mergeClosure(sessionId, featureEnabled("async-input"));
+      return {
+        persist: () => {
+          if (closeFails.times > 0) { closeFails.times--; throw new Error("the review store refused the write"); }
+          closure.persist();
+        },
+        publish: () => { closure.publish(); },
+      };
+    },
     blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled("async-input")),
   });
   const cwd = `/repo/${id}`;
@@ -261,5 +271,34 @@ test("a merged scout whose report is not ready keeps its questions open, and clo
   await tick(); await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.equal(f.registry.getReview(filed.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("a task status write that fails rolls the question closure back with it", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-write-fails");
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  const db = openDb();
+  // The task's own completion write is refused after the question settles were written.
+  for (const event of ["INSERT", "UPDATE"]) {
+    db.exec(`CREATE TRIGGER refuse_done_${event.toLowerCase()} BEFORE ${event} ON tasks
+      WHEN NEW.id = '${f.taskId}' AND NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'refused'); END`);
+  }
+  try {
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(f.registry.getReview(filed.id)?.status, "pending", "nothing was published");
+    const row = db.prepare("SELECT status, closed_reason FROM reviews WHERE id = ?").get(filed.id) as { status: string; closed_reason: string | null };
+    assert.deepEqual({ ...row }, { status: "pending", closed_reason: null }, "the settle rolled back with the failed write");
+  } finally {
+    db.exec("DROP TRIGGER refuse_done_insert; DROP TRIGGER refuse_done_update;");
+  }
+
+  // Once the write is accepted, the next observation completes the task and closes the question together.
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
 });

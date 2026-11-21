@@ -747,21 +747,40 @@ export class ReviewManager {
    * completion; it only makes sure no question outlives it unexplained.
    */
   closeQuestionsForMerge(sessionId: string, flagOn: boolean): ReviewItem[] {
-    const closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
-    if (closing.length === 0) return [];
-    // Mid runtime transfer the questions are moving to the successor session, so they cannot be
-    // closed here. A skipped close is not a success: throw, and the merge settle keeps the task
-    // running until the transfer resolves and the next observation can close them with `merged`.
-    if (transferForSource(sessionId)) throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
-    // All or none: the caller completes the task only once every question is durably closed,
-    // so a failed write must not leave some closed and some open. Published only after commit.
-    const resolvedAt = Date.now();
-    inTransaction(() => {
-      for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
-    });
-    return closing.map((review) => this.publishSettled({
-      ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
-    }));
+    const closure = this.mergeClosure(sessionId, flagOn);
+    inTransaction(closure.persist);
+    return closure.publish();
+  }
+
+  /**
+   * The merge closure in two halves, so a caller can commit it inside its own transaction.
+   * `persist` writes every outstanding question's `orphaned`/`merged` settle and nothing else;
+   * it must run inside a transaction, and throws `MergeClosureDeferred` mid runtime transfer.
+   * `publish` broadcasts what `persist` wrote and releases waiting calls; run it only after
+   * the commit. Merge-driven completion persists this with the task's own status write
+   * (`TaskManager` `joinCompletion`), so the two land together or not at all.
+   */
+  mergeClosure(sessionId: string, flagOn: boolean): { persist: () => void; publish: () => ReviewItem[] } {
+    let closing: ReviewItem[] = [];
+    let resolvedAt = 0;
+    return {
+      persist: () => {
+        closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
+        if (closing.length === 0) return;
+        // Mid runtime transfer the questions are moving to the successor session, so they cannot
+        // be closed here. A skipped close is not a success: throw, and the merge settle keeps the
+        // task running until the transfer resolves and the next observation can close them.
+        if (transferForSource(sessionId)) {
+          closing = [];
+          throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
+        }
+        resolvedAt = Date.now();
+        for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+      },
+      publish: () => closing.map((review) => this.publishSettled({
+        ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
+      })),
+    };
   }
 
   /**

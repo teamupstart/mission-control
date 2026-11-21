@@ -318,6 +318,10 @@ const tasks = new TaskManager(
 // reason `merged` as a condition of that completion (`async-input`). The flag is read per merge.
 tasks.useMergeQuestions({
   close: (sessionId) => { reviews.closeQuestionsForMerge(sessionId, featureEnabled(ASYNC_INPUT_FLAG)); },
+  closure: (sessionId) => {
+    const closure = reviews.mergeClosure(sessionId, featureEnabled(ASYNC_INPUT_FLAG));
+    return { persist: closure.persist, publish: () => { closure.publish(); } };
+  },
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
 const queues = new QueueManager(registry);

@@ -9279,10 +9279,13 @@ export function openTaskSessionClosure(
 export function completeTaskWithSessionClosure(
   task: Task,
   closure: { sessionId: string; requestedAt: number; deadlineAt: number } | null,
+  /** Other durable state that must commit with this completion or not at all. */
+  alsoPersist?: () => void,
 ): readonly string[] {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
+    alsoPersist?.();
     const displaced = upsertTask(task);
     if (taskHasWorktrees(task)) {
       d.prepare(`INSERT OR REPLACE INTO task_worktree_returns (task_id, completed_at, dispatched_at)

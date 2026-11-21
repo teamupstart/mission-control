@@ -6,6 +6,7 @@ import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpa
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { helperArgv, helperStopFile } from "./fixtures/fake-shaper-helper.mjs";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
 import { SHAPING_LIMITS, ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
@@ -296,7 +297,41 @@ const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
   return done();
 };
 
-test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", async (t) => {
+/**
+ * Whether this process can remove a directory it may not read, as root or any process holding
+ * CAP_DAC_OVERRIDE can. Then a locked tree is no lock at all, and a test about one has nothing to
+ * prove.
+ */
+const bypassesDirectoryPermissions = ((): boolean => {
+  const probe = mkdtempSync(join(tmpdir(), "shaping-permission-probe-"));
+  const locked = join(probe, "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "file"), "");
+  chmodSync(locked, 0o000);
+  try {
+    rmSync(locked, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (existsSync(locked)) chmodSync(locked, 0o700);
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
+/**
+ * Stop whatever helper a fixture recorded, whether or not the test reached its own cleanup. It
+ * writes the helper's stop file, which the helper watches and exits on, and signals no pid at all:
+ * a helper that has already exited may have had its pid given to an unrelated process, and any
+ * check made before a signal could go stale before the signal lands.
+ */
+const stopRecorded = (pidFile: string): void => {
+  writeFileSync(helperStopFile(pidFile), "");
+};
+
+test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", {
+  skip: bypassesDirectoryPermissions ? "this process can remove a directory it may not read, so nothing is locked" : false,
+}, async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
   const outside = mkdtempSync(join(tmpdir(), "shaping-outside-"));
@@ -317,7 +352,7 @@ test("a selector that locks a directory still answers; cleanup changes no permis
     chmodSync(outside, 0o700);
     rmSync(outside, { recursive: true, force: true });
     if (cwd) {
-      chmodSync(join(cwd, "locked"), 0o700);
+      if (existsSync(join(cwd, "locked"))) chmodSync(join(cwd, "locked"), 0o700);
       rmSync(cwd, { recursive: true, force: true });
     }
   }
@@ -797,9 +832,7 @@ test("a helper outside the process group that holds the pipes cannot keep them o
     for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
     assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    stopRecorded(pidFile);
   }
 });
 
@@ -808,6 +841,8 @@ test("a helper left in the group after a successful reply is reaped when the cal
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then has nothing to stop.
+  let gone = false;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "orphan-helper", pidFile]), ctx(30_000));
     assert.equal(reply.kind, "data", "the shaper answered normally");
@@ -816,9 +851,10 @@ test("a helper left in the group after a successful reply is reaped when the cal
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper did not outlive the dry run");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    if (!gone) stopRecorded(pidFile);
   }
 });
 
@@ -827,6 +863,8 @@ test("a successful reply is kept when a helper in the group still holds the pipe
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then has nothing to stop.
+  let gone = false;
   try {
     const started = Date.now();
     // A generous timeout: the reply must come from the shaper's exit, not from the timeout.
@@ -839,9 +877,10 @@ test("a successful reply is kept when a helper in the group still holds the pipe
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper holding the pipes was stopped");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    if (!gone) stopRecorded(pidFile);
   }
 });
 
@@ -858,9 +897,7 @@ test("a reply that arrives just before the deadline is kept, though a helper out
     assert.match((reply as { data: string }).data, /answered just before the deadline/);
     assert.ok(Date.now() - started < timeoutMs, `returned within the call's budget (${Date.now() - started} ms)`);
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    stopRecorded(pidFile);
   }
 });
 
@@ -898,16 +935,25 @@ test("stopping a call kills its whole process group, descendants included", asyn
   const controller = new AbortController();
   const pending = callCommand(request(), shaper([FIXTURE, "grandchild", pidFile]), ctx(120_000, { signal: controller.signal }));
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
-  for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  assert.ok(pid > 0, "the shaper started its own child");
-  controller.abort();
-  assert.equal((await pending).kind, "timed_out");
-  let alive = true;
-  for (let attempt = 0; attempt < 200 && alive; attempt++) {
-    try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+  // Set once the liveness check has seen the descendant exit; cleanup then has nothing to stop.
+  let gone = false;
+  try {
+    for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(pid > 0, "the shaper started its own child");
+    controller.abort();
+    assert.equal((await pending).kind, "timed_out");
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+    }
+    gone = !alive;
+    assert.equal(alive, false, "the shaper's own child was killed with it");
+  } finally {
+    // The liveness check above runs first, so a transport regression still fails the test.
+    controller.abort();
+    if (!gone) stopRecorded(pidFile);
   }
-  assert.equal(alive, false, "the shaper's own child was killed with it");
 });
 
 test("an abort stops the call at once", async () => {
@@ -938,17 +984,15 @@ test("an overflow settles as soon as the cap is crossed, though a helper outside
   const startedFile = join(scratch, "overflow-started");
   rmSync(pidFile, { force: true });
   rmSync(startedFile, { force: true });
-  let pid = 0;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "escape-overflow", pidFile, startedFile]), ctx(30_000));
     const answered = Date.now();
-    pid = Number(readFileSync(pidFile, "utf8"));
     assert.deepEqual(reply, { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
     // The drain this replaces waited a full second after the cap; the answer now comes at once.
     const sinceOutput = answered - Number(readFileSync(startedFile, "utf8"));
     assert.ok(sinceOutput < 900, `answered ${sinceOutput} ms after the shaper started writing`);
   } finally {
-    if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    stopRecorded(pidFile);
   }
 });
 
@@ -978,4 +1022,61 @@ test("a shaper definition cannot name a shell string or a relative path outside 
   }
   const ok: Shaper = ShaperSchema.parse({ id: "x", label: "X", stage: "gather", transport: { type: "command", command: "node" } });
   assert.equal(ok.transport.type, "command");
+});
+
+test("the command transport reports when its outcome is known, before its reply settles", async () => {
+  const events: string[] = [];
+  const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx(10_000, { settled: () => events.push("settled") })).then((value) => {
+    events.push("replied");
+    return value;
+  });
+  assert.equal(reply.kind, "data");
+  assert.deepEqual(events, ["settled", "replied"]);
+  // A failure reports it too.
+  let failed = 0;
+  await callCommand(request(), shaper([FIXTURE, "fail"]), ctx(10_000, { settled: () => failed++ }));
+  assert.equal(failed, 1);
+});
+
+test("fallback cleanup stops the recorded helper through its stop file and signals no pid", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const pidFile = join(scratch, "stop-file.pid");
+  // An unrelated process that holds the pid the file names, as a recycled pid would.
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  // The helper this pid file really records, started the way the fixture starts its helpers.
+  const helper = spawn(process.execPath, helperArgv(pidFile), { stdio: "ignore" });
+  try {
+    writeFileSync(pidFile, String(unrelated.pid));
+    stopRecorded(pidFile);
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "the recorded helper exits on its own");
+    assert.equal(aliveNow(unrelated.pid!), true, "and the process the pid file names is never signalled");
+  } finally {
+    unrelated.kill("SIGKILL");
+    helper.kill("SIGKILL");
+    rmSync(pidFile, { force: true });
+    rmSync(helperStopFile(pidFile), { force: true });
+  }
+});
+
+test("a helper whose directory is removed exits, though its stop file never appeared", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  // A teardown that removes the scratch directory before the helper polled for its stop file.
+  const home = mkdtempSync(join(scratch, "helper-home-"));
+  const helper = spawn(process.execPath, helperArgv(join(home, "helper.pid")), { stdio: "ignore" });
+  try {
+    await sleep(150);
+    assert.equal(aliveNow(helper.pid!), true, "it runs while its directory is there");
+    rmSync(home, { recursive: true, force: true });
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "it exits once the directory is gone");
+  } finally {
+    helper.kill("SIGKILL");
+  }
 });

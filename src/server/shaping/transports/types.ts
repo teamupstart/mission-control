@@ -71,6 +71,13 @@ export interface TransportContext {
   readonly scope: ShapingRunScope;
   /** The folder a discovered shaper was found in, which its `./` command resolves against. Null when registered. */
   readonly root: string | null;
+  /**
+   * Call the moment the reply's outcome is known: the process exiting, the response arriving.
+   * The engine judges the call's deadline by that moment, so work queued between it and the
+   * engine reading the reply never turns an on-time reply into a timeout. Optional for a
+   * transport; without it the engine uses the moment the reply settles.
+   */
+  readonly settled?: () => void;
   /** The launch's trace context, or null when it has none. Every call of a run gets the same one. */
   readonly trace: ShapingTraceContext | null;
   /**

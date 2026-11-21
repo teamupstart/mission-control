@@ -608,3 +608,85 @@ test("several earlier adoptions resolve to the lowest-numbered one", () => {
     4,
   );
 });
+
+const oldMerge = (patch: Partial<SessionActionAdoptedPullRequest> = {}) => pr({
+  observedState: "MERGED", observedAt: 1, adoptedAt: 1, mergedContentTreeOid: TREE, ...patch,
+});
+
+for (const missing of ["review", "merged-tree"] as const) {
+  test(`a PR merged during the action wait preserves earlier adoption with missing ${missing} proof`, () => {
+    const decision = decide([oldMerge({ observedAt: 11,
+      ...(missing === "merged-tree" ? { mergedContentTreeOid: null } : {}),
+    })], missing === "review" ? { acceptedContentTreeOid: null } : {});
+    assert.equal(decision.kind, "complete");
+    if (decision.kind !== "complete") return;
+    assert.ok(decision.warnings?.length);
+    assert.equal("mergedContentTreeOid" in decision.continuationExpectation, false);
+  });
+}
+
+test("a merge during the wait still needs the earlier adoption's repository identity", () => {
+  assert.deepEqual(decide([oldMerge({ observedAt: 11, repositoryRoot: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+test("an earlier merged publication covers the reviewed tree even with a packaging commit", () => {
+  const decision = decide([oldMerge({ observedHeadOid: OTHER_HEAD })]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /Already published.*pull\/7/);
+  assert.deepEqual(SessionActionContinuationExpectationSchema.parse(decision.continuationExpectation),
+    decision.continuationExpectation, "restart preserves historical publication proof");
+});
+
+for (const patch of [
+  { mergedContentTreeOid: null }, { mergedContentTreeOid: OTHER_HEAD },
+  { repositoryRoot: "/other" }, { branch: "other" },
+]) test(`an earlier merge without matching publication waits: ${JSON.stringify(patch)}`, () => {
+  assert.deepEqual(decide([oldMerge(patch)]), { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+test("a historical merge never accepts missing review proof", () => {
+  assert.deepEqual(decide([oldMerge()], { acceptedContentTreeOid: null }),
+    { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+for (const dirty of [false, true]) test(`historical publication rechecks continuation content, dirty=${dirty}`, () => {
+  const context = { evidence: { contentTreeOid: TREE, workingTreeDirty: dirty } } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture({ ...expectation, mergedContentTreeOid: TREE }, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: TREE,
+  });
+  assert.equal(result?.kind ?? null, dirty ? "blocked" : null);
+});
+
+test("historical publication blocks changed clean continuation content after satisfying the action", () => {
+  const decision = decide([oldMerge()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+
+  // A later commit leaves the checkout clean but changes the content already published.
+  const changedTree = "d".repeat(40);
+  const context = {
+    evidence: { contentTreeOid: changedTree, workingTreeDirty: false },
+  } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture(decision.continuationExpectation, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: changedTree,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "published_content_changed");
+});
+
+test("historical publication reports missing continuation proof as capture failure, not changed content", () => {
+  const decision = decide([oldMerge()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  const context = { evidence: { contentTreeOid: null, workingTreeDirty: false } } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture(decision.continuationExpectation, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: null,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /publication tree could not be read/);
+});

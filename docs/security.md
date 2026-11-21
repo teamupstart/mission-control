@@ -533,8 +533,12 @@ refused when it is registered, so `app_config.shaping`, and the `shaping` domain
 settings snapshot, hold the reference and never the value. The stored config's own schema
 also empties any literal credential it finds in an entry, including one this build cannot
 run: a header value, a transport URL's userinfo and query string, or a credential argument. Every read, settings restore and backup capture goes through that schema, so an
-entry handed over another way, such as a foreign snapshot, still cannot carry secret text
-into the daemon or into a snapshot. A stored entry may nest at most 32 levels deep, checked
+entry handed over another way, such as a foreign snapshot, still cannot carry a literal
+credential in those fields into the daemon or into a snapshot. That guarantee covers those
+fields only: an unsupported entry keeps every other field exactly as written, unread, so a
+foreign snapshot can still carry secret text in a field this build does not know, and it is
+kept in the stored config and in later snapshots. Like the shape check above, this is best
+effort, not a scan of everything an entry holds. A stored entry may nest at most 32 levels deep, checked
 without recursion before anything recursive reads it, so a crafted entry is a validation
 error that takes the unreadable-config path rather than a stack overflow. An entry it emptied anything in is marked
 `credentialsRemoved` and is unsupported. When that mark would take an entry past the 16 KiB

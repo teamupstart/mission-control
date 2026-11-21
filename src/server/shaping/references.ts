@@ -69,7 +69,6 @@ function spelled(reference: string): string {
   return `{${reference}}`;
 }
 
-/** The value one reference resolves to, or null. An empty value is unresolved. */
 /**
  * Whether `value` can travel in a header as written: tabs, spaces, visible ASCII and the Latin-1
  * range only, the characters `Headers` accepts. A CR, LF or NUL is refused when a header is built
@@ -81,6 +80,7 @@ function sendable(value: string): boolean {
   return !/[^\t\x20-\x7e\x80-\xff]/.test(value);
 }
 
+/** The value one reference resolves to, or null. An empty or blank value is unresolved. */
 function resolveOne(reference: string, ctx: ReferenceContext, token: string): string | null {
   // A caller value of only spaces and tabs is blank once it is sent as a header, as an
   // environment value is: unresolved, so no request carries an empty identity or bare text.
@@ -208,8 +208,6 @@ export function shaperEnvironmentNames(shaper: Shaper): string[] {
  * A name counts as set only when a call would send it: one no reference may resolve, or that a
  * `command` shaper may never receive, such as Mission Control's own token, is always `unset`, as
  * are an empty value and one that carries the daemon's token.
- * A name no reference may resolve, such as Mission Control's own token, is always `unset`, as a
- * call would find it.
  */
 export function referenceStatus(
   config: ShapingConfig,

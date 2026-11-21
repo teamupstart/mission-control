@@ -28,7 +28,10 @@ legacy.exec(`
 `);
 legacy.close();
 
-const { inTransaction, openDb, loadPendingReviews } = await import("../src/server/db.ts");
+const {
+  inTransaction, openDb, loadPendingReviews, listPendingTurns, createPendingTurn,
+  claimNextPendingTurn, markPendingTurnUncertain,
+} = await import("../src/server/db.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, ReviewResolutionError, SnoozeActorRefusal } = await import("../src/server/reviews.ts");
@@ -333,6 +336,87 @@ test("a snooze the agent hears as its tool result sends no second copy, and a la
   assert.deepEqual(f.turns(), []);
 });
 
+test("withdrawing a message-mode question cancels only its unclaimed snooze instruction, including after recovery", () => {
+  const f = fixture("withdraw-snooze");
+  const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  f.reviews.snooze(review.id, HOUR, { mode: "hold" });
+  const instruction = f.turns()[0]!;
+  assert.equal(instruction.id, `review-continuation:snooze:${review.id}`);
+  assert.equal(instruction.claimedAt, null);
+  assert.match(instruction.text, /Not answered yet/);
+
+  const other = f.ask();
+  f.reviews.detachWait(other.id, f.id);
+  f.reviews.snooze(other.id, HOUR);
+  createPendingTurn({ id: `ordinary:${review.id}`, noteKey: instruction.noteKey, text: "Keep working", now: Date.now() });
+  f.registry.refreshPendingTurns(instruction.noteKey);
+  const retained = f.turns().filter((turn) => turn.id !== instruction.id);
+  assert.equal(retained.length, 2);
+
+  f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed");
+  assert.equal(f.registry.getReview(review.id)?.status, "withdrawn");
+  assert.deepEqual(listPendingTurns(instruction.noteKey), retained, "the canceled instruction is removed durably");
+  assert.deepEqual(f.turns(), retained, "the live outbox also loses the instruction without an answer replacing it");
+  new ReviewManager(f.registry).startContinuationRecovery(f.deliver);
+  assert.deepEqual(f.turns(), retained, "recovery does not requeue a withdrawn question's instruction");
+});
+
+test("a failed snooze-instruction deletion rolls back withdrawal and leaves the question and instruction open", () => {
+  const f = fixture("withdraw-snooze-fails");
+  const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  f.reviews.snooze(review.id, HOUR, { mode: "hold" });
+  const instruction = f.turns()[0]!;
+  assert.equal(instruction.id, `review-continuation:snooze:${review.id}`);
+  assert.equal(instruction.state, "queued");
+  assert.equal(instruction.claimedAt, null);
+  const before = f.registry.getReview(review.id);
+  const db = openDb();
+  const stored = db.prepare("SELECT status, response, resolved_at FROM reviews WHERE id = ?");
+  const beforeStored = stored.get(review.id);
+  assert.equal(beforeStored?.status, "snoozed");
+
+  db.exec(`CREATE TRIGGER refuse_snooze_delete BEFORE DELETE ON pending_turns
+    WHEN OLD.id = '${instruction.id}' BEGIN SELECT RAISE(ABORT, 'snooze instruction deletion refused'); END`);
+  try {
+    assert.throws(
+      () => f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed"),
+      /snooze instruction deletion refused/,
+    );
+    assert.deepEqual(stored.get(review.id), beforeStored, "the question's settlement is rolled back on disk");
+    assert.deepEqual(f.registry.getReview(review.id), before, "no withdrawal is published to the live registry");
+    assert.deepEqual(f.reviews.openQuestions(f.id).map((r) => r.id), [review.id]);
+    assert.deepEqual(listPendingTurns(instruction.noteKey), [instruction], "the instruction stays queued with no answer replacing it");
+    assert.deepEqual(f.turns(), [instruction], "the live outbox retains the same unclaimed instruction");
+  } finally {
+    db.exec("DROP TRIGGER refuse_snooze_delete");
+  }
+});
+
+for (const state of ["sending", "uncertain"] as const) {
+  test(`withdrawing a message-mode question preserves its ${state} snooze instruction`, () => {
+    const f = fixture(`withdraw-snooze-${state}`);
+    const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+      snoozable: true, waitMode: "message",
+    });
+    f.reviews.snooze(review.id, HOUR);
+    const noteKey = f.turns()[0]!.noteKey;
+    const claimed = claimNextPendingTurn(noteKey, Date.now())!;
+    assert.equal(claimed.id, `review-continuation:snooze:${review.id}`);
+    if (state === "uncertain") markPendingTurnUncertain(claimed.id, claimed.revision, "Delivery not confirmed", Date.now());
+    f.registry.refreshPendingTurns(noteKey);
+    const before = f.turns();
+
+    f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed");
+    assert.equal(f.registry.getReview(review.id)?.status, "withdrawn");
+    assert.deepEqual(listPendingTurns(noteKey), before, "do not discard a record of a message that may have reached the agent");
+    assert.deepEqual(f.turns(), before);
+  });
+}
+
 test("an owed instruction that could not be handed over yet is delivered when recovery starts", () => {
   const f = fixture("owed-later");
   const review = f.ask();
@@ -350,3 +434,36 @@ test("an owed instruction that could not be handed over yet is delivered when re
   new ReviewManager(f.registry).startContinuationRecovery(f.deliver);
   assert.equal(f.turns().length, 1);
 });
+
+
+for (const mode of ["judgment", "option", "hold"] as const) {
+  test(`a message-mode snooze sends an unanswered ${mode} instruction, then a separate resolved answer`, () => {
+    const f = fixture(`message-snooze-${mode}`);
+    const review = f.reviews.create(f.id, "input", "Which linter?", "Which linter?", linter, {
+      snoozable: true, waitMode: "message", meanwhile: "Prepare tests without applying the configuration",
+    });
+    f.reviews.snooze(review.id, HOUR, mode === "option" ? { mode, optionId: "o1" } : { mode });
+    assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+    assert.deepEqual(f.registry.outstandingReviews(f.id).map((r) => r.id), [review.id]);
+    assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:snooze:${review.id}`]);
+    const instruction = f.turns()[0]!.text;
+    assert.match(instruction, /Not answered yet/);
+    assert.doesNotMatch(instruction, /Mission Control answer to question/);
+    assert.match(instruction, mode === "hold" ? /Do not do any work that depends on this answer/
+      : mode === "option" ? /"eslint" as a provisional answer/ : /proceed on your best judgment/);
+    const stored = openDb().prepare("SELECT status, continuation_queued_at FROM reviews WHERE id = ?").get(review.id);
+    assert.equal(stored?.status, "snoozed");
+    assert.equal(stored?.continuation_queued_at, null, "the snooze does not claim an answer was queued");
+
+    f.reviews.resolve(review.id, "answer", "Use eslint", "human");
+    assert.deepEqual(f.turns().map((turn) => turn.id), [
+      `review-continuation:snooze:${review.id}`,
+      `review-continuation:answer:${review.id}`,
+    ]);
+    assert.equal(f.turns()[0]!.text, instruction, "answering does not rewrite or combine with the instruction");
+    assert.match(f.turns()[1]!.text, /^Mission Control answer to question/);
+    assert.match(f.turns()[1]!.text, /Use eslint/);
+    assert.match(f.turns()[1]!.text, /Prepare tests without applying the configuration/);
+    assert.deepEqual(f.registry.outstandingReviews(f.id), []);
+  });
+}

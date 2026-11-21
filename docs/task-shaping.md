@@ -324,7 +324,9 @@ prompt, the kind contract, and then the task context section. Claude, Codex and 
 identical text on the terminal and SDK runtimes. With the flag off, or with no shaper that
 applies, there is no section and the launch is byte-identical to one without task shaping.
 
-The section never makes a task that launches today fail to launch. Each harness declares how
+The section never makes a task that launches today fail to launch, with the one exception
+described at the end of this section for a Pi launcher that adds environment of its own. Each
+harness declares how
 its turn one reaches the worker (`turnOne` in `src/server/harness/index.ts`):
 
 | Path | Used by | Ceiling |
@@ -357,6 +359,13 @@ their outcomes, and `limit` says the terminal's environment left too little room
 truncated because the daemon offered a section that the terminal could not carry, which points
 at that terminal's environment. A launch with no section has no check, and its wrapper is
 unchanged.
+
+The check sees the exec the wrapper makes, plus room for an interpreter that execs again under
+its own path. It cannot see inside a launcher shim that exports more environment before its own
+final exec. A Pi install whose shim does that, in a pane already near `ARG_MAX`, can still fail
+to start with a section that the check passed. The dispatch then reports a launch failure rather
+than running unshaped. To retry without shaping, turn the shaper off (or the `task-shaping` flag)
+and dispatch the task again: with no section there is no check, and the launch is the original.
 
 A pane paste through Ghostty or iTerm2 travels inside an AppleScript, and its encoded size depends
 on the exact text (iTerm2 turns every newline into an expression of its own). A launch that may

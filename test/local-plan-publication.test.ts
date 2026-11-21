@@ -865,6 +865,40 @@ test("a source sync that would drop a pinned plan input's prerequisite is refuse
   assert.equal(f.tasks.get(dependent.id)!.title, "Pinned merge");
 });
 
+test("explicit revision changes refuse a completed replacement origin without merge proof atomically", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
+  const f = await fixture(false, "ship");
+  const from = { ...f.input, files: ["plan.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Keep the saved origin", intent: "Refuse completion without merge proof", backlog: true, workflowId: null,
+    planInputs: [from], dependencies: [{ type: "task", taskId: f.task.id }] });
+
+  f.registry.upsertTask({ ...f.task, status: "done", sessionId: null });
+  f.registry.resetWorkEpisode(f.id);
+  const replacement = { ...f.task, id: randomUUID(), title: "Completed replacement origin" };
+  f.registry.upsertTask(replacement);
+  const authority = planAuthority(f.registry, f.registry.getSession(f.id)!, "repo-01");
+  assert.equal(authority.taskId, replacement.id);
+  const saved = await savePlan(authority, { repoSlot: "repo-01", requestId: randomUUID(), slug: "replacement-plan", expectedRevision: 0, files: f.files });
+  const to = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: saved.manifest.revision, files: ["phase-1.md"] };
+  f.registry.upsertTask({ ...replacement, status: "done", sessionId: null });
+  const binding = f.registry.workEpisodeForTask(replacement.id)!;
+  assert.equal(binding.episodeId, authority.episodeId);
+  assert.equal(binding.mergedAt, null);
+  assert.equal(binding.prUrl, null);
+  assert.equal(publicationReceipt(to), null);
+  const before = structuredClone(f.tasks.get(dependent.id)!);
+  const persistedBefore = loadActiveTasks().find(task => task.id === dependent.id)!;
+  assert.ok(before.dependencies.every(edge => edge.type !== "task" || edge.taskId !== replacement.id), "no retained replacement edge can authorize the change");
+
+  const refused = await f.tasks.update(dependent.id, { planInputChange: { from, to } });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, "dependency task is neither backlogged nor active");
+  assert.deepEqual(f.tasks.get(dependent.id), before, "refusal preserves the in-memory pin and dependencies");
+  assert.deepEqual(loadActiveTasks().find(task => task.id === dependent.id), persistedBefore, "refusal persists neither half of the pin/origin change");
+});
+
 test("explicit revision changes preserve shared origins and never reinterpret mixed local work as publication", async () => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });

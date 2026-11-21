@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry"].includes(name) ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable"].includes(name) ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -460,6 +460,31 @@ test("an unpreviewed revision blocks Save and dispatch until previewed or cancel
   await expect(dialog).toBeHidden();
   expect(writes).toBe(0);
   expect(await read()).toEqual(before);
+});
+
+test("a failed preview request shows the connection error and keeps Save and dispatch blocked", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  let rejectedPreviews = 0;
+  await dashboard.route(`**/api/tasks/${before.id}/update`, route => {
+    if (route.request().postDataJSON().previewOnly) {
+      rejectedPreviews++;
+      return route.abort("failed");
+    }
+    return route.continue();
+  });
+
+  const preview = dialog.getByRole("button", { name: "Preview revision change" });
+  await preview.click();
+  await expect(dialog.getByRole("alert")).toHaveText("Could not reach Mission Control");
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(preview).toBeEnabled();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Dispatch now", exact: true })).toBeDisabled();
+  expect(rejectedPreviews).toBe(1);
+  expect(await read()).toEqual(before);
+  await shoot(dashboard, "revision-change-unreachable");
 });
 
 test("Save and dependency edits wait for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {

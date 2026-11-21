@@ -128,6 +128,7 @@ import {
   withInspectorGate,
   workflowInspectorGate,
   workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -5564,6 +5565,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -9339,7 +9341,7 @@ export class WorkflowStore {
           || version?.completionPolicy.kind !== "inspector") return null;
       const updated = this.updateInspectorGate({
         runId: run.id, expectedState, state,
-        status: version.completionPolicy.onFindings === "inspector_only"
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
           ? "waiting_for_new_head" : "waiting_for_session",
         phase: "inspector_findings", now,
       });
@@ -9408,8 +9410,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9650,8 +9651,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"

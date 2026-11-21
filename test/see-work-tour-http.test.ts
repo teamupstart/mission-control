@@ -13,6 +13,7 @@ import { enableExperience, experienceFacts } from "./helpers/experience-assertio
 function tourTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "tour-task",
+    workUnitId: null,
     title: "Tour demo",
     intent: "[Mission Control See the work tour demo]\n\nWait and ask.",
     kind: "ship",

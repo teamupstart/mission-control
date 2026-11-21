@@ -4,6 +4,7 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
 export const WORKFLOW_HOLD_DETAILS_FLAG_ID = "workflow-hold-details" as const;
+export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 
 export const FEATURE_FLAGS = [
   {
@@ -12,6 +13,13 @@ export const FEATURE_FLAGS = [
     description: "Show why each workflow holds a Fleet session, who acts next, and a link to its run.",
     stage: "preview",
     keywords: ["fleet", "workflow", "held", "waiting"],
+  },
+  {
+    id: PINNED_PLAN_CHANGE_FLAG_ID,
+    label: "Change pinned plan revision",
+    description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
+    stage: "preview",
+    keywords: ["backlog", "plan", "revision", "dependency"],
   },
   {
     id: "codex-resident-native-mcp",

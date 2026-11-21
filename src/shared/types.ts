@@ -2444,6 +2444,14 @@ export interface Task {
   /** Null or absent on historical tasks means a Git checkout. */
   workspaceKind?: "resident-workspace" | null;
   id: string;
+  /**
+   * The work unit this task belongs to, `wu_<ULID>` (`isWorkUnitId`, @shared/work-unit.ts), or
+   * null. A plan task and the phase tasks its session creates share one; a standalone task has
+   * its own. Null for a resident run, which is not a piece of work, and for a row that predates
+   * the column until its next dispatch or assign gives it one. Written once: no later write
+   * changes it. Only `TaskManager` mints or copies it. See `docs/work-units.md`.
+   */
+  workUnitId: string | null;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
   /** The full task prompt delivered as the agent's first message. */
@@ -2981,6 +2989,14 @@ export interface ReviewSnooze {
   optionId: string | null;
   /** When it last came back to the operator, or null while it has not yet. */
   remindedAt: number | null;
+  /**
+   * False when no snooze of this question has told its agent anything yet: a message-mode
+   * question (`async-input`) snoozed only on "Keep doing what it said", which sends nothing and
+   * leaves `mode` unrecorded (it reads as `judgment`). Its next snooze may still choose what the
+   * agent does meanwhile. Absent once a mode was recorded, which is every other snooze, and on a
+   * row from an older daemon; absent reads as told.
+   */
+  instructed?: boolean;
 }
 
 /**

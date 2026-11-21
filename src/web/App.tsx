@@ -175,7 +175,8 @@ import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { isBuiltinResidentProfileId } from "@shared/residents.ts";
 import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
@@ -2678,6 +2679,12 @@ export function App(): React.JSX.Element {
     return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
   }, [residentDrawerShown, residentEntries]);
   /**
+   * Residents the operator paused, by session: a paused resident does not wake, so its open
+   * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
+   * `PausedResidentsContext`; the review chord is handed it through `residentKeysRef`.
+   */
+  const pausedResidents = useMemo(() => pausedResidentSessionIds(residentRuns, sessions), [residentRuns, sessions]);
+  /**
    * What the global key handler needs about residents, read through a ref so the listener does
    * not re-subscribe on every resident or drawer change.
    */
@@ -2686,6 +2693,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2697,6 +2705,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -4208,7 +4217,8 @@ export function App(): React.JSX.Element {
       // open. See `reviewChordTarget`.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
-        const target = reviewChordTarget(visible, selectedId, keys.drawerAsking, keys.detailId);
+        const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
+        const target = reviewChordTarget(visible.map(mark), selectedId, keys.drawerAsking.map(mark), keys.detailId);
         if (!target) return;
         e.preventDefault();
         if (target.kind === "resident" && target.opens === "conversation") {
@@ -4535,6 +4545,7 @@ export function App(): React.JSX.Element {
       <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
+      <PausedResidentsContext.Provider value={pausedResidents}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -5041,7 +5052,7 @@ export function App(): React.JSX.Element {
         {residentsInDrawer && !residentDrawerShown && (
           <ResidentsEdgeTab
             live={residentEntries.length}
-            needsYou={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "attention")}
+            needsYou={residentEntries.some(residentEntryAmber)}
             working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
             onOpen={() => showResidentDrawer()}
           />
@@ -5416,6 +5427,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
       </FeatureFlagsContext.Provider>

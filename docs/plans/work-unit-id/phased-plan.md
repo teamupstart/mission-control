@@ -10,7 +10,7 @@ file stands on its own for an agent that arrives with only its path.
 |---|---|---|
 | D1 | A task created by a plan task's session inherits. Others get a new unit unless they pass `workUnit: "inherit"`. | Phase 1 |
 | D2 | Mission Control sets `WORK_UNIT_ID`; the config owner references it. No header injection. | Phase 2 |
-| D3 | No inference for existing tasks. A new id at the next dispatch. | Phase 1 |
+| D3 | No inference for existing tasks. A new id at the next dispatch or assignment. | Phase 1 |
 | D4 | Every lane that exports traces carries the unhashed id. | Phase 3 |
 | D5 | Phase the plan and schedule its tasks. | This file |
 | D6 | A resident run gets no work unit. Jordan chose this in the plan validation repair, over covering pinned residents with a fifth phase. It narrows R3 and R5. | Phase 1 (no id), Phase 2 (the resident catalog) |

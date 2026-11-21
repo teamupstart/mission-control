@@ -3145,3 +3145,40 @@ for (const kind of ["evidence_capture_repair", "persona_feedback", "pr_handoff",
     }
   });
 }
+
+for (const recovery of ["session return", "operator acknowledgement"] as const) {
+  test(`published-tree review obligation survives Inspector feedback ${recovery}`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      const { packet, session } = await blockUnsentFeedback(seeded);
+      const run = seeded.store.getRun(seeded.ids.run)!;
+      const gate = run.gateState as unknown as WorkflowInspectorGateState;
+      const reviewedContent = { submissionId: seeded.ids.submission, headSha: "reviewed-head",
+        treeOid: "a".repeat(40), publishedTreeOid: "b".repeat(40) };
+      seeded.store.setRunState(run.id, run.status, "delivery_blocked", {
+        ...gate, reviewedContent,
+      }, Date.now());
+      session.state = "idle";
+      if (recovery === "session return") {
+        scriptGitHub("OPEN", seeded.head);
+        seeded.registry.setSessionPause(session.id, null);
+        await waitFor(() => seeded.store.getDelivery(packet.id)?.state === "delivered", "feedback was not recovered");
+        assert.deepEqual(seeded.injected, [packet.payload]);
+      } else {
+        seeded.store.setDeliveryState(packet.id, "uncertain", "lost acknowledgement");
+        const result = await seeded.manager.resolveDelivery(packet.id, {
+          requestId: "ack-published-feedback", resolution: "mark_delivered",
+        });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.deepEqual(seeded.injected, []);
+      }
+      assert.equal(seeded.store.getRun(run.id)?.status, "waiting_for_session",
+        "recovery must not restore Inspector-only bypass when full review is owed");
+      assert.deepEqual((seeded.store.getRun(run.id)?.gateState as unknown as WorkflowInspectorGateState).reviewedContent,
+        reviewedContent);
+    } finally {
+      scriptGitHub(null);
+      await seeded.manager.stop();
+    }
+  });
+}

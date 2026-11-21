@@ -3,6 +3,7 @@ import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
 // The shipped registry also exports this id; a build that substitutes the registry keeps the export.
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 
 // Replaces only the registry module in reader tests.
 export const FEATURE_FLAGS = [{

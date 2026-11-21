@@ -71,7 +71,11 @@ function order(rows: ConversationRow[]): string[] {
     throw new Error("review ids must not collide with episode markers in this fixture");
   }
   return rows.map((r) =>
-    r.kind === "episode" ? r.episode.marker : r.kind === "review" ? r.review.id : r.id,
+    r.kind === "episode" ? r.episode.marker
+      : r.kind === "review" ? r.review.id
+        : r.kind === "asked" ? `asked:${r.review.id}`
+          : r.kind === "closed" ? `closed:${r.review.id}`
+            : r.id,
   );
 }
 

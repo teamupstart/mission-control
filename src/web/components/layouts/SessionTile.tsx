@@ -26,6 +26,8 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { openQuestionsLabel } from "../../lib/async-questions.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
@@ -577,6 +579,12 @@ export function SessionTile({
           </span>
         )}
         {session.pendingReviews > 0 && <span className="tile-flag tf-review">review</span>}
+        {/* Message-mode questions (`async-input`): listed while the agent keeps working, in the
+            working blue rather than amber. Once the agent stops on them the tile's tone turns
+            amber through `stateDisplay`, and the flag stays to say what it is waiting on. */}
+        {openQuestionCount(session) > 0 && (
+          <span className="tile-flag tf-question">{openQuestionsLabel(openQuestionCount(session))}</span>
+        )}
         {session.queue && session.queue.openCount > 0 && (
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}

@@ -161,6 +161,31 @@ test("a named value a command reprints with its whitespace normalized is redacte
   }
 });
 
+/** A value longer than any in this process's environment, and at least 1,000 characters. */
+function longestEnvValue(prefix: string): string {
+  const longest = Math.max(1_000, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
+  const alphabet = "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f";
+  return `${prefix}${Array.from({ length: longest }, (_, i) => alphabet[(i * 7 + (i >> 5)) % alphabet.length]).join("")}`;
+}
+
+test("a command's stderr cut inside a JSON-escaped spelling of a named value keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Longer than anything else the child receives, so it alone sets the margin kept beyond the
+  // tail; escaped, each copy is six times that, and the recorded stderr's front edge cuts one.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("esc-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "2"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    // No escape survives: the whole escaped copy was removed, and the cut one was dropped.
+    assert.equal(reason.includes("\\u00"), false, reason.slice(0, 300));
+    assert.match(reason, /^The command exited with code 5/);
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
 test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SPACED;
   process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";

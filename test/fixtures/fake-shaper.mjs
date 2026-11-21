@@ -92,6 +92,15 @@ switch (mode) {
     process.exit(4);
     break;
   }
+  case "leak-escaped": {
+    // The value spelled as JSON \u escapes, six characters for each of its own, repeated so the
+    // recorded tail's front edge cuts through one escaped copy of it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    const escaped = [...value].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    process.stderr.write(`${escaped}\n`.repeat(Number(rest[1] ?? 12)));
+    process.exit(5);
+    break;
+  }
   case "leak-long": {
     // The value repeated many times, then padding, so the recorded tail's front edge cuts
     // through one copy of it. The front of the 2,000-character tail lands mid-value.

@@ -8,10 +8,10 @@ import { readToken } from "@shared/harness-runtime.mjs";
 import { canonicalJson, SHAPING_LIMIT_RANGES, type ShapingContext, type ShapingRequest } from "@shared/shaping.ts";
 import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
-import { holdsResolvedValue, redactResolved, type ResolvedValue } from "../references.ts";
+import { holdsResolvedValue, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
 import {
-  credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, shaperCommandEnv, withTimeout,
+  credentialBearingValues, escapedMargin, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, withTimeout,
   type ReceivedValues,
 } from "./command.ts";
 import {
@@ -174,11 +174,24 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
 const pendingCall = new AsyncLocalStorage<{ interrupted(): void }>();
 
 /**
- * The reason for a reply that is not JSON, or not a JSON-RPC message. Fixed text: a parser's
- * message quotes a cut-down excerpt of what it read, which can hold a piece of a header value no
- * search for the whole value finds, so it is never quoted.
+ * A request, `initialize` or `tools/call`, answered `202 Accepted`. That status carries no body and
+ * is for notifications and responses only (MCP streamable HTTP): the SDK accepts it and goes on
+ * waiting for a reply that can never come, so the handshake or call would wait out its budget.
+ */
+class AcceptedRequestError extends Error {
+  constructor() {
+    super("The MCP server answered a request with 202 Accepted, which carries no reply.");
+    this.name = "AcceptedRequestError";
+  }
+}
+
+/**
+ * The reason for a reply that is not JSON, not a JSON-RPC message, or no reply at all where one is
+ * owed. Fixed text: a parser's message quotes a cut-down excerpt of what it read, which can hold a
+ * piece of a header value no search for the whole value finds, so it is never quoted.
  */
 function malformedReason(error: unknown): string | null {
+  if (error instanceof AcceptedRequestError) return error.message;
   if (error instanceof SyntaxError) return "The MCP server sent a reply that is not JSON.";
   if (error instanceof Error && error.name === "ZodError") return "The MCP server sent JSON that is not a JSON-RPC message.";
   return null;
@@ -225,6 +238,12 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
     const call = pendingCall.getStore();
     const response = await base(input, init);
     const request = requestOf(init?.body);
+    // A message with an id is a request and is owed a reply: a `202` for one is refused at once.
+    // Notifications, which carry no id, are still accepted with it.
+    if (request !== null && response.status === 202) {
+      await response.body?.cancel().catch(() => {});
+      throw new AcceptedRequestError();
+    }
     const stream = response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("text/event-stream");
     if (request === null || !stream || !response.body) return response;
     const { id, method } = request;
@@ -378,9 +397,8 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   // margin is dropped in the original text's positions before anything is recorded.
   let stderr = "";
   let stderrCut = false;
-  // Six times the longest value: a JSON `\u` escape spells one character in six, and a value cut
-  // at the front in that spelling must fall wholly inside the margin that is dropped.
-  const longest = (received.values[0]?.length ?? 0) * 6;
+  // Six times the longest value, as the `command` transport keeps it (`escapedMargin`).
+  const longest = escapedMargin(received);
   // Decoded as a stream, as the `command` transport decodes it: a character split across two
   // chunks is kept whole, so a non-ASCII value the child received still matches when redacted.
   const stderrDecoder = new StringDecoder("utf8");
@@ -390,13 +408,8 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     if (joined.length > keep) stderrCut = true;
     stderr = joined.slice(-keep);
   });
-  // What the child wrote, scrubbed of everything it received, then of each named value in any
-  // spelling (JSON escapes and spacing variants included), and only then collapsed and cut.
-  const scrubDiagnostic = (text: string, dropBefore = 0): string => {
-    const scrubbed = redactReceived(text, received, dropBefore);
-    const named2 = redactResolved(scrubbed, named);
-    return redactResolved(redactReceived(named2.replace(/\s+/g, " "), received), named).trim();
-  };
+  // What the child wrote, scrubbed as the `command` transport scrubs its stderr, and only then cut.
+  const scrubDiagnostic = (text: string, dropBefore = 0): string => scrubChildOutput(text, received, named, dropBefore);
   // A passed value with inner whitespace can be spelled with any amount of whitespace there, so
   // no margin bounds where a spelling cut at the front of the buffer ends. Once the buffer is cut,
   // its stderr is then not quoted at all.
@@ -494,6 +507,9 @@ async function openHttp(
   // A malformed event on a response stream reaches only `onerror`: the call it carried would wait
   // out its budget. The connection fails with the fixed reason, and the next call reconnects.
   transport.onerror = (error) => {
+    // A request answered 202 rejects that request itself, which says so in its own place: the
+    // handshake or the call. The connection is not failed over it here.
+    if (error instanceof AcceptedRequestError) return;
     const malformed = malformedReason(error);
     if (!malformed) return;
     state.fail(malformed);

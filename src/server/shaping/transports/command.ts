@@ -8,8 +8,8 @@ import { trimUrlText } from "@shared/shaping.ts";
 import { dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
-import { redactSpans } from "../redaction.ts";
-import { holdsResolvedValue, NEVER_PASSED_ENV_NAMES, redactResolved, scrubResolved, type ResolvedValue } from "../references.ts";
+import { redactSpans, type RedactionSpan } from "../redaction.ts";
+import { holdsResolvedValue, NEVER_PASSED_ENV_NAMES, redactResolved, scrubResolved, variantSpans, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, withCarriedEnv } from "./carriers.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
@@ -160,6 +160,16 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
 }
 
 /**
+ * How much of a child's stderr is kept beyond the tail a diagnostic records, and dropped from its
+ * front once it was cut: six times the longest value the child received, because a JSON `\u`
+ * escape spells one character in six. A value cut at the front in any spelling the scrub knows
+ * then falls wholly inside the dropped margin, and no fragment of it survives unrecognised.
+ */
+export function escapedMargin(received: ReceivedValues): number {
+  return (received.values[0]?.length ?? 0) * 6;
+}
+
+/**
  * Remove every value the child received from text it printed, before it is recorded. A value of
  * four characters or more is replaced wherever it appears. A shorter inherited one is replaced
  * only as a whole token, between non-alphanumerics: `LANG=C` or `SHLVL=1` matched as substrings
@@ -172,10 +182,28 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
  * combined extent and no part of either survives. Each value is found in linear time, however
  * many matches it has: up to 256 KiB of shaper output never stalls the event loop.
  */
-export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
+export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0, spans: readonly RedactionSpan[] = []): string {
   return redactSpans(text, received.values.map((value) => ({
     value, wholeToken: value.length < SHORT_VALUE_CHARS && !received.named.has(value), label: "",
-  })), () => "[redacted]", dropBefore);
+  })), () => "[redacted]", dropBefore, Number.POSITIVE_INFINITY, spans);
+}
+
+/**
+ * A child's diagnostic output scrubbed for a record: every value it received, then each named
+ * value in any spelling (JSON escapes and spacing variants included), then collapsed and scrubbed
+ * again, because collapsing whitespace can turn a spacing variant into the value itself.
+ *
+ * `dropBefore` is the margin of a buffer whose front was cut. It is dropped in the original text's
+ * positions, with every spelling of every named value already found there: a spelling that runs
+ * across the dropped margin is removed whole, never left behind as a tail no later search
+ * recognises. That needs `escapedMargin`, wide enough to hold any spelling cut at the very front.
+ */
+export function scrubChildOutput(text: string, received: ReceivedValues, named: readonly ResolvedValue[], dropBefore = 0): string {
+  const cut = dropBefore > 0
+    ? redactReceived(text, received, dropBefore, variantSpans(text, named.filter(({ value }) => value !== "")))
+    : redactReceived(text, received);
+  const scrubbed = redactResolved(cut, named);
+  return redactResolved(redactReceived(scrubbed.replace(/\s+/g, " "), received), named).trim();
 }
 
 /**
@@ -310,7 +338,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       }),
     ...credentials,
   ];
-  const longestValue = received.values[0]?.length ?? 0;
+  // The margin kept beyond the recorded stderr tail, and dropped from its front once it is cut:
+  // six times the longest value, because a JSON `\u` escape spells one character in six, and a
+  // value cut at the front in that spelling must fall wholly inside the margin that is dropped.
+  const stderrMargin = escapedMargin(received);
   // For identifiers: everything but the short inherited values only whole-token rules apply to.
   const identifierValues: ReceivedValues = {
     values: received.values.filter((value) => value.length >= SHORT_VALUE_CHARS || received.named.has(value)),
@@ -343,14 +374,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       // A named value with inner whitespace can be spelled with any amount of whitespace there,
       // so once the front was cut no margin bounds a spelling cut there: nothing is quoted.
       if (stderrDropped && namedValues.some(({ value }) => /\s/.test(value))) return "its stderr is not quoted: it was too long to scrub safely";
-      // Once the front was cut, the first `longestValue` characters may hold the tail end of a
-      // value. They are dropped in the original text's positions, not after replacement.
-      // Then collapsed and scrubbed again: the record collapses whitespace, which can make a
-      // spacing variant of a value into the value itself.
-      // Each named value is also removed in any spelling, spacing variants and JSON escapes
-      // included, before anything is cut: a child that prints `Jane  Doe` as `Jane Doe` is caught.
-      const scrubbed = redactResolved(redactReceived(stderr, received, stderrDropped ? longestValue : 0), namedValues);
-      return redactResolved(redactReceived(scrubbed.replace(/\s+/g, " "), received), namedValues).slice(-STDERR_TAIL_CHARS).trim();
+      // Once the front was cut, the first `stderrMargin` characters may hold the tail end of a
+      // value, in any spelling: they are dropped in the original text's positions.
+      return scrubChildOutput(stderr, received, namedValues, stderrDropped ? stderrMargin : 0).slice(-STDERR_TAIL_CHARS).trim();
     };
     const end = (why: "timed_out" | "overflow"): void => {
       if (ending || settled) return;
@@ -391,7 +417,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       // Decoded as a stream: a character split across two chunks is kept whole, so a non-ASCII
       // value the child received still matches exactly when it is redacted.
       const joined = stderr + stderrDecoder.write(chunk);
-      const keep = STDERR_TAIL_CHARS + longestValue;
+      const keep = STDERR_TAIL_CHARS + stderrMargin;
       if (joined.length > keep) stderrDropped = true;
       stderr = joined.slice(-keep);
     });

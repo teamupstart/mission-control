@@ -728,6 +728,20 @@ test("a stderr cut inside a widened spelling of a passed value is not quoted at 
   assert.match(reason, /Its stderr is not quoted: it was too long to scrub safely\.$/);
 });
 
+test("a stderr cut inside a JSON-escaped spelling of a passed value keeps no fragment of it", async () => {
+  // Longer than anything else the server receives, so it alone sets the margin; escaped, each
+  // copy is six times that, and the kept stderr's front edge cuts one of the two.
+  const longest = Math.max(1_000, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
+  const value = `esc-${Array.from({ length: longest }, (_, i) => "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f"[(i * 7 + (i >> 5)) % 35]).join("")}`;
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "escaped-stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "escaped-stderr-exit", KEY_ENV, "2"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+  const reason = (reply as { reason: string }).reason;
+  assert.equal(reason.includes("\\u00"), false, reason.slice(0, 300));
+  assert.match(reason, /^The MCP server exited/);
+});
+
 test("a passed value whose multibyte character stderr splits across chunks is still redacted", async () => {
   const value = "sécret-ünïcode-4f2a";
   const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "split-utf8-exit" }, "folded", {
@@ -834,6 +848,49 @@ test("a reply or handshake over HTTP that is not JSON fails with fixed text, nev
       // the same fixed sentence as a call.
       assert.equal(reason, "The MCP server sent a reply that is not JSON.", at);
       for (let i = 0; i + 6 <= value.length; i++) assert.equal(reason.includes(value.slice(i, i + 6)), false, reason);
+    } finally { await server.close(); }
+  }
+});
+
+/** A loopback MCP endpoint that answers `202 Accepted` with no body to every message, or only to `tools/call`. */
+async function startAcceptingEverything(at: "handshake" | "call") {
+  const methods: string[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    methods.push(message.method);
+    if (message.method === "initialize" && at === "call") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "accepting", version: "1.0.0" } },
+      }));
+      return;
+    }
+    res.writeHead(202).end();
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    methods,
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+test("a request answered 202 with no reply fails at once, while a notification answered 202 is accepted", async () => {
+  for (const at of ["handshake", "call"] as const) {
+    const server = await startAcceptingEverything(at);
+    try {
+      const started = Date.now();
+      // A budget far longer than the test: a call that waited for a reply would time out here.
+      const reply = await callMcp(request(false), shaper({ type: "http", url: server.url }), ctx());
+      assert.equal(reply.kind, "failed", JSON.stringify(reply));
+      const accepted = "The MCP server answered a request with 202 Accepted, which carries no reply.";
+      assert.equal((reply as { reason: string }).reason, at === "call" ? accepted : `The MCP server did not complete its handshake: ${accepted}`);
+      assert.ok(Date.now() - started < 5_000, `answered after ${Date.now() - started} ms`);
+      // On the call path the `initialized` notification was answered 202 and the handshake went on.
+      if (at === "call") assert.deepEqual(server.methods.slice(0, 3), ["initialize", "notifications/initialized", "tools/call"]);
     } finally { await server.close(); }
   }
 });

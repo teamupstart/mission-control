@@ -434,7 +434,12 @@ password are removed from diagnostics and content alike, under the variable's na
 legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
-whole and a non-ASCII value still matches exactly when it is redacted.
+whole and a non-ASCII value still matches exactly when it is redacted. It is kept with a margin
+six times the longest value the child received, that value's length spelled entirely in JSON
+`\u` escapes. Once the front is cut, the margin is dropped in the original text's positions,
+with every spelling of each named value already found there: a value cut at the front, as
+written or escaped, falls inside it, and a spelling that runs across it is removed whole, so
+neither leaves a fragment in a reason.
 
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
 started outside its process group cannot keep them open after the group is killed. It also
@@ -589,8 +594,8 @@ environment plus only the variables its `env` names, and a value named there is 
 its replies and diagnostics. The SDK would add its own defaults (`HOME`, `LOGNAME`, `PATH`,
 `SHELL`, `TERM`, `USER`) beneath that environment, so each one the scrubbed environment left out
 is passed as unset and the server receives exactly what the diagnostics are redacted against.
-Its stderr is kept with a margin as long as the longest value it received, and that margin is
-dropped once the front is cut, so a value cut there leaves no fragment in a reason. It is one
+Its stderr is kept and scrubbed exactly as a `command` shaper's is, with the same escape-wide
+margin, so a value cut at the front leaves no fragment in a reason. It is one
 process per shaping run, closed when the run ends, or at once after a message over the cap. A
 run that ends while its command is still being located starts no server. The SDK starts it
 outside a process group of its own, so a helper the server starts can outlive it.

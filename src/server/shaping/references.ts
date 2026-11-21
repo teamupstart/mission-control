@@ -315,7 +315,7 @@ function decodeEscapes(text: string): { decoded: string; starts: number[]; ends:
  * decoding, and each match yields its span directly: however many distinct spellings a reply
  * holds, nothing is searched for again.
  */
-function variantSpans(text: string, resolved: readonly ResolvedValue[]): RedactionSpan[] {
+export function variantSpans(text: string, resolved: readonly ResolvedValue[]): RedactionSpan[] {
   const out: RedactionSpan[] = [];
   for (const entry of resolved) {
     const pattern = spacingPattern(entry.value);

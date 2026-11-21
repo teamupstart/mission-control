@@ -170,7 +170,7 @@ test("only unsent Preview session actions require operator delivery", () => {
   for (const deliveryMode of ["live", "preview"] as const) {
     const waiting = { ...run, status: "waiting_for_action" as const, deliveryMode };
     assert.deepEqual(workflowHold({ ...waiting, actionWait: "awaiting_send" }), {
-      actor: deliveryMode === "preview" ? "Operator" : "Session",
+      actor: deliveryMode === "preview" ? "Operator" : "Workflow",
       reason: deliveryMode === "preview"
         ? "The instruction is ready in preview; send it to the session from the run."
         : "The instruction is ready and has not been sent to the session yet. Next: Mission Control sends the authorized instruction; in Preview, you send it from the run's delivery controls.",

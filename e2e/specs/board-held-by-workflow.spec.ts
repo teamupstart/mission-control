@@ -508,6 +508,11 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   expect((await api<import("../../src/shared/types.ts").Session[]>(daemon, "/api/sessions")).find(s => s.id === id)?.blocker)
     .toEqual(blocked.blocker);
 
+  await update({ ...summary, status: "waiting_for_action", deliveryMode: "live", actionWait: "awaiting_send" });
+  await expect(currentHold).toContainText("Next: Mission Control sends the authorized instruction");
+  await expect(currentHold).toContainText("In progress · Workflow");
+  await expect(currentHold).not.toContainText("In progress · Session");
+  await shoot(dashboard, "hold-live-action-delivery");
   await update({ ...summary, status: "waiting_for_action", deliveryMode: "preview", actionWait: "awaiting_send" });
   await expect(holds).toContainText("The instruction is ready in preview; send it to the session from the run.");
   await expect(holds).toContainText("Action needed · Operator");

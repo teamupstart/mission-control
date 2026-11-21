@@ -47,7 +47,8 @@ export function workflowHold(run: WorkflowRunSummary, blocker?: Pick<SessionBloc
     if (run.deliveryMode === "preview" && run.actionWait === "awaiting_send") {
       return describe("Operator", "The instruction is ready in preview; send it to the session from the run.");
     }
-    return describe(run.actionWait && sessionActionWaitsOnOperator(run.actionWait) ? "Operator" : "Session",
+    return describe(run.actionWait === "awaiting_send" ? "Workflow"
+      : run.actionWait && sessionActionWaitsOnOperator(run.actionWait) ? "Operator" : "Session",
       run.actionWait ? actionWaitSentence(run.actionWait) : "Session action in progress.",
       !run.actionWait || !sessionActionWaitsOnOperator(run.actionWait));
   }

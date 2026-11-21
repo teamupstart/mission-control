@@ -339,6 +339,7 @@ export function TaskShapingView({
       {testing && (
         <ShapingTestDialog id={testing.id} label={testing.label} revision={testing.revision}
           current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id && !entry.duplicate)?.revision ?? null}
+          waiting={awaitingRevision.has(`row:${testing.id}`)}
           repositories={repositories} onTest={onTest} onClose={() => setTesting(null)} />
       )}
     </section>

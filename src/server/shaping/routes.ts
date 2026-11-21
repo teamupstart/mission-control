@@ -15,14 +15,17 @@ import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
+  dropShapingWriteRecords,
   EARLIER_INSTANCE_REFUSAL,
   expiredWriteRefusal,
   noteShapingWriteApplied,
   readShapingWriteOrder,
+  SEQUENCE_TOO_FAR_AHEAD_REFUSAL,
   SHAPING_WRITE_ORDER_HEADER,
   shapingWriteExpired,
   shapingWriteFromEarlierInstance,
   shapingWriteSuperseded,
+  shapingWriteTooFarAhead,
   SUPERSEDED_WRITE_REFUSAL,
   UNREADABLE_ORDER_REFUSAL,
 } from "./write-order.ts";
@@ -117,10 +120,12 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     // Sent but unreadable is refused, never taken for a write with no order: that one would skip
     // every ordering check, and could overwrite a newer edit if it arrives late.
     if (header !== undefined && order === null) return c.json(UNREADABLE_ORDER_REFUSAL, 400);
+    if (order && shapingWriteTooFarAhead(order)) return c.json(SEQUENCE_TOO_FAR_AHEAD_REFUSAL, 400);
     try {
       const discovered = await discoverShapers();
       // Checked here, as the write is about to apply and after every wait: a write that waited for
       // discovery while its window gave up on it and sent a newer one never overwrites that one.
+      if (order) dropShapingWriteRecords();
       if (order && shapingWriteFromEarlierInstance(order)) return c.json(EARLIER_INSTANCE_REFUSAL, 409);
       if (order && shapingWriteExpired(order)) return c.json(expiredWriteRefusal(), 409);
       if (order && shapingWriteSuperseded(order)) return c.json(SUPERSEDED_WRITE_REFUSAL, 409);

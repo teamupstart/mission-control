@@ -2176,6 +2176,8 @@ test("a late answer for another row's write never lowers the commit an imported 
   const a = commandShaper("waits-a", "Waits A");
   await putShaping(daemon, { kind: "upsert", shaper: a });
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("waits-b", "Waits B") });
+  // Installed before the reload `holdShapingFrames` makes, so both apply to the page under test.
+  await countReadWrites(page);
   await holdShapingFrames(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(pill(page, "Waits B")).toHaveAccessibleName("Waits B: off");
@@ -2221,6 +2223,8 @@ test("a late answer for another row's write never lowers the commit an imported 
   const bAnswered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
   answers.open();
   expect((await bAnswered).status()).toBe(200);
+  // Both answers, the import's and B's, have been read by the panel: the late one has been handled.
+  await writesHandled(page, 2);
   await page.unroute("**/api/shaping");
   // The stream reaches B's commit but not the import's: A still shows a revision the daemon moved past.
   // B's answer can come before its frames do, so the three are waited for before they are released.
@@ -2229,7 +2233,7 @@ test("a late answer for another row's write never lowers the commit an imported 
   await release(3);
   await expect.poll(delivered).toBe(held + 3);
   await expect(pill(page, "Waits B")).toHaveAccessibleName("Waits B: on");
-  await page.waitForTimeout(300);
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   await expect(pill(page, "Waits A")).toBeDisabled();
   // The import's frame arrives, and A's switch then goes through.
   await release();
@@ -2281,8 +2285,9 @@ test("after a save is refused as waiting too long, the tab's next save is number
   const form = page.getByRole("form", { name: "Caller identity and budgets" });
   const identity = form.getByRole("textbox", { name: "Caller identity" });
   const save = form.getByRole("button", { name: "Save", exact: true });
-  // The daemon's floor is an hour ahead of this clock, as once the clock was set back after it.
-  const floor = (Date.now() + 3_600_000) * 1000;
+  // The daemon's floor is half a minute ahead of this clock, as once the clock was set back after it:
+  // inside the lead the daemon accepts, which a tab raised past its floor always is.
+  const floor = (Date.now() + 30_000) * 1000;
   const reason = "This change waited too long to be applied, so it was not: a newer change may have been made since it was sent. Check what is shown now, and make it again if it is missing.";
   let refused = false;
   await page.route("**/api/shaping", async (route) => {
@@ -2356,4 +2361,50 @@ test("a restarted daemon's snapshot never stands in for a lost identical import"
   );
   await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
+});
+
+test("an open dry run waits with its row for the revision an accepted import made", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("dry-waits", "Dry waits");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await holdShapingFrames(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Dry waits")).toHaveAccessibleName("Dry waits: off");
+  // This window's identical import is held on its way to the daemon.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // A peer's identical import reaches the tab and frees the dialog, which the operator closes, and
+  // they open a dry run of the row it shows.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole("button", { name: "Dry-run Dry waits" }).click();
+  const dryRun = page.getByRole("dialog", { name: "Dry-run Dry waits" });
+  await dryRun.getByLabel("Repository").fill(daemon.repo);
+  const run = dryRun.getByRole("button", { name: "Run", exact: true });
+  await expect(run).toBeEnabled();
+  // The import's frame is held, so its answer lands first: the revision the dialog shows is behind.
+  await page.evaluate(() => { (window as unknown as { holdShapingFrames: boolean }).holdShapingFrames = true; });
+  const answered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  goes.open();
+  expect((await answered).status()).toBe(200);
+  await page.unroute("**/api/shaping");
+  await expect(run).toBeDisabled();
+  await expect(dryRun.getByRole("status")).toHaveText("Waiting for the update that carries Dry waits's latest change.");
+  // The frame arrives: the definition the dialog opened on is no longer the stored one.
+  await page.evaluate(() => { (window as unknown as { releaseShapingFrames: () => void }).releaseShapingFrames(); });
+  await expect(dryRun.getByRole("alert")).toContainText("was replaced");
+  await expect(run).toBeDisabled();
 });

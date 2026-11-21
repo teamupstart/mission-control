@@ -260,13 +260,18 @@ const OUTCOME_LABEL: Record<string, string> = {
  * Dry-run one shaper against a repository Mission Control knows: whatever its stored choice,
  * nothing is saved, and closing the dialog stops the run.
  */
-export function ShapingTestDialog({ id, label, revision, current, repositories, onTest, onClose }: {
+export function ShapingTestDialog({ id, label, revision, current, waiting = false, repositories, onTest, onClose }: {
   id: string;
   label: string;
   /** The daemon's revision of the definition the operator chose to dry-run. Sent with the run. */
   revision: string | null;
   /** The revision stored for this id now, or null once it is gone. */
   current: string | null;
+  /**
+   * A write to this shaper was accepted, but the revision it made has not reached the view: `current`
+   * is already behind the daemon's, so a run sent now would be refused. Run waits until it arrives.
+   */
+  waiting?: boolean;
   repositories: () => Promise<string[]>;
   onTest: ShapingTestRunner;
   onClose: () => void;
@@ -334,6 +339,7 @@ export function ShapingTestDialog({ id, label, revision, current, repositories, 
         )}
         {error && <p role="alert" className="shaping-refusal">{error}</p>}
         {running && <p className="shaping-note" role="status">Running {label}…</p>}
+        {waiting && !replaced && <p className="shaping-note" role="status">Waiting for the update that carries {label}'s latest change.</p>}
         {result && (
           <section className="shaping-result" aria-label="Dry-run result">
             {summary ? (
@@ -367,7 +373,7 @@ export function ShapingTestDialog({ id, label, revision, current, repositories, 
           <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
         </Tooltip>
         <Tooltip label="Run this shaper once against the repository">
-          <button type="button" className="btn" disabled={running || replaced || repository.trim() === ""} onClick={() => void run()}>
+          <button type="button" className="btn" disabled={running || replaced || waiting || repository.trim() === ""} onClick={() => void run()}>
             {running ? "Running…" : "Run"}
           </button>
         </Tooltip>

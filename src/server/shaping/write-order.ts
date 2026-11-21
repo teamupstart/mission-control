@@ -32,13 +32,26 @@ export interface ShapingWriteOrder {
 
 /**
  * The daemon keeps each record of an applied write for `SHAPING_WRITE_WINDOW_MS` after it last
- * applied, measured on the process's monotonic clock, and never bounds the records by count, which
- * enough traffic from other pages could exhaust. A record it drops raises a floor to the sequence it
+ * applied, measured on the process's monotonic clock, and at most `SHAPING_WRITE_RECORDS_KEPT` of
+ * them, dropping the oldest first. Whichever way a record goes, it raises a floor to the sequence it
  * held, and any write at or below that floor is refused as expired: a write a dropped record would
- * have refused is always at or below it. The decision compares sequences only, so no change to the
- * wall clock, forward or back, can make a write eligible again once its record is gone.
+ * have refused is always at or below it, so dropping one early, under a burst, only refuses more.
+ * That comparison is of sequences only, so no wall clock change can make such a write eligible
+ * again. A write is also refused once its sequence is older than the window by the wall clock, so
+ * it expires even on a daemon where nothing else was written: that check can only refuse.
  */
 export { SHAPING_WRITE_WINDOW_MS };
+
+/** The most write records the daemon keeps, whatever ids callers send. */
+export const SHAPING_WRITE_RECORDS_KEPT = 4096;
+
+/**
+ * How far ahead of both the daemon's clock and the floor a sequence may be. A dashboard numbers its
+ * writes by the same clock, raised past the floor when refused, so its sequences sit well inside
+ * this; one further ahead can only come from a broken or hostile client, and is refused rather than
+ * allowed to push the floor past where every other tab can follow.
+ */
+export const SHAPING_SEQUENCE_LEAD_MS = 60_000;
 
 const ID = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -63,17 +76,28 @@ export function readShapingWriteOrder(header: string | undefined): ShapingWriteO
   return { window, sequence: number, controls: list, instance: instance ?? null };
 }
 
-/** Whether a write from the same window, sent after this one, has already been applied to one of its controls. */
+/**
+ * Whether a write from the same tab, sent after this one or numbered the same, has already been
+ * applied to one of its controls. A request is never sent twice under one sequence, so an equal one
+ * is another page's, a duplicated tab's, whose clock gave both the same number: which of the two
+ * was meant last cannot be told, and the one already applied stands.
+ */
 export function shapingWriteSuperseded(order: ShapingWriteOrder): boolean {
-  return order.controls.some((control) => (applied.get(slot(order.window, control))?.sequence ?? 0) > order.sequence);
+  return order.controls.some((control) => (applied.get(slot(order.window, control))?.sequence ?? 0) >= order.sequence);
 }
 
 /**
- * Whether the write is at or below the floor of dropped records: a record of a newer write that must
- * refuse it may be gone, so it is refused itself.
+ * Whether the write is at or below the floor of dropped records, where a record of a newer write
+ * that must refuse it may be gone, or was sent longer ago than `SHAPING_WRITE_WINDOW_MS` by the wall
+ * clock, however quiet the daemon has been since.
  */
-export function shapingWriteExpired(order: ShapingWriteOrder): boolean {
-  return order.sequence <= floor;
+export function shapingWriteExpired(order: ShapingWriteOrder, now = Date.now()): boolean {
+  return order.sequence <= floor || order.sequence / 1000 < now - SHAPING_WRITE_WINDOW_MS;
+}
+
+/** Whether the write's sequence is further ahead of the daemon's clock and the floor than any tab's can be. */
+export function shapingWriteTooFarAhead(order: ShapingWriteOrder, now = Date.now()): boolean {
+  return order.sequence > Math.max(now * 1000, floor) + SHAPING_SEQUENCE_LEAD_MS * 1000;
 }
 
 /** The floor of dropped records, which a refused page raises its next sequences above. */
@@ -89,9 +113,18 @@ export function noteShapingWriteApplied(order: ShapingWriteOrder, now = performa
     applied.delete(key);
     applied.set(key, { sequence, at: now });
   }
+  dropShapingWriteRecords(now);
+}
+
+/**
+ * Drop the records older than the window, and the oldest beyond `SHAPING_WRITE_RECORDS_KEPT`,
+ * raising the floor to each dropped record's sequence. Run on every ordered request, refused ones
+ * included, so records never outlive the window for want of another successful write.
+ */
+export function dropShapingWriteRecords(now = performance.now()): void {
   // Oldest first, so the records to drop are the leading ones.
   for (const [key, record] of applied) {
-    if (now - record.at <= SHAPING_WRITE_WINDOW_MS) break;
+    if (now - record.at <= SHAPING_WRITE_WINDOW_MS && applied.size <= SHAPING_WRITE_RECORDS_KEPT) break;
     floor = Math.max(floor, record.sequence);
     applied.delete(key);
   }
@@ -126,6 +159,12 @@ export function expiredWriteRefusal(): { error: "expired"; reason: string; floor
     floor,
   };
 }
+
+/** The refusal for a write numbered further ahead than any dashboard tab numbers one. */
+export const SEQUENCE_TOO_FAR_AHEAD_REFUSAL = {
+  error: "unreadable_order",
+  reason: "This change's write order is too far ahead of the daemon's clock, so it was not applied. Reload the page and make it again.",
+} as const;
 
 /** The refusal for a write whose order header was sent but cannot be read. */
 export const UNREADABLE_ORDER_REFUSAL = {

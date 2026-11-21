@@ -326,15 +326,20 @@ before the body limit, so such a request is refused as forbidden whatever its si
   delayed older write from any of them is refused once a newer one from any of them applied, which
   keeps the newer edit, and the refusal says the newer change may have been made in a duplicate.
   Each sequence is the time the write was sent, in microseconds, never lower than the last the tab
-  sent. The daemon keeps each record of an
-  applied write for ten minutes after it last applied, on its monotonic clock, however many other
-  pages write meanwhile. Dropping a record raises a floor to the sequence it held, and a write at
-  or below that floor answers 409 `expired` with the floor: every write a dropped record would have
-  refused is refused that way instead. The decision compares sequences only, so setting the wall
-  clock forward or back never makes such a write eligible again. A tab refused this way numbers
-  its next writes above the floor, so making the change again goes through even after the clock
-  was set back. A header that is sent but cannot be read answers 400 `unreadable_order` and
-  changes nothing; a write without the header, from any other client, is not ordered.
+  sent. A write numbered the same as one already applied on its control, as a tab and its
+  duplicate can number two saves, is refused the same way: the one applied first stands. The
+  daemon keeps each record of an applied write for ten minutes after it last applied, on its
+  monotonic clock, and at most 4,096 of them whatever ids callers send, dropping the oldest first.
+  Dropping a record, either way, raises a floor to the sequence it held, and a write at or below
+  that floor answers 409 `expired` with the floor: every write a dropped record would have refused
+  is refused that way instead. That comparison is of sequences only, so setting the wall clock
+  forward or back never makes such a write eligible again. A write sent more than ten minutes ago
+  by the wall clock answers 409 `expired` too, even on a daemon where nothing else was written. A
+  tab refused this way numbers its next writes above the floor, so making the change again goes
+  through even after the clock was set back. A header that is sent but cannot be read, or whose
+  sequence is more than a minute ahead of both the daemon's clock and the floor, answers 400
+  `unreadable_order` and changes nothing; a write without the header, from any other client, is
+  not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
@@ -426,7 +431,8 @@ names the daemon commit it shows (`commit`, which every change of the view advan
 writer), and the write's answer names the commit it made, so the row waits until the stream
 reaches that commit or a later one, even when another writer's frame moved the row's revision on
 in between. Answers can arrive out of order, so a late answer naming an earlier commit never
-lowers the commit a row already waits for. An outcome shown above the list, for a shaper no longer listed or for the
+lowers the commit a row already waits for. A dry run already open on such a row waits with it: its **Run** stays
+off until the update arrives. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears

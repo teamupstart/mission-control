@@ -1284,3 +1284,22 @@ test("a view names the commit it shows, which every write that changes it advanc
   assert.ok(imported > changed);
   assert.ok(await commit(await put({ kind: "upsert", shaper })) > imported, "the reimport advanced it");
 });
+
+test("an ordered write numbered too far ahead, or sent too long ago, is refused though nothing else was written", async () => {
+  const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
+  const instance = ((await (await get()).json()) as { config: { instance: string } }).config.instance;
+  const send = (sequence: number, user: string) => app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("idle-window", sequence, ["settings"], instance) },
+    body: JSON.stringify({ kind: "settings", caller: { user } }),
+  });
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const ahead = await send(Number.MAX_SAFE_INTEGER, "too-far-ahead");
+  assert.equal(ahead.status, 400);
+  assert.equal(((await ahead.json()) as { error: string }).error, "unreadable_order");
+  // Sent eleven minutes ago, to a window that has written nothing: its age alone refuses it.
+  const old = await send((Date.now() - 11 * 60_000) * 1000, "sent-long-ago-to-an-idle-daemon");
+  assert.equal(old.status, 409);
+  assert.equal(((await old.json()) as { error: string }).error, "expired");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  assert.equal((await send(Date.now() * 1000, "sent-just-now")).status, 200);
+});

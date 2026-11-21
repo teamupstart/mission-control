@@ -8,11 +8,14 @@ import {
   heldShapingWriteRecords,
   noteShapingWriteApplied,
   readShapingWriteOrder,
+  SHAPING_SEQUENCE_LEAD_MS,
+  SHAPING_WRITE_RECORDS_KEPT,
   SHAPING_WRITE_WINDOW_MS,
   shapingWriteExpired,
   shapingWriteFloor,
   shapingWriteFromEarlierInstance,
   shapingWriteSuperseded,
+  shapingWriteTooFarAhead,
 } from "../src/server/shaping/write-order.ts";
 
 /** A sequence as a window numbers a write it sent `ago` milliseconds before `now`. */
@@ -57,27 +60,55 @@ test("a write made against an earlier daemon process is told apart from one made
   assert.equal(shapingWriteFromEarlierInstance(order()), true, "no instance named, as against an older daemon");
 });
 
-test("a record outlives any number of other windows' writes, and goes only once no write it refuses can apply", () => {
+test("a burst of other windows' writes never grows the records past their bound, and a write a dropped record refused stays refused", () => {
   const now = Date.now();
   const window = "w-retained";
   const newer = readShapingWriteOrder(shapingWriteOrder(window, sentAt(now, 0, 2), ["settings"]))!;
   const older = readShapingWriteOrder(shapingWriteOrder(window, sentAt(now, 0, 1), ["settings"]))!;
   noteShapingWriteApplied(newer, after(1));
-  // Far more traffic than any count bound would keep, from other windows, in the same moment.
+  assert.equal(shapingWriteSuperseded(older), true, "the newer save's record is held");
+  // Far more distinct ids and controls than the bound, from callers that choose them, in one moment.
   const moment = after(1);
-  for (let index = 0; index < 10_000; index++) {
-    noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder(`w-other-${index}`, sentAt(now), ["settings", `row:r${index}`]))!, moment);
+  for (let index = 0; index < SHAPING_WRITE_RECORDS_KEPT * 2; index++) {
+    noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder(`w-other-${index}`, sentAt(now, 0, 3), [`row:r${index}`]))!, moment);
   }
-  assert.equal(shapingWriteSuperseded(older), true, "the newer save's record is still held");
-  assert.equal(shapingWriteExpired(older), false);
-  // Past the window, the records go, and raise the floor to the newer save's sequence: the older
-  // write is refused as expired instead.
-  noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder("w-after", sentAt(now, 0, 9), ["settings"]))!, after(SHAPING_WRITE_WINDOW_MS + 1000));
-  assert.equal(heldShapingWriteRecords(), 1, "only the write applied just now is held");
+  assert.ok(heldShapingWriteRecords() <= SHAPING_WRITE_RECORDS_KEPT, "the records stay within their bound");
+  // The newer save's record was among the oldest and went first, but raised the floor past it: the
+  // older write is still refused, now as expired.
   assert.equal(shapingWriteSuperseded(older), false);
   assert.ok(shapingWriteFloor() >= newer.sequence);
-  assert.equal(shapingWriteExpired(older), true, "nothing that record refused can apply");
-  assert.equal(shapingWriteExpired(newer), true, "nor the write it recorded, sent again");
+  assert.equal(shapingWriteExpired(older, now), true);
+  // Past the window, every record goes, and the floor keeps refusing what they refused.
+  noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder("w-after", sentAt(now, 0, 9), ["settings"]))!, after(SHAPING_WRITE_WINDOW_MS + 1000));
+  assert.equal(heldShapingWriteRecords(), 1, "only the write applied just now is held");
+  assert.equal(shapingWriteExpired(newer, now), true, "nor the write a record held, sent again");
+});
+
+test("a write sent longer ago than the window is refused, though nothing else was written meanwhile", () => {
+  const now = Date.now() + 60 * 60_000;
+  const order = (ago: number) => readShapingWriteOrder(shapingWriteOrder("w-idle", sentAt(now, ago), ["settings"]))!;
+  // Above the floor, so only its age decides.
+  assert.ok(order(SHAPING_WRITE_WINDOW_MS + 1000).sequence > shapingWriteFloor());
+  assert.equal(shapingWriteExpired(order(SHAPING_WRITE_WINDOW_MS + 1000), now), true, "sent before the window");
+  assert.equal(shapingWriteExpired(order(SHAPING_WRITE_WINDOW_MS - 1000), now), false, "sent inside it");
+});
+
+test("a sequence further ahead than any tab numbers one is refused, so it can never lift the floor out of reach", () => {
+  const now = Date.now();
+  const order = (sequence: number) => readShapingWriteOrder(shapingWriteOrder("w-ahead", sequence, ["settings"]))!;
+  assert.equal(shapingWriteTooFarAhead(order(Number.MAX_SAFE_INTEGER), now), true, "the largest safe integer");
+  assert.equal(shapingWriteTooFarAhead(order((now + SHAPING_SEQUENCE_LEAD_MS + 1000) * 1000), now), true);
+  assert.equal(shapingWriteTooFarAhead(order((now + 1000) * 1000), now), false, "a tab's own clock");
+  // A tab raised past the floor is always inside the bound, however far ahead the floor is.
+  assert.equal(shapingWriteTooFarAhead(order(shapingWriteFloor() + 1), now), false);
+});
+
+test("two pages of a tab that give writes the same number: the one applied first stands", () => {
+  const now = Date.now() + 2 * 60 * 60_000;
+  const tied = sentAt(now, 0, 5);
+  noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder("w-tied", tied, ["settings"]))!, after(1));
+  assert.equal(shapingWriteSuperseded(readShapingWriteOrder(shapingWriteOrder("w-tied", tied, ["settings"]))!), true, "the duplicate's write, numbered the same");
+  assert.equal(shapingWriteSuperseded(readShapingWriteOrder(shapingWriteOrder("w-tied", tied + 1, ["settings"]))!), false, "one numbered after it");
 });
 
 test("once a record is dropped, no wall clock change makes a write it refused eligible again", () => {

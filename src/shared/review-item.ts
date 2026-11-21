@@ -14,6 +14,7 @@ import type {
   PlanDecision,
   PlanDecisionAnswer,
   ReviewActor,
+  ReviewClosedReason,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
@@ -65,6 +66,39 @@ export function isConversationResolvedReview(review: ReviewItem): boolean {
   return (review.resolvedBy === "human" || review.resolvedBy === "standing-approval" || review.resolvedBy?.startsWith("session:") === true)
     && HUMAN_REVIEW_STATUSES.has(review.status);
 }
+
+/**
+ * Whether the conversation records this question for itself, whatever became of it: a
+ * message-mode question (`async-input`), which gets an Asked entry where it was filed and says
+ * there how it ended, and any question a merge closed (`closedReason: "merged"`), whose closure
+ * the operator's merge caused and the conversation must never leave silent.
+ *
+ * Read on both sides for the reason this module exists: the history route admits these rows by
+ * the SQL mirror in `server/db.ts`, and the dashboard admits the live ones by this, so a question
+ * shown on submit is still there on reload. Not an answer: `isConversationResolvedReview` still
+ * decides which of them also gets the gold answer entry.
+ */
+export function isConversationQuestionRecord(review: Pick<ReviewItem, "waitMode" | "closedReason">): boolean {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return (review.waitMode != null && (waitModes as readonly string[]).includes(review.waitMode))
+    || (review.closedReason != null && (closedReasons as readonly string[]).includes(review.closedReason));
+}
+
+/**
+ * The one statement of which questions the conversation records for itself: a review in any of
+ * these wait modes, or closed for any of these reasons. `isConversationQuestionRecord` reads it in
+ * memory, and the history query's SQL (`conversationQuestionRecordSql` in `server/db.ts`) is built
+ * from it, so a new outcome is added here and the live and reloaded conversations agree on it.
+ *
+ * Every value is a fixed identifier, never input: the SQL builder quotes them as literals.
+ */
+export const CONVERSATION_QUESTION_RECORDS = {
+  waitModes: ["message"],
+  closedReasons: ["merged"],
+} as const satisfies {
+  waitModes: readonly NonNullable<ReviewItem["waitMode"]>[];
+  closedReasons: readonly ReviewClosedReason[];
+};
 
 /**
  * Answers given from a home session or `mctl` (spec 7.8): `home:{sessionId}`,

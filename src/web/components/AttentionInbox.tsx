@@ -17,6 +17,7 @@ import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
+import { QUESTION_ACTION_COPY, allMessageMode, questionAgentStatus } from "../lib/async-questions.ts";
 
 /**
  * One place to drain everything that is waiting on a person.
@@ -244,10 +245,14 @@ function inboxSubject(item: AttentionItem): string {
  * that answers. The visible word stays "Dismiss", so the accessible name still starts with it.
  */
 function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: () => void }): React.JSX.Element {
+  // A row of message-mode questions (`async-input`) never had its agent waiting inside a call: the
+  // words follow whether that agent is still working or has stopped, as the cards below say.
   const tip =
-    item.kind === "session_reviews"
-      ? "Remove these questions from the inbox without answering them. The agent keeps waiting; a new question from it still shows here"
-      : "Remove this from the inbox without resolving it. It stays dismissed until it reports something new";
+    item.kind !== "session_reviews"
+      ? "Remove this from the inbox without resolving it. It stays dismissed until it reports something new"
+      : QUESTION_ACTION_COPY[
+        allMessageMode(item.reviews) ? questionAgentStatus(item.session) : "call"
+      ].dismissRow;
   return (
     <Tooltip label={tip}>
       <button
@@ -343,6 +348,7 @@ function InboxItem({
             <ReviewCard
               key={review.id}
               review={review}
+              session={item.session}
               note={item.session.note}
               onMovedToChat={(sessionId) => {
                 onOpenSession(sessionId);

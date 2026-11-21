@@ -83,6 +83,7 @@ import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/co
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
+import { AskedQuestionCard, ClosedQuestionCard } from "./AskedQuestion.tsx";
 import { SnoozedReviewCard } from "./ReviewSnooze.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
@@ -320,6 +321,7 @@ export function TranscriptPanel({
   dialogOpen = false,
   episodes = [],
   reviews = [],
+  onAnswerQuestion,
   onReplyBox,
   onOpenFile,
   onCommentInFiles,
@@ -372,6 +374,11 @@ export function TranscriptPanel({
    * one is answered.
    */
   reviews?: ReviewItem[];
+  /**
+   * Open the card that answers this session's open questions, from an Asked entry
+   * (`async-input`). Without it an open Asked entry has no Answer button.
+   */
+  onAnswerQuestion?: () => void;
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -1354,6 +1361,10 @@ export function TranscriptPanel({
                 >
                   <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
+              ) : row.kind === "asked" ? (
+                <AskedQuestionCard key={`ask-${row.review.id}`} review={row.review} session={session} onAnswer={onAnswerQuestion} />
+              ) : row.kind === "closed" ? (
+                <ClosedQuestionCard key={`closed-${row.review.id}`} review={row.review} />
               ) : row.kind === "review" ? (
                 row.review.status === "snoozed" ? (
                   <SnoozedReviewCard key={`rv-${row.review.id}`} review={row.review} />

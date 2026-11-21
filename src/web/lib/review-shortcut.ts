@@ -1,4 +1,26 @@
 import type { Session } from "@shared/types.ts";
+import { hasOpenAsks, stoppedAsking } from "./async-questions.ts";
+
+/**
+ * What the chord reads about a session. `openQuestions` and the state fields only matter for a
+ * message-mode question (`async-input`), so a caller that predates them may leave them out and
+ * reads as a session with none.
+ */
+export type ChordSession = Pick<Session, "id" | "pendingReviews">
+  & Partial<Pick<Session, "openQuestions" | "state" | "stateConfirmed" | "task">>;
+
+function filled(session: ChordSession): Pick<Session, "pendingReviews" | "openQuestions" | "state" | "stateConfirmed" | "task"> {
+  return {
+    pendingReviews: session.pendingReviews,
+    openQuestions: session.openQuestions ?? 0,
+    state: session.state ?? "idle",
+    stateConfirmed: session.stateConfirmed ?? false,
+    task: session.task ?? null,
+  };
+}
+
+const asksNow = (session: ChordSession): boolean => stoppedAsking(filled(session));
+const asksAtAll = (session: ChordSession): boolean => hasOpenAsks(filled(session));
 
 /**
  * Which session the review chord should open, and whether it has to move the selection to
@@ -28,19 +50,23 @@ export interface ReviewShortcutTarget {
  * is asking - which is grid order, and a pending review tones a session `attention`, so
  * that is the top of the "needs you" group rather than an arbitrary session.
  *
+ * A session whose agent is still working past its message-mode questions (`async-input`) is
+ * reached too, but only after every session that has stopped: its questions are open, and the
+ * agent is not waiting on them yet.
+ *
  * Returns null when nothing anywhere is waiting. The caller must not `preventDefault` on
  * a null: an unclaimed chord belongs to the browser, and this one is a bare letter that
  * costs nothing to leave alone.
  */
 export function reviewShortcutTarget(
-  visible: readonly Pick<Session, "id" | "pendingReviews">[],
+  visible: readonly ChordSession[],
   selectedId: string | null,
 ): ReviewShortcutTarget | null {
   const selected = selectedId ? visible.find((s) => s.id === selectedId) : null;
-  if (selected && selected.pendingReviews > 0) {
+  if (selected && asksAtAll(selected)) {
     return { sessionId: selected.id, refocus: false };
   }
-  const asking = visible.find((s) => s.pendingReviews > 0);
+  const asking = visible.find(asksNow) ?? visible.find(asksAtAll);
   return asking ? { sessionId: asking.id, refocus: true } : null;
 }
 
@@ -48,7 +74,8 @@ export function reviewShortcutTarget(
  * What the review chord does, once the Residents drawer's Needs you group is counted too.
  *
  * - `fleet`: a fleet session's review queue, by `reviewShortcutTarget`'s rule, over `visible`
- *   less every resident in the drawer's group. The fleet always comes first: the drawer sits to
+ *   less every resident in the drawer's group, except that a fleet session still working past its
+ *   message-mode questions waits until every stopped resident has been reached. The fleet always comes first: the drawer sits to
  *   its right, and a fleet session asking is what the chord has always meant. A resident in the
  *   group is the drawer step's even while it is also a rail row, and even while it is the
  *   selected session, so its review never jumps ahead of a fleet session's.
@@ -70,17 +97,31 @@ export type ReviewChordTarget =
   | { kind: "resident"; sessionId: string; opens: "review" | "conversation" };
 
 export function reviewChordTarget(
-  visible: readonly Pick<Session, "id" | "pendingReviews">[],
+  visible: readonly ChordSession[],
   selectedId: string | null,
-  drawerAsking: readonly Pick<Session, "id" | "pendingReviews">[],
+  drawerAsking: readonly ChordSession[],
   openDetailId: string | null = null,
 ): ReviewChordTarget | null {
   const inGroup = new Set(drawerAsking.map((session) => session.id));
   const fleetRows = inGroup.size > 0 ? visible.filter((session) => !inGroup.has(session.id)) : visible;
-  const fleet = reviewShortcutTarget(fleetRows, selectedId);
-  if (fleet) return { kind: "fleet", ...fleet };
-  const resident = drawerAsking.find((session) => session.id !== openDetailId || session.pendingReviews > 0)
-    ?? drawerAsking[0];
+  const selected = selectedId ? fleetRows.find((session) => session.id === selectedId) : null;
+  if (selected && asksAtAll(selected)) return { kind: "fleet", sessionId: selected.id, refocus: false };
+  // Every session that has stopped comes before any still working past its message-mode questions
+  // (`async-input`), the drawer's included: the stopped fleet sessions, then the stopped residents,
+  // then the working fleet sessions, then the residents listed for their open questions alone.
+  // With no message-mode question anywhere the last two steps find nothing new, so the order is
+  // exactly what it was.
+  const fleetNow = fleetRows.find(asksNow);
+  if (fleetNow) return { kind: "fleet", sessionId: fleetNow.id, refocus: true };
+  const residentNow = firstResident(drawerAsking.filter((session) => asksNow(session) || !asksAtAll(session)), openDetailId);
+  if (residentNow) return residentNow;
+  const fleetLater = fleetRows.find(asksAtAll);
+  if (fleetLater) return { kind: "fleet", sessionId: fleetLater.id, refocus: true };
+  return firstResident(drawerAsking, openDetailId);
+}
+
+function firstResident(asking: readonly ChordSession[], openDetailId: string | null): ReviewChordTarget | null {
+  const resident = asking.find((session) => session.id !== openDetailId || asksAtAll(session)) ?? asking[0];
   if (!resident) return null;
-  return { kind: "resident", sessionId: resident.id, opens: resident.pendingReviews > 0 ? "review" : "conversation" };
+  return { kind: "resident", sessionId: resident.id, opens: asksAtAll(resident) ? "review" : "conversation" };
 }

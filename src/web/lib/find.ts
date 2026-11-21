@@ -196,7 +196,7 @@ export function collectHits(
   const hits: FindHit[] = [];
 
   for (const row of rows) {
-    if (row.kind === "episode" || row.kind === "review") continue;
+    if (row.kind === "episode" || row.kind === "review" || row.kind === "asked" || row.kind === "closed") continue;
 
     if (row.kind === "turn") {
       const who = turnWho(row.message, agentLabel);

@@ -45,6 +45,17 @@ and the **to answer** count like any other while it is pending. Its session turn
 its own colour and cadence. A merged pull request closes it unanswered with the reason `merged`,
 which takes it out of the inbox.
 
+Its card says which: **Still working** with the agent's own line on what it is doing meanwhile, or
+**Stopped, waiting on this answer**, and how long ago it was asked. Within **Questions from
+agents**, sessions that have stopped are listed first, then oldest question first; a session still
+working past its questions follows every stopped one. A question waiting inside a call always
+counts as stopped, so while the inbox holds only questions waiting inside a call, which is always
+the case if the flag has never been on, the order is oldest first, as it was. Questions filed
+while the flag was on stay answerable after it is turned off, and keep this stopped-first order
+until they are settled. The row's own
+**Dismiss** says the questions stay open and, like the cards, whether the agent keeps working or
+has stopped on them, rather than that it keeps waiting.
+
 ### Snoozed questions
 
 After the sections above, a **Snoozed** section lists the `request_input` questions you chose

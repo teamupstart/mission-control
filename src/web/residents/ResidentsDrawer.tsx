@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
@@ -54,9 +55,15 @@ export function residentDrawerEntries(
   }));
 }
 
-/** A listed resident whose session has started and needs you: the Board's Needs you tone. */
+/**
+ * A listed resident whose session has started and needs you: the Board's Needs you tone, or a
+ * message-mode question still open (`async-input`). A resident is never amber for its questions
+ * alone, because it keeps iterating on its cadence, so its card keeps the working or idle tone
+ * while the group lists it with its asks.
+ */
 function entryNeedsYou(entry: ResidentDrawerEntry): boolean {
-  return entry.session !== null && stateDisplay(entry.session).tone === "attention";
+  return entry.session !== null
+    && (stateDisplay(entry.session).tone === "attention" || openQuestionCount(entry.session) > 0);
 }
 
 /**

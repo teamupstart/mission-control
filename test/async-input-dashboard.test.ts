@@ -1,0 +1,385 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { ReviewItem, Session, TranscriptMessage } from "../src/shared/types.ts";
+import { snoozeMeanwhileLabel, snoozeMeanwhileSince } from "../src/shared/review-snooze.ts";
+import { isConversationQuestionRecord } from "../src/shared/review-item.ts";
+import { reportBucket } from "../src/shared/session.ts";
+import {
+  QUESTION_ACTION_COPY,
+  questionWait,
+  questionAgentStatus,
+  questionBadge,
+  questionOutcome,
+  questionStatusLine,
+  stoppedOnQuestions,
+} from "../src/web/lib/async-questions.ts";
+import { foldAttention } from "../src/web/lib/attention.ts";
+import { stateDisplay } from "../src/web/lib/format.ts";
+import { reviewChordTarget, reviewShortcutTarget } from "../src/web/lib/review-shortcut.ts";
+import { mergeConversation, reviewEntries, type ConversationRow } from "../src/web/lib/episodes.ts";
+import { timelineReviewsFor } from "../src/web/lib/timelineReviews.ts";
+import { transcriptRows } from "../src/web/lib/tools.ts";
+import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
+import { SnoozeSheet } from "../src/web/components/ReviewSnooze.tsx";
+import { AskedQuestionCard, ClosedQuestionCard } from "../src/web/components/AskedQuestion.tsx";
+import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+
+// The asynchronous input inbox, Phase 3: how the dashboard renders a question its agent filed and
+// kept working past. Every surface reads `ReviewItem` and `Session` through the same predicates,
+// so these pin the rendering decisions; `e2e/specs/async-input-dashboard.spec.ts` drives them in a
+// browser against the real daemon.
+
+const NOW = Date.UTC(2026, 10, 20, 15, 0);
+const MIN = 60_000;
+
+function question(over: Partial<ReviewItem> = {}): ReviewItem {
+  return {
+    id: "q1",
+    sessionId: "s1",
+    kind: "input",
+    title: "Which linter should this repo use?",
+    body: "Which linter should this repo use?",
+    status: "pending",
+    response: null,
+    snoozable: true,
+    waitMode: "message",
+    meanwhile: "proceeding with eslint; the config is one file",
+    decisions: [{
+      id: "q",
+      question: "Which linter should this repo use?",
+      options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint", recommended: true }],
+    }],
+    createdAt: NOW - 4 * MIN,
+    resolvedAt: null,
+    ...over,
+  };
+}
+
+const working = (over: Partial<Session> = {}): Session =>
+  mkSession({ state: "working", stateConfirmed: true, openQuestions: 1, ...over });
+const stopped = (over: Partial<Session> = {}): Session =>
+  mkSession({ state: "idle", stateConfirmed: true, openQuestions: 1, ...over });
+const resident = (over: Partial<Session> = {}): Session =>
+  mkSession({ state: "idle", stateConfirmed: true, openQuestions: 1, task: mkTaskSummary({ kind: "resident" }), ...over });
+
+// ---- the card's status line ----
+
+test("a message-mode card reads Still working with its meanwhile line while the agent works", () => {
+  assert.deepEqual(questionStatusLine(question(), working(), NOW), {
+    status: "working",
+    label: "Still working",
+    meanwhile: "proceeding with eslint; the config is one file",
+    asked: "asked 4m ago",
+  });
+});
+
+test("a stopped agent reads Stopped, waiting on this answer, and drops the meanwhile line", () => {
+  assert.deepEqual(questionStatusLine(question(), stopped(), NOW), {
+    status: "stopped",
+    label: "Stopped, waiting on this answer",
+    meanwhile: null,
+    asked: "asked 4m ago",
+  });
+});
+
+test("an unconfirmed agent reads stopped, as the bucket paints it amber", () => {
+  const unconfirmed = mkSession({ state: "working", stateConfirmed: false, openQuestions: 1 });
+  assert.equal(questionStatusLine(question(), unconfirmed, NOW)?.status, "stopped");
+  assert.equal(reportBucket(unconfirmed), "needs-you");
+});
+
+test("a resident between iterations reads Still working, because it wakes on its own", () => {
+  assert.equal(questionStatusLine(question(), resident(), NOW)?.label, "Still working");
+});
+
+test("the status line agrees with the bucket's idle clause for every reading", () => {
+  for (const session of [working(), stopped(), resident(), mkSession({ state: "starting", stateConfirmed: true, openQuestions: 1 })]) {
+    assert.equal(questionAgentStatus(session) === "stopped", reportBucket(session) === "needs-you", session.state);
+  }
+});
+
+test("a call-mode card has no status line and renders exactly as before", () => {
+  const callMode = question({ waitMode: undefined, meanwhile: undefined });
+  assert.equal(questionStatusLine(callMode, stopped(), NOW), null);
+  const withSession = renderToStaticMarkup(createElement(ReviewCard, { review: callMode, session: stopped() }));
+  const without = renderToStaticMarkup(createElement(ReviewCard, { review: callMode }));
+  assert.equal(withSession, without);
+  assert.doesNotMatch(withSession, /review-wait/);
+});
+
+test("the rendered card carries the status line under its title", () => {
+  const html = renderToStaticMarkup(createElement(ReviewCard, { review: question(), session: working() }));
+  assert.match(html, /class="review-wait review-wait-working"/);
+  assert.match(html, />Still working</);
+  assert.match(html, /proceeding with eslint; the config is one file/);
+  assert.ok(html.indexOf("review-wait") > html.indexOf("<h3>"), "under the title");
+  const stoppedHtml = renderToStaticMarkup(createElement(ReviewCard, { review: question(), session: stopped() }));
+  assert.match(stoppedHtml, />Stopped, waiting on this answer</);
+  assert.doesNotMatch(stoppedHtml, /proceeding with eslint/);
+});
+
+// ---- the inbox ----
+
+test("stopped sessions lead the inbox's questions, then oldest question first", () => {
+  const sessions = [
+    working({ id: "busy", name: "busy" }),
+    stopped({ id: "stuck", name: "stuck" }),
+    mkSession({ id: "gate", name: "gate", state: "awaiting_review", stateConfirmed: true, pendingReviews: 1 }),
+  ];
+  const reviews = [
+    question({ id: "a", sessionId: "busy", createdAt: NOW - 30 * MIN }),
+    question({ id: "b", sessionId: "stuck", createdAt: NOW - 5 * MIN }),
+    question({ id: "c", sessionId: "gate", waitMode: undefined, kind: "plan", createdAt: NOW - 10 * MIN }),
+  ];
+  const order = foldAttention({ sessions, reviews, ensembles: [] }).items
+    .flatMap((item) => (item.kind === "session_reviews" ? [item.session.id] : []));
+  assert.deepEqual(order, ["gate", "stuck", "busy"]);
+});
+
+test("with every review call-mode, the order is oldest first exactly as before", () => {
+  const sessions = [mkSession({ id: "x", pendingReviews: 1 }), mkSession({ id: "y", pendingReviews: 1 })];
+  const reviews = [
+    question({ id: "1", sessionId: "y", waitMode: undefined, createdAt: 1 }),
+    question({ id: "2", sessionId: "x", waitMode: undefined, createdAt: 2 }),
+  ];
+  const order = foldAttention({ sessions, reviews, ensembles: [] }).items
+    .flatMap((item) => (item.kind === "session_reviews" ? [item.session.id] : []));
+  assert.deepEqual(order, ["y", "x"]);
+  assert.equal(stoppedOnQuestions(working(), [question({ waitMode: undefined })]), true, "a call-mode review is always stopped");
+});
+
+test("a working session's questions count toward to answer but not toward need you", () => {
+  const session = working();
+  const fold = foldAttention({ sessions: [session], reviews: [question()], ensembles: [] });
+  assert.equal(fold.total, 1);
+  assert.notEqual(stateDisplay(session).tone, "attention");
+  assert.equal(fold.items.some((item) => item.kind === "session_blocked"), false);
+});
+
+test("the attention-pill invariant holds for a stopped session with open questions", () => {
+  // Every amber session owes an answer: the stopped one is amber and its question is listed.
+  const session = stopped();
+  assert.equal(stateDisplay(session).tone, "attention");
+  const fold = foldAttention({ sessions: [session], reviews: [question()], ensembles: [] });
+  assert.equal(fold.total, 1);
+  assert.equal(fold.items[0]?.kind, "session_reviews");
+});
+
+// ---- the state badge ----
+
+test("a working session's badge reads N questions open in the working tone and opens them", () => {
+  const session = working({ openQuestions: 2 });
+  const badge = questionBadge(session, stateDisplay(session));
+  assert.deepEqual({ label: badge?.label, tone: badge?.tone }, { label: "2 questions open", tone: "working" });
+  assert.equal(questionBadge(working(), stateDisplay(working()))?.label, "1 question open");
+});
+
+test("a stopped session's badge is today's amber button", () => {
+  const session = stopped();
+  assert.deepEqual(
+    { label: questionBadge(session, stateDisplay(session))?.label, tone: questionBadge(session, stateDisplay(session))?.tone },
+    { label: "waiting on your answer", tone: "attention" },
+  );
+});
+
+test("a resident with questions open keeps its own tone, never amber", () => {
+  const session = resident();
+  const badge = questionBadge(session, stateDisplay(session));
+  assert.deepEqual({ label: badge?.label, tone: badge?.tone }, { label: "1 question open", tone: "idle" });
+});
+
+test("a call-mode review keeps today's badge, and nothing to answer is no button", () => {
+  const session = mkSession({ state: "awaiting_input", stateConfirmed: true, pendingReviews: 1 });
+  const badge = questionBadge(session, stateDisplay(session));
+  assert.equal(badge?.label, "to review");
+  assert.match(badge?.tooltip ?? "", /1 review waiting on you/);
+  assert.equal(questionBadge(mkSession({ openQuestions: 0 }), stateDisplay(mkSession())), null);
+});
+
+// ---- the review chord ----
+
+test("the chord reaches a working session's questions only after every stopped session", () => {
+  const visible = [working({ id: "busy" }), stopped({ id: "stuck" })];
+  assert.deepEqual(reviewShortcutTarget(visible, null), { sessionId: "stuck", refocus: true });
+  assert.deepEqual(reviewShortcutTarget([working({ id: "busy" })], null), { sessionId: "busy", refocus: true });
+  assert.deepEqual(reviewShortcutTarget(visible, "busy"), { sessionId: "busy", refocus: false }, "the selected one still wins");
+});
+
+test("a stopped resident in the drawer comes before a fleet session still working past its question", () => {
+  const busy = working({ id: "busy" });
+  const parked = mkSession({ id: "parked", state: "awaiting_input", stateConfirmed: true, task: mkTaskSummary({ kind: "resident" }) });
+  const watcher = resident({ id: "watcher" });
+  assert.deepEqual(reviewChordTarget([busy], null, [watcher, parked]), { kind: "resident", sessionId: "parked", opens: "conversation" });
+  assert.deepEqual(reviewChordTarget([busy], null, [watcher]), { kind: "fleet", sessionId: "busy", refocus: true });
+  assert.deepEqual(reviewChordTarget([], null, [watcher]), { kind: "resident", sessionId: "watcher", opens: "review" });
+});
+
+test("a resident with open questions opens its review queue, not its conversation", () => {
+  const r = resident({ id: "watcher" });
+  assert.deepEqual(reviewChordTarget([], null, [r]), { kind: "resident", sessionId: "watcher", opens: "review" });
+});
+
+// ---- the conversation ----
+
+function order(rows: ConversationRow[]): string[] {
+  return rows.map((r) =>
+    r.kind === "turn" || r.kind === "tools" ? r.id : `${r.kind}:${r.kind === "episode" ? r.episode.marker : r.review.id}`);
+}
+
+function msg(id: string, ts: number): TranscriptMessage {
+  return { id, role: "assistant", text: `turn ${id}`, tools: [], ts };
+}
+
+test("an open question is an Asked entry where it was filed, while the agent carried on", () => {
+  const q = question({ createdAt: 150 });
+  const rows = mergeConversation(transcriptRows([msg("a", 100), msg("b", 200)]), [], [q]);
+  assert.deepEqual(order(rows), ["a", "asked:q1", "b"]);
+});
+
+test("an answered question keeps its Asked entry and gains the gold answer at the resolution", () => {
+  const q = question({ createdAt: 150, status: "answered", resolvedAt: 250, resolvedBy: "human", response: "eslint" });
+  const rows = mergeConversation(transcriptRows([msg("a", 100), msg("b", 200), msg("c", 300)]), [], [q]);
+  assert.deepEqual(order(rows), ["a", "asked:q1", "b", "review:q1", "c"]);
+});
+
+test("Foreman's answer, a merge closure, an orphaning and a withdrawal each stay on the Asked entry", () => {
+  for (const over of [
+    { status: "answered" as const, resolvedBy: "foreman" as const, resolvedAt: 250 },
+    { status: "orphaned" as const, closedReason: "merged" as const, resolvedAt: 250 },
+    { status: "orphaned" as const, resolvedAt: 250 },
+    { status: "withdrawn" as const, response: "no longer needed", resolvedAt: 250 },
+  ]) {
+    assert.deepEqual(reviewEntries(question({ createdAt: 150, ...over })).map((e) => `${e.kind}@${e.ts}`), ["asked@150"], over.status);
+  }
+});
+
+test("a call-mode question a merge closed is a closure entry where it was snoozed", () => {
+  const snoozedThenMerged = question({
+    waitMode: undefined, status: "orphaned", closedReason: "merged", createdAt: 100, resolvedAt: 400,
+    snooze: { at: 200, until: 9_000, mode: "judgment", optionId: null, remindedAt: null },
+  });
+  assert.deepEqual(reviewEntries(snoozedThenMerged).map((e) => `${e.kind}@${e.ts}`), ["closed@200"]);
+  const pendingThenMerged = question({ waitMode: undefined, status: "orphaned", closedReason: "merged", createdAt: 100, resolvedAt: 400 });
+  assert.deepEqual(reviewEntries(pendingThenMerged).map((e) => `${e.kind}@${e.ts}`), ["closed@400"]);
+  const otherOrphan = question({ waitMode: undefined, status: "orphaned", createdAt: 100, resolvedAt: 400 });
+  assert.deepEqual(reviewEntries(otherOrphan), [], "an ordinary orphaned call-mode question stays out, as before");
+});
+
+test("the outcome line says how each question ended", () => {
+  assert.equal(questionOutcome(question()).state, "open");
+  assert.equal(questionOutcome(question({ status: "orphaned", closedReason: "merged" })).text, "Closed unanswered: pull request merged");
+  assert.equal(questionOutcome(question({ status: "orphaned" })).text, "Closed unanswered");
+  assert.deepEqual(questionOutcome(question({ status: "withdrawn", response: "found it in the README" })), {
+    state: "withdrawn", text: "Withdrawn by the agent", detail: "found it in the README",
+  });
+  assert.equal(questionOutcome(question({ status: "answered", resolvedBy: "foreman" })).text, "Answered by Foreman");
+  assert.equal(questionOutcome(question({ status: "dismissed", resolvedBy: "human" })).text, "Dismissed without an answer");
+});
+
+test("an open Asked entry says whether its agent is still working or has stopped, and an ended one does not", () => {
+  const open = (session: Session) => renderToStaticMarkup(createElement(AskedQuestionCard, { review: question(), session }));
+  assert.match(open(working()), /review-asked-status review-wait-working[^>]*><span class="review-wait-state">Still working</);
+  assert.match(open(stopped()), /review-wait-stopped[^>]*><span class="review-wait-state">Stopped, waiting on this answer</);
+  assert.match(open(resident()), />Still working</);
+  const ended = renderToStaticMarkup(createElement(AskedQuestionCard, {
+    review: question({ status: "answered", resolvedBy: "human" }), session: stopped(),
+  }));
+  assert.doesNotMatch(ended, /review-asked-status/);
+  assert.match(ended, />Answered</);
+});
+
+test("the Asked entry has an Answer button only while the question is open", () => {
+  const open = renderToStaticMarkup(createElement(AskedQuestionCard, { review: question(), onAnswer: () => {} }));
+  assert.match(open, />Asked</);
+  assert.match(open, />Answer</);
+  assert.match(open, /proceeding with eslint/);
+  const merged = renderToStaticMarkup(createElement(AskedQuestionCard, {
+    review: question({ status: "orphaned", closedReason: "merged" }), onAnswer: () => {},
+  }));
+  assert.match(merged, /Closed unanswered: pull request merged/);
+  assert.doesNotMatch(merged, />Answer</);
+  const closed = renderToStaticMarkup(createElement(ClosedQuestionCard, {
+    review: question({ waitMode: undefined, status: "orphaned", closedReason: "merged" }),
+  }));
+  assert.match(closed, /Closed unanswered: pull request merged/);
+});
+
+test("the timeline admits a filed question in any status, and a merge-closed call-mode one", () => {
+  const live = [
+    question({ id: "open" }),
+    question({ id: "foreman", status: "answered", resolvedBy: "foreman" }),
+    question({ id: "merged-call", waitMode: undefined, status: "orphaned", closedReason: "merged" }),
+    question({ id: "other-call", waitMode: undefined, status: "pending" }),
+    question({ id: "elsewhere", sessionId: "s2" }),
+  ];
+  assert.deepEqual(timelineReviewsFor("s1", [], live, true).map((r) => r.id).sort(), ["foreman", "merged-call", "open"]);
+  assert.equal(isConversationQuestionRecord({ waitMode: undefined, closedReason: null }), false);
+});
+
+test("with the flag off, a merge-closed call-mode question stays out of the conversation, as before", () => {
+  const mergedCall = question({ id: "merged-call", waitMode: undefined, status: "orphaned", closedReason: "merged", resolvedAt: 400 });
+  // From the history route as well as live: neither half may bring it back.
+  assert.deepEqual(timelineReviewsFor("s1", [mergedCall], [mergedCall], false), []);
+  // A filed question was asked only because the flag was on, and stays answerable after it goes off.
+  assert.deepEqual(timelineReviewsFor("s1", [], [question({ id: "open" })], false).map((r) => r.id), ["open"]);
+  // And an ordinary human answer is in the conversation whichever way the flag reads.
+  const answered = question({ id: "answered", waitMode: undefined, status: "answered", resolvedBy: "human", resolvedAt: 300 });
+  assert.deepEqual(timelineReviewsFor("s1", [answered], [], false).map((r) => r.id), ["answered"]);
+});
+
+// ---- Remind me later ----
+
+test("a message-mode question's default Meanwhile reads Keep doing what it said", () => {
+  const html = renderToStaticMarkup(createElement(SnoozeSheet, { review: question(), onBack: () => {} }));
+  assert.match(html, /Keep doing what it said/);
+  assert.match(html, /It said &quot;proceeding with eslint; the config is one file&quot;. Nothing is sent to it/);
+  assert.doesNotMatch(html, /Use your best judgment/);
+  const callMode = renderToStaticMarkup(createElement(SnoozeSheet, { review: question({ waitMode: undefined }), onBack: () => {} }));
+  assert.match(callMode, /Use your best judgment/);
+});
+
+test("every action's words follow the agent's current status, never contradicting the card", () => {
+  assert.equal(questionWait(question({ waitMode: undefined }), stopped()), "call");
+  assert.equal(questionWait(question(), working()), "working");
+  assert.equal(questionWait(question(), stopped()), "stopped");
+  assert.equal(questionWait(question(), resident()), "working");
+  assert.match(QUESTION_ACTION_COPY.stopped.dismissRow, /has stopped on them/);
+  assert.match(QUESTION_ACTION_COPY.stopped.remindLater, /has stopped on it/);
+  for (const copy of Object.values(QUESTION_ACTION_COPY.stopped)) assert.doesNotMatch(copy, /keeps working/);
+  assert.match(QUESTION_ACTION_COPY.call.dismissRow, /The agent keeps waiting/, "call-mode words unchanged");
+
+  const card = (session: Session) => renderToStaticMarkup(createElement(ReviewCard, { review: question(), session }));
+  assert.match(card(working()), /The agent keeps working, and this question comes back to you later/);
+  assert.match(card(stopped()), /The agent has stopped on it and hears nothing unless you choose a provisional option or Hold/);
+  assert.doesNotMatch(card(stopped()), /keeps working/);
+
+  const sheet = renderToStaticMarkup(createElement(SnoozeSheet, { review: question(), wait: "stopped", onBack: () => {} }));
+  assert.match(sheet, /It has since stopped. Nothing is sent to it/);
+  assert.match(sheet, /the agent stays stopped unless you choose a provisional option or Hold/);
+});
+
+test("the snooze labels read true for an agent that never waited", () => {
+  const judgment = { mode: "judgment" as const, optionId: null };
+  assert.equal(snoozeMeanwhileLabel(question(), judgment), "Keep doing what it said");
+  assert.equal(snoozeMeanwhileLabel(question({ waitMode: undefined }), judgment), "Use its best judgment");
+  assert.equal(snoozeMeanwhileSince(question(), judgment), "The agent has kept doing what it said it would when it asked.");
+  assert.equal(snoozeMeanwhileLabel(question(), { mode: "option", optionId: "o0" }), 'Go with "biome" for now');
+  assert.equal(snoozeMeanwhileLabel(question(), { mode: "hold", optionId: null }), "Hold work that depends on this");
+});
+
+// ---- the Residents drawer ----
+
+const { residentDrawerGroups } = await import("../src/web/residents/ResidentsDrawer.tsx");
+type DrawerEntry = Parameters<typeof residentDrawerGroups>[0][number];
+
+test("a working resident with an open question is listed under Needs you, its tone unchanged", () => {
+  const entry = (session: Session): DrawerEntry => ({ session } as DrawerEntry);
+  const asking = resident({ id: "asking", state: "working" });
+  const quiet = resident({ id: "quiet", openQuestions: 0 });
+  const groups = residentDrawerGroups([entry(quiet), entry(asking)]);
+  assert.deepEqual(groups.needsYou.map((e) => e.session?.id), ["asking"]);
+  assert.deepEqual(groups.others.map((e) => e.session?.id), ["quiet"]);
+  assert.equal(stateDisplay(asking).tone, "working", "never amber for its questions alone");
+});

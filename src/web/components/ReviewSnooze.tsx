@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import {
   DEFAULT_REVIEW_SNOOZE_DELAY,
+  KEEP_DOING_WHAT_IT_SAID,
   REVIEW_SNOOZE_DELAYS,
   provisionalOptions,
   reviewSnoozeDelay,
@@ -14,6 +15,7 @@ import { api } from "../lib/api.ts";
 import { untilTime } from "../lib/format.ts";
 import { reminderClock } from "../lib/review-snooze.ts";
 import { useNow } from "../useNow.ts";
+import { QUESTION_ACTION_COPY, type QuestionWait } from "../lib/async-questions.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -29,16 +31,22 @@ export function ClockGlyph(): React.JSX.Element {
   );
 }
 
-/** The footer button that opens the sheet, beside Dismiss on the question's card. */
+/**
+ * The footer button that opens the sheet, beside Dismiss on the question's card. `wait`: how the
+ * agent waits right now. A message-mode question (`async-input`) never held a call, so a snooze
+ * releases no one: its words say whether the agent is still working or has stopped on it.
+ */
 export function RemindLaterButton({
   disabled,
   onClick,
+  wait = "call",
 }: {
   disabled: boolean;
   onClick: () => void;
+  wait?: QuestionWait;
 }): React.JSX.Element {
   return (
-    <Tooltip label="Not ready to decide? The agent stops waiting and carries on, and this question comes back to you later">
+    <Tooltip label={QUESTION_ACTION_COPY[wait].remindLater}>
       <button type="button" className="btn btn-later" disabled={disabled} onClick={onClick}>
         <ClockGlyph />
         Remind me later…
@@ -69,9 +77,12 @@ function meanwhileFromChoice(choice: MeanwhileChoice): ReviewSnoozeMeanwhile {
  */
 export function SnoozeSheet({
   review,
+  wait = review.waitMode === "message" ? "working" : "call",
   onBack,
 }: {
   review: ReviewItem;
+  /** How the agent waits right now (`questionWait`); the card that opens the sheet passes it. */
+  wait?: QuestionWait;
   /** Close the sheet without snoozing; the form comes back as it was. */
   onBack: () => void;
 }): React.JSX.Element {
@@ -82,6 +93,9 @@ export function SnoozeSheet({
   const [err, setErr] = useState<string | null>(null);
   const options = provisionalOptions(review);
   const earlier = review.snooze ?? null;
+  // A message-mode question's agent already carried on when it asked (`async-input`): the default
+  // lets it keep doing what it said, and sends it nothing. Still the `judgment` mode on the wire.
+  const carryingOn = wait !== "call";
   const name = `snooze-${review.id}`;
   const back = reminderClock(now + reviewSnoozeDelay(delay).ms, now);
 
@@ -129,8 +143,12 @@ export function SnoozeSheet({
           <div className="snooze-meanwhile">
             <MeanwhileRow
               name={`${name}-meanwhile`}
-              label="Use your best judgment"
-              detail="It picks, says which, and keeps that choice easy to change"
+              label={carryingOn ? KEEP_DOING_WHAT_IT_SAID : "Use your best judgment"}
+              detail={carryingOn
+                ? `${review.meanwhile
+                  ? `It said "${review.meanwhile.replace(/[.\s]+$/, "")}".`
+                  : "It already carried on when it asked."}${wait === "stopped" ? " It has since stopped." : ""} Nothing is sent to it`
+                : "It picks, says which, and keeps that choice easy to change"}
               checked={choice === "judgment"}
               disabled={busy}
               onPick={() => setChoice("judgment")}
@@ -163,7 +181,7 @@ export function SnoozeSheet({
             Back
           </button>
         </Tooltip>
-        <Tooltip label="Park this question; the agent stops waiting now">
+        <Tooltip label={QUESTION_ACTION_COPY[wait].snooze}>
           <button type="button" className="btn btn-snooze" data-dialog-default disabled={busy} onClick={() => void submit()}>
             <ClockGlyph />
             {/* "at 3:30 PM" for today; "tomorrow 2:30 PM" or "Mon 12:30 AM" stand on their own. */}

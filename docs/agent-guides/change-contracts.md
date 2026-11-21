@@ -145,6 +145,17 @@ and the span attribute `work_unit_id`. They are spelled once, in `src/shared/wor
 and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
 choose one. See [Work units](../work-units.md).
 
+What a session emits for its work unit follows its launch record (`session_launch_work_units`),
+never the `work-unit-id` flag. The flag is read in one place, `launchWorkUnitId`, once per
+launch, and that one value goes to the agent's environment and the record. Later readers use
+`launchWorkUnitFor(session)` or `sessionWorkUnitId(session, task)` from
+`src/server/work-unit.ts`. A new launch path computes the decision where it begins, hands it to
+the registry before the session's first event (`registerSdkSession`'s `launchWorkUnitId`, or
+`expectTerminalLaunchWorkUnit` with the launch's own state home before a terminal spawn, then
+`settleTerminalLaunchWorkUnit` with the launch's outcome), and applies it with `withWorkUnit` or
+`workUnitEnv`; it never sets `WORK_UNIT_ID` any other way. A terminal hand-over is never matched
+by checkout path: only the agent beneath that launch's wrapper may take it.
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs

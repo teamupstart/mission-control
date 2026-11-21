@@ -3,6 +3,13 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
+/**
+ * The one owner of the work unit preview's id. The server reads it in one place,
+ * `launchWorkUnitId` in `src/server/work-unit.ts`, once per launch; the dashboard row reads it
+ * through `useFeatureFlag`. See `docs/work-units.md`.
+ */
+export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: "codex-resident-native-mcp",
@@ -71,6 +78,16 @@ export const FEATURE_FLAGS = [
       "as waiting on your answer.",
     stage: "preview",
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
+  },
+  {
+    id: WORK_UNIT_ID_FLAG_ID,
+    label: "Work unit id",
+    description:
+      "Tag a task's sessions with one id, so its traces and MCP calls can be found together. An agent " +
+      "started while this is on gets WORK_UNIT_ID in its environment, and the session detail shows the " +
+      "id. A switch takes effect at each agent's next start.",
+    stage: "preview",
+    keywords: ["work unit", "WORK_UNIT_ID", "x-work-unit-id", "mcp", "trace", "telemetry"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

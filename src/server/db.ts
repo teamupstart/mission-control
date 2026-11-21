@@ -281,7 +281,10 @@ let db: DatabaseSync | undefined;
 // 40: a task's work unit id (`tasks.work_unit_id`, @shared/work-unit.ts) and its index, nullable
 //     with no backfill: an older task gets its id at its next dispatch or assign, and nothing is
 //     inferred for it. Written once, enforced by `upsertTask`.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 40;
+// 41: the work unit each session's agent was started with (`session_launch_work_units`), a new
+//     empty table keyed by note key: a session running before it has no record and emits no
+//     work unit until its next start. No existing row is migrated.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 41;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3644,6 +3647,7 @@ function outstandingFileCommentIndexSql(): string {
 function migrate(d: DatabaseSync): void {
   migrateHomeDispatch(d);
   migrateTaskWorkUnit(d);
+  migrateLaunchWorkUnits(d);
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -5331,6 +5335,27 @@ function migrateHomeDispatch(d: DatabaseSync): void {
 function migrateTaskWorkUnit(d: DatabaseSync): void {
   addColumn(d, "tasks", "work_unit_id", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_work_unit ON tasks(work_unit_id)");
+}
+
+/**
+ * Schema 41: the launch record - the work unit each session's agent was started with.
+ *
+ * Its own table, keyed like `session_standing_instructions` (noteKeyFor = agentSessionId ??
+ * synthetic id) and for the same reason: it describes the PROCESS, which a `/clear` or an
+ * assign does not end, so the row follows the session across every note-key rotation. One row
+ * per session whose agent carries a work unit; an agent started with none has no row.
+ * Additive: an upgraded database gains an empty table.
+ */
+function migrateLaunchWorkUnits(d: DatabaseSync): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_launch_work_units (
+      note_key     TEXT PRIMARY KEY,
+      work_unit_id TEXT NOT NULL,
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_launch_work_units_age
+      ON session_launch_work_units(created_at);
+  `);
 }
 
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
@@ -12645,6 +12670,98 @@ export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan:
   const r = openDb()
     .prepare(
       `DELETE FROM session_standing_instructions
+         WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- session launch work units (what each agent was started with) ----
+
+/** One session's launch record: the work unit its agent's environment carries. */
+export interface LaunchWorkUnitRecord {
+  noteKey: string;
+  workUnitId: string;
+  createdAt: number;
+}
+
+interface LaunchWorkUnitRow {
+  note_key: string;
+  work_unit_id: string;
+  created_at: number;
+}
+
+/**
+ * Record what a launch that succeeded carries, replacing any earlier launch's row under this
+ * key - an agent's environment belongs to its latest start. A launch that carries none deletes
+ * the row instead (`deleteLaunchWorkUnit`); there is no "none" row.
+ */
+export function upsertLaunchWorkUnit(record: LaunchWorkUnitRecord): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_launch_work_units (note_key, work_unit_id, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET work_unit_id=excluded.work_unit_id, created_at=excluded.created_at`,
+    )
+    .run(record.noteKey, record.workUnitId, record.createdAt);
+}
+
+export function deleteLaunchWorkUnit(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_launch_work_units WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Every record, reloaded into the registry on start. A row whose id is not well formed - which
+ * nothing in this build writes - is skipped rather than trusted: it could only tag a session
+ * with something that is not a work unit.
+ */
+export function loadLaunchWorkUnits(): LaunchWorkUnitRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT note_key, work_unit_id, created_at FROM session_launch_work_units`)
+    .all() as unknown as LaunchWorkUnitRow[];
+  return rows
+    .filter((row) => isWorkUnitId(row.work_unit_id))
+    .map((row) => ({ noteKey: row.note_key, workUnitId: row.work_unit_id, createdAt: row.created_at }));
+}
+
+/**
+ * Carry a record across a note-key rotation - every rotation, as `moveStandingInstructions`
+ * does and for its reason: a `/clear` or an assign starts a new conversation, not a new
+ * process, and the variable is on the process. Last-write-wins on the destination.
+ */
+export function moveLaunchWorkUnit(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT work_unit_id, created_at FROM session_launch_work_units WHERE note_key = ?`)
+      .get(fromKey) as { work_unit_id: string; created_at: number } | undefined;
+    if (row) {
+      d.prepare(
+        `INSERT INTO session_launch_work_units (note_key, work_unit_id, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(note_key) DO UPDATE SET work_unit_id=excluded.work_unit_id, created_at=excluded.created_at`,
+      ).run(toKey, row.work_unit_id, row.created_at);
+      d.prepare(`DELETE FROM session_launch_work_units WHERE note_key = ?`).run(fromKey);
+    }
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete records that belong to no live session and have gone stale. Returns how many.
+ * `pruneStandingInstructions`' twin, with the same contract: its only caller,
+ * `Registry.pruneLaunchWorkUnits`, proves liveness first, so an empty `liveKeys` means nothing
+ * is live.
+ */
+export function pruneLaunchWorkUnits(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_launch_work_units
          WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
     )
     .run(olderThan, ...keys);

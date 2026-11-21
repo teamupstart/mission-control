@@ -23,12 +23,20 @@ import {
   isolatedScoutSubmissionCredentialPath,
   readToken,
 } from "../shared/harness-runtime.mjs";
+import { WORK_UNIT_ENV_VAR } from "../shared/work-unit.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import { shellCommand } from "./terminal/shell.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
+
+/**
+ * Variables a child may carry only when its launch sets them: removed from every inherited
+ * environment, and unset by the terminal wrapper before its exports. Today that is the work
+ * unit (`docs/work-units.md`, "The launch environment").
+ */
+const INHERITED_ONLY_ENV_NAMES = [WORK_UNIT_ENV_VAR] as const;
 
 /** Terminal pane identifiers that a headless or SDK child must never inherit. */
 const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
@@ -157,6 +165,10 @@ export function agentSubprocessEnv(
   for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value !== undefined) env[name] = value;
   }
+  // Never inherited: the daemon may have been started from a worker's shell, and no process it
+  // spawns - an agent, a workflow check, a one-shot model call - may carry that unit's id. A
+  // launch that carries one supplies it in `extraEnv`, which is applied after this.
+  for (const name of INHERITED_ONLY_ENV_NAMES) delete env[name];
   Object.assign(env, options.extraEnv);
   if (!env.GOCACHE) env.GOCACHE = sharedGoBuildCache();
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
@@ -210,8 +222,9 @@ export function agentSubprocessEnv(
  * Three details are load-bearing:
  *
  *   - The `unset` comes first and names every spelling of the state home, so the login
- *     shell's own `MISSION_HOME` cannot survive into the agent. It replaces the
- *     `env -u NAME` prefix rather than sitting beside it.
+ *     shell's own `MISSION_HOME` cannot survive into the agent, and `WORK_UNIT_ID`, so a
+ *     terminal server started from a worker's shell cannot tag the agent with that unit. It
+ *     replaces the `env -u NAME` prefix rather than sitting beside it.
  *   - The exports carry `PATH`. Herdr's `workspace.create` accepts an `env` map, and it is
  *     NOT a substitute: measured, the map reaches the shell, but the login shell's rc files
  *     then rewrite `PATH` back to the operator's interactive one, which is exactly the
@@ -224,7 +237,10 @@ export function agentSubprocessEnv(
 function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[], preserveShellGoCache: boolean): string {
   return [
     "#!/bin/sh",
-    `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
+    // The pane already holds the terminal server's environment, so a variable the launch
+    // leaves out would otherwise reach the agent from there. The exports below are then the
+    // only source of a work unit: set when the launch carries one, absent when it does not.
+    `unset ${[...STATE_HOME_ENV_NAMES, ...INHERITED_ONLY_ENV_NAMES].join(" ")}`,
     ...Object.entries(env).map(([name, value]) => {
       const assignment = `export ${name}=${shellCommand([value])}`;
       // Terminal servers and login shells can supply a setting the daemon never saw.

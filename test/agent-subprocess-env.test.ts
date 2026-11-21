@@ -188,8 +188,9 @@ test("the launch wrapper carries the environment and the agent, so what a backen
 
   const script = readFileSync(argv[1]!, "utf8");
   // Every state-home spelling is removed before anything is exported, so the login shell's
-  // own MISSION_HOME cannot survive into the agent.
-  assert.match(script, /^unset MISSION_HOME FLEET_HOME HARNESS_HOME$/m);
+  // own MISSION_HOME cannot survive into the agent - and so is WORK_UNIT_ID, so the terminal
+  // server's cannot either: only the launch's own export below may set it.
+  assert.match(script, /^unset MISSION_HOME FLEET_HOME HARNESS_HOME WORK_UNIT_ID$/m);
   assert.match(script, /^export PATH=/m);
   assert.match(script, /^export MISSION_HOME=/m);
   // The agent is the last statement, quoted the way a backend would quote it, and NOT

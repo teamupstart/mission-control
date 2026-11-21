@@ -5,8 +5,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
-[Fold the drawer's Profiles](residents.md#the-residents-drawer) and
-[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) as previews.
+[Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) and
+[Work unit id](work-units.md#the-launch-environment) (`work-unit-id`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -160,6 +161,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the session detail's "work unit" row. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and

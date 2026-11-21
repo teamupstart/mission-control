@@ -95,6 +95,13 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](sessions.md#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
+**`WORK_UNIT_ID` is set, never read.** Mission Control does not take it as a setting. With the
+`work-unit-id` preview on when an agent starts, Mission Control sets it in that agent's
+environment to the task's [work unit](work-units.md#the-launch-environment) id, so MCP config
+that references it sends the `x-work-unit-id` header. A value in the daemon's own environment, or
+in the shell of the terminal server a pane runs in, is removed from every process Mission
+Control starts: an agent carries only its own launch's value, or none.
+
 Every configurable built-in command is declared in the executable catalog. Its override uses
 `MISSION_<TOOL>_BIN`, then the compatible `FLEET_` and `HARNESS_` forms. This applies to agent
 CLIs, `gh`, Git, Node.js, npm, Jira, Atlassian CLI, Conductor, the legacy Treehouse bridge, terminal backends,

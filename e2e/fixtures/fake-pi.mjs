@@ -43,7 +43,7 @@ function record(request = null) {
   mkdirSync(join(recordDir, "pi"), { recursive: true });
   writeFileSync(
     recordPath,
-    JSON.stringify({ argv, cwd: process.cwd(), request }, null, 2),
+    JSON.stringify({ argv, cwd: process.cwd(), request, workUnitId: process.env.WORK_UNIT_ID ?? null }, null, 2),
   );
 }
 

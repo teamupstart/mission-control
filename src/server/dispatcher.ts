@@ -1,5 +1,12 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
+import { workUnitEnv } from "./agent-work-unit.ts";
+import { launchWorkUnitId } from "./work-unit.ts";
+import {
+  expectTerminalLaunchWorkUnit,
+  settleTerminalLaunchWorkUnit,
+  type TerminalLaunchWorkUnit,
+} from "./terminal-launch-work-units.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -430,6 +437,16 @@ export class Dispatcher {
     // a refusal BEFORE it (a missing binary, an unavailable tool bundle) stays distinguishable
     // from a launch that resolved a model and then failed.
     let resolution: DispatchResolution | null = null;
+    // This launch's one work unit decision, made here where the launch begins and never again:
+    // the agent's environment, the launch record the registry installs when the agent
+    // appears, and the shaping run all take this value, so a switch of the preview while this
+    // launch is in flight cannot give them different answers. `TaskManager.dispatch` has
+    // already given an older row its id, so its first dispatch decides with it.
+    const workUnitId = launchWorkUnitId(task);
+    // A terminal launch's hand-over to the registry, and whether the launch got as far as a
+    // task running on its agent - the only outcome that confirms it (see the `finally`).
+    let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
+    let launchSucceeded = false;
     noteDispatchStarted(taskId);
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
@@ -456,7 +473,7 @@ export class Dispatcher {
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);
       if (task.kind === "pipeline") {
-        await this.dispatchPipeline(taskId, task);
+        await this.dispatchPipeline(taskId, task, workUnitId);
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
         // dispatch this facility ever recorded - and a launch-success rate computed from
         // failures alone is worse than no rate at all. Nothing is resolved on this path: the
@@ -810,6 +827,7 @@ export class Dispatcher {
           standing,
           standingFallbackTurnOne,
           residentMcp,
+          workUnitId,
         );
         observeDispatchFinished({
           taskId,
@@ -977,6 +995,11 @@ export class Dispatcher {
         : null;
       let home: SpawnedHome;
       try {
+        // Handed over immediately before the spawn, keyed by this launch's own state home -
+        // the one its wrapper runs from. The agent is discovered, and announced, before this
+        // function gets control back, and the registry installs the launch record when it
+        // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
+        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId);
         home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
@@ -985,7 +1008,7 @@ export class Dispatcher {
           agentArgs,
           stateHome,
           terminalBackend,
-          advisorEnv,
+          { ...advisorEnv, ...workUnitEnv(workUnitId) },
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
@@ -1106,6 +1129,7 @@ export class Dispatcher {
       // and nothing more. Provenance lives in the work-episode bindings used by
       // `bindTaskToWorkEpisode` and `mergedPrFor`.
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      launchSucceeded = true;
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
       observeDispatchFinished({
         taskId,
@@ -1215,11 +1239,27 @@ export class Dispatcher {
         });
         await this.teardownTaskResources(taskId, cur, message);
       }
+    } finally {
+      // The terminal launch's verdict on its work unit hand-over. Every exit short of the task
+      // running on its agent - a failure, or a task settled underneath the launch - is
+      // "failed", never "not-started": a failed dispatch keeps its terminal, so its agent may
+      // be running with the variable, and its record must outlive the failure for as long as
+      // that agent does. A no-op for an embedded launch.
+      settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
     }
   }
 
-  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
-  private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
+  /**
+   * Launch Conductor's Engineer host, leaving provider worktree creation to the engine.
+   *
+   * `workUnitId` is the launch's one decision. The managed host is an agent this supervisor
+   * starts, so it carries the id and gets a launch record. The terminal host is Conductor's own
+   * CLI, not an agent: the agents it starts are its engine's, discovered rather than launched by
+   * Mission Control, so no launch record could follow them - and a variable they inherited from
+   * the host would tag their MCP calls with a work unit their sessions never emit. It therefore
+   * carries none (and inherits none: `agentSubprocessEnv` and the wrapper remove it).
+   */
+  private async dispatchPipeline(taskId: string, task: Task, workUnitId: string | null): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
     }
@@ -1640,6 +1680,7 @@ export class Dispatcher {
         if (problem) throw new Error(problem);
         session = await supervisor.start({
           sessionId,
+          workUnitId,
           agent: task.agent,
           name: task.title.trim() || launch.cwd,
           cwd: launch.cwd,
@@ -1931,6 +1972,8 @@ export class Dispatcher {
     standingFallbackTurnOne: string,
     /** A resident run's pinned MCP set, rendered beside Mission's descriptor. */
     residentMcp: ResidentMcpLaunch | null = null,
+    /** The launch's one work unit decision, from the top of `dispatch`. */
+    workUnitId: string | null = null,
   ): Promise<void> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -2026,6 +2069,7 @@ export class Dispatcher {
       // nothing out of band for them.
       standingInstructions: { delivery: standing, fallbackPrompt: standingFallbackTurnOne },
       taskId,
+      workUnitId,
       gitBranch: wt.branch,
       gitRoot: taskHasRepository(task) ? wt.path : null,
       repoRoot: taskHasRepository(task) ? task.repoRoot : null,

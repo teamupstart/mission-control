@@ -1,6 +1,8 @@
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
+import { WORK_UNIT_ID_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { WorkUnitRow } from "../WorkUnitRow.tsx";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
@@ -488,11 +490,16 @@ export function ConsoleDetail({
   // `silent` is already true for a session with no task, so this needs no separate guard.
   const showTaskChip = !pill.silent;
   const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
+  // The id this session emits, and only while the preview is on: with it off the detail is
+  // exactly what it was before work units existed. `task.workUnitId` is already the emitted
+  // id (the agent's launch record while the task has the same one), never the task's own.
+  const workUnitsShown = useFeatureFlag(WORK_UNIT_ID_FLAG_ID);
+  const workUnitId = workUnitsShown ? (session.task?.workUnitId ?? null) : null;
   // Guarded as an element rather than with CSS `:empty`. The band carries padding and a
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || workUnitId !== null;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -760,6 +767,7 @@ export function ConsoleDetail({
             <dd className="mono branch">{workspaceBranch}</dd>
           </div>
         )}
+        {workUnitId !== null && <WorkUnitRow workUnitId={workUnitId} />}
         {session.task && (
           <>
           {/* The chip survives as long as it is hosting something - a kind, a title, the

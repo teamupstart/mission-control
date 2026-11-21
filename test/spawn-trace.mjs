@@ -20,12 +20,16 @@
 import childProcess from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
-const dir = process.env.MISSION_TEST_SPAWN_TRACE;
+// Absolute from the first traced process on, and handed down that way: a descendant started
+// in another working directory would otherwise resolve a relative value somewhere else, and
+// the report on the original directory would silently miss its records.
+const dir = process.env.MISSION_TEST_SPAWN_TRACE ? resolve(process.env.MISSION_TEST_SPAWN_TRACE) : "";
 
 if (dir) {
+  process.env.MISSION_TEST_SPAWN_TRACE = dir;
   mkdirSync(dir, { recursive: true });
   // A worker is the first traced process in its chain: nothing above it named a file yet.
   const role = process.env.MISSION_TEST_SPAWN_TRACE_FILE ? "descendant" : "worker";

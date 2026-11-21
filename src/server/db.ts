@@ -948,7 +948,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- never pruned either: they can never bind, and they are the record that a turn with their
     -- words could be Mission Control's. Only an ordinary unbound row past the delivery window is
     -- pruned: once a binding walk (the prune tick walks live conversations) has expired it, or
-    -- once no live session has held its conversation for the goal table's prune age. No message text, only its fingerprint.
+    -- once no live session holds its conversation and delivered_at is older than the goal table's
+    -- prune age (an old row can go on the first tick after its session exits). No message text,
+    -- only its fingerprint.
     --
     -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
     -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it

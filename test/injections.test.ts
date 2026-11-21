@@ -12,6 +12,32 @@ import {
 
 beforeEach(() => forgetInjections());
 
+test("a workflow receipt observes its consumed echo once, before or after send confirmation", () => {
+  for (const confirmFirst of [false, true]) {
+    const seen: string[] = [];
+    reserveInjection("receipt", "packet", "workflow", () => seen.push("echo"));
+    if (confirmFirst) confirmReservedInjection("receipt", "packet", "workflow");
+    assert.deepEqual(seen, []);
+    assert.equal(claimInjectionEcho("receipt", "packet"), "workflow");
+    if (!confirmFirst) confirmReservedInjection("receipt", "packet", "workflow");
+    assert.deepEqual(seen, ["echo"]);
+    assert.equal(claimInjectionEcho("receipt", "packet"), undefined, "a human retype has no receipt");
+    assert.deepEqual(seen, ["echo"]);
+  }
+});
+
+test("refused or ambiguous duplicate reservations cannot attribute an episode", () => {
+  let calls = 0;
+  reserveInjection("receipt", "refused", "workflow", () => calls++);
+  releaseInjection("receipt", "refused");
+  assert.equal(claimInjectionEcho("receipt", "refused"), undefined);
+  reserveInjection("receipt", "duplicate", "workflow", () => calls++);
+  reserveInjection("receipt", "duplicate", "workflow", () => calls++);
+  claimInjectionEcho("receipt", "duplicate");
+  claimInjectionEcho("receipt", "duplicate");
+  assert.equal(calls, 0);
+});
+
 test("a delivery is credited to whoever made it, in that session only", () => {
   recordInjection("s1", "fix the arrow keys", "foreman");
   recordInjection("s1", "/reload-skills", "harness");

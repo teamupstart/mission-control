@@ -192,8 +192,10 @@ test("continuing an SDK task in Ghostty retains the returned launch target", asy
   const continued = await getTask();
   expect(continued.sessionId).not.toBe(embedded);
   expect(continued.terminalLaunch?.sessionId).toBe(continued.sessionId);
-  await expect(dashboard.getByRole("navigation", { name: "Sessions" })
-    .getByRole("button", { name: /^Continue in Ghostty .* idle / })).toHaveAttribute("aria-current", "true");
+  const continuedRow = dashboard.getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: "Continue in Ghostty", description: "Continue in Ghostty - idle", exact: true });
+  await expect(continuedRow).toHaveAttribute("aria-current", "true");
+  await expect(continuedRow).toHaveAccessibleDescription(/Continue in Ghostty - idle/);
   await expect(dashboard.getByPlaceholder("No pane to send to")).toHaveCount(0);
   const nonce = "handoff-to-exact-ghostty-uuid";
   // Exercise the exact terminal write target, as in the native UUID acknowledgement probe.

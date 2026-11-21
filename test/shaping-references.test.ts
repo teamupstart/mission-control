@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
-  missingReferenceReason, redactResolved, referenceStatus, resolveReferenceMap, resolveReferences, scrubReason, scrubResolved,
+  holdsResolvedValue, JSON_ESCAPE_LEVELS, missingReferenceReason, redactResolved, referenceStatus, resolveReferenceMap, resolveReferences, scrubReason, scrubResolved,
 } from "../src/server/shaping/references.ts";
 
 const caller = { user: "declared-user", agent: "claude", conversation: "t_123" };
@@ -172,6 +172,30 @@ test("the status leaves out a variable named only in a header the transport repl
     transport: { type: "http", url: "https://guidance.example.test/v1", headers: { Accept: "{env:ONLY_IN_ACCEPT}", traceparent: "{env:ONLY_IN_TRACE}", "x-key": "{env:ACME_TOKEN}" } },
   });
   assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
+});
+
+test("a caller value of only spaces and tabs is unresolved, as a blank environment value is", () => {
+  for (const blank of [" ", "\t", " \t  "]) {
+    assert.deepEqual(resolveReferences("{caller.user}", { ...ctx, caller: { ...caller, user: blank } }), { ok: false, missing: ["{caller.user}"] });
+    assert.deepEqual(resolveReferences("agent {caller.agent}", { ...ctx, caller: { ...caller, agent: blank } }), { ok: false, missing: ["{caller.agent}"] });
+    assert.deepEqual(resolveReferences("{caller.conversation}", { ...ctx, caller: { ...caller, conversation: blank } }), { ok: false, missing: ["{caller.conversation}"] });
+  }
+  // Inner whitespace is a value, not a blank one.
+  assert.deepEqual(resolveReferences("{caller.user}", { ...ctx, caller: { ...caller, user: "Jane Doe" } }), {
+    ok: true, value: "Jane Doe", resolved: [{ name: "caller.user", value: "Jane Doe" }],
+  });
+});
+
+test("a resolved value escaped at every supported level of nested JSON text is found and removed", () => {
+  const value = "nest-key-9q2z";
+  let text = `{"x-api-key":"${[...value].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")}"}`;
+  for (let level = 1; level <= JSON_ESCAPE_LEVELS; level++) {
+    assert.equal(holdsResolvedValue(text, [{ name: "KEY", value }]), true, `level ${level}`);
+    const scrubbed = redactResolved(text, [{ name: "KEY", value }]);
+    assert.ok(scrubbed.includes("[KEY redacted]"), `level ${level}: ${scrubbed}`);
+    assert.equal(scrubbed.includes("\\u00"), false, `level ${level}: ${scrubbed}`);
+    text = JSON.stringify({ diagnostic: text });
+  }
 });
 
 test("an environment reference reads only the environment's own non-blank string", () => {

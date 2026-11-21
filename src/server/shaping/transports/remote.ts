@@ -2,6 +2,7 @@ import type { ShapingRequest } from "@shared/shaping.ts";
 import { plaintextCredentialProblem } from "@shared/resident-mcp.ts";
 import {
   holdsResolvedValue,
+  JSON_ESCAPE_LEVELS,
   missingReferenceReason,
   redactResolved,
   resolveReferenceMap,
@@ -143,12 +144,12 @@ export function quoted(text: string, resolved: readonly ResolvedValue[]): { text
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /**
- * `text` with JSON string escapes decoded, up to three levels deep, for a body that nests one
- * JSON document's text inside another's. Only for matching and display: a diagnostic, not data.
+ * `text` with JSON string escapes decoded, up to `JSON_ESCAPE_LEVELS` deep, for a body that nests
+ * one JSON document's text inside another's. Only for matching and display: a diagnostic, not data.
  */
 export function decodeJsonEscapes(text: string): string {
   let out = text;
-  for (let level = 0; level < 3; level++) {
+  for (let level = 0; level < JSON_ESCAPE_LEVELS; level++) {
     const next = out.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g,
       (_whole, hex: string | undefined, char: string | undefined) => (hex ? String.fromCharCode(Number.parseInt(hex, 16)) : JSON_ESCAPES[char!]!));
     if (next === out) break;

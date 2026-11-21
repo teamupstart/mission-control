@@ -580,7 +580,11 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
   whitespace and would turn that spelling back into the value. A value spelled with any JSON
   escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
-  is replaced.
+  is replaced. That holds up to three levels of JSON text nested inside JSON strings, such as a
+  serialized diagnostic inside a serialized log line, where a value is escaped once per level,
+  in a successful reply as much as in a failure reason. The depth is bounded because each level
+  costs a pass over the text and a crafted chain of escapes can peel only a few characters per
+  level, so a value escaped four or more levels deep is not found.
 - **One spelling per header.** A shaper that configures one header name twice in different
   letter case, such as `Authorization` and `authorization`, is not called: which value is sent
   would depend on their order, and two shapers sharing a connection could send each other's

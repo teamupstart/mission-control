@@ -61,6 +61,15 @@ before(async () => {
         const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
         return json(200, { guidance: [{ id: "dump", body: `{"x-api-key":"${echoed}","accept":"*/*"}` }] });
       }
+      case "/nested-echo-2":
+      case "/nested-echo-3": {
+        // The header in a diagnostic serialized as JSON text, every character a \u escape, inside
+        // one more (or two more) serialized documents: escaped once per level of nesting.
+        const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+        let text = `{"x-api-key":"${echoed}"}`;
+        for (let level = 2; level < Number(path.slice(-1)); level++) text = JSON.stringify({ diagnostic: text });
+        return json(200, { guidance: [{ id: "dump", body: JSON.stringify({ diagnostic: text }) }] });
+      }
       case "/spaced-title": {
         const value = String(req.headers["x-caller"] ?? "");
         return json(200, { guidance: [{ id: "entry", title: `notes for ${value.replace(" ", "\t\t")}`, body: "the body" }] });
@@ -310,6 +319,24 @@ test("a successful reply whose text spells a value in any JSON escape is redacte
   const reply = await withKey("plain-key-77aa", () => callHttp(request(), shaper("/escaped-echo", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
   assert.equal(reply.redacted, true);
   assert.equal(data(reply).guidance[0].body, `{"x-api-key":"[${KEY_ENV} redacted]","accept":"*/*"}`);
+});
+
+test("a successful reply that nests an escaped header value in JSON text inside JSON text is redacted and marked", async () => {
+  for (const path of ["/nested-echo-2", "/nested-echo-3"]) {
+    const reply = await withKey("plain-key-77aa", () => callHttp(request(), shaper(path, { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+    assert.equal(reply.redacted, true, path);
+    const body = data(reply).guidance[0].body as string;
+    assert.ok(body.includes(`[${KEY_ENV} redacted]`), `${path}: ${body}`);
+    assert.equal(body.includes("u00"), false, `${path}: ${body}`);
+  }
+});
+
+test("a blank caller value names its reference and sends no request", async () => {
+  const count = seen.length;
+  const blank = { ...request(), context: { ...request().context, caller: { user: " \t ", agent: "claude", conversation: "t_1" } } };
+  assert.deepEqual(await callHttp(blank, shaper("/ok", { "x-caller": "user {caller.user}" }), ctx()),
+    { kind: "unavailable", reason: "The reference {caller.user} did not resolve to a value, so the shaper was not called." });
+  assert.equal(seen.length, count, "no request at all");
 });
 
 test("a failure body that spells a value in any JSON escape is redacted from the reason", async () => {

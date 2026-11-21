@@ -82,7 +82,9 @@ function sendable(value: string): boolean {
 }
 
 function resolveOne(reference: string, ctx: ReferenceContext, token: string): string | null {
-  const caller = (value: string | null) => (value && sendable(value) ? value : null);
+  // A caller value of only spaces and tabs is blank once it is sent as a header, as an
+  // environment value is: unresolved, so no request carries an empty identity or bare text.
+  const caller = (value: string | null) => (value && value.trim() !== "" && sendable(value) ? value : null);
   switch (reference) {
     case "caller.user": return caller(ctx.caller.user);
     case "caller.agent": return caller(ctx.caller.agent);
@@ -276,6 +278,14 @@ function spacingPattern(value: string): RegExp | null {
   return new RegExp(parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
 }
 
+/**
+ * How many levels of JSON text nested in JSON strings a scrub decodes: a reply string can hold
+ * a serialized diagnostic that itself holds serialized JSON, a value escaped once per level.
+ * Bounded, because a crafted chain such as `\u005cu005c...` peels only a few characters a level,
+ * and decoding until nothing changes would cost the text's length squared.
+ */
+export const JSON_ESCAPE_LEVELS = 3;
+
 const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /**
@@ -324,16 +334,22 @@ export function variantSpans(text: string, resolved: readonly ResolvedValue[]): 
       if (match[0] !== entry.value) out.push({ start: match.index, end: match.index + match[0].length, label: entry.name });
     }
   }
-  const map = decodeEscapes(text);
-  if (!map) return out;
-  const take = (label: string, start: number, length: number) => {
-    out.push({ start: map.starts[start]!, end: map.ends[start + length - 1]!, label });
-  };
-  for (const entry of resolved) {
-    if (entry.value.length === 0) continue;
-    forEachOccurrence(map.decoded, entry.value, false, (start) => take(entry.name, start, entry.value.length));
-    const pattern = spacingPattern(entry.value);
-    if (pattern) for (const match of map.decoded.matchAll(pattern)) take(entry.name, match.index, match[0].length);
+  // Each level is decoded from the one before, and each of its characters keeps the span of the
+  // original text it came from, so a value found at any level is removed there as written.
+  let map = decodeEscapes(text);
+  for (let level = 0; map && level < JSON_ESCAPE_LEVELS; level++) {
+    const { decoded, starts, ends } = map;
+    const take = (label: string, start: number, length: number) => {
+      out.push({ start: starts[start]!, end: ends[start + length - 1]!, label });
+    };
+    for (const entry of resolved) {
+      if (entry.value.length === 0) continue;
+      forEachOccurrence(decoded, entry.value, false, (start) => take(entry.name, start, entry.value.length));
+      const pattern = spacingPattern(entry.value);
+      if (pattern) for (const match of decoded.matchAll(pattern)) take(entry.name, match.index, match[0].length);
+    }
+    const next = level + 1 < JSON_ESCAPE_LEVELS ? decodeEscapes(decoded) : null;
+    map = next && { decoded: next.decoded, starts: next.starts.map((at) => starts[at]!), ends: next.ends.map((at) => ends[at - 1]!) };
   }
   return out;
 }

@@ -497,9 +497,9 @@ and a longer one is `failed` without being read further. The call's timeout abor
 - **References.** Header values may reference `{caller.user}`, the identity declared under
   `caller.user`, `{caller.agent}`, the harness, `{caller.conversation}`, the task id, and
   `{env:NAME}`, the daemon's environment variable `NAME`. They are resolved when the call is
-  made. One that resolves to nothing, an empty value included, fails closed: no request is
-  sent, and the outcome is `unavailable`, with a reason that names the reference and never a
-  value. A dry run has no task, harness or conversation, so a shaper that references them
+  made. One that resolves to nothing, an empty value or one of only spaces and tabs included,
+  caller values as much as `{env:NAME}`, fails closed: no request is sent, and the outcome is
+  `unavailable`, with a reason that names the reference and never a value. A dry run has no task, harness or conversation, so a shaper that references them
   is `unavailable` there. `{env:NAME}` never resolves Mission Control's own token, credentials
   or state directory, or a value that carries the daemon's token.
   [Configuration](configuration.md#task-shaping-references) says where the daemon's environment

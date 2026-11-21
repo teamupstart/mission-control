@@ -8,6 +8,7 @@ import {
   reviewSnoozeDelay,
   snoozeMeanwhileLabel,
   snoozeMeanwhileSince,
+  snoozeToldNothing,
   type ReviewSnoozeDelayId,
   type ReviewSnoozeMeanwhile,
 } from "@shared/review-snooze.ts";
@@ -93,7 +94,11 @@ export function SnoozeSheet({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const options = provisionalOptions(review);
-  const earlier = review.snooze ?? null;
+  // The agent is told what to do meanwhile only once, so a question that came back keeps that
+  // choice - unless nothing was ever told: a filed question snoozed on "Keep doing what it said"
+  // sent nothing, so the choice is offered again and a Hold or option now still reaches it. Read
+  // from what the daemon recorded (`instructed`), never inferred from the mode.
+  const earlier = review.snooze && !snoozeToldNothing(review, review.snooze) ? review.snooze : null;
   // A message-mode question's agent already carried on when it asked (`async-input`): the default
   // lets it keep doing what it said, and sends it nothing. Still the `judgment` mode on the wire.
   const carryingOn = wait !== "call";

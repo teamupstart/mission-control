@@ -304,9 +304,23 @@ test("Remind me later starts on Keep doing what it said for an agent that never 
   await capture(snoozed, "08-snoozed-row", page);
   await expect.poll(async () => (await api<ReviewItem[]>(daemon, "/api/reviews")).find((r) => r.id === filed.id)?.status).toBe("snoozed");
   // Nothing is owed to the agent: no "carry on" message was queued for this question.
-  expect(withDaemonDb(daemon, (db) => db.prepare(
-    "SELECT snooze_instruction_owed_at AS owed FROM reviews WHERE id = ?",
-  ).get(filed.id) as { owed: number | null }).owed).toBeNull();
+  const snoozeRow = () => withDaemonDb(daemon, (db) => ({ ...db.prepare(
+    "SELECT snooze_instruction_owed_at AS owed, snooze_mode AS mode FROM reviews WHERE id = ?",
+  ).get(filed.id) as { owed: number | null; mode: string | null } }));
+  expect(snoozeRow()).toEqual({ owed: null, mode: null });
+
+  // That silent snooze told the agent nothing, so when the question comes back the Meanwhile
+  // choice is offered again, and choosing Hold now does reach the agent.
+  await snoozed.getByRole("button", { name: "Answer now" }).click();
+  await expect(snoozed).toHaveCount(0);
+  await card.getByRole("button", { name: /Remind me later/ }).click();
+  const again = card.getByRole("group", { name: "Remind me later" });
+  await expect(again).not.toContainText("keeps doing what you chose last time");
+  await again.getByRole("radio", { name: /Hold work that depends on this/ }).check();
+  await again.getByRole("button", { name: /^Remind me / }).click();
+  await expect(inbox.getByRole("region", { name: `Snoozed: ${LINTER}` })).toContainText("Meanwhile: hold work that depends on this");
+  await expect.poll(() => snoozeRow().mode).toBe("hold");
+  expect(snoozeRow().owed).not.toBeNull();
 });
 
 test("a merge's closure is recorded in the conversation for a filed question and for a snoozed call-mode question, and survives a reload", async ({ dashboard: page, daemon }) => {

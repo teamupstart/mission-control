@@ -80,18 +80,31 @@ function optionLabel(review: Pick<ReviewItem, "decisions">, optionId: string | n
 export const KEEP_DOING_WHAT_IT_SAID = "Keep doing what it said";
 
 /**
+ * Whether this question's snoozes have so far told its agent nothing: a message-mode question
+ * snoozed only on "Keep doing what it said" (`ReviewSnooze.instructed === false`). Read from what
+ * the daemon recorded, never inferred from the mode, because a judgment snooze stored before that
+ * rule did send its agent an instruction.
+ */
+export function snoozeToldNothing(
+  review: Pick<ReviewItem, "waitMode">,
+  snooze: Pick<ReviewSnooze, "instructed"> | null | undefined,
+): boolean {
+  return review.waitMode === "message" && snooze?.instructed === false;
+}
+
+/**
  * What the agent was told to do meanwhile, as the operator reads it on the reminder and in the
  * inbox. An option that no longer resolves falls back to best judgment, which is what the agent
  * would have been told for a question with nothing to carry on with.
  */
 export function snoozeMeanwhileLabel(
   review: Pick<ReviewItem, "decisions" | "waitMode">,
-  snooze: Pick<ReviewSnooze, "mode" | "optionId">,
+  snooze: Pick<ReviewSnooze, "mode" | "optionId" | "instructed">,
 ): string {
   const label = snooze.mode === "option" ? optionLabel(review, snooze.optionId) : null;
   if (label) return `Go with "${label}" for now`;
   if (snooze.mode === "hold") return "Hold work that depends on this";
-  return review.waitMode === "message" ? KEEP_DOING_WHAT_IT_SAID : "Use its best judgment";
+  return snoozeToldNothing(review, snooze) ? KEEP_DOING_WHAT_IT_SAID : "Use its best judgment";
 }
 
 /**
@@ -104,12 +117,12 @@ export function snoozeMeanwhileLabel(
  */
 export function snoozeMeanwhileSince(
   review: Pick<ReviewItem, "decisions" | "waitMode">,
-  snooze: Pick<ReviewSnooze, "mode" | "optionId">,
+  snooze: Pick<ReviewSnooze, "mode" | "optionId" | "instructed">,
 ): string {
   const label = snooze.mode === "option" ? optionLabel(review, snooze.optionId) : null;
   if (label) return `The agent has kept working with "${label}" as a provisional answer.`;
   if (snooze.mode === "hold") return "The agent has held the work that depends on this and carried on with the rest.";
-  return review.waitMode === "message"
+  return snoozeToldNothing(review, snooze)
     ? "You left it to do what it said it would when it asked."
     : "The agent has kept working on its best judgment.";
 }

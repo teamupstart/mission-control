@@ -423,8 +423,27 @@ test("every action's words follow the agent's current status, never contradictin
   assert.match(sheet, /the agent stays stopped unless you choose a provisional option or Hold/);
 });
 
+test("a returned filed question whose earlier snooze sent nothing offers the Meanwhile choice again", () => {
+  const silent = question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW, instructed: false } });
+  const html = renderToStaticMarkup(createElement(SnoozeSheet, { review: silent, onBack: () => {} }));
+  assert.match(html, /Hold work that depends on this/);
+  assert.doesNotMatch(html, /keeps doing what you chose last time/);
+  // A question whose earlier snooze did tell its agent something keeps that choice, as before.
+  const told = question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "hold", optionId: null, remindedAt: NOW } });
+  assert.match(renderToStaticMarkup(createElement(SnoozeSheet, { review: told, onBack: () => {} })), /keeps doing what you chose last time/);
+  const callMode = question({ waitMode: undefined, snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } });
+  assert.match(renderToStaticMarkup(createElement(SnoozeSheet, { review: callMode, onBack: () => {} })), /keeps doing what you chose last time/);
+  // A filed question snoozed on best judgment before the silent rule: its agent WAS told, so the
+  // choice is not re-offered and the labels say what it was told, not "Keep doing what it said".
+  const toldEarlier = question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } });
+  const toldHtml = renderToStaticMarkup(createElement(SnoozeSheet, { review: toldEarlier, onBack: () => {} }));
+  assert.match(toldHtml, /keeps doing what you chose last time: use its best judgment/);
+  assert.doesNotMatch(toldHtml, /Hold work that depends on this/);
+  assert.equal(snoozeMeanwhileSince(toldEarlier, toldEarlier.snooze!), "The agent has kept working on its best judgment.");
+});
+
 test("the snooze labels read true for an agent that never waited", () => {
-  const judgment = { mode: "judgment" as const, optionId: null };
+  const judgment = { mode: "judgment" as const, optionId: null, instructed: false };
   assert.equal(snoozeMeanwhileLabel(question(), judgment), "Keep doing what it said");
   assert.equal(snoozeMeanwhileLabel(question({ waitMode: undefined }), judgment), "Use its best judgment");
   // Neutral: by the time the question comes back the agent may have stopped, which the card's live
@@ -432,7 +451,7 @@ test("the snooze labels read true for an agent that never waited", () => {
   assert.equal(snoozeMeanwhileSince(question(), judgment), "You left it to do what it said it would when it asked.");
   assert.doesNotMatch(snoozeMeanwhileSince(question(), judgment), /kept|keeps|working/);
   const returned = renderToStaticMarkup(createElement(ReviewCard, {
-    review: question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } }),
+    review: question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW, instructed: false } }),
     session: stopped(),
   }));
   assert.match(returned, /Stopped, waiting on this answer/);

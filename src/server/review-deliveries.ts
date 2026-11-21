@@ -14,6 +14,7 @@ import {
   type ReviewDeliveryRow,
 } from "./db.ts";
 import { DELIVERY_LAG_MS, DeliveryLedger, onSend, type DeliveryConversation } from "./delivery-binding.ts";
+import type { SessionMessages } from "./harness/index.ts";
 import { HUMAN_ECHO_TTL_MS, injectionFingerprint } from "./injections.ts";
 
 /**
@@ -373,16 +374,43 @@ const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
 const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
 
 /**
- * Drop ordinary unbound deliveries past the delivery window that a binding walk has expired:
- * they can no longer bind anything. Bound rows are kept, so an old conversation reopened later still draws its cards, and so are
+ * Drop ordinary unbound deliveries past the delivery window that a binding walk has expired - the
+ * tick walks live conversations itself - or whose conversation no live session has held for the
+ * abandonment age: they can no longer bind anything. Bound rows are kept, so an old conversation reopened later still draws its cards, and so are
  * contested and offset-less rows, which keep a turn with their words from reading as "you".
  */
-export function pruneReviewDeliveries(now = Date.now()): number {
-  // Only rows a binding walk has expired: a row nobody has walked since it was sent may hold a
-  // turn already in the file, waiting for the first read to bind it, however old the row is.
-  // Such a row stays until a read or a send walks it, which binds it or expires it.
-  const expired = loadPrunableReviewDeliveries(now - DELIVERY_LAG_MS).filter((id) => ledger.isExpired(id));
-  const removed = deleteUnboundReviewDeliveries(expired);
+export function pruneReviewDeliveries(
+  now = Date.now(),
+  options: {
+    /**
+     * Where a conversation's transcript is, for one a live session holds; `undefined` for one no
+     * live session holds. Null as a whole when liveness is not yet known (no completed sweep).
+     */
+    conversation?: ((noteKey: string) => { transcript: SessionMessages | null } | undefined) | null;
+    /** A conversation no live session holds is given up on once its delivery is older than this. */
+    abandonedBefore?: number;
+  } = {},
+): number {
+  const candidates = loadPrunableReviewDeliveries(now - DELIVERY_LAG_MS);
+  if (!candidates.length) return 0;
+  // A row is deleted only once a binding walk has expired it: before that it may hold a turn
+  // already in the file, waiting to be bound. The tick walks live conversations itself, so this
+  // does not depend on anyone opening them; the walk binds what has landed and expires the rest.
+  const live = new Map<string, boolean>();
+  for (const { noteKey } of candidates) {
+    if (live.has(noteKey)) continue;
+    const held = options.conversation ? options.conversation(noteKey) : null;
+    live.set(noteKey, held !== undefined);
+    if (held?.transcript) ledger.bindLanded(noteKey, held.transcript, now);
+  }
+  // A conversation no live session holds cannot be opened or walked. Its rows are given up on
+  // after the age every other per-conversation table uses (`abandonedBefore`), as is a live one
+  // whose transcript cannot be read only once it is no longer live. Unknown liveness drops none.
+  const abandoned = (noteKey: string, deliveredAt: number) => options.conversation != null
+    && options.abandonedBefore !== undefined && live.get(noteKey) === false && deliveredAt < options.abandonedBefore;
+  const removed = deleteUnboundReviewDeliveries(candidates
+    .filter((row) => ledger.isExpired(row.id) || abandoned(row.noteKey, row.deliveredAt))
+    .map((row) => row.id));
   if (removed) ledger.forgetCaches();
   return removed;
 }

@@ -48,17 +48,26 @@ export function useTimelineReviews(
     setLineage([]);
     setSettledFor(null);
     if (!enabled) return;
-    void loadReviewHistory(sessionId).then(({ stored: rows, lineage: inherited }) => {
-      // Guarded against the session switching mid-flight: without this, a slow response for
-      // the session you just left would land in the panel for the one you just opened, and
-      // its answers would read as this session's.
-      if (!alive) return;
-      setStored(rows);
-      setLineage(inherited);
-      setSettledFor(sessionId);
-    });
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = (): void => {
+      void loadReviewHistory(sessionId).then(({ stored: rows, lineage: inherited, complete }) => {
+        // Guarded against the session switching mid-flight: without this, a slow response for
+        // the session you just left would land in the panel for the one you just opened, and
+        // its answers would read as this session's.
+        if (!alive) return;
+        // Whatever arrived is shown at once, so a failed lineage read never hides this session's
+        // own answers. Only a complete read settles the history, though: a failed one is not
+        // evidence that a question is gone, so the cards stay loading and the read is retried.
+        setStored(rows);
+        setLineage(inherited);
+        if (complete) setSettledFor(sessionId);
+        else retry = setTimeout(load, HISTORY_RETRY_MS);
+      });
+    };
+    load();
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
     };
   }, [sessionId, enabled]);
 
@@ -76,11 +85,11 @@ export function useTimelineReviews(
 }
 
 /**
- * Read a session's durable review history and its runtime-transfer predecessors', always
- * settling. Both reads count before the history is loaded, since an answer delivered here can
- * name a question a predecessor asked; but each lands on its own, and a read that fails or
- * rejects contributes nothing rather than holding the other back or leaving the history
- * unsettled, where every delivered answer would read as loading for good.
+ * Read a session's durable review history and its runtime-transfer predecessors'. It always
+ * resolves, and each read lands on its own, so one that fails or rejects never holds the other
+ * back. `complete` says both answered. Only a complete read may settle the history: a failed one
+ * says nothing about whether a question still exists, so the hook keeps delivered answers
+ * loading and retries rather than drawing them as "no longer available".
  */
 export async function loadReviewHistory(
   sessionId: string,
@@ -88,13 +97,20 @@ export async function loadReviewHistory(
     own: (id: string) => Promise<ReviewItem[] | null>;
     lineage: (id: string) => Promise<ReviewItem[] | null>;
   } = { own: api.resolvedReviews, lineage: api.lineageReviews },
-): Promise<{ stored: ReviewItem[]; lineage: ReviewItem[] }> {
+): Promise<{ stored: ReviewItem[]; lineage: ReviewItem[]; complete: boolean }> {
   const [own, inherited] = await Promise.allSettled([read.own(sessionId), read.lineage(sessionId)]);
+  const ownRows = own.status === "fulfilled" ? own.value : null;
+  const inheritedRows = inherited.status === "fulfilled" ? inherited.value : null;
   return {
-    stored: own.status === "fulfilled" && own.value ? own.value : [],
-    lineage: inherited.status === "fulfilled" && inherited.value ? inherited.value : [],
+    stored: ownRows ?? [],
+    lineage: inheritedRows ?? [],
+    // Both reads answered: only then may a missing review be called gone.
+    complete: ownRows !== null && inheritedRows !== null,
   };
 }
+
+/** How long a review-history read that failed waits before it is tried again. */
+export const HISTORY_RETRY_MS = 5_000;
 
 /**
  * What `useTimelineReviews` hands the conversation. `reviews` are this session's entries.

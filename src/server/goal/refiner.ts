@@ -178,7 +178,7 @@ export function startGoalRefiner(registry: Registry): () => void {
         const delegated = registry.pruneDelegatedTurns(now - GOAL_PRUNE_AGE_MS);
         if (delegated > 0) console.log(`[goal] pruned ${delegated} orphaned delegated-turn sender(s)`);
         // And review-message deliveries that never found their turn (`review-deliveries.ts`).
-        const reviewDeliveries = registry.pruneReviewDeliveries(now);
+        const reviewDeliveries = registry.pruneReviewDeliveries(now, now - GOAL_PRUNE_AGE_MS);
         if (reviewDeliveries > 0) console.log(`[goal] pruned ${reviewDeliveries} unbound review-message deliveries`);
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same

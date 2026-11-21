@@ -402,6 +402,41 @@ test("a delivery nobody read for a day is not pruned before its turn binds, acro
   assert.deepEqual(turn!.presentation, { kind: "review-message", envelope: "answer", reviewIds: [review] });
 });
 
+test("the prune tick walks live conversations itself: a landed turn is bound, a delivery that never landed is expired and dropped", () => {
+  const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
+  const review = storeReview("s1");
+  const landed = answerText([review], "Mission Control answer: landed");
+  const lost = answerText([review], "Mission Control answer: lost");
+  reserveReviewDelivery(t.conversation(k), landed, undefined, now);
+  t.append("delivered", landed, now + 1);
+  reserveReviewDelivery(t.conversation(k), lost, undefined, now + 2);
+  restart(); // nobody reads the conversation; the daemon restarts before the tick
+  const live = (noteKey: string) => noteKey === k ? { transcript: t.conversation(k).transcript } : undefined;
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG, { conversation: live, abandonedBefore: now - LAG }), 1, "only the lost one");
+  const rows = openDb().prepare("SELECT message_id FROM session_review_deliveries WHERE note_key = ?").all(k) as Array<{ message_id: string | null }>;
+  assert.deepEqual(rows.map((r) => r.message_id), ["delivered"], "the landed one was bound by the tick, not dropped");
+  restart();
+  assert.equal(attribute("s1", t, k)[0]!.presentation?.kind, "review-message");
+});
+
+test("a conversation no live session holds is given up on only after the abandonment age; an unreadable live one is kept", () => {
+  const now = Date.now();
+  const gone = conversationKey();
+  reserveReviewDelivery(fakeTranscript().conversation(gone), answerText([storeReview("s1")]), undefined, now);
+  const notLive = () => undefined;
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG, { conversation: notLive, abandonedBefore: now - 1 }), 0, "younger than the age");
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG, { conversation: null, abandonedBefore: now + 1 }), 0, "unknown liveness drops none");
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG, { conversation: notLive, abandonedBefore: now + 1 }), 1, "older than the age");
+
+  const t = fakeTranscript(); const k = conversationKey();
+  reserveReviewDelivery(t.conversation(k), answerText([storeReview("s1")]), undefined, now);
+  const good = t.conversation(k).transcript!;
+  const broken = { ...good, read: { ...good.read, after: () => { throw new Error("EIO"); } } };
+  restart();
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG, { conversation: () => ({ transcript: broken as never }), abandonedBefore: now + 1 }), 0,
+    "a live conversation whose transcript cannot be read keeps its row");
+});
+
 test("contested and offset-less deliveries outlive the prune tick, so their turns never read as the operator's", () => {
   for (const kind of ["contested", "no offset"] as const) {
     restart();

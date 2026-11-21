@@ -149,7 +149,7 @@ import type {
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor } from "./harness/index.ts";
+import { hooksFor, sessionMessages } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -8877,14 +8877,24 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Drop ordinary review-message deliveries that never bound, are past the delivery window, and
-   * that a binding walk has expired. Liveness does not matter: such a row can bind nothing and
-   * says nothing about any turn. One no walk has reached yet is kept until one does. Bound
+   * Drop ordinary review-message deliveries that never bound and are past the delivery window,
+   * once a binding walk has expired them. The tick walks every live conversation that has such a
+   * row, so expiry does not wait for someone to open it; a conversation no live session holds is
+   * given up on after `olderThan`, the goal table's own age. Contested and offset-less rows, and
+   * bound ones, are kept. Bound
    * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
    * and offset-less rows, which keep a turn with their words from reading as the operator's.
    */
-  pruneReviewDeliveries(now: number): number {
-    return pruneReviewDeliveries(now);
+  pruneReviewDeliveries(now: number, olderThan: number): number {
+    if (!this.sweptSessions) return pruneReviewDeliveries(now, { conversation: null });
+    const byKey = new Map([...this.sessions.values()].map((s) => [noteKeyFor(s), s] as const));
+    return pruneReviewDeliveries(now, {
+      conversation: (noteKey) => {
+        const session = byKey.get(noteKey);
+        return session ? { transcript: sessionMessages(session) } : undefined;
+      },
+      abandonedBefore: olderThan,
+    });
   }
 
   /**

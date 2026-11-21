@@ -321,6 +321,42 @@ test("while the review history is still loading, a delivered answer reads as loa
   await page.unroute("**/resolved-reviews*");
 });
 
+test("a failed review-history read keeps a delivered answer loading, never gone, and the retry brings its card", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  await enableAsyncInput(daemon);
+  const session = await dispatch(daemon, "Add a linter to CI", "add a linter to CI", "idle");
+  const filed = await ask(daemon, session.cwd!, LINTER);
+  await api(daemon, `/api/reviews/${filed.id}/resolve`, { action: "answer", response: "eslint", selections: [{ decisionId: "q", selected: ["o1"] }] });
+  const before = await openSession(page, session);
+  await expect(answerCard(before, LINTER)).toHaveCount(1, { timeout: 30_000 });
+
+  // After a restart the answer lives only in the durable history, and its first read fails.
+  await page.goto("about:blank");
+  await daemon.shutdown();
+  await daemon.restart();
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.state,
+    { timeout: 60_000 }).toBe("idle");
+  let failures = 0;
+  await page.route("**/resolved-reviews*", async (route) => {
+    if (!route.request().url().includes("lineage") && failures++ === 0) await route.fulfill({ status: 500, body: "{}" });
+    else await route.continue();
+  });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const detail = await openSession(page, session);
+  await expect(replyTo(detail, filed.id).first()).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => failures, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  const loading = detail.getByRole("note", { name: "Answer loading" });
+  await expect(loading).toBeVisible();
+  await expect(detail.getByText("This question is no longer available")).toHaveCount(0);
+  await expect(rawUserTurns(detail, RAW)).toHaveCount(0);
+
+  // The retry succeeds and the real card takes the turn.
+  await expect(answerCard(detail, LINTER)).toHaveCount(1, { timeout: 30_000 });
+  await expect(loading).toHaveCount(0);
+  expect(failures).toBeGreaterThanOrEqual(2);
+  await page.unroute("**/resolved-reviews*");
+});
+
 test("Remind me later with a provisional option draws the snoozed line, not raw instructions", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);
   await enableAsyncInput(daemon);

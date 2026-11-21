@@ -611,8 +611,12 @@ margin, so a value cut at the front leaves no fragment in a reason. It is one
 process per shaping run, closed when the run ends, or at once after a message over the cap. A
 run that ends while its command is still being located starts no server, and a call already
 cancelled when it is made opens no connection at all, stdio or streamable HTTP, so no server is
-started and no resolved header is sent. The SDK starts it
-outside a process group of its own, so a helper the server starts can outlive it.
+started and no resolved header is sent. The server runs in a process
+group of its own, as a `command` shaper does, with the SDK's message framing but not its
+process handling: closing the connection ends its stdin, then signals the whole group with
+SIGTERM and then SIGKILL, and a server that exits on its own has what is left of its group
+killed too, so a helper the server started does not outlive the run. A helper that leaves the
+group on purpose is out of reach, as it is for a `command` shaper.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling
 them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a

@@ -21,6 +21,10 @@
 //   echo-header <name> An entry whose body repeats the request header `name`.
 //   error-header <name> A tool error whose text repeats the request header `name`.
 //   echo-env <NAME>    An entry whose body repeats the server's environment variable `NAME`.
+//   helper <pidfile>   Over stdio only: starts a helper in its own process group that runs until
+//                      killed, writes the helper's pid to `pidfile`, then answers as `ok`.
+import { spawn } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -130,7 +134,15 @@ export async function startGuidanceHttp({ mode = "ok", args = [], json = true } 
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const [mode = "ok", ...args] = process.argv.slice(2);
+  let [mode = "ok", ...args] = process.argv.slice(2);
+  if (mode === "helper") {
+    // A helper with stdio of its own, so nothing but its process group ties it to the server.
+    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    writeFileSync(`${args[0]}.partial`, String(helper.pid));
+    renameSync(`${args[0]}.partial`, args[0]);
+    helper.unref();
+    [mode, args] = ["ok", []];
+  }
   const server = createGuidanceServer(mode, args);
   await server.connect(new StdioServerTransport());
   process.stdin.on("end", () => process.exit(0));

@@ -10,6 +10,7 @@ import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
 import { holdsResolvedValue, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
+import { GroupStdioTransport } from "./group-stdio.ts";
 import {
   credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, stderrMargin, withTimeout,
   type ReceivedValues,
@@ -335,9 +336,9 @@ function handshakeMs(): number {
 async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promise<Connection> {
   const server = shaper.transport.server;
   if (server.type !== "stdio") throw new Error("not a stdio server");
-  const [{ Client: McpClient }, { StdioClientTransport, DEFAULT_INHERITED_ENV_VARS }] = await Promise.all([
+  const [{ Client: McpClient }, framing] = await Promise.all([
     import("@modelcontextprotocol/sdk/client/index.js"),
-    import("@modelcontextprotocol/sdk/client/stdio.js"),
+    import("@modelcontextprotocol/sdk/shared/stdio.js"),
   ]);
   // The `command` transport's environment and rules: scrubbed, plus only the variables the shaper
   // names, with the launch's trace context and work unit id. One process per run, so the run's.
@@ -378,20 +379,16 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     named: new Set([...inherited.named, ...credentials.map(({ value }) => value)]),
   };
   const state = latch();
-  // The SDK spawns with its own inherited defaults (HOME, LOGNAME, PATH, SHELL, TERM, USER) under
-  // the environment it is given. Each one this environment left out is named as undefined, which
-  // Node leaves out of the child's, so the server receives exactly the filtered environment that
-  // every diagnostic is redacted against.
-  const spawnEnv: Record<string, string | undefined> = { ...executable.env };
-  for (const name of DEFAULT_INHERITED_ENV_VARS) if (!Object.hasOwn(spawnEnv, name)) spawnEnv[name] = undefined;
-  const transport = new StdioClientTransport({
+  // In a process group of its own, as a `command` shaper runs, so closing the connection stops
+  // every helper the server started too; and with exactly the filtered environment, which every
+  // diagnostic is redacted against, with nothing of the SDK's inherited defaults added beneath it.
+  const transport = new GroupStdioTransport({
     command: executable.path,
     args: server.args,
-    env: spawnEnv as Record<string, string>,
+    env: executable.env,
     cwd: scratch,
-    stderr: "pipe",
     maxBufferSize: REMOTE_REPLY_BYTES,
-  });
+  }, framing);
   // Kept a value's length beyond the tail it needs, as the `command` transport keeps it: once the
   // front is cut, a value cut there survives only as a piece no search recognises, so that
   // margin is dropped in the original text's positions before anything is recorded.

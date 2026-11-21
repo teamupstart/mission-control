@@ -74,7 +74,7 @@ export function shaperCommandEnv(
   return withCarriedEnv(Object.fromEntries(env), trace, workUnitId);
 }
 
-function killGroup(child: ChildProcess): void {
+export function killGroup(child: ChildProcess): void {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
     else child.kill("SIGKILL");
@@ -89,7 +89,7 @@ function killGroup(child: ChildProcess): void {
  * timeout would leave its pipes and their listeners open for as long as that helper lives.
  * Harmless after a normal close, when the streams are already ended.
  */
-function releaseStdio(child: ChildProcess | undefined): void {
+export function releaseStdio(child: ChildProcess | undefined): void {
   for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
     if (!stream) continue;
     stream.removeAllListeners("data");

@@ -4,7 +4,7 @@
 // the trace context and work unit id every call carries. No real service, no credential.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -594,6 +594,32 @@ test("a value cut at the front of the retained stderr leaves no fragment in the 
   const reason = (reply as { reason: string }).reason;
   assert.equal(reason.includes(value.slice(-24)), false, "the value's surviving end is not in the reason");
   assert.equal(reason.includes(value.slice(-6)), false);
+});
+
+test("a helper a stdio server started stops with it when the run ends", async () => {
+  const pidFile = join(home, "stdio-helper.pid");
+  rmSync(pidFile, { force: true });
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const scope = runScope();
+  scopes.push(scope);
+  const run = ctx({ scope });
+  let pid = 0;
+  try {
+    const reply = await callMcp(request(), shaper({ type: "stdio", mode: "helper", args: [pidFile] }), run);
+    assert.equal(reply.kind, "data", JSON.stringify(reply).slice(0, 300));
+    for (let attempt = 0; attempt < 100 && !existsSync(pidFile); attempt++) await sleep(20);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    process.kill(pid, 0);
+    // The run ends, as it does when a dry run finishes, times out or is cancelled.
+    scope.close();
+    let alive = true;
+    for (let attempt = 0; attempt < 300 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the helper did not outlive the run");
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+  }
 });
 
 test("a call whose signal is already aborted opens no connection and sends nothing", async () => {

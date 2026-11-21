@@ -342,27 +342,46 @@ function decodeEscapes(text: string): { decoded: string; starts: number[]; ends:
  * holds, nothing is searched for again.
  */
 export function variantSpans(text: string, resolved: readonly ResolvedValue[]): RedactionSpan[] {
+  // One scan per distinct value, however many names share it: each span carries all of them.
+  const byValue = new Map<string, string[]>();
+  for (const { name, value } of resolved) {
+    if (value === "") continue;
+    const names = byValue.get(value);
+    if (!names) byValue.set(value, [name]);
+    else if (!names.includes(name)) names.push(name);
+  }
   const out: RedactionSpan[] = [];
-  for (const entry of resolved) {
-    const pattern = spacingPattern(entry.value);
+  // Spans of one scan, merged as they are found. A scan reports matches in order of where they
+  // start in the original text, so a span that meets the last one only extends it, and the
+  // spans kept never outnumber the stretches of text they cover. A match that is the value as
+  // written is left to the caller's own search for it, which every caller makes.
+  const collect = (value: string, labels: readonly string[]) => {
+    let last: { start: number; end: number; labels: readonly string[] } | null = null;
+    return (start: number, end: number) => {
+      if (end - start === value.length && text.startsWith(value, start)) return;
+      if (last && start <= last.end) { if (end > last.end) last.end = end; return; }
+      last = { start, end, labels };
+      out.push(last);
+    };
+  };
+  for (const [value, labels] of byValue) {
+    const pattern = spacingPattern(value);
     if (!pattern) continue;
-    forEachSpacingMatch(text, pattern, (index, length) => {
-      if (text.slice(index, index + length) !== entry.value) out.push({ start: index, end: index + length, label: entry.name });
-    });
+    const add = collect(value, labels);
+    forEachSpacingMatch(text, pattern, (index, length) => add(index, index + length));
   }
   // Each level is decoded from the one before, and each of its characters keeps the span of the
   // original text it came from, so a value found at any level is removed there as written.
   let map = decodeEscapes(text);
   for (let level = 0; map && level < JSON_ESCAPE_LEVELS; level++) {
     const { decoded, starts, ends } = map;
-    const take = (label: string, start: number, length: number) => {
-      out.push({ start: starts[start]!, end: ends[start + length - 1]!, label });
-    };
-    for (const entry of resolved) {
-      if (entry.value.length === 0) continue;
-      forEachOccurrence(decoded, entry.value, false, (start) => take(entry.name, start, entry.value.length));
-      const pattern = spacingPattern(entry.value);
-      if (pattern) forEachSpacingMatch(decoded, pattern, (index, length) => take(entry.name, index, length));
+    for (const [value, labels] of byValue) {
+      const exact = collect(value, labels);
+      forEachOccurrence(decoded, value, false, (start) => exact(starts[start]!, ends[start + value.length - 1]!));
+      const pattern = spacingPattern(value);
+      if (!pattern) continue;
+      const spaced = collect(value, labels);
+      forEachSpacingMatch(decoded, pattern, (index, length) => spaced(starts[index]!, ends[index + length - 1]!));
     }
     const next = level + 1 < JSON_ESCAPE_LEVELS ? decodeEscapes(decoded) : null;
     map = next && { decoded: next.decoded, starts: next.starts.map((at) => starts[at]!), ends: next.ends.map((at) => ends[at - 1]!) };

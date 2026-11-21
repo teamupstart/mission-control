@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
-  holdsResolvedValue, JSON_ESCAPE_LEVELS, missingReferenceReason, redactResolved, referenceStatus, resolveReferenceMap, resolveReferences, scrubReason, scrubResolved,
+  holdsResolvedValue, JSON_ESCAPE_LEVELS, missingReferenceReason, variantSpans, redactResolved, referenceStatus, resolveReferenceMap, resolveReferences, scrubReason, scrubResolved,
 } from "../src/server/shaping/references.ts";
 
 const caller = { user: "declared-user", agent: "claude", conversation: "t_123" };
@@ -172,6 +172,22 @@ test("the status leaves out a variable named only in a header the transport repl
     transport: { type: "http", url: "https://guidance.example.test/v1", headers: { Accept: "{env:ONLY_IN_ACCEPT}", traceparent: "{env:ONLY_IN_TRACE}", "x-key": "{env:ACME_TOKEN}" } },
   });
   assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
+});
+
+test("spans for a value shared by several names stay bounded by the text, not by its matches", () => {
+  // Five references resolving to one short value, in a field that holds one escape, so every
+  // level is decoded, and 50,000 literal copies of the value that the caller's own search finds.
+  const names = ["caller.agent", "A", "B", "C", "D"];
+  const resolved = names.map((name) => ({ name, value: "pi" }));
+  const literal = `\\u0041 ${"pi ".repeat(50_000)}`;
+  assert.equal(variantSpans(literal, resolved).length, 0, "literal copies are left to the search for the value as written");
+  assert.equal(redactResolved(literal, resolved).includes("pi"), false, "and are still removed");
+  // 50,000 escaped copies side by side: one stretch of text, so one span, carrying every name.
+  const escaped = "\\u0070i".repeat(50_000);
+  const spans = variantSpans(escaped, resolved);
+  assert.equal(spans.length, 1);
+  assert.deepEqual(spans[0], { start: 0, end: escaped.length, labels: names });
+  assert.equal(redactResolved(escaped, resolved), `[${names.join(", ")} redacted]`);
 });
 
 test("overlapping spacing variants of a value are all found, as written and inside escaped text", () => {

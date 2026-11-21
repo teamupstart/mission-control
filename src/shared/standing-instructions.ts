@@ -20,9 +20,16 @@ export type RepoTaskSkillSkipReason =
   | "unreadable"
   | "empty";
 
+/**
+ * A stored record is read back tolerantly (a newer build may have written a kind or a skip
+ * reason this build does not know), so `kind` and `reason` admit any string. The known
+ * literals stay in the union for autocomplete and for the resolver that writes them, but an
+ * exhaustive switch over either field must keep a default: the type no longer promises a
+ * value the parser does not check.
+ */
 export interface RepoTaskSkillIncluded {
   repo: string;
-  kind: TaskKind;
+  kind: TaskKind | (string & {});
   path: string;
   bytes: number;
   truncated: boolean;
@@ -30,9 +37,9 @@ export interface RepoTaskSkillIncluded {
 
 export interface RepoTaskSkillSkipped {
   repo: string;
-  kind: TaskKind;
+  kind: TaskKind | (string & {});
   path: string;
-  reason: RepoTaskSkillSkipReason;
+  reason: RepoTaskSkillSkipReason | (string & {});
 }
 
 /**

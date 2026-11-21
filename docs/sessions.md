@@ -3115,8 +3115,9 @@ of waiting inside the call:
   every stopped session has been reached (or at once, when it is the selected session); a board tile carries the same count as a flag. The
   conversation shows an **Asked** entry where the question was filed. While it is open, the entry
   says **Still working** or **Stopped, waiting on this answer** and offers **Answer**; once it has
-  ended, the entry says how instead: answered (your answer is the gold entry where its agent
-  received it), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
+  ended, the entry says how instead: answered (your answer is the gold entry, where its agent
+  received it when it went as a message, or where you gave it when the call returned it; see
+  "Your answer stays in the conversation" under [Review channel (MCP)](#review-channel-mcp)), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
   the agent** with its reason. A question that waited in a call and was closed by a merge shows the
   same merge line in a **Closed** entry: in place of its Snoozed entry if it had been snoozed, or
   at the moment the merge closed it if it never was. These Closed entries show only while the flag

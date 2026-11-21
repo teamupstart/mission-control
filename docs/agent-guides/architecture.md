@@ -379,8 +379,11 @@ and the remaining unbound deliveries of those words belong to one controller. Th
 The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
 uses it unchanged. The ledgers share one claim space: a turn is bound by at most one row of
 either table, and an unbound row of the same words in the other table is a rival that contests
-both, exactly as two controllers do. Every outbox row the daemon writes about a review (`review-continuation:`
-ids, `async-input`) starts with a marker line owned by `src/shared/review-message-envelope.ts`.
+both, exactly as two controllers do. Outbox rows the daemon writes about a review
+(`review-continuation:` ids) start with a marker line owned by
+`src/shared/review-message-envelope.ts`: a message-mode answer always, and a call-mode late answer
+or a snooze instruction only while `async-input` is enabled when the row is queued
+(`queueReviewPendingTurn`); with the flag off those two are written unmarked, exactly as before.
 At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row through
 `review-deliveries.ts` for such a row instead of noting another send, and only for a row with
 that id prefix, so an operator message that starts with the marker is noted like any other send.

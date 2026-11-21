@@ -10,6 +10,56 @@
 // a settings panel that wanted to preview a match reads the same function the launch does
 // rather than reimplementing longest-path-match in the browser.
 
+import type { TaskKind } from "./types.ts";
+
+/** Why a repository's task skill file was not added to a first prompt (spec 7.15). Append-only. */
+export type RepoTaskSkillSkipReason =
+  | "outside-worktree"
+  | "not-a-regular-file"
+  | "too-large"
+  | "unreadable"
+  | "empty";
+
+/**
+ * A stored record is read back tolerantly (a newer build may have written a kind or a skip
+ * reason this build does not know), so `kind` and `reason` admit any string. The known
+ * literals stay in the union for autocomplete and for the resolver that writes them, but an
+ * exhaustive switch over either field must keep a default: the type no longer promises a
+ * value the parser does not check.
+ */
+export interface RepoTaskSkillIncluded {
+  repo: string;
+  kind: TaskKind | (string & {});
+  path: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface RepoTaskSkillSkipped {
+  repo: string;
+  kind: TaskKind | (string & {});
+  path: string;
+  reason: RepoTaskSkillSkipReason | (string & {});
+}
+
+/**
+ * What one launch did with repository task skills. Stored in
+ * session_standing_instructions.repo_task_skills and returned as repoTaskSkills by
+ * GET /api/sessions/:id/standing-instructions.
+ */
+export interface RepoTaskSkillRecord {
+  included: RepoTaskSkillIncluded[];
+  skipped: RepoTaskSkillSkipped[];
+}
+
+/**
+ * What GET /api/sessions/:id/standing-instructions returns: the delivery, plus the repository
+ * task skill launch record when the launch included or skipped one.
+ */
+export interface StandingInstructionsResponse extends StandingInstructionsDelivery {
+  repoTaskSkills?: RepoTaskSkillRecord;
+}
+
 /** Semantic ceiling for one repository's block, and for the machine-wide default. */
 export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
 

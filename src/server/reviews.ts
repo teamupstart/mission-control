@@ -320,8 +320,7 @@ export class ReviewManager {
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
       // poll arrives is that poll's result and is never also queued as a message.
-      if (existing.waitMode === "message" && options.callerPolls === true) markReviewWaitAttached(existing.id);
-      return existing;
+      return existing.waitMode === "message" && options.callerPolls === true ? this.attachCall(existing) : existing;
     }
 
     const review: ReviewItem = {
@@ -355,6 +354,19 @@ export class ReviewManager {
       this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
     }
     return review;
+  }
+
+  /**
+   * An older MCP child is waiting in a call on a question filed without one: turn it into the
+   * call-mode question it now is (`markReviewWaitAttached`), and republish it so the session
+   * counts it as a pending review rather than an open question until it settles. Without this
+   * a session blocked in that call would read as still working past its question.
+   */
+  private attachCall(review: ReviewItem): ReviewItem {
+    if (!markReviewWaitAttached(review.id)) return review;
+    const { waitMode: _filed, ...call } = review;
+    this.registry.upsertReview(call);
+    return call;
   }
 
   /**
@@ -646,7 +658,7 @@ export class ReviewManager {
     // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
     // its answer is this call's result, and only a later detach (a cancelled or restarted call)
     // hands it to the outbox. Without this the agent would hear the answer twice.
-    if (current.waitMode === "message") markReviewWaitAttached(id);
+    if (current.waitMode === "message") this.attachCall(current);
 
     return new Promise<ReviewItem | null>((resolve) => {
       let set = this.waiters.get(id);

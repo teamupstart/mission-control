@@ -401,6 +401,10 @@ async function olderChildReattaches() {
   assert.equal(filed.wait, "message");
   const again = await created(await post(app, d.cwd, ask));
   assert.equal(again.id, filed.id, "the identical ask re-attaches to the filed row");
+  // From here it is the call-mode question the older child is blocked on.
+  assert.equal(again.wait, "call");
+  assert.equal(registry.getReview(filed.id)?.waitMode, undefined);
+  assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 });
   const call = app.request(`/mcp/reviews/${filed.id}/wait`, { headers: authed });
   // Until the long-poll is actually attached, nothing is waiting in a call.
   for (let i = 0; i < 200 && !reviews.blockedInRequestInputCall(d.syntheticId, true); i++) {

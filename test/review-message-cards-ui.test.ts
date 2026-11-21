@@ -184,19 +184,46 @@ test("the review history read always resolves, keeps what arrived, and is comple
   const transient = async () => ({ ok: false as const, definite: false });
   const definite = async () => ({ ok: false as const, definite: true });
   const reject = () => Promise.reject(new Error("network down"));
+  const load = async (...args: Parameters<typeof loadReviewHistory>) => {
+    const { stored, lineage, complete } = await loadReviewHistory(...args);
+    return { stored, lineage, complete };
+  };
   // A failed lineage read cannot hide the session's own answers, but it does not settle either.
-  assert.deepEqual(await loadReviewHistory("s", { own: ok(own), lineage: reject }), { stored: own, lineage: [], complete: false });
+  assert.deepEqual(await load("s", { own: ok(own), lineage: reject }), { stored: own, lineage: [], complete: false });
   // Nor the other way round.
-  assert.deepEqual(await loadReviewHistory("s", { own: reject, lineage: ok(inherited) }), { stored: [], lineage: inherited, complete: false });
+  assert.deepEqual(await load("s", { own: reject, lineage: ok(inherited) }), { stored: [], lineage: inherited, complete: false });
   // A 5xx or network failure is transient: never an empty history.
-  assert.deepEqual(await loadReviewHistory("s", { own: transient, lineage: ok([]) }), { stored: [], lineage: [], complete: false });
+  assert.deepEqual(await load("s", { own: transient, lineage: ok([]) }), { stored: [], lineage: [], complete: false });
   // A 4xx is a definite answer (a session the daemon no longer holds): complete, with nothing in it.
-  assert.deepEqual(await loadReviewHistory("s", { own: definite, lineage: definite }), { stored: [], lineage: [], complete: true });
+  assert.deepEqual(await load("s", { own: definite, lineage: definite }), { stored: [], lineage: [], complete: true });
   // Both answered, even with nothing in them: complete, so a missing review really is gone.
-  assert.deepEqual(await loadReviewHistory("s", { own: ok([]), lineage: ok([]) }), { stored: [], lineage: [], complete: true });
+  assert.deepEqual(await load("s", { own: ok([]), lineage: ok([]) }), { stored: [], lineage: [], complete: true });
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true })), ["delivered:1b0c@d"]);
   // Not complete, the history stays unloaded and the card stays loading.
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: false })), ["delivered:1b0c@d:loading"]);
+});
+
+test("a source that answered on an earlier attempt keeps its reviews when a later attempt fails", async () => {
+  const { loadReviewHistory, NO_HISTORY } = await import("../src/web/lib/timelineReviews.ts");
+  const own = [review(A)];
+  const inherited = [review(B, { sessionId: "predecessor" })];
+  let ownReads = 0;
+  // Attempt 1: this session's history answers, the lineage read fails.
+  const first = await loadReviewHistory("s", {
+    own: async () => { ownReads += 1; return { ok: true as const, value: own }; },
+    lineage: async () => ({ ok: false as const, definite: false }),
+  }, NO_HISTORY);
+  assert.deepEqual({ stored: first.stored, complete: first.complete }, { stored: own, complete: false });
+  // Attempt 2: the own read would now fail, the lineage read answers. The reviews already in hand stay.
+  const second = await loadReviewHistory("s", {
+    own: async () => { ownReads += 1; return { ok: false as const, definite: false }; },
+    lineage: async () => ({ ok: true as const, value: inherited }),
+  }, first);
+  assert.deepEqual({ stored: second.stored, lineage: second.lineage, complete: second.complete },
+    { stored: own, lineage: inherited, complete: true });
+  assert.equal(ownReads, 1, "a source that answered is not read again");
+  // So the delivered answer draws its real card, never "no longer available".
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], second.stored, [], { loaded: true, lineage: second.lineage })), ["review:1b0c@d"]);
 });
 
 test("a review-history read that keeps failing backs off and stops, so it neither polls for good nor loads for good", async () => {

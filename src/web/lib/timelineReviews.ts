@@ -50,12 +50,16 @@ export function useTimelineReviews(
     if (!enabled) return;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
+    // Carried across attempts, so a source that answered once is never read or lost again.
+    let history: ReviewHistoryRead = NO_HISTORY;
     const load = (): void => {
-      void loadReviewHistory(sessionId).then(({ stored: rows, lineage: inherited, complete }) => {
+      void loadReviewHistory(sessionId, undefined, history).then((next) => {
+        const { stored: rows, lineage: inherited, complete } = next;
         // Guarded against the session switching mid-flight: without this, a slow response for
         // the session you just left would land in the panel for the one you just opened, and
         // its answers would read as this session's.
         if (!alive) return;
+        history = next;
         // Whatever arrived is shown at once, so a failed lineage read never hides this session's
         // own answers. Only a complete read settles the history, though: a transient failure is
         // not evidence that a question is gone, so the cards stay loading and the read is retried,
@@ -100,21 +104,47 @@ export async function loadReviewHistory(
     own: (id: string) => Promise<JsonRead<ReviewItem[]>>;
     lineage: (id: string) => Promise<JsonRead<ReviewItem[]>>;
   } = { own: api.resolvedReviews, lineage: api.lineageReviews },
-): Promise<{ stored: ReviewItem[]; lineage: ReviewItem[]; complete: boolean }> {
-  const [own, inherited] = await Promise.allSettled([read.own(sessionId), read.lineage(sessionId)]);
-  const outcome = (r: PromiseSettledResult<JsonRead<ReviewItem[]>>): JsonRead<ReviewItem[]> =>
+  /** The previous attempt's result: a source that answered there is kept, and not read again. */
+  previous: ReviewHistoryRead = NO_HISTORY,
+): Promise<ReviewHistoryRead> {
+  const skip = (): Promise<null> => Promise.resolve(null);
+  const [own, inherited] = await Promise.allSettled([
+    previous.ownAnswered ? skip() : read.own(sessionId),
+    previous.lineageAnswered ? skip() : read.lineage(sessionId),
+  ]);
+  const outcome = (r: PromiseSettledResult<JsonRead<ReviewItem[]> | null>): JsonRead<ReviewItem[]> | null =>
     r.status === "fulfilled" ? r.value : { ok: false, definite: false };
+  // A definite answer (a 4xx, such as a session the daemon no longer holds) is final: asking
+  // again will not change it, so it answers the source with nothing in it.
+  const answered = (r: JsonRead<ReviewItem[]>) => r.ok || r.definite;
   const mine = outcome(own);
   const theirs = outcome(inherited);
-  // A definite answer (a 4xx, such as a session the daemon no longer holds) is final: asking
-  // again will not change it, so it completes the read with nothing in it.
-  const answered = (r: JsonRead<ReviewItem[]>) => r.ok || r.definite;
+  const ownAnswered = previous.ownAnswered || (mine !== null && answered(mine));
+  const lineageAnswered = previous.lineageAnswered || (theirs !== null && answered(theirs));
   return {
-    stored: mine.ok ? mine.value : [],
-    lineage: theirs.ok ? theirs.value : [],
-    complete: answered(mine) && answered(theirs),
+    // A source read before keeps what it returned: a later attempt that fails never discards it.
+    stored: mine?.ok ? mine.value : previous.stored,
+    lineage: theirs?.ok ? theirs.value : previous.lineage,
+    ownAnswered,
+    lineageAnswered,
+    complete: ownAnswered && lineageAnswered,
   };
 }
+
+/**
+ * The review history read so far: what each source returned, and whether each has answered
+ * (successfully, or with a definite 4xx). `complete` once both have.
+ */
+export interface ReviewHistoryRead {
+  stored: ReviewItem[];
+  lineage: ReviewItem[];
+  ownAnswered: boolean;
+  lineageAnswered: boolean;
+  complete: boolean;
+}
+
+/** Nothing read yet. */
+export const NO_HISTORY: ReviewHistoryRead = { stored: [], lineage: [], ownAnswered: false, lineageAnswered: false, complete: false };
 
 /** The first retry's wait; each later one doubles, up to `HISTORY_RETRY_MAX_MS`. */
 export const HISTORY_RETRY_MS = 5_000;

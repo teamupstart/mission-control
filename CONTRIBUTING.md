@@ -87,6 +87,12 @@ preflight or add Chromium flags.
 runners with an explicit worker and shard allocation so its behavior does not depend on the local
 fallback and pull request jobs remain isolated from shared self-hosted infrastructure.
 
+Node test commands set a two-minute per-test deadline (`--test-timeout=120000`), so an
+unresolved await fails locally instead of consuming the workflow check's one-hour budget.
+A test with a deliberate longer budget can set its own `timeout`. For a direct focused
+invocation, add the timeout flag to the command documented in `AGENTS.md`. This is a Node
+test deadline, not a preemptive watchdog for synchronous native calls.
+
 ## Test layers
 
 The repository has four complementary test layers:

@@ -1117,6 +1117,7 @@ export class Dispatcher {
         }
         if (adopted.newlyBound) this.notifySessionBound(taskId);
         discovered = this.requireLiveSession(adopted.session.id);
+        if (await settled()) return;
       }
       if (!this.registry.getTask(taskId)?.terminalResourceId) {
         this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
@@ -1142,6 +1143,9 @@ export class Dispatcher {
         discovered,
         codexLaunch.instrumented,
       );
+      // Before anything reads or writes the task's terminal fields: a replacement that took the
+      // task during the wait owns them.
+      if (await settled()) return;
       const session = piLaunch.sessionId
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;

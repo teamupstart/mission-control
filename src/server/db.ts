@@ -8360,6 +8360,30 @@ export function rekeyTaskShaping(taskId: string, fromSessionId: string, toSessio
   return Number(r.changes) > 0;
 }
 
+/**
+ * Clear a task's record and delivered text only while the record still names `sessionId`, in
+ * one transaction. A failed commit's clean-up: it removes the earlier delivery's record that a
+ * handover back to the same session would otherwise show as its own, and never a record a later
+ * commit wrote for that session or another. True when something was cleared.
+ */
+export function clearTaskShapingFor(taskId: string, sessionId: string): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const cleared = Number(d.prepare(
+      `UPDATE tasks SET shaping = NULL
+         WHERE id = ? AND shaping IS NOT NULL AND json_extract(shaping, '$.sessionId') = ?`,
+    ).run(taskId, sessionId).changes) > 0;
+    if (cleared) d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(taskId);
+    if (ownsTransaction) d.exec("COMMIT");
+    return cleared;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** The stored record alone, for a task that is not in memory. */
 export function taskShapingRecord(taskId: string): TaskShaping | null {
   const row = openDb().prepare(`SELECT shaping FROM tasks WHERE id = ?`).get(taskId) as { shaping: string | null } | undefined;

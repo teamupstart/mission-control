@@ -348,6 +348,30 @@ test("with the flag off, a session's task card carries no record in the snapshot
   assert.equal(card()?.shaping?.state, "degraded", "turning the flag back on shows it again");
 });
 
+test("with the flag off, a step still running shows no progress mark in task events or the snapshot", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "progress", status: "dispatching" }));
+  registry.setTaskShapingContext("progress", true);
+  assert.ok(registry.snapshot().tasks.find((task) => task.id === "progress")?.shapingContext, "shown while the flag is on");
+  setFlag(false);
+  const marks: unknown[] = [];
+  const onEvent = (event: { type: string; task?: { id: string; shapingContext?: unknown } }) => {
+    if (event.type === "task_upsert" && event.task?.id === "progress") marks.push(event.task.shapingContext);
+  };
+  registry.on("event", onEvent);
+  try {
+    assert.equal(registry.snapshot().tasks.find((task) => task.id === "progress")?.shapingContext, undefined, "a reconnect sees no step");
+    registry.upsertTask({ ...registry.getTask("progress")!, priority: "high" });
+  } finally {
+    registry.off("event", onEvent);
+    registry.setTaskShapingContext("progress", false);
+    setFlag(true);
+  }
+  assert.ok(marks.length > 0);
+  assert.deepEqual(marks.filter((mark) => mark !== undefined), [], "and no update carries it");
+});
+
 test("turning the flag back on publishes every task and session card that has a record", () => {
   setFlag(true);
   const registry = new Registry();
@@ -406,13 +430,10 @@ test("a failed unshaped commit to the same session hides that session's earlier 
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "same-unshaped", status: "running", sessionId: "kept" }));
   registry.commitTaskShaping("same-unshaped", "kept", record("kept"), "first text");
-  let calls = 0;
-  registry.shapingCommitter = (taskId, summary, text) => {
-    calls += 1;
-    // A handover no shaper applied to: its clearing write fails, the clean-up that follows succeeds.
-    if (calls === 1) throw new Error("disk full");
-    return db.commitTaskShaping(taskId, summary, text);
-  };
+  let cleanups = 0;
+  // A handover no shaper applied to: its clearing write fails, the clean-up that follows succeeds.
+  registry.shapingCommitter = () => { throw new Error("disk full"); };
+  registry.shapingClearer = (taskId, sessionId) => { cleanups += 1; return db.clearTaskShapingFor(taskId, sessionId); };
   const warn = console.warn;
   console.warn = () => {};
   try {
@@ -420,10 +441,63 @@ test("a failed unshaped commit to the same session hides that session's earlier 
   } finally {
     console.warn = warn;
     registry.shapingCommitter = null;
+    registry.shapingClearer = null;
   }
-  assert.equal(calls, 2, "the clean-up ran although the launch carried no summary");
+  assert.equal(cleanups, 1, "the clean-up ran although the launch carried no summary");
   assert.equal(currentShaping(registry.getTask("same-unshaped")!), null, "the earlier delivery's context is not shown as this one's");
   assert.equal(db.getTask("same-unshaped")?.shaping, undefined);
+});
+
+test("a clean-up that fails too is retried after the handover's own task write, so a restart reads nothing back", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "double-fault", status: "backlog", sessionId: null }));
+  registry.upsertTask({ ...registry.getTask("double-fault")!, status: "running", sessionId: "kept" });
+  registry.commitTaskShaping("double-fault", "kept", record("kept"), "first text");
+  registry.upsertTask({ ...registry.getTask("double-fault")!, status: "backlog", sessionId: null });
+  let clearFails = true;
+  registry.shapingCommitter = () => { throw new Error("disk full"); };
+  registry.shapingClearer = (taskId, sessionId) => {
+    if (clearFails) throw new Error("still full");
+    return db.clearTaskShapingFor(taskId, sessionId);
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // Handed back to the session it ran on: both the commit and its clean-up fail.
+    assert.equal(registry.commitTaskShaping("double-fault", "kept", null, ""), false);
+    assert.equal(db.getTask("double-fault")?.shaping?.sessionId, "kept", "the earlier record is still on disk");
+    clearFails = false;
+    // The handover's own write, which binds the task to that session again.
+    registry.upsertTask({ ...registry.getTask("double-fault")!, status: "running", sessionId: "kept" });
+  } finally {
+    console.warn = warn;
+    registry.shapingCommitter = null;
+    registry.shapingClearer = null;
+  }
+  assert.equal(db.getTask("double-fault")?.shaping, undefined, "the retry cleared it once writes succeeded");
+  assert.equal(db.getTaskShapingText("double-fault"), null);
+  assert.equal(currentShaping(new Registry().getTask("double-fault")!), null, "so a restart shows no earlier context");
+});
+
+test("a pending clean-up never removes a record a later commit wrote", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "later-commit", status: "running", sessionId: "kept" }));
+  registry.commitTaskShaping("later-commit", "kept", record("kept"), "first text");
+  registry.shapingCommitter = () => { throw new Error("disk full"); };
+  registry.shapingClearer = () => { throw new Error("still full"); };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(registry.commitTaskShaping("later-commit", "kept", null, ""), false);
+  } finally {
+    console.warn = warn;
+    registry.shapingCommitter = null;
+    registry.shapingClearer = null;
+  }
+  // The next delivery to the same session commits normally, then the task is written again.
+  assert.equal(registry.commitTaskShaping("later-commit", "kept", record("kept", "degraded"), ""), true);
+  registry.upsertTask({ ...registry.getTask("later-commit")!, priority: "high" });
+  assert.equal(db.getTask("later-commit")?.shaping?.state, "degraded", "the later delivery's record stands");
 });
 
 test("a restart reads the record back with the task", () => {

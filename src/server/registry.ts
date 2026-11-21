@@ -313,6 +313,7 @@ import {
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
   rekeyTaskShaping as dbRekeyTaskShaping,
+  clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
   inTransaction,
@@ -2156,7 +2157,7 @@ export class Registry extends EventEmitter {
     // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
     // (see `withShaping`).
     // A session's task card is gated the same way.
-    const e: ServerEvent = event.type === "task_upsert" && event.task.shaping !== undefined
+    const e: ServerEvent = event.type === "task_upsert" && (event.task.shaping !== undefined || event.task.shapingContext !== undefined)
       ? { ...event, task: taskShapingForReads(event.task) }
       : event.type === "session_upsert" && event.session.task?.shaping !== undefined
         ? { ...event, session: sessionShapingForReads(event.session) }
@@ -7580,6 +7581,9 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
+    // The row just persisted, so the database is taking writes again: settle a superseded
+    // shaping record a failed clean-up left on disk (see `hideSupersededShaping`).
+    if (this.pendingShapingClears.size > 0) this.retryShapingClear(task.id);
   }
 
   /**
@@ -7716,6 +7720,8 @@ export class Registry extends EventEmitter {
     const summary = unstamped ? { ...unstamped, sessionId } : null;
     try {
       (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
+      // This commit settled the row, so no earlier clean-up may touch it now.
+      this.pendingShapingClears.delete(taskId);
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
       this.hideSupersededShaping(taskId, sessionId);
@@ -7769,19 +7775,34 @@ export class Registry extends EventEmitter {
   private hideSupersededShaping(taskId: string, sessionId: string): void {
     const current = this.tasks.get(taskId);
     if (current?.shaping?.sessionId !== sessionId) return;
-    try {
-      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, null, "");
-    } catch {
-      // Memory still drops it below; the next commit or restart settles the row.
-    }
+    // Memory drops it now. On disk it is cleared only while it still names this session, and a
+    // clear that fails too is retried after the task's next persisted write - the handover's
+    // own, a moment later - so a restart does not read the earlier delivery back as this one's.
+    this.pendingShapingClears.set(taskId, sessionId);
+    this.retryShapingClear(taskId);
     const { shaping: _stale, ...rest } = current;
     this.tasks.set(taskId, rest);
     this.emitEvent({ type: "task_upsert", task: rest });
     this.resyncSessionTask(sessionId);
   }
 
-  /** Test seam for a commit that fails. Production always takes the database function. */
+  /** Superseded records whose on-disk clear has not succeeded yet: task id to the session they name. */
+  private readonly pendingShapingClears = new Map<string, string>();
+
+  private retryShapingClear(taskId: string): void {
+    const sessionId = this.pendingShapingClears.get(taskId);
+    if (sessionId === undefined) return;
+    try {
+      (this.shapingClearer ?? dbClearTaskShapingFor)(taskId, sessionId);
+      this.pendingShapingClears.delete(taskId);
+    } catch (error) {
+      console.warn(`[shaping] could not clear task ${taskId}'s superseded shaping record yet:`, error);
+    }
+  }
+
+  /** Test seams for a commit, or a clean-up, that fails. Production always takes the database functions. */
   shapingCommitter: typeof dbCommitTaskShaping | null = null;
+  shapingClearer: typeof dbClearTaskShapingFor | null = null;
 
   /**
    * Carry a task's shaping record to the session that continues its conversation. Called where

@@ -907,6 +907,74 @@ test("a terminal launch replaced while its prompt was being delivered retires it
   assert.equal(getTaskShapingText(taskId)?.text, SECTION);
 });
 
+test("a terminal launch replaced while it waited for readiness never writes its terminal onto the replacement", async () => {
+  const repo = seedRepo("replaced-ready");
+  const taskId = "replaced-ready";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "claude" }));
+  const homes: string[] = [];
+  const killed: string[] = [];
+  const readyHooks: Array<() => void> = [];
+  let shapingCalls = 0;
+  let releaseSecondShaping!: () => void;
+  const secondShapingHeld = new Promise<void>((resolve) => { releaseSecondShaping = resolve; });
+  let secondInShaping!: () => void;
+  const secondShaping = new Promise<void>((resolve) => { secondInShaping = resolve; });
+  let firstSpawned!: () => void;
+  const spawnedFirst = new Promise<void>((resolve) => { firstSpawned = resolve; });
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "terminal",
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    shapeTask: async (input, deps) => {
+      if (++shapingCalls === 2) {
+        // The replacement is held in its shaping step, before it has a terminal of its own.
+        secondInShaping();
+        await secondShapingHeld;
+      }
+      return standIn(SECTION).shapeTask(input, deps);
+    },
+    spawn: async (_label, _short, cwd) => {
+      const n = homes.length;
+      const nativeId = `native-replaced-ready-${n}`;
+      const discovered = mkDiscovered({ agent: "claude", cwd, syntheticId: `sid-replaced-ready-${n}-${++seq}` });
+      registry.applyDiscovery([discovered]);
+      const hook = () => registry.applyHook({ agent: "claude", event: "SessionStart", sessionId: nativeId, cwd, transcriptPath: null,
+        env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
+      homes.push(`home-replaced-ready-${n}`);
+      // The first agent proves it can read only when the test says so.
+      if (n === 0) { readyHooks.push(hook); firstSpawned(); } else hook();
+      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: null };
+    },
+    inject: async (session, text) => {
+      registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: session.agentSessionId ?? session.id, cwd: session.cwd,
+        transcriptPath: null, prompt: text, env: { tmuxPane: "%1" } });
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    killHome: async (name) => { killed.push(name); return { ok: true, asked: true }; },
+  });
+  const original = dispatcher.dispatch(taskId);
+  await spawnedFirst;
+  // Let the first attempt reach its readiness wait, then cancel and dispatch again.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "cancelled" });
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "dispatching", sessionId: null, worktreePath: null, branch: null,
+    homeName: null, terminalResourceId: null });
+  const replacement = dispatcher.dispatch(taskId);
+  await secondShaping;
+  // The first agent becomes ready while its replacement has no terminal yet.
+  readyHooks[0]!();
+  await original;
+  assert.deepEqual(killed, [homes[0]], "the replaced attempt retired its own home");
+  assert.equal(registry.getTask(taskId)?.terminalResourceId ?? null, null, "and wrote no terminal onto the replacement");
+  assert.equal(registry.getTask(taskId)?.homeName ?? null, null);
+  releaseSecondShaping();
+  await replacement;
+  assertRunning(registry.getTask(taskId)!);
+  assert.equal(registry.getTask(taskId)?.homeName, homes[1]);
+  assert.deepEqual(killed, [homes[0]]);
+});
+
 test("a section the final check drops counts nothing as delivered, and keeps each shaper's outcome", async () => {
   const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
   const task = mkTask({ id: "final-check", status: "dispatching", repoRoot: seedRepo("final-check"), title: "Shaping", intent: "do it", agent: "claude" });

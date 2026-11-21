@@ -69,6 +69,16 @@ test("a symlink leaving the worktree is skipped as outside-worktree", () => {
   rmSync(r.dir, { recursive: true, force: true });
 });
 
+test("a symlink to a contained file whose name starts with two dots is included", () => {
+  const r = repo("app");
+  writeFileSync(join(r.worktreePath, "..ship.md"), "Contained guidance.");
+  symlinkSync(join(r.worktreePath, "..ship.md"), join(r.worktreePath, ".claude", "skills", "ship", "SKILL.md"));
+  const resolved = resolveRepoTaskSkills("ship", [r]);
+  assert.deepEqual(resolved.record.skipped, []);
+  assert.equal(resolved.blocks[0]?.body, "Contained guidance.");
+  rmSync(r.dir, { recursive: true, force: true });
+});
+
 test("a directory, an empty body and an oversize file are skipped and recorded", () => {
   const d = repo("d");
   rmSync(join(d.worktreePath, ".claude", "skills", "ship"), { recursive: true });

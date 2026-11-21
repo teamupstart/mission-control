@@ -446,7 +446,10 @@ test("an SDK failure before the acceptance boundary remains safely retryable", a
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes before acceptance preserve uncertainty", async () => {
+test("SDK ownership changes before acceptance preserve uncertainty", async (t) => {
+  // The person's words never reached the driver, so their announcement is withdrawn too.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-before-acceptance";
   const key = "agent:owner-before-acceptance";
@@ -496,11 +499,16 @@ test("SDK ownership changes before acceptance preserve uncertainty", async () =>
   assert.equal(accepted, 0);
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
+  assert.deepEqual(heard.map((h) => h.released), [false, true], "a send refused before acceptance still contests a delivery of its words");
+  assert.equal(heard[1]!.id, heard[0]!.id);
   manager.stop();
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes during acknowledgement preserve uncertainty", async () => {
+test("SDK ownership changes during acknowledgement preserve uncertainty", async (t) => {
+  // Past the acceptance boundary the words may have reached the agent: the announcement stands.
+  const heard: Array<{ released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-during-ack";
   const key = "agent:owner-during-ack";
@@ -548,6 +556,7 @@ test("SDK ownership changes during acknowledgement preserve uncertainty", async 
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
   assert.equal(registry.getGoal(id), null, "an uncertain owner cannot receive the prompt");
+  assert.deepEqual(heard.map((h) => h.released), [false], "a send that may have landed was taken back");
   manager.stop();
   clearPendingTurns(key);
 });

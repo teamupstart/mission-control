@@ -998,6 +998,10 @@ export class PendingTurnManager {
           "SDK conversation ownership changed during delivery.",
           handoff.acceptanceBoundaryCrossed,
         );
+        // The row stays uncertain either way, but a guard that refused before the acceptance
+        // boundary handed the driver nothing: the person's words did not land, so they no longer
+        // contest a delivery of the same words. Past the boundary they may have, and stand.
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
@@ -1067,6 +1071,8 @@ export class PendingTurnManager {
           `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
           handoff.acceptanceBoundaryCrossed,
         );
+        // Withdrawn only when the refusal came before the acceptance boundary (see above).
+        if (!handoff.acceptanceBoundaryCrossed) withdrawPersonDelivery(personSend);
       } else if (handoff.acceptanceBoundaryCrossed) {
         // Once the supervisor crossed its serialized acceptance guard, a thrown
         // transport response is not proof of refusal: Codex may already have written

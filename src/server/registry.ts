@@ -9583,9 +9583,12 @@ export class Registry extends EventEmitter {
       prompt: this.awaitingTurnPrompts.get(s.id) ?? null,
       reportsPrompts: this.promptReporters.has(s.id),
       freshIdleAt: report && report.state === "idle" && report.ref !== this.awaitingDeclaredReport.get(key) ? report.at : null,
-      // The transcript's turn marker is read only for a session without hooks, whose turns a
-      // sweep can miss whole; a hooked session reports each turn as it starts.
-      passiveTurnStartedAt: s.hooksSeen ? null : this.passiveTurnStartedAt(s),
+      // The transcript's turn marker is read whenever the reading itself came from the
+      // transcript, whose sweeps can miss a turn whole. Decided by the source of this reading,
+      // not by `hooksSeen`, which `report_status` or a reloaded event log can set on a session
+      // whose lifecycle still arrives only through its transcript. A fresh hook overlay reports
+      // each turn as it starts, so its marker is not needed.
+      passiveTurnStartedAt: report?.source === "transcript" ? this.passiveTurnStartedAt(s) : null,
     });
     if (judged.wake) {
       this.endAwaitingFromTurn(s, key, "wake", now);
@@ -9608,12 +9611,18 @@ export class Registry extends EventEmitter {
    * overlay, else a fresh transcript read, else null. Only those two: each changes only when the
    * agent's own lifecycle moves, unlike the session's activity stamp.
    */
-  private lifecycleReport(s: Session): { state: Session["state"]; at: number; ref: object } | null {
+  private lifecycleReport(
+    s: Session,
+  ): { state: Session["state"]; at: number; ref: object; source: "hook" | "transcript" } | null {
     const now = Date.now();
     const overlay = this.overlayFor(s);
-    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) return { state: overlay.state, at: overlay.lastActivity, ref: overlay };
+    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
+      return { state: overlay.state, at: overlay.lastActivity, ref: overlay, source: "hook" };
+    }
     const passive = this.passiveStateFor(s);
-    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) return { state: passive.state, at: passive.lastActivity, ref: passive };
+    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) {
+      return { state: passive.state, at: passive.lastActivity, ref: passive, source: "transcript" };
+    }
     return null;
   }
 

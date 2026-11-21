@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -26,6 +26,9 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
+const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
+const { sessionScoutCredentialPath } = await import("../src/shared/harness-runtime.mjs");
 const { isAwaiting, awaitingOverdue } = await import("../src/shared/session.ts");
 const { detectStall, NO_UNPUSHED } = await import("../src/shared/stall.ts");
 const {
@@ -1163,6 +1166,29 @@ test("a turn a session without hooks starts and ends between sweeps is still jud
   assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
 });
 
+test("a missed turn is judged from the transcript even after report_status marked the session as hooked", () => {
+  // `report_status` sets `hooksSeen` on a session whose lifecycle still arrives only through its
+  // transcript: its reading still comes from the transcript, so its turn marker still counts.
+  const registry = new Registry();
+  const d = mkDiscovered({ agent: "codex" });
+  registry.applyDiscovery([d]);
+  let at = Date.now() - 60_000;
+  const read = (state: "idle" | "working", turnStartedAt?: number) => {
+    at += 1_000;
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity: at, ...(turnStartedAt ? { turnStartedAt } : {}) });
+    registry.applyDiscovery([d]);
+  };
+  read("working", at);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  read("idle");
+  registry.applyStatus({ tmuxPane: (d.terminals[0] as { paneId: string }).paneId }, null, "watching CI");
+  assert.equal(registry.getSession(d.syntheticId)?.hooksSeen, true, "the fixture is not marked as hooked");
+  const settled = loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!.settledAt!;
+  read("idle", settled + 5_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the missed wake was skipped because the session read as hooked");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
 test("a declaration whose request body is read after the preview switched off is refused", async () => {
   const registry = new Registry();
   const app = mkApp(registry);
@@ -1314,13 +1340,26 @@ function mkApp(registry: RegistryT) {
   });
 }
 
-test("the MCP routes bind to the caller and follow the preview; the session clears its own standing wait and the dashboard clears as the operator", async () => {
+test("the MCP routes bind to the caller and follow the preview; the session clears its own standing wait and the dashboard clears as the operator", async (t) => {
   const registry = new Registry();
+  t.after(maintainScoutSessionCredentials(registry));
   const app = mkApp(registry);
   const sdk = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "claude", name: "embedded", cwd: "/repo", agentSessionId: `agent-aw-route-${seq}` });
-  const mcp = (path: string, body: unknown) => app.request(path, {
+  const other = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "claude", name: "other", cwd: "/repo", agentSessionId: `agent-aw-route-${seq}` });
+  // The signed Registry credential each session's MCP bridge sends: it, not the body, names the caller.
+  const credentialOf = (id: string) => {
+    const path = sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(id)}`);
+    t.after(() => rmSync(path, { force: true }));
+    return readFileSync(path, "utf8").trim();
+  };
+  const sdkCredential = credentialOf(sdk.id);
+  const otherCredential = credentialOf(other.id);
+  const mcp = (path: string, body: unknown, credential: string = sdkCredential) => app.request(path, {
     method: "POST",
-    headers: { host: "127.0.0.1", "content-type": "application/json", "x-harness-token": ensureToken() },
+    headers: {
+      host: "127.0.0.1", "content-type": "application/json", "x-harness-token": ensureToken(),
+      ...(credential ? { "x-mission-scout-credential": credential } : {}),
+    },
     body: JSON.stringify(body),
   });
   const api = (path: string, body: unknown) => app.request(path, {
@@ -1414,7 +1453,19 @@ test("the MCP routes bind to the caller and follow the preview; the session clea
     assert.equal(clearedEvents(sdk.id).at(-1)?.actor, "operator");
     const again = await mcp("/mcp/awaiting/clear", { env: {}, sessionId: sdk.id, resolution: "cancelled" });
     assert.deepEqual(await again.json(), { sessionId: sdk.id, cleared: false });
-    assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: "sdk:nobody", ...wire() })).status, 404);
+    // Bound to the caller's signed credential: without one nothing is declared, and a body that
+    // names another session is refused rather than acted on for either session.
+    assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire() }, "")).status, 403);
+    assert.equal(registry.getAwaiting(sdk.id), null, "a declaration without the caller's credential landed");
+    assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire() }, otherCredential)).status, 403);
+    assert.equal(registry.getAwaiting(sdk.id), null, "another session's credential declared a wait on this one");
+    assert.equal(registry.getAwaiting(other.id), null, "a mismatched declaration was retargeted to its caller");
+    assert.equal(registry.reportAwaiting(sdk.id, body()).ok, true);
+    assert.equal((await mcp("/mcp/awaiting/clear", { env: {}, sessionId: sdk.id }, otherCredential)).status, 403);
+    assert.ok(registry.getAwaiting(sdk.id), "another session cleared this session's wait");
+    assert.equal((await mcp("/mcp/awaiting/clear", { env: {}, sessionId: sdk.id }, "")).status, 403);
+    assert.ok(registry.getAwaiting(sdk.id));
+    assert.equal(registry.clearAwaiting(sdk.id, "operator"), true);
 
     // Switching the preview off ends every standing wait.
     assert.equal(registry.reportAwaiting(sdk.id, body()).ok, true);

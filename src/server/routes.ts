@@ -34,7 +34,9 @@ import { activeStackGitHub } from "./stacking/github.ts";
 import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
-import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
+import {
+  registerSessionControlRoutes, sessionControlActor, sessionControlCaller, sessionControlCallerRefusal,
+} from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
@@ -5565,9 +5567,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
   });
 
-  // A session declaring it is idle on purpose while a background process finishes. Bound to
-  // the caller like `/mcp/blocker`, and refused while the session has a `request_input` pending
-  // or stands on a blocker. 404 with `feature` while the preview is off, which the tool reads.
+  // The session a declared-wait call is about: the one its signed Registry credential names,
+  // never the body's `env` or `sessionId`, which any holder of the machine token can write. A
+  // body naming a different session is refused rather than silently retargeted.
+  const awaitingCaller = (
+    c: Context,
+    env: Parameters<Registry["findSessionByEnv"]>[0],
+    sessionId: string | null,
+  ): { ok: true; sessionId: string } | { ok: false; status: 403; error: string } => {
+    const caller = sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!caller) return { ok: false, status: 403, error: "Only a live session Mission Control registered can declare or clear its own wait." };
+    const named = registry.findSessionByEnv(env, sessionId);
+    if (named && named.id !== caller) return { ok: false, status: 403, error: "A session can only declare or clear its own wait." };
+    return { ok: true, sessionId: caller };
+  };
+
+  // A session declaring it is idle on purpose while a background process finishes. Bound to the
+  // caller by its signed credential (`awaitingCaller`), and refused while the session has a
+  // `request_input` pending or stands on a blocker. 404 with `feature` while the preview is off,
+  // which the tool reads.
   app.post("/mcp/awaiting", requireFeature(SESSION_AWAITING_FLAG_ID), async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpReportAwaitingSchema);
@@ -5579,11 +5597,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "This feature is disabled.", feature: SESSION_AWAITING_FLAG_ID }, 404);
     }
     const { env, sessionId, ...body } = parsed.data;
-    const session = registry.findSessionByEnv(env, sessionId);
-    if (!session) return c.json({ error: "no matching session" }, 404);
-    const result = registry.reportAwaiting(session.id, body);
+    const caller = awaitingCaller(c, env, sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const result = registry.reportAwaiting(caller.sessionId, body);
     if (!result.ok) return c.json({ error: result.error }, result.status);
-    return c.json({ sessionId: session.id, created: result.created, awaiting: result.awaiting });
+    return c.json({ sessionId: caller.sessionId, created: result.created, awaiting: result.awaiting });
   });
 
   // The session ending its own wait. Not gated on the preview, so a session can always end a
@@ -5592,10 +5610,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpClearAwaitingSchema);
     if (!parsed.ok) return parsed.res;
-    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
-    if (!session) return c.json({ error: "no matching session" }, 404);
-    const cleared = registry.clearAwaiting(session.id, "session", parsed.data.resolution);
-    return c.json({ sessionId: session.id, cleared });
+    const caller = awaitingCaller(c, parsed.data.env, parsed.data.sessionId);
+    if (!caller.ok) return c.json({ error: caller.error }, caller.status);
+    const cleared = registry.clearAwaiting(caller.sessionId, "session", parsed.data.resolution);
+    return c.json({ sessionId: caller.sessionId, cleared });
   });
 
   // The session clearing its own blocker. Clearing a session with none is a no-op success.

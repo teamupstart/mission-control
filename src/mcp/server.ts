@@ -1235,7 +1235,8 @@ server.registerTool(
   },
   async (input) => {
     try {
-      const res = await http("/mcp/awaiting", "POST", { env: ENV, sessionId: SESSION_ID, ...input });
+      // The session's signed credential names the caller; the daemon refuses a body naming another.
+      const res = await http("/mcp/awaiting", "POST", { env: ENV, sessionId: SESSION_ID, ...input }, true);
       const body = (await res.json().catch(() => ({}))) as { created?: boolean; error?: string; feature?: string };
       if (res.status === 404 && body.feature) {
         return textResult(
@@ -1273,7 +1274,7 @@ server.registerTool(
   },
   async ({ resolution }) => {
     try {
-      const res = await http("/mcp/awaiting/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution });
+      const res = await http("/mcp/awaiting/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution }, true);
       const body = (await res.json()) as { cleared?: boolean; error?: string };
       if (!res.ok) {
         return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);

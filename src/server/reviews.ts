@@ -9,7 +9,7 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { questionHoldsCompletion } from "@shared/async-input.ts";
+import { ASYNC_INPUT_FLAG, asyncInputAnswer, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -32,6 +32,7 @@ import {
   wakeReviewRow,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
 import { isRewordedRetry } from "./review-retry.ts";
 
 /**
@@ -65,6 +66,7 @@ export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
+export class OpenQuestionLimitError extends Error {}
 
 /** A merge could not close a session's questions yet (a runtime transfer is moving them). */
 export class MergeClosureDeferred extends Error {}
@@ -191,7 +193,10 @@ export class ReviewManager {
       ? snoozedContinuationLead(review)
       : `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
         "Treat this as the result of your earlier review tool call:";
-    return `${lead}\n\n${result.text}` + addenda.map((text) => `\n\n${text}`).join("");
+    // Only settled, deliverable answers use the answer formatter. Snooze instructions have
+    // their own delivery path and must never acquire an answer heading.
+    const answer = review.waitMode === "message" && deliversContinuation(review);
+    return (answer ? asyncInputAnswer(review) : `${lead}\n\n${result.text}`) + addenda.map((text) => `\n\n${text}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
@@ -347,6 +352,18 @@ export class ReviewManager {
     const replaced = this.retriesReplacedBy(review);
     const resolvedAt = Date.now();
     inTransaction(() => {
+      if (isRequestInputQuestion(review) && (review.waitMode === "message" || featureEnabled(ASYNC_INPUT_FLAG))) {
+        // Count parked and call-mode questions too. A recognized retry replaces its older
+        // card in this transaction, so only questions that will remain consume a slot.
+        const open = this.openQuestions(sessionId).filter((r) => !replaced.some((older) => older.id === r.id));
+        if (open.length >= MAX_OPEN_QUESTIONS) {
+          throw new OpenQuestionLimitError(
+            `Not asked: this session already has ${open.length} open questions (limit ${MAX_OPEN_QUESTIONS}):\n` +
+            open.map((r) => `- ${r.title} (${r.id})`).join("\n") +
+            "\nWork on what you can or end your turn. Use withdraw_question for a message-mode question you no longer need.",
+          );
+        }
+      }
       insertReview(review);
       for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
     });
@@ -355,6 +372,19 @@ export class ReviewManager {
       this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
     }
     return review;
+  }
+
+  /** Both wait modes, including questions parked by the operator. */
+  openQuestions(sessionId: string): ReviewItem[] {
+    return this.registry.outstandingReviews(sessionId).filter(isRequestInputQuestion);
+  }
+
+  withdrawQuestion(sessionId: string, id: string, reason: string): ReviewItem {
+    const review = this.openQuestions(sessionId).find((r) => r.id === id);
+    if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
+    if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
+    if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
+    return this.settle(review, "withdrawn", reason);
   }
 
   /**

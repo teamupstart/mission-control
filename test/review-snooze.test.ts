@@ -350,3 +350,36 @@ test("an owed instruction that could not be handed over yet is delivered when re
   new ReviewManager(f.registry).startContinuationRecovery(f.deliver);
   assert.equal(f.turns().length, 1);
 });
+
+
+for (const mode of ["judgment", "option", "hold"] as const) {
+  test(`a message-mode snooze sends an unanswered ${mode} instruction, then a separate resolved answer`, () => {
+    const f = fixture(`message-snooze-${mode}`);
+    const review = f.reviews.create(f.id, "input", "Which linter?", "Which linter?", linter, {
+      snoozable: true, waitMode: "message", meanwhile: "Prepare tests without applying the configuration",
+    });
+    f.reviews.snooze(review.id, HOUR, mode === "option" ? { mode, optionId: "o1" } : { mode });
+    assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+    assert.deepEqual(f.registry.outstandingReviews(f.id).map((r) => r.id), [review.id]);
+    assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:snooze:${review.id}`]);
+    const instruction = f.turns()[0]!.text;
+    assert.match(instruction, /Not answered yet/);
+    assert.doesNotMatch(instruction, /Mission Control answer to question/);
+    assert.match(instruction, mode === "hold" ? /Do not do any work that depends on this answer/
+      : mode === "option" ? /"eslint" as a provisional answer/ : /proceed on your best judgment/);
+    const stored = openDb().prepare("SELECT status, continuation_queued_at FROM reviews WHERE id = ?").get(review.id);
+    assert.equal(stored?.status, "snoozed");
+    assert.equal(stored?.continuation_queued_at, null, "the snooze does not claim an answer was queued");
+
+    f.reviews.resolve(review.id, "answer", "Use eslint", "human");
+    assert.deepEqual(f.turns().map((turn) => turn.id), [
+      `review-continuation:snooze:${review.id}`,
+      `review-continuation:answer:${review.id}`,
+    ]);
+    assert.equal(f.turns()[0]!.text, instruction, "answering does not rewrite or combine with the instruction");
+    assert.match(f.turns()[1]!.text, /^Mission Control answer to question/);
+    assert.match(f.turns()[1]!.text, /Use eslint/);
+    assert.match(f.turns()[1]!.text, /Prepare tests without applying the configuration/);
+    assert.deepEqual(f.registry.outstandingReviews(f.id), []);
+  });
+}

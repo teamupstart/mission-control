@@ -18,7 +18,7 @@ import { MEANWHILE_MAX_CHARS } from "../src/shared/async-input.ts";
 const home = mkdtempSync(join(tmpdir(), "async-input-mcp-"));
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
-let mode: "message" | "call" | "legacy" = "message";
+let mode: "message" | "call" | "legacy" | "limit" = "message";
 const RECEIPT = "Filed, not answered: stub receipt.";
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";
@@ -28,6 +28,7 @@ const daemon = createServer((req: IncomingMessage, res) => {
     seen.push({ method: req.method ?? "", path, body: raw ? JSON.parse(raw) : {} });
     const json = (value: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
     if (req.method === "POST" && path === "/mcp/reviews") {
+      if (mode === "limit") return res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ error: "Not asked: ten open questions. Work on what you can or end your turn." }));
       if (mode === "message") return json({ id: "rev-m", sessionId: "s", wait: "message", receipt: RECEIPT });
       if (mode === "call") return json({ id: "rev-c", sessionId: "s", wait: "call" });
       return json({ id: "rev-l", sessionId: "s" });
@@ -38,6 +39,8 @@ const daemon = createServer((req: IncomingMessage, res) => {
         response: "Answered: eslint", createdAt: 1, resolvedAt: 2,
       });
     }
+    if (path === "/mcp/questions/list") return json({ questions: [{ id: "q1", title: "Which?", status: "pending" }] });
+    if (path === "/mcp/questions/q1/withdraw") return json({ id: "q1", status: "withdrawn" });
     res.writeHead(404).end("unexpected");
   });
 });
@@ -58,7 +61,7 @@ before(async () => {
       MISSION_PORT: String(address.port),
       MISSION_SESSION_ID: "sdk:async-input-mcp",
     } as Record<string, string>,
-    stderr: "pipe",
+    stderr: "inherit",
   }));
 });
 after(async () => {
@@ -114,4 +117,22 @@ test("the tool describes both outcomes and bounds meanwhile", async () => {
   const tooLong = await ask({ question: "Which?", meanwhile: "x".repeat(MEANWHILE_MAX_CHARS + 1) });
   assert.equal(tooLong.isError, true);
   assert.deepEqual(tooLong.requests, [], "refused before the daemon is asked");
+});
+
+test("housekeeping tools carry session context and return the daemon results", async () => {
+  const listed = await client.callTool({ name: "list_open_questions", arguments: {} });
+  assert.ok(JSON.stringify(listed.content).includes("q1"));
+  assert.equal(seen.at(-1)!.path, "/mcp/questions/list");
+  assert.equal(seen.at(-1)!.body.sessionId, "sdk:async-input-mcp");
+  const withdrawn = await client.callTool({ name: "withdraw_question", arguments: { id: "q1", reason: "Obsolete" } });
+  assert.ok(JSON.stringify(withdrawn.content).includes("withdrawn"));
+  assert.equal(seen.at(-1)!.body.reason, "Obsolete");
+});
+
+test("the bound returns an error result with recovery instructions and no wait", async () => {
+  mode = "limit";
+  const outcome = await ask({ question: "Eleventh?" });
+  assert.equal(outcome.isError, true);
+  assert.match(outcome.text, /Work on what you can or end your turn/);
+  assert.equal(outcome.requests.length, 1);
 });

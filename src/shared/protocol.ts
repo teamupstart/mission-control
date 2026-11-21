@@ -723,6 +723,10 @@ export const DetachReviewWaitSchema = z.object({
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
 });
+export const ListOpenQuestionsSchema = DetachReviewWaitSchema;
+export const WithdrawQuestionSchema = DetachReviewWaitSchema.extend({
+  reason: z.string().trim().min(1).max(2000),
+});
 export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
 
 // ---- public product issue reporting --------------------------------------------------

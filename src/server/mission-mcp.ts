@@ -83,6 +83,8 @@ export const MISSION_MCP_TOOLS = [
   "publish_plan",
   "get_pull_request_policy",
   "request_input",
+  "list_open_questions",
+  "withdraw_question",
   "report_product_issue",
   "report_status",
   "report_blocker",

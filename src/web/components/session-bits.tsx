@@ -1176,7 +1176,7 @@ export function FleetSectionHead({
         // case. It is also the shorter of the two, and this wraps to three lines at the 250px a
         // board column gets by default.
         <span className="fleet-section-why">
-          A workflow owns the next turn. Check its wait reason and next action.
+          A workflow owns the next turn. Open its run for the current step and available actions.
         </span>
       )}
     </div>

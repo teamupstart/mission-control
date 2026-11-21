@@ -192,7 +192,7 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await expect(idle.locator(".fleet-section-free")).toBeVisible();
   await expect(idle.locator(".fleet-section-held")).toContainText("held by a workflow");
   await expect(idle.locator(".fleet-section-held"))
-    .toContainText("Check its wait reason and next action");
+    .toContainText("Open its run for the current step and available actions");
 
   // The count stops being a single number that means neither thing. This is the assertion the
   // whole change exists for: 2 sessions, and only 1 of them can take work.

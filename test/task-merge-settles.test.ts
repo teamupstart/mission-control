@@ -1049,6 +1049,31 @@ for (const change of ["none", "working", "queue", "workflow", "checkout"] as con
   });
 }
 
+test("shutdown drains an owned scout archive without finishing stale publication settlement", async () => {
+  const archive = deferred();
+  const entered = deferred();
+  const f = await rolledPublicationFixture("scout-shutdown", {
+    managed: true,
+    archives: {
+      ensureReady: async () => { entered.resolve(); await archive.promise; return { ok: true }; },
+      settleBeforeCleanup: async () => ({ ok: true }),
+    },
+  });
+  f.finish(); await entered.promise;
+  let stopped = false;
+  const stopping = f.tasks.stop().then(() => { stopped = true; });
+  try {
+    await settleTicks();
+    assert.equal(stopped, false, "shutdown retains the existing durable archive drain");
+  } finally {
+    archive.resolve();
+    await stopping;
+  }
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "the stopped settlement cannot write done");
+  const { getTaskSessionClosure } = await import("../src/server/db.ts");
+  assert.equal(getTaskSessionClosure(f.taskId), null, "shutdown creates no stale closure obligation");
+});
+
 test("workflow settlement releases only dependency edges pinned to the merged episode", async () => {
   const f = await rolledPublicationFixture("dependency-episodes");
   const dep = (episodeId: string) => ({ type: "task" as const, taskId: f.taskId, title: "Plan",

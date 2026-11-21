@@ -253,7 +253,7 @@ test("the idle column splits into free and held, with the held ones last", () =>
   assert.match(html, /fleet-section-held/);
   assert.match(html, /held by a workflow/);
   // The section no longer promises that every held run advances automatically.
-  assert.match(html, /Check its wait reason and next action/);
+  assert.match(html, /Open its run for the current step and available actions/);
   // Free rule before held rule, and the held tile after both.
   assert.ok(
     html.indexOf("fleet-section-free") < html.indexOf("fleet-section-held"),

@@ -894,7 +894,7 @@ test("explicit revision changes refuse a completed replacement origin without me
 
   const refused = await f.tasks.update(dependent.id, { planInputChange: { from, to } });
   assert.equal(refused.ok, false);
-  assert.equal(refused.error, "dependency task is neither backlogged nor active");
+  assert.equal(refused.error, `Completed replacement origin "${replacement.title}" has no merge proof for work episode ${binding.episodeId}. Select a revision with verified merge proof.`);
   assert.deepEqual(f.tasks.get(dependent.id), before, "refusal preserves the in-memory pin and dependencies");
   assert.deepEqual(loadActiveTasks().find(task => task.id === dependent.id), persistedBefore, "refusal persists neither half of the pin/origin change");
 });

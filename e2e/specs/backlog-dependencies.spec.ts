@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard", "revision-change-ready-dispatch"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard", "revision-change-ready-dispatch", "revision-change-missing-merge-proof"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -349,6 +349,41 @@ for (const retained of [true, false]) test("change pinned revision previews and 
   await expect(dialog.getByRole("link", { name: "replacement-plan revision 2" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Remove dependency: Replacement origin" })).toBeDisabled();
   await shoot(dashboard, "revision-change-saved-" + retained);
+});
+
+test("a completed replacement without merge proof explains the exact episode and leaves the saved task unchanged", async ({ dashboard, daemon }) => {
+  const old = await savedPlan(daemon);
+  const replacement = await savedPlan(daemon, false, "replacement-plan");
+  const task = await create(daemon, "Keep the original pin", {
+    planInputs: [old.input], dependencies: [{ type: "task", taskId: old.source.id }],
+  });
+  await daemon.crash();
+  const episode = withDaemonDb(daemon, db => {
+    db.prepare("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?").run(replacement.source.id);
+    db.prepare("DELETE FROM sdk_sessions WHERE id = ?").run(replacement.session.id);
+    return db.prepare("SELECT episode_id, merged_at, pr_url FROM task_work_episode_bindings WHERE task_id = ?")
+      .get(replacement.source.id) as { episode_id: string; merged_at: number | null; pr_url: string | null };
+  });
+  expect(episode.merged_at).toBeNull();
+  expect(episode.pr_url).toBeNull();
+  await daemon.restart();
+  const flag = await fetch(daemon.baseURL + "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });
+  expect(flag.ok).toBe(true);
+  const dialog = await editor(dashboard, daemon, task.title);
+  const read = async () => (await (await fetch(daemon.baseURL + "/api/tasks")).json() as Task[]).find(t => t.id === task.id)!;
+  const before = await read();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
+  await dialog.getByLabel("Revision", { exact: true }).fill(String(replacement.input.revision));
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(`Completed replacement origin "${replacement.source.title}" has no merge proof for work episode ${episode.episode_id}. Select a revision with verified merge proof.`);
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
+  expect(await read()).toEqual(before);
+  await dialog.getByRole("textbox", { name: /^Title/ }).focus();
+  await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+  await shoot(dashboard, "revision-change-missing-merge-proof");
 });
 
 test("a validated replacement enables dispatch using its merged dependencies without sending raw edits", async ({ dashboard, daemon }) => {

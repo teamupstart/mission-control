@@ -4408,6 +4408,7 @@ export class TaskManager {
         const planInputs = [...t.planInputs!];
         planInputs[index] = to;
         const saved = planRevisionRecord(to.planId, to.revision);
+        const source = saved.task_id ? this.getDurable(saved.task_id) ?? null : null;
         const selection = selectPinChangeDependencies({
           current: t.dependencies,
           from: { input: from, origin: planRevisionRecord(from.planId, from.revision) },
@@ -4415,7 +4416,7 @@ export class TaskManager {
           remainingPins: planInputs.map(input => ({ input, origin: planRevisionRecord(input.planId, input.revision) })),
           storage: readPlanRevision(to.planId, to.revision).manifest.policy.storage,
           published: Boolean(publicationReceipt(to)),
-          source: saved.task_id ? this.getDurable(saved.task_id) ?? null : null,
+          source,
           bindings: saved.task_id
             ? [taskWorkEpisodeForTask(saved.task_id), ...historicalTaskWorkEpisodeBindingsForTask(saved.task_id)]
               .filter((binding): binding is TaskWorkEpisodeBinding => binding !== null)
@@ -4429,6 +4430,10 @@ export class TaskManager {
             const mergedUrl = this.mergeUrlForDependency(mergeCandidate.edge, "");
             if (mergedUrl) candidates.push({ ...mergeCandidate.edge, prUrl: mergedUrl,
               satisfiedAt: mergeCandidate.mergedAt ?? Date.now() });
+          }
+          if (addition.type === "task" && source?.status === "done"
+            && !candidates.some(edge => dependencyKey(edge) === dependencyKey(addition))) {
+            throw new PlanStoreError(`Completed replacement origin ${JSON.stringify(source.title)} has no merge proof for work episode ${saved.episode_id ?? "unknown"}. Select a revision with verified merge proof.`);
           }
           dependencies.push(...this.resolveDependencies([addition], t.id, candidates));
         }

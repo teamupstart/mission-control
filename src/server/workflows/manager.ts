@@ -101,6 +101,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  workflowHasPendingPullRequestAction,
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
@@ -155,6 +156,7 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
@@ -387,6 +389,7 @@ export interface WorkflowManagerOptions {
   ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
+  classifyCriterionFulfillment?: NonNullable<Parameters<typeof classifyWorkflowCriterionFulfillment>[1]>["execute"];
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   /** The authorship sink's older name, still honoured. See `confirmInjection`. */
@@ -2413,6 +2416,11 @@ export class WorkflowManager {
     if (!["evidence_reconciliation_error", "evidence_readiness", "preflight_refinement_exhausted", "persona_feedback", "round_limit", "infrastructure_error"].includes(run.currentPhase)) return null;
     const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!parsed.success) return null;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (run.criteria?.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)
+        && version && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+      return { submissionId: submission.id, kind: "publication", label: "Classify publication criteria" };
+    }
     if (run.currentPhase === "evidence_reconciliation_error" || submission.readiness?.gapCodes.includes("missing_coverage")) {
       let cursor: WorkflowSubmission | null = submission;
       for (let depth = 0; cursor && depth < 128; depth++) {
@@ -7416,6 +7424,32 @@ export class WorkflowManager {
           }
         }
       }
+      // Old runs already have their criterion identities. Classify only missing timing metadata,
+      // against that frozen intent, rather than recompacting or reusing a broad override.
+      const fulfillmentSource = this.store.getRun(run.id)?.criteria;
+      if (context.compaction.status === "model" && fulfillmentSource && version
+          && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+        let classified = fulfillmentSource;
+        if (fulfillmentSource.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)) {
+          const classificationContext = { ...context, canonicalCriteria: fulfillmentSource.canonicalCriteria };
+          const classifications = await this.schedule(() => classifyWorkflowCriterionFulfillment(classificationContext, {
+            execute: this.options.classifyCriterionFulfillment
+              ?? (this.options.compactContext ? async () => ({ kind: "failed" as const,
+                cause: "transport" as const, reason: "No injected criterion fulfillment classifier" }) : undefined),
+            observer: observerFor("criterion_fulfillment"),
+            onExecution: (execution) => contextExecutions.set("criterion_fulfillment", execution),
+          }), "capture");
+          if (classifications && this.captureIsActive(run.id, submission.id)) {
+            classified = this.store.freezeRunCriterionFulfillment({ runId: run.id, source: fulfillmentSource,
+              classifications, submissionId: submission.id, now: Date.now() }) ?? fulfillmentSource;
+          }
+        }
+        // A recovery child's context may predate the successful classification. Copy only
+        // timing from the durable result; every other field and all historical contexts stay put.
+        const timing = new Map(classified.canonicalCriteria.map((criterion) => [criterion.id, criterion.fulfilledByAction]));
+        context = { ...context, canonicalCriteria: context.canonicalCriteria?.map((criterion) =>
+          timing.get(criterion.id) === undefined ? criterion : { ...criterion, fulfilledByAction: timing.get(criterion.id) }) };
+      }
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
@@ -7500,6 +7534,8 @@ export class WorkflowManager {
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
             enforceCoverage: enforcingReadiness,
+            pendingPullRequestAction: version != null
+              && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),

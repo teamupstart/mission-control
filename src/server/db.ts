@@ -12659,6 +12659,15 @@ export function bindReviewDelivery(id: string, messageId: string, messageTs: num
   return Number(r.changes) > 0;
 }
 
+/** These reviews, whatever their status or age; ids that name no review are skipped. */
+export function loadReviewsByIds(ids: readonly string[]): ReviewItem[] {
+  if (!ids.length) return [];
+  const rows = openDb()
+    .prepare(`SELECT * FROM reviews WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
 /** Write-once: a steered delivery's echo decision, "" for none. */
 export function settleReviewDeliverySteerEcho(id: string, echo: string): void {
   openDb().prepare(`UPDATE session_review_deliveries SET steer_echo = ? WHERE id = ? AND steer_echo IS NULL`).run(echo, id);

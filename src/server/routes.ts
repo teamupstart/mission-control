@@ -317,6 +317,7 @@ import {
   type ProductIssueSubmitResult,
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
+import { boundReviewIds } from "./review-deliveries.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
@@ -614,6 +615,7 @@ import {
   retryWritebacks,
   getSkillsAcks,
   loadConversationResolvedReviews,
+  loadReviewsByIds,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   loadOpenInspectorInspections,
@@ -7216,11 +7218,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // `?lineage=1`: the same history for the sessions this conversation was transferred from,
     // never this one's own. The dashboard reads it only to draw an answer delivered here whose
     // question a predecessor asked (`mergeConversation`), never as entries of this session.
-    if (c.req.query("lineage") === "1") {
-      const predecessors = runtimeTransferPredecessors(session.id, noteKeyFor(session)).filter((id) => id !== session.id);
-      return c.json(predecessors.flatMap((id) => loadConversationResolvedReviews(id)));
-    }
-    return c.json(loadConversationResolvedReviews(session.id));
+    const lineage = c.req.query("lineage") === "1";
+    const owners = lineage
+      ? runtimeTransferPredecessors(session.id, noteKeyFor(session)).filter((id) => id !== session.id)
+      : [session.id];
+    const history = owners.flatMap((id) => loadConversationResolvedReviews(id));
+    // The history is capped to its newest rows. A review an answer delivered into this
+    // conversation names is added whatever its age, so the delivered turn can always draw its
+    // card rather than "no longer available" while the review still exists.
+    const present = new Set(history.map((review) => review.id));
+    const owned = new Set(owners);
+    const delivered = loadReviewsByIds(boundReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
+      .filter((review) => owned.has(review.sessionId));
+    return c.json([...history, ...delivered]);
   });
 
   // --- Foreman session work queues (localhost only) ---

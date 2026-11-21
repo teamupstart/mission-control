@@ -53,3 +53,30 @@ test("?lineage=1 returns the answered questions of the sessions this conversatio
   const ownHistory = await (await app.request(path, { headers: HEADERS })).json() as ReviewItem[];
   assert.deepEqual(ownHistory.map((r) => r.id), [own], "the session's own history is unchanged");
 });
+
+test("the history always includes reviews this conversation's bound deliveries name, past the newest-500 cap", async () => {
+  const { insertReviewDelivery } = await import("../src/server/db.ts");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "proc:ttys902:902:0", agent: "claude", name: "long", nameSource: "process", cwd: "/wt/long",
+    gitBranch: null, gitRoot: null, repoRoot: null, pid: 902, tty: "ttys902",
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%902" })], startedAt: 0,
+  } as DiscoveredSession]);
+  const session = registry.getSession("proc:ttys902:902:0")!;
+  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+  const insert = openDb().prepare(`INSERT INTO reviews
+    (id, session_id, kind, title, body, status, response, created_at, resolved_at, resolved_by, wait_mode)
+    VALUES (?, ?, 'input', 'Which linter?', 'Which linter?', 'answered', 'eslint', ?, ?, 'human', 'message')`);
+  // The answer delivered long ago, then 501 newer answers that push it out of the capped history.
+  const old = randomUUID();
+  insert.run(old, session.id, 1, 2);
+  for (let i = 0; i < 501; i++) insert.run(randomUUID(), session.id, 10 + i, 10 + i);
+  insertReviewDelivery({
+    id: randomUUID(), noteKey: noteKeyFor(session), fingerprint: "f", envelope: "answer", reviewIds: [old],
+    deliveredAt: 3, transcriptOffset: 0, contested: false, confirmedAt: 3, messageId: "delivered-turn", messageTs: 3,
+    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null,
+  });
+  const history = await (await app.request(`/api/sessions/${encodeURIComponent(session.id)}/resolved-reviews`, { headers: HEADERS })).json() as ReviewItem[];
+  assert.equal(history.filter((r) => r.id !== old).length, 500, "the cap still applies to the rest");
+  assert.ok(history.some((r) => r.id === old), "the delivered answer's review is always there for its card");
+});

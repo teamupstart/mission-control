@@ -1,25 +1,14 @@
 import type { TranscriptMessage, TurnOriginSession } from "@shared/types.ts";
-import {
-  bindDelegatedTurn,
-  contestDelegatedTurn,
-  deleteDelegatedTurn,
-  insertDelegatedTurn,
-  loadDelegatedTurns,
-  pruneDelegatedTurns as pruneRows,
-  type DelegatedTurnRow,
-} from "./db.ts";
-import {
-  DeliveryLedger,
-  forgetDeliveryBindingState,
-  type DeliveryConversation,
-} from "./delivery-binding.ts";
+import { pruneDelegatedTurns as pruneRows, type DelegatedTurnRow } from "./db.ts";
+import { forgetDeliveryBindingState, type DeliveryConversation } from "./delivery-binding.ts";
+import { delegatedLedger as ledger } from "./delivery-ledgers.ts";
 
 export {
   noteOtherSend,
   rememberedOtherSendKeys,
   withdrawOtherSend,
   type OtherSendHandle,
-} from "./delivery-binding.ts";
+} from "./delivery-ledgers.ts";
 
 /**
  * Which controlling session sent a delegated message, durably and per delivery.
@@ -42,16 +31,6 @@ function sourceOf(row: DelegatedTurnRow): TurnOriginSession {
   return { id: row.controllerId, name: row.controllerName };
 }
 
-const ledger = new DeliveryLedger<DelegatedTurnRow>({
-  label: "a delegated turn",
-  load: loadDelegatedTurns,
-  insert: insertDelegatedTurn,
-  remove: deleteDelegatedTurn,
-  contest: contestDelegatedTurn,
-  bind: bindDelegatedTurn,
-  // The label a row would show: two rows with the same one cannot be credited to the wrong sender.
-  sender: (row) => `${row.controllerId}\0${row.controllerName}`,
-});
 
 /**
  * Record a delegated delivery BEFORE it is attempted; returns its id for `releaseDelegatedTurn`.

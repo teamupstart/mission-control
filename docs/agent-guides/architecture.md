@@ -377,7 +377,8 @@ delivery both call `reconsider`, which clears a contest only when no other send 
 and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
 
 The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
-uses it unchanged. The ledgers share one claim space: a turn is bound by at most one row of
+uses it unchanged. Both ledgers are constructed and registered together in `delivery-ledgers.ts`,
+which each table's owner imports, so the shared claim space never depends on import order. The ledgers share one claim space: a turn is bound by at most one row of
 either table, and an unbound row of the same words in the other table is a rival that contests
 both, exactly as two controllers do. Outbox rows the daemon writes about a review
 (`review-continuation:` ids) start with a marker line owned by
@@ -390,7 +391,9 @@ that id prefix, so an operator message that starts with the marker is noted like
 `attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
 (`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
 `mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available"),
-never as the raw turn. A delivery's words on a turn no delivery claims drop the live label, as a
+never as the raw turn. The resolved-reviews route adds every review a bound delivery of the
+conversation names (`boundReviewIds`) to its capped history, so an old delivered answer keeps its
+card however many newer reviews there are. A delivery's words on a turn no delivery claims drop the live label, as a
 delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
 (they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
 delivery window is pruned on the goal tick only once a binding walk has expired it (the tick

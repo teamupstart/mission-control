@@ -188,7 +188,17 @@ function recentSends(noteKey: string, fingerprint: string, now: number): OtherSe
  * exactly as two senders' rows in one ledger do, because nothing in the file says which wrote
  * the turn.
  */
-const ledgers: Array<DeliveryLedger<BindableDelivery>> = [];
+let ledgers: Array<DeliveryLedger<BindableDelivery>> = [];
+
+/**
+ * Name the ledgers that make up the claim space. Called once, by `delivery-ledgers.ts`, which
+ * constructs every ledger and is the module each delivery table's owner imports, so the set is
+ * complete before any reservation, binding or other send consults it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each ledger has its own row type
+export function registerDeliveryLedgers(list: ReadonlyArray<DeliveryLedger<any>>): void {
+  ledgers = [...list] as Array<DeliveryLedger<BindableDelivery>>;
+}
 
 /** One conversation's unbound rows of these words, in every ledger, with who they credit. */
 function openRows(noteKey: string, fingerprint: string): Array<{ ledger: DeliveryLedger<BindableDelivery>; row: BindableDelivery }> {
@@ -307,9 +317,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     private readonly store: DeliveryStore<Row>,
     /** Drop whatever the owner derived from these rows, whenever the row caches are dropped. */
     private readonly onForget: () => void = () => {},
-  ) {
-    ledgers.push(this as unknown as DeliveryLedger<BindableDelivery>);
-  }
+  ) {}
 
   rows(noteKey: string): Row[] {
     let rows = this.cache.get(noteKey);

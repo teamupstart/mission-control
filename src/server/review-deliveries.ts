@@ -1,19 +1,15 @@
 import { parseReviewEnvelope } from "@shared/review-message-envelope.ts";
 import type { TranscriptMessage, TranscriptPresentation, WorkCycleSummary } from "@shared/types.ts";
 import {
-  bindReviewDelivery,
   confirmReviewDelivery as persistConfirmation,
-  contestReviewDelivery,
-  deleteReviewDelivery,
-  insertReviewDelivery,
-  loadReviewDeliveries,
   deleteUnboundReviewDeliveries,
   loadPrunableReviewDeliveries,
   settleReviewDeliverySteerEcho,
   updateReviewDeliveryEcho,
   type ReviewDeliveryRow,
 } from "./db.ts";
-import { DELIVERY_LAG_MS, DeliveryLedger, onSend, type DeliveryConversation } from "./delivery-binding.ts";
+import { DELIVERY_LAG_MS, onSend, type DeliveryConversation } from "./delivery-binding.ts";
+import { onReviewLedgerForget, reviewLedger as ledger } from "./delivery-ledgers.ts";
 import type { SessionMessages } from "./harness/index.ts";
 import { HUMAN_ECHO_TTL_MS, injectionFingerprint } from "./injections.ts";
 
@@ -40,17 +36,7 @@ import { HUMAN_ECHO_TTL_MS, injectionFingerprint } from "./injections.ts";
  * leave a debt that swallows a later operator copy.
  */
 
-const MISSION_CONTROL = "mission-control";
-
-const ledger = new DeliveryLedger<ReviewDeliveryRow>({
-  label: "a review message",
-  load: loadReviewDeliveries,
-  insert: insertReviewDelivery,
-  remove: deleteReviewDelivery,
-  contest: contestReviewDelivery,
-  bind: bindReviewDelivery,
-  sender: () => MISSION_CONTROL,
-}, () => owing.clear());
+onReviewLedgerForget(() => owing.clear());
 
 /**
  * Per conversation, only the deliveries that still owe their prompt-hook echo, in reservation
@@ -400,6 +386,16 @@ function steerEchoOf(
 const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
 /** The file could not be read: nothing about the echo is known. */
 const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
+
+/**
+ * Every review id named by a delivery bound to a turn of this conversation. The conversation's
+ * review history is capped to its newest rows, so an answer delivered long ago could otherwise be
+ * missing from it and drawn as "no longer available" while its review still exists; the history
+ * read adds these ids' reviews so every bound delivery's card can be drawn.
+ */
+export function boundReviewIds(noteKey: string): string[] {
+  return [...new Set(ledger.rows(noteKey).filter((row) => row.messageId !== null).flatMap((row) => row.reviewIds))];
+}
 
 /**
  * Drop ordinary unbound deliveries past the delivery window that a binding walk has expired - the

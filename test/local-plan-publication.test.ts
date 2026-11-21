@@ -27,6 +27,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { openDb, closeDb, loadActiveTasks } = await import("../src/server/db.ts");
 const { savePlan, planContext, readPlanFile, reserveTaskPlans } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
+const { buildInbox } = await import("../src/server/home-dispatch/inbox.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
@@ -228,6 +229,34 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] }), /originating.*episode/);
+});
+
+test("a run summary carries when its run started, for headless mode's inbox to tell a task's own run from an earlier one", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const summary = f.workflows.store.runSummary(runId)!;
+  assert.equal(typeof summary.startedAt, "number");
+  assert.equal(summary.startedAt, f.workflows.store.getRun(runId)!.startedAt, "the same value the run row holds");
+  // Every way the daemon lists runs shares one builder, including the list the inbox reads.
+  const started = f.workflows.store.getRun(runId)!.startedAt;
+  assert.equal(f.workflows.runs().find((r) => r.id === runId)?.startedAt, started, "manager.runs(), the list the inbox reads");
+  assert.equal(f.workflows.store.listRunSummaryPage({ limit: 50, cursor: null }).items.find((r) => r.id === runId)?.startedAt, started, "the paged list");
+});
+
+test("the inbox attaches a real run to a task only when it started after the task did", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const runStart = f.workflows.store.getRun(runId)!.startedAt;
+  openDb().prepare(`UPDATE tasks SET origin_surface = 'mctl', origin_repo = ? WHERE id = ?`).run(f.repo, f.task.id);
+  const cli = { caller: { surface: "cli" as const, repoRoot: null }, sessionId: null, allRepos: true };
+  const runOf = () => buildInbox({ registry: f.registry, workflows: f.workflows }, cli).items.find((i) => i.taskId === f.task.id)?.run;
+
+  // The task was dispatched before the run began: the run is its own, read from the real store.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart - 1_000 });
+  assert.equal(runOf()?.workflowId !== undefined, true, "a run that started after the task did is attached");
+  // The task was dispatched after the run began: the run belongs to whichever task held the session before.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart + 1_000 });
+  assert.equal(runOf(), undefined, "a run that started before the task did is not");
 });
 
 // Headless mode (7.9): only `home-approval:` approves from a home session; a later plain `home:` or

@@ -4,6 +4,7 @@ import type { TaskPlanInput, TaskPlanInputChange } from "@shared/managed-plans.t
 import { managedPlanPreview } from "@shared/managed-plans.ts";
 import { dependencyInputKey } from "@shared/task-bulk.ts";
 import { api } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 export function PinnedPlanChange({ task, input, disabled, onChange, onEditing }: {
   task: Task; input: TaskPlanInput; disabled: boolean;
@@ -34,8 +35,8 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing }:
     } catch { setError("Could not reach Mission Control"); }
     finally { setPending(false); }
   }
-  if (!open) return <button type="button" className="btn btn-ghost" disabled={disabled}
-    onClick={() => { setOpen(true); onEditing(true); }}>Change pinned revision</button>;
+  if (!open) return <Tooltip label="Choose an exact replacement plan revision and preview its prerequisites"><button type="button" className="btn btn-ghost" disabled={disabled}
+    onClick={() => { setOpen(true); onEditing(true); }}>Change pinned revision</button></Tooltip>;
   const removed = task.dependencies.filter(edge => !preview?.dependencies.some(next => dependencyInputKey(next) === dependencyInputKey(edge)));
   const added = preview?.dependencies.filter(edge => !task.dependencies.some(old => dependencyInputKey(old) === dependencyInputKey(edge))) ?? [];
   return <fieldset className="pinned-plan-change" disabled={pending}>
@@ -44,12 +45,12 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing }:
     <label className="field">Plan ID<input className="field-input" value={planId} onChange={e => { reset(); setPlanId(e.target.value); }} /></label>
     <label className="field">Revision<input className="field-input" type="number" min="1" value={revision} onChange={e => { reset(); setRevision(e.target.value); }} /></label>
     <label className="field">Markdown files<input className="field-input" value={files} onChange={e => { reset(); setFiles(e.target.value); }} /><span className="field-hint">Comma-separated exact filenames</span></label>
-    <button type="button" className="btn" onClick={() => void inspect()} disabled={!revision || disabled}>Preview revision change</button>{" "}
-    <button type="button" className="btn btn-ghost" onClick={() => { reset(); setOpen(false); onEditing(false); }}>Cancel revision change</button>
+    <Tooltip label="Validate the selected revision and show changes without saving"><button type="button" className="btn" onClick={() => void inspect()} disabled={!revision || disabled}>Preview revision change</button></Tooltip>{" "}
+    <Tooltip label="Discard the revision selection and keep the saved pin"><button type="button" className="btn btn-ghost" onClick={() => { reset(); setOpen(false); onEditing(false); }}>Cancel revision change</button></Tooltip>
     {error && <p role="alert">{error}</p>}
     {preview && <section aria-label="Pinned revision preview">
-      <p><strong>Old:</strong> <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">{input.planId} revision {input.revision}</a> · {input.files.join(", ")}</p>
-      <p><strong>New:</strong> <a href={managedPlanPreview(planId.trim(), Number(revision))} target="_blank" rel="noreferrer">{planId.trim()} revision {revision}</a> · {files}</p>
+      <p><strong>Old:</strong> <Tooltip label="Open the currently pinned plan revision in a new tab"><a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">{input.planId} revision {input.revision}</a></Tooltip> · {input.files.join(", ")}</p>
+      <p><strong>New:</strong> <Tooltip label="Open the selected replacement revision in a new tab"><a href={managedPlanPreview(planId.trim(), Number(revision))} target="_blank" rel="noreferrer">{planId.trim()} revision {revision}</a></Tooltip> · {files}</p>
       <p><strong>Remove:</strong> {removed.map(edge => edge.title).join(", ") || "None"}</p>
       <p><strong>Add:</strong> {added.map(edge => edge.title).join(", ") || "None"}</p>
       <p><strong>Retain:</strong> {preview.dependencies.filter(edge => !added.includes(edge)).map(edge => edge.title + (edge.satisfiedAt !== null ? " (merged/published)" : " (waiting)")).join(", ") || "None"}</p>

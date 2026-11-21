@@ -299,7 +299,10 @@ for (const retained of [true, false]) test("change pinned revision previews and 
     headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });
   expect(flag.ok).toBe(true);
   dialog = await editor(dashboard, daemon, task.title);
+  await expect(dialog.getByRole("button", { name: "Change pinned revision" })).toHaveAccessibleDescription("Choose an exact replacement plan revision and preview its prerequisites");
   await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await expect(dialog.getByRole("button", { name: "Preview revision change" })).toHaveAccessibleDescription("Validate the selected revision and show changes without saving");
+  await expect(dialog.getByRole("button", { name: "Cancel revision change" })).toHaveAccessibleDescription("Discard the revision selection and keep the saved pin");
   await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("");
   await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
   await dialog.getByLabel("Revision", { exact: true }).fill("999");
@@ -314,6 +317,8 @@ for (const retained of [true, false]) test("change pinned revision previews and 
     const newPin = preview.locator("p").filter({ hasText: /^New:/ });
     await expect(oldPin).toHaveText("Old: " + old.input.planId + " revision 1 · plan.md");
     await expect(newPin).toHaveText("New: " + replacement.input.planId + " revision 2 · implementation.md");
+    await expect(oldPin.getByRole("link")).toHaveAccessibleDescription("Open the currently pinned plan revision in a new tab");
+    await expect(newPin.getByRole("link")).toHaveAccessibleDescription("Open the selected replacement revision in a new tab");
     await expect(oldPin.getByRole("link")).toHaveAttribute("href", "/?plan=" + old.input.planId + "&revision=1");
     await expect(newPin.getByRole("link")).toHaveAttribute("href", "/?plan=" + replacement.input.planId + "&revision=2");
   };

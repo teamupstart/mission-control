@@ -108,8 +108,10 @@ function precedesTranscript(row: ConversationRow, transcriptTs: number): boolean
  *
  * A turn the daemon bound to its delivery (`presentation.kind === "review-message"`) becomes
  * one card per review it carried, in delivery order, keeping the turn's time and native id. A
- * review this conversation cannot draw still gets a card at that turn, saying the question is no
- * longer available, so a delivered answer is never shown as raw daemon text. `delivered` collects
+ * review this conversation cannot draw still gets a card at that turn, so a delivered answer is
+ * never shown as raw daemon text. What that card says follows the review history (`history`):
+ * loading while it is in flight, unreadable once its reads failed through every retry, and "no
+ * longer available" only once a read answered without the review. `delivered` collects
  * what was drawn here so the merge can drop those reviews' entries elsewhere. Returns the rows
  * unchanged, by reference, when no turn is a review message.
  */

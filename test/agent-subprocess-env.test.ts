@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -373,24 +374,33 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
   const tag = `${process.pid}-${Date.now()}`;
   const orphan = join(DISPOSABLE_STATE_ROOT, `session-orphaned-turn-one-${tag}`);
   writeFileSync(`${orphan}.turn-one`, "original");
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(`${orphan}.turn-one`, longAgo, longAgo);
+  // A launch that just finished under another daemon: its state home is gone, but its dispatch may
+  // not have read the outcome yet.
+  const fresh = join(DISPOSABLE_STATE_ROOT, `session-fresh-turn-one-${tag}`);
+  writeFileSync(`${fresh}.turn-one`, "shaped");
   // A launch still running: its state home exists.
   const live = createDisposableAgentStateHome();
   writeFileSync(`${live}.turn-one`, "shaped");
   // An orphan that cannot be removed - a non-empty directory - sorted ahead of the others.
   const stuck = join(DISPOSABLE_STATE_ROOT, `session-0-stuck-turn-one-${tag}`);
   mkdirSync(join(`${stuck}.turn-one`, "held"), { recursive: true });
+  utimesSync(`${stuck}.turn-one`, longAgo, longAgo);
   const warn = console.warn;
   const warnings: unknown[] = [];
   console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
   try {
     reconcileDisposableAgentStateHomes();
     assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
+    assert.equal(readFileSync(`${fresh}.turn-one`, "utf8"), "shaped", "a recent outcome is kept for a dispatch that may still read it");
     assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
     assert.ok(warnings.some((w) => String(w).includes(`could not remove the orphaned turn-one outcome session-0-stuck-turn-one-${tag}`)), "the stuck one was logged");
   } finally {
     console.warn = warn;
     rmSync(`${stuck}.turn-one`, { recursive: true, force: true });
     rmSync(`${orphan}.turn-one`, { force: true });
+    rmSync(`${fresh}.turn-one`, { force: true });
     rmSync(`${live}.turn-one`, { force: true });
     rmSync(live, { recursive: true, force: true });
   }

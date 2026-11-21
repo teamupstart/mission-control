@@ -53,6 +53,21 @@ function sharedGoBuildCache(): string {
 }
 
 /**
+ * How long a turn-one outcome is kept after its wrapper wrote it, whoever owns it. A dispatch reads
+ * its outcome seconds after the launch, so this outlasts any in-flight dispatch of another daemon
+ * sharing the disposable root, while still reclaiming the ones a dead daemon left behind.
+ */
+const TURN_ONE_OUTCOME_GRACE_MS = 10 * 60 * 1000;
+
+function outcomeIsStale(path: string, now: number): boolean {
+  try {
+    return now - statSync(path).mtimeMs >= TURN_ONE_OUTCOME_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Remove only expired Pipeline caller files left by a previous daemon crash, and turn-one outcome
  * files (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
  * and the dispatch that would have read and removed them died with that daemon.
@@ -68,8 +83,9 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
     if (!entry.startsWith("session-")) continue;
     const outcomeOf = entry.endsWith(".turn-one") ? join(DISPOSABLE_STATE_ROOT, entry.slice(0, -".turn-one".length)) : null;
     if (outcomeOf) {
-      // Still running under a live wrapper, or still owned by this daemon: leave it.
-      if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf)) {
+      // Still running under a live wrapper, still owned by this daemon, or young enough that another
+      // daemon's dispatch may not have read it yet: leave it.
+      if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf) && outcomeIsStale(join(DISPOSABLE_STATE_ROOT, entry), now)) {
         try {
           rmSync(turnOneOutcomePath(outcomeOf), { force: true });
         } catch (error) {

@@ -33,7 +33,12 @@ import type { SdkTurn } from "./harness/types.ts";
 import { sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { noteOtherSend, withdrawOtherSend, type OtherSendHandle } from "./delegated-turns.ts";
-import { confirmReviewDelivery, releaseReviewDelivery, reserveReviewDelivery } from "./review-deliveries.ts";
+import {
+  confirmReviewDelivery,
+  releaseReviewDelivery,
+  reserveReviewDelivery,
+  stampReviewDeliveryHandoff,
+} from "./review-deliveries.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { isReviewMessageTurn } from "@shared/review-message-envelope.ts";
@@ -1009,6 +1014,11 @@ export class PendingTurnManager {
           // boundary immediately before the driver is handed the turn. Earlier, the row could
           // wait behind another operation long enough for its turn stamp to be stale, and a
           // guard that refuses leaves nothing to release.
+          // A review message's echo turn is decided here too, from the cycle as it is now: the
+          // row may have waited long enough for the one read at reservation to be stale.
+          if (outboxSend.kind === "review") {
+            stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, this.registry.getSession(session.id)?.workCycle);
+          }
           if (!author && !reviewMessage) humanEcho ??= expectHumanEcho(session.id, turn.text, {
             noteKey: turn.noteKey,
             cycle: this.registry.getSession(session.id)?.workCycle,
@@ -1151,6 +1161,8 @@ export class PendingTurnManager {
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
         boundaryCrossed = true;
+        // The write is next: a review message's echo belongs to the cycle as it stands now.
+        if (outboxSend.kind === "review") stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, current.workCycle);
         this.pickup.set(turn.noteKey, {
           sessionId: session.id,
           turn,

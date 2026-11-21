@@ -28,7 +28,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { openDb, createReviewContinuationPendingTurn, createSnoozeInstructionPendingTurn } = await import("../src/server/db.ts");
 const {
   claimReviewDeliveryEcho, confirmReviewDelivery, expireReviewDeliveryEchoes, pruneReviewDeliveries, releaseReviewDelivery,
-  reserveReviewDelivery,
+  reserveReviewDelivery, reviewDeliveryBookkeeping, stampReviewDeliveryHandoff,
 } = await import("../src/server/review-deliveries.ts");
 const { forgetDeliveryBindingState, noteOtherSend } = await import("../src/server/delivery-binding.ts");
 const { delegatedTurnSources, reserveDelegatedTurn } = await import("../src/server/delegated-turns.ts");
@@ -451,8 +451,13 @@ function hookSession() {
       env: { tmuxPane: paneId }, prompt,
     } as HookIngest);
   };
-  const deliver = (text: string, now = Date.now()) =>
-    reserveReviewDelivery({ key: noteKeyFor(registry.getSession(session.id)!), transcript: null }, text, undefined, now)!;
+  // Reserved and then handed to the runtime, as the outbox does.
+  const deliver = (text: string, now = Date.now()) => {
+    const key = noteKeyFor(registry.getSession(session.id)!);
+    const id = reserveReviewDelivery({ key, transcript: null }, text, undefined, now)!;
+    stampReviewDeliveryHandoff(key, id, undefined, now);
+    return id;
+  };
   const revisions = () => registry.getGoal(session.id)?.promptRevision ?? 0;
   submit("Add a linter to CI");
   return { registry, session, submit, deliver, revisions };
@@ -507,6 +512,36 @@ test("an operator prompt that spent the echo of a delivery the runtime then refu
   assert.equal(revisions() - before, 1);
 });
 
+test("a turn that completes while a delivery waits for its handoff never clears the echo the delivery will produce", () => {
+  const k = conversationKey(); const now = Date.now();
+  const text = answerText([randomUUID()]);
+  // Reserved against an idle conversation at generation 0, so its echo would belong to turn 1.
+  const id = reserveReviewDelivery({ key: k, transcript: null }, text, { active: false, generation: 0 } as never, now)!;
+  // The row waits behind other work; turn 1 completes, and far longer than the TTL passes.
+  expireReviewDeliveryEchoes(k, 1, now + 1_000);
+  // At the handoff the conversation is at generation 1 and idle: the echo belongs to turn 2.
+  stampReviewDeliveryHandoff(k, id, { active: false, generation: 1 } as never, now + HUMAN_ECHO_TTL_MS + 5_000);
+  expireReviewDeliveryEchoes(k, 1, now + HUMAN_ECHO_TTL_MS + 6_000);
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + HUMAN_ECHO_TTL_MS + 7_000), true, "the echo still finds its debt");
+  // Its own turn's completion clears a debt nobody spent, as before.
+  const again = reserveReviewDelivery({ key: k, transcript: null }, text, { active: false, generation: 1 } as never, now)!;
+  stampReviewDeliveryHandoff(k, again, { active: false, generation: 1 } as never, now);
+  expireReviewDeliveryEchoes(k, 2, now + 1);
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + 2), false);
+});
+
+test("bookkeeping for a delivery that ends uncertain - never confirmed, never refused - ages out", () => {
+  const k = conversationKey(); const now = Date.now();
+  const before = reviewDeliveryBookkeeping();
+  const text = answerText([randomUUID()]);
+  reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now);
+  claimReviewDeliveryEcho(k, [text], now + 1, () => {});
+  assert.deepEqual(reviewDeliveryBookkeeping(), { reservations: before.reservations + 1, unacceptedClaims: before.unacceptedClaims + 1 });
+  // A day later, the next delivery sweeps what nothing will ever settle.
+  reserveReviewDelivery({ key: k, transcript: null }, answerText([randomUUID()]), undefined, now + LAG + 10);
+  assert.deepEqual(reviewDeliveryBookkeeping(), { reservations: 1, unacceptedClaims: 0 });
+});
+
 test("the count survives a restart between a delivery and its echo", () => {
   const { submit, deliver, revisions } = hookSession();
   const text = answerText([randomUUID()]);
@@ -544,6 +579,7 @@ test("a dropped echo's debt clears at its work cycle's completion or the TTL, ac
   const id = reserveReviewDelivery({ key: k, transcript: null }, answerText([randomUUID()]), { active: true, generation: 3 } as never,
     Date.now() - HUMAN_ECHO_TTL_MS - 1_000)!;
   assert.ok(id);
+  stampReviewDeliveryHandoff(k, id, { active: true, generation: 3 } as never, Date.now() - HUMAN_ECHO_TTL_MS - 1_000);
   expireReviewDeliveryEchoes(k, 4);
   assert.equal(claimReviewDeliveryEcho(k, [answerText([randomUUID()])]), false, "other words owe nothing");
   const owed = openDb().prepare("SELECT echo_owed, echo_eligible_at FROM session_review_deliveries WHERE id = ?").get(id) as { echo_owed: number; echo_eligible_at: number | null };

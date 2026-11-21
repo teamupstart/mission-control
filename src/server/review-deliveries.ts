@@ -67,18 +67,39 @@ onSend((conversation, fingerprint) => {
 });
 
 /**
- * The work-cycle generation each reservation was made at, until it is confirmed. A restart in
- * between ends the delivery as uncertain and it is never confirmed, so memory is enough.
+ * Each reservation until it is confirmed or released: the work-cycle generation its echo was
+ * stamped against, and whether the runtime has been handed the text yet (`handed`). A restart in
+ * between ends the delivery as uncertain and it is never confirmed, so memory is enough. An
+ * uncertain delivery is neither confirmed nor released, so entries also age out (`sweep`).
  */
-const reservedAt = new Map<string, number>();
+const reservedAt = new Map<string, { base: number; handed: boolean; at: number }>();
 
 /**
  * Arrivals that spent the echo of a delivery not yet accepted, keyed by delivery. If that delivery
  * is then refused, nothing it sent can have been echoed, so the arrival was someone else's words
  * - the operator's - and is captured after all. In memory: a restart leaves an unaccepted delivery
- * uncertain, never refused.
+ * uncertain, never refused, and an uncertain one's entry ages out (`sweep`).
  */
-const unacceptedClaims = new Map<string, () => void>();
+const unacceptedClaims = new Map<string, { restore: () => void; at: number }>();
+
+/** Drop bookkeeping for deliveries that were never settled, once past the delivery window. */
+function sweep(now: number): void {
+  for (const [id, entry] of reservedAt) if (now - entry.at > DELIVERY_LAG_MS) reservedAt.delete(id);
+  for (const [id, entry] of unacceptedClaims) if (now - entry.at > DELIVERY_LAG_MS) unacceptedClaims.delete(id);
+}
+
+/** For tests: how many unsettled reservations and unaccepted claims are remembered. */
+export function reviewDeliveryBookkeeping(): { reservations: number; unacceptedClaims: number } {
+  return { reservations: reservedAt.size, unacceptedClaims: unacceptedClaims.size };
+}
+
+/**
+ * Reserved, and the runtime not yet handed its text: no echo can exist, so neither a completed
+ * turn nor the TTL may clear the debt. Its turn is decided at the handoff (`stampReviewDeliveryHandoff`).
+ */
+function awaitingHandoff(id: string): boolean {
+  return reservedAt.get(id)?.handed === false;
+}
 
 /**
  * Reserve a delivery for an outbox row about to be sent, BEFORE the send. Returns its id, or
@@ -95,6 +116,7 @@ export function reserveReviewDelivery(
 ): string | null {
   const envelope = parseReviewEnvelope(text);
   if (!envelope) return null;
+  sweep(now);
   const base = cycle?.generation ?? 0;
   const queued = cycle?.active === true;
   const row = ledger.reserve(conversation, text, (shared) => ({
@@ -107,8 +129,36 @@ export function reserveReviewDelivery(
     echoEligibleAt: queued ? null : now,
     steerEcho: null,
   }), now);
-  reservedAt.set(row.id, base);
+  reservedAt.set(row.id, { base, handed: false, at: now });
   return row.id;
+}
+
+/**
+ * The runtime is being handed this delivery now. Restamps the turn its echo belongs to from the
+ * session's work cycle as the registry projects it at this moment - the point `expectHumanEcho`
+ * reads it for a follow-up - because a row can wait behind other work long enough for the cycle
+ * read at reservation to be stale, and a turn completing in between would otherwise clear the
+ * debt before the echo could arrive. Only ever moves the turn later.
+ */
+export function stampReviewDeliveryHandoff(
+  noteKey: string,
+  id: string,
+  cycle: WorkCycleSummary | undefined,
+  now = Date.now(),
+): void {
+  const entry = reservedAt.get(id);
+  if (!entry) return;
+  entry.handed = true;
+  const row = ledger.rows(noteKey).find((r) => r.id === id);
+  if (!row || !row.echoOwed) return;
+  const base = cycle?.generation ?? 0;
+  const queued = cycle?.active === true;
+  const turn = base + (queued ? 2 : 1);
+  if (turn <= row.echoTurnGeneration && entry.base >= base) return;
+  entry.base = Math.max(entry.base, base);
+  row.echoTurnGeneration = Math.max(row.echoTurnGeneration, turn);
+  row.echoEligibleAt = queued ? null : now;
+  persistEcho(row);
 }
 
 /**
@@ -123,7 +173,7 @@ export function confirmReviewDelivery(
 ): void {
   const now = options.now ?? Date.now();
   const row = ledger.rows(noteKey).find((r) => r.id === id);
-  const base = reservedAt.get(id);
+  const base = reservedAt.get(id)?.base;
   reservedAt.delete(id);
   unacceptedClaims.delete(id);
   persistConfirmation(id, now);
@@ -139,7 +189,7 @@ export function confirmReviewDelivery(
 export function releaseReviewDelivery(noteKey: string, id: string): void {
   reservedAt.delete(id);
   ledger.release(noteKey, id);
-  const restore = unacceptedClaims.get(id);
+  const restore = unacceptedClaims.get(id)?.restore;
   unacceptedClaims.delete(id);
   try {
     restore?.();
@@ -154,7 +204,7 @@ function persistEcho(row: ReviewDeliveryRow): void {
 
 /** Whether this delivery's owed echo has aged past its wait. */
 function echoLapsed(row: ReviewDeliveryRow, now: number): boolean {
-  return row.echoEligibleAt !== null && now - row.echoEligibleAt > HUMAN_ECHO_TTL_MS;
+  return !awaitingHandoff(row.id) && row.echoEligibleAt !== null && now - row.echoEligibleAt > HUMAN_ECHO_TTL_MS;
 }
 
 /**
@@ -172,6 +222,7 @@ export function claimReviewDeliveryEcho(
   /** Capture this arrival after all, if the delivery whose echo it spent is then refused. */
   ifRefused?: () => void,
 ): boolean {
+  sweep(now);
   const fingerprints = new Set(texts.map(injectionFingerprint));
   for (const row of ledger.rows(noteKey)) {
     if (!row.echoOwed || !fingerprints.has(row.fingerprint)) continue;
@@ -181,7 +232,7 @@ export function claimReviewDeliveryEcho(
     if (echoLapsed(row, now)) continue;
     // Spent before the runtime accepted the delivery, whose echo may yet be this arrival or may
     // never exist. The count is settled now; a refusal later hands the arrival back.
-    if (row.confirmedAt === null && reservedAt.has(row.id) && ifRefused) unacceptedClaims.set(row.id, ifRefused);
+    if (row.confirmedAt === null && reservedAt.has(row.id) && ifRefused) unacceptedClaims.set(row.id, { restore: ifRefused, at: now });
     return true;
   }
   return false;
@@ -194,7 +245,8 @@ export function claimReviewDeliveryEcho(
  */
 export function expireReviewDeliveryEchoes(noteKey: string, completedGeneration: number, now = Date.now()): void {
   for (const row of ledger.rows(noteKey)) {
-    if (!row.echoOwed) continue;
+    // A delivery still waiting for its handoff belongs to no turn yet (`stampReviewDeliveryHandoff`).
+    if (!row.echoOwed || awaitingHandoff(row.id)) continue;
     if (row.echoTurnGeneration <= completedGeneration || echoLapsed(row, now)) {
       row.echoOwed = false;
       persistEcho(row);

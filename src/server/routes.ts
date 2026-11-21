@@ -10230,7 +10230,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
 export { hostIsLoopback } from "./loopback.ts";
 
-
 /**
  * What a write into somebody's session is attributed to.
  *

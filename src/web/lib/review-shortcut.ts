@@ -1,5 +1,5 @@
 import type { Session } from "@shared/types.ts";
-import { hasOpenAsks, stoppedAsking } from "./async-questions.ts";
+import { hasOpenAsks, stoppedAsking, type QuestionAgent } from "./async-questions.ts";
 
 /**
  * What the chord reads about a session. `openQuestions` and the state fields only matter for a
@@ -7,15 +7,19 @@ import { hasOpenAsks, stoppedAsking } from "./async-questions.ts";
  * reads as a session with none.
  */
 export type ChordSession = Pick<Session, "id" | "pendingReviews">
-  & Partial<Pick<Session, "openQuestions" | "state" | "stateConfirmed" | "task">>;
+  & Partial<Pick<Session, "openQuestions" | "state" | "stateConfirmed" | "task">>
+  & { residentPaused?: boolean };
 
-function filled(session: ChordSession): Pick<Session, "pendingReviews" | "openQuestions" | "state" | "stateConfirmed" | "task"> {
+function filled(session: ChordSession): Pick<Session, "pendingReviews" | "openQuestions"> & QuestionAgent {
   return {
     pendingReviews: session.pendingReviews,
     openQuestions: session.openQuestions ?? 0,
     state: session.state ?? "idle",
     stateConfirmed: session.stateConfirmed ?? false,
     task: session.task ?? null,
+    // A resident its operator paused has stopped on its questions (`questionAgentStatus`); the
+    // caller marks it with `asQuestionAgent`.
+    residentPaused: session.residentPaused === true,
   };
 }
 

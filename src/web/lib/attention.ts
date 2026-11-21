@@ -14,7 +14,7 @@ import {
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { stateDisplay } from "./format.ts";
-import { stoppedOnQuestions } from "./async-questions.ts";
+import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
 /**
  * The one display rule for a session correlated with a Pipeline commission.
@@ -407,11 +407,12 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // every stopped one: it is owed an answer, but nothing has stopped for it yet. With the flag off
   // every review is one its agent waits on inside a call, so every row is stopped and the order
   // is oldest first, exactly as before.
+  const pausedResidents = pausedResidentSessionIds(input.residentRuns, input.sessions);
   const groups = [...bySession.entries()].map(([sessionId, reviews]) => {
     const session = sessionById.get(sessionId)!;
     return {
       session,
-      stopped: stoppedOnQuestions(session, reviews),
+      stopped: stoppedOnQuestions(asQuestionAgent(session, pausedResidents), reviews),
       reviews: [...reviews].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
     };
   });

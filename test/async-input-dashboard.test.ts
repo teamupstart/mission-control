@@ -7,7 +7,10 @@ import { snoozeMeanwhileLabel, snoozeMeanwhileSince } from "../src/shared/review
 import { isConversationQuestionRecord } from "../src/shared/review-item.ts";
 import { reportBucket } from "../src/shared/session.ts";
 import {
+  PausedResidentsContext,
   QUESTION_ACTION_COPY,
+  asQuestionAgent,
+  pausedResidentSessionIds,
   questionWait,
   questionAgentStatus,
   questionBadge,
@@ -385,14 +388,24 @@ test("the snooze labels read true for an agent that never waited", () => {
   const judgment = { mode: "judgment" as const, optionId: null };
   assert.equal(snoozeMeanwhileLabel(question(), judgment), "Keep doing what it said");
   assert.equal(snoozeMeanwhileLabel(question({ waitMode: undefined }), judgment), "Use its best judgment");
-  assert.equal(snoozeMeanwhileSince(question(), judgment), "The agent has kept doing what it said it would when it asked.");
+  // Neutral: by the time the question comes back the agent may have stopped, which the card's live
+  // status line says; this line only records what the operator chose.
+  assert.equal(snoozeMeanwhileSince(question(), judgment), "You left it to do what it said it would when it asked.");
+  assert.doesNotMatch(snoozeMeanwhileSince(question(), judgment), /kept|keeps|working/);
+  const returned = renderToStaticMarkup(createElement(ReviewCard, {
+    review: question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } }),
+    session: stopped(),
+  }));
+  assert.match(returned, /Stopped, waiting on this answer/);
+  assert.match(returned, /You left it to do what it said it would when it asked/);
+  assert.doesNotMatch(returned, /kept doing|keeps working/);
   assert.equal(snoozeMeanwhileLabel(question(), { mode: "option", optionId: "o0" }), 'Go with "biome" for now');
   assert.equal(snoozeMeanwhileLabel(question(), { mode: "hold", optionId: null }), "Hold work that depends on this");
 });
 
 // ---- the Residents drawer ----
 
-const { residentDrawerGroups } = await import("../src/web/residents/ResidentsDrawer.tsx");
+const { residentDrawerGroups, residentEntryAmber } = await import("../src/web/residents/ResidentsDrawer.tsx");
 type DrawerEntry = Parameters<typeof residentDrawerGroups>[0][number];
 
 test("a working resident with an open question is listed under Needs you, its tone unchanged", () => {
@@ -403,4 +416,59 @@ test("a working resident with an open question is listed under Needs you, its to
   assert.deepEqual(groups.needsYou.map((e) => e.session?.id), ["asking"]);
   assert.deepEqual(groups.others.map((e) => e.session?.id), ["quiet"]);
   assert.equal(stateDisplay(asking).tone, "working", "never amber for its questions alone");
+});
+
+// ---- a resident the operator paused ----
+
+test("a paused resident has stopped on its open question, unless it is still finishing a turn", () => {
+  const paused = { ...resident({ id: "watcher" }), residentPaused: true };
+  assert.equal(questionAgentStatus(paused), "stopped");
+  assert.equal(questionStatusLine(question(), paused, NOW)?.label, "Stopped, waiting on this answer");
+  assert.equal(questionAgentStatus({ ...paused, state: "working" }), "working", "Pause does not interrupt a running turn");
+  assert.equal(questionAgentStatus(resident()), "working", "an unpaused resident still wakes on its own");
+  // The shared bucket is unchanged: the daemon refuses Resume while it reads needs-you.
+  assert.notEqual(reportBucket(resident()), "needs-you");
+});
+
+test("paused residents are joined from their runs by task, and marked only when paused", () => {
+  const watcher = resident({ id: "watcher", task: mkTaskSummary({ id: "t-watch", kind: "resident" }) });
+  const other = resident({ id: "other", task: mkTaskSummary({ id: "t-other", kind: "resident" }) });
+  const ids = pausedResidentSessionIds(
+    [{ taskId: "t-watch", loopState: "paused" }, { taskId: "t-other", loopState: "waiting" }],
+    [watcher, other],
+  );
+  assert.deepEqual([...ids], ["watcher"]);
+  assert.equal(asQuestionAgent(watcher, ids).residentPaused, true);
+  assert.equal(asQuestionAgent(other, ids).residentPaused, undefined);
+  assert.equal(pausedResidentSessionIds(undefined, [watcher]).size, 0);
+});
+
+test("a paused resident's question sorts with the stopped ones, and the chord reaches it before working sessions", () => {
+  const watcher = resident({ id: "watcher", name: "watcher", task: mkTaskSummary({ id: "t-watch", kind: "resident" }) });
+  const busy = working({ id: "busy", name: "busy" });
+  const order = (runs: { taskId: string; loopState: "paused" | "waiting" }[]) => foldAttention({
+    sessions: [busy, watcher],
+    reviews: [question({ id: "a", sessionId: "watcher", createdAt: NOW - 1 * MIN }), question({ id: "b", sessionId: "busy", createdAt: NOW - 30 * MIN })],
+    ensembles: [],
+    residentRuns: runs as never,
+  }).items.flatMap((item) => (item.kind === "session_reviews" ? [item.session.id] : []));
+  assert.deepEqual(order([{ taskId: "t-watch", loopState: "waiting" }]), ["busy", "watcher"], "both working: oldest first");
+  assert.deepEqual(order([{ taskId: "t-watch", loopState: "paused" }]), ["watcher", "busy"], "paused: stopped, so first");
+
+  const pausedWatcher = asQuestionAgent(watcher, new Set(["watcher"]));
+  assert.deepEqual(reviewChordTarget([busy], null, [pausedWatcher]), { kind: "resident", sessionId: "watcher", opens: "review" });
+  assert.deepEqual(reviewChordTarget([busy], null, [watcher]), { kind: "fleet", sessionId: "busy", refocus: true });
+});
+
+test("a paused resident's badge, card and drawer entry say it has stopped, and the drawer turns it amber", () => {
+  const watcher = resident({ id: "watcher" });
+  const paused = { ...watcher, residentPaused: true };
+  assert.match(questionBadge(paused, stateDisplay(watcher))?.tooltip ?? "", /has stopped/);
+  const card = renderToStaticMarkup(createElement(PausedResidentsContext.Provider, { value: new Set(["watcher"]) },
+    createElement(ReviewCard, { review: question({ sessionId: "watcher" }), session: watcher })));
+  assert.match(card, /Stopped, waiting on this answer/);
+  assert.doesNotMatch(card, /Still working/);
+  const run = (loopState: "paused" | "waiting") => ({ loopState }) as Parameters<typeof residentEntryAmber>[0]["run"];
+  assert.equal(residentEntryAmber({ run: run("paused"), session: watcher }), true);
+  assert.equal(residentEntryAmber({ run: run("waiting"), session: watcher }), false, "a working resident is never amber for its questions");
 });

@@ -5,25 +5,78 @@
 // The card's status line, the inbox's order, the state badge, the review chord and the Residents
 // drawer all ask these functions, which is how one question reads the same everywhere it appears.
 
-import { confirmedWorking, openQuestionCount, waitingOnOpenQuestion } from "@shared/async-input.ts";
+import { createContext, useContext } from "react";
+import { confirmedWorking, openQuestionCount } from "@shared/async-input.ts";
+import type { ResidentRunSummary } from "@shared/residents.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { relativeTime, type StateDisplay } from "./format.ts";
 
 /**
+ * What these functions read about the agent behind a question: the session's own reading, plus
+ * whether it is a resident the operator paused. The session alone cannot say the second. A
+ * resident's Pause lives on its resident run (`loopState: "paused"`), which the dashboard joins in
+ * (`pausedResidentSessionIds`), so a caller that knows marks the session with `residentPaused`.
+ */
+export type QuestionAgent = Pick<Session, "state" | "stateConfirmed" | "task"> & { residentPaused?: boolean };
+
+/**
  * Whether the agent behind a message-mode question is still working past it or has stopped on it.
  *
- * The same reading as `waitingOnOpenQuestion`, the bucket's idle clause: a session that is not
- * confirmed working has stopped, and a resident never has, because it wakes on its own cadence.
- * Unconfirmed is stopped, as the bucket paints it amber. Stated for any session rather than only
- * one whose `openQuestions` is already raised, so a card drawn in the one frame between a
- * `review_upsert` and the `session_upsert` that counts it still reads correctly.
+ * For any session that is not a resident this is exactly the bucket's idle clause
+ * (`waitingOnOpenQuestion`): a session that is not confirmed working has stopped, unconfirmed
+ * included, as the bucket paints it amber. A resident reads as working because it wakes on its own
+ * cadence, except when its operator paused it: a paused resident does not wake, so unless it is
+ * still finishing a turn, nothing will act on its question and it reads as stopped.
+ *
+ * The paused case is decided here and not in the shared clause on purpose. The daemon refuses a
+ * resident's Resume while its bucket is `needs-you` (`ResidentLoop.resume`), so teaching the
+ * bucket that a paused resident's open question needs you would refuse the very Resume that lets
+ * it act on the question, and break the rule that filed questions never hold a resident.
+ *
+ * Stated for any session rather than only one whose `openQuestions` is already raised, so a card
+ * drawn in the one frame between a `review_upsert` and the `session_upsert` that counts it still
+ * reads correctly.
  */
 export type QuestionAgentStatus = "working" | "stopped";
 
-export function questionAgentStatus(
-  session: Pick<Session, "state" | "stateConfirmed" | "task">,
-): QuestionAgentStatus {
-  return session.task?.kind === "resident" || confirmedWorking(session) ? "working" : "stopped";
+export function questionAgentStatus(agent: QuestionAgent): QuestionAgentStatus {
+  if (confirmedWorking(agent)) return "working";
+  return agent.task?.kind === "resident" && agent.residentPaused !== true ? "working" : "stopped";
+}
+
+/**
+ * The sessions of residents whose loop the operator paused, joined from the resident runs by task.
+ * Every surface that reads `questionAgentStatus` is handed this one set: components through
+ * `PausedResidentsContext`, the attention fold and the review chord as an argument.
+ */
+export function pausedResidentSessionIds(
+  runs: readonly Pick<ResidentRunSummary, "taskId" | "loopState">[] | undefined,
+  sessions: readonly Pick<Session, "id" | "task">[],
+): ReadonlySet<string> {
+  const pausedTasks = new Set((runs ?? []).filter((run) => run.loopState === "paused").map((run) => run.taskId));
+  if (pausedTasks.size === 0) return NO_PAUSED_RESIDENTS;
+  return new Set(sessions.filter((s) => s.task && pausedTasks.has(s.task.id)).map((s) => s.id));
+}
+
+const NO_PAUSED_RESIDENTS: ReadonlySet<string> = new Set();
+
+/** The paused residents' session ids, provided once by App for every component below it. */
+export const PausedResidentsContext = createContext<ReadonlySet<string>>(NO_PAUSED_RESIDENTS);
+
+/** The session, marked as a paused resident when it is one. */
+export function asQuestionAgent<T extends Pick<Session, "id">>(
+  session: T,
+  paused: ReadonlySet<string>,
+): T & { residentPaused?: boolean } {
+  return paused.has(session.id) ? { ...session, residentPaused: true } : session;
+}
+
+/** `asQuestionAgent` for a component, from `PausedResidentsContext`. */
+export function useQuestionAgent<T extends Pick<Session, "id">>(session: T): T & { residentPaused?: boolean };
+export function useQuestionAgent<T extends Pick<Session, "id">>(session: T | null): (T & { residentPaused?: boolean }) | null;
+export function useQuestionAgent<T extends Pick<Session, "id">>(session: T | null): (T & { residentPaused?: boolean }) | null {
+  const paused = useContext(PausedResidentsContext);
+  return session ? asQuestionAgent(session, paused) : null;
 }
 
 /** The card's status line for a message-mode question, as the operator reads it. */
@@ -43,7 +96,7 @@ export interface QuestionStatusLine {
  */
 export function questionStatusLine(
   review: Pick<ReviewItem, "waitMode" | "meanwhile" | "createdAt">,
-  session: Pick<Session, "state" | "stateConfirmed" | "task"> | null | undefined,
+  session: QuestionAgent | null | undefined,
   now = Date.now(),
 ): QuestionStatusLine | null {
   if (review.waitMode !== "message" || !session) return null;
@@ -65,7 +118,7 @@ export function questionStatusLine(
  * is exactly what it was.
  */
 export function stoppedOnQuestions(
-  session: Pick<Session, "state" | "stateConfirmed" | "task">,
+  session: QuestionAgent,
   reviews: readonly Pick<ReviewItem, "waitMode">[],
 ): boolean {
   return reviews.some((review) => review.waitMode !== "message") || questionAgentStatus(session) === "stopped";
@@ -95,7 +148,7 @@ export function openQuestionsLabel(count: number): string {
  *   "N questions open", in that tone, never amber.
  */
 export function questionBadge(
-  session: Pick<Session, "pendingReviews" | "openQuestions" | "state" | "stateConfirmed" | "task">,
+  session: Pick<Session, "pendingReviews" | "openQuestions"> & QuestionAgent,
   display: StateDisplay,
 ): { label: string; tone: StateDisplay["tone"]; tooltip: string } | null {
   if (session.pendingReviews > 0) {
@@ -125,9 +178,9 @@ export function hasOpenAsks(session: Pick<Session, "pendingReviews" | "openQuest
 
 /** A session that has stopped on something only the operator can answer through a review. */
 export function stoppedAsking(
-  session: Pick<Session, "pendingReviews" | "openQuestions" | "state" | "stateConfirmed" | "task">,
+  session: Pick<Session, "pendingReviews" | "openQuestions"> & QuestionAgent,
 ): boolean {
-  return session.pendingReviews > 0 || waitingOnOpenQuestion(session);
+  return session.pendingReviews > 0 || (openQuestionCount(session) > 0 && questionAgentStatus(session) === "stopped");
 }
 
 /**
@@ -178,7 +231,7 @@ export type QuestionWait = "call" | QuestionAgentStatus;
 
 export function questionWait(
   review: Pick<ReviewItem, "waitMode">,
-  session: Pick<Session, "state" | "stateConfirmed" | "task"> | null | undefined,
+  session: QuestionAgent | null | undefined,
 ): QuestionWait {
   if (review.waitMode !== "message") return "call";
   // Every caller passes the asking session; without one, the words fall back to what the agent

@@ -26,7 +26,7 @@ import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { CheckoutPathText } from "./CheckoutPathText.tsx";
-import { questionStatusLine, questionWait } from "../lib/async-questions.ts";
+import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
 import { useNow } from "../useNow.ts";
 
 /**
@@ -144,7 +144,7 @@ export function ReviewCard({
    * line: whether the agent is still working past the question or has stopped on it. Every other
    * review ignores it.
    */
-  session?: Pick<Session, "state" | "stateConfirmed" | "task"> | null;
+  session?: Pick<Session, "id" | "state" | "stateConfirmed" | "task"> | null;
   note?: SessionNoteSummary | null;
   /** Paths in the session's checkout; a question naming one links it to Files. */
   checkoutPaths?: ReadonlySet<string> | null;
@@ -171,7 +171,9 @@ export function ReviewCard({
   const [snoozing, setSnoozing] = useState(false);
   const snoozable = canSnoozeReview(review);
   // How the agent waits right now, so Remind me later says what is true of it (`QUESTION_ACTION_COPY`).
-  const wait = questionWait(review, session);
+  // The asking session, marked when it is a resident the operator paused (`questionAgentStatus`).
+  const agent = useQuestionAgent(session);
+  const wait = questionWait(review, agent);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -289,7 +291,7 @@ export function ReviewCard({
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
-      <QuestionStatus review={review} session={session} />
+      <QuestionStatus review={review} session={agent} />
       <ReminderBanner review={review} />
 
       {showsBody(review) && (
@@ -441,7 +443,7 @@ function QuestionStatus({
   session,
 }: {
   review: ReviewItem;
-  session: Pick<Session, "state" | "stateConfirmed" | "task"> | null;
+  session: QuestionAgent | null;
 }): React.JSX.Element | null {
   const now = useNow(review.waitMode === "message", 10_000);
   const line = questionStatusLine(review, session, now);

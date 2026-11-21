@@ -486,7 +486,10 @@ The loop prompt asks the resident to check whether its earlier questions were an
 asks again, and never to repeat a question that is still open. In the Residents drawer, a resident
 with a filed question open is listed in the **Needs you** group with its question as an ask row,
 while its card keeps the working or idle colour it already wears; the row opens the question, whose
-card reads **Still working**.
+card reads **Still working**. A resident you paused does not wake to act on its questions, so once
+it is not mid-turn they read **Stopped, waiting on this answer** everywhere they appear, its drawer
+card and the closed drawer's tab turn amber, the inbox lists it with the other stopped sessions,
+and **e** reaches it among them. Its questions still never hold it: Resume is not refused for them.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.

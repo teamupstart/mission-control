@@ -29,7 +29,10 @@ const HELD_TURN = "E2E_HOLD_TURN_UNTIL_RELEASED";
 async function capture(target: Locator | Page, name: string, page: Page): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
+  // A focused control keeps its tooltip open; blur it so the capture shows only the surface.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.mouse.move(0, 0);
+  await expect(page.locator(".tooltip")).toHaveCount(0, { timeout: 3000 }).catch(() => undefined);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/async-input-dashboard/${name}.png`);
@@ -446,4 +449,31 @@ test("the Residents drawer lists a working resident's question under Needs you w
   await expect(modal).toBeVisible();
   await expectContentClearsBorder(modal);
   await expect(modal.locator(".review-wait")).toContainText("Still working");
+  await closeOverlay(page, modal);
+
+  // Its turn ends: an unpaused resident still reads as working, because it wakes on its own cadence.
+  const stop = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
+    body: JSON.stringify({ agent: resident.agent, cwd: resident.cwd, sessionId: resident.agentSessionId ?? resident.id, env: {} }),
+  });
+  expect(stop.status).toBe(204);
+  const residentCard = drawer.getByRole("listitem").filter({ has: page.getByRole("button", { name: new RegExp(`^${RESIDENT}, `) }) });
+  await expect(residentCard.getByRole("button", { name: new RegExp(`^${RESIDENT}, idle$`) })).toBeVisible({ timeout: 30_000 });
+  await expect(residentCard).not.toHaveClass(/needs-you/);
+
+  // Paused from its own card, it will not wake to act on the question: it has stopped on it, so
+  // the drawer turns it amber and the question says so.
+  await residentCard.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect(residentCard.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+  await expect(residentCard).toHaveClass(/needs-you/);
+  // The Pause button's tooltip outlives its swap to Resume; a hover and leave on Resume closes it.
+  await residentCard.getByRole("button", { name: "Resume", exact: true }).hover();
+  await page.mouse.move(0, 0);
+  await capture(page, "15-drawer-paused-resident-question", page);
+  await residentCard.getByRole("list", { name: `${RESIDENT} is asking` }).getByRole("button").first().click();
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".review-wait")).toContainText("Stopped, waiting on this answer");
+  await expect(modal.getByRole("button", { name: /Remind me later/ }))
+    .toHaveAccessibleDescription(/The agent has stopped on it/);
+  await capture(modal, "16-paused-resident-card-stopped", page);
 });

@@ -1,5 +1,5 @@
 import type { ReviewItem, Session } from "@shared/types.ts";
-import { questionOutcome, questionStatusLine } from "../lib/async-questions.ts";
+import { questionOutcome, questionStatusLine, useQuestionAgent } from "../lib/async-questions.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -20,12 +20,13 @@ export function AskedQuestionCard({
 }: {
   review: ReviewItem;
   /** The asking session, live: while the question is open, the entry says whether its agent works. */
-  session?: Pick<Session, "state" | "stateConfirmed" | "task"> | null;
+  session?: Pick<Session, "id" | "state" | "stateConfirmed" | "task"> | null;
   /** Open the card that answers it. Without it the open state has no button. */
   onAnswer?: () => void;
 }): React.JSX.Element {
   const outcome = questionOutcome(review);
-  const status = outcome.state === "open" ? questionStatusLine(review, session) : null;
+  const agent = useQuestionAgent(session);
+  const status = outcome.state === "open" ? questionStatusLine(review, agent) : null;
   return (
     <div className={`review-asked is-${outcome.state}`} role="note" aria-label={`Asked: ${review.title}`}>
       <div className="review-answer-head">

@@ -94,7 +94,14 @@ export function snoozeMeanwhileLabel(
   return review.waitMode === "message" ? KEEP_DOING_WHAT_IT_SAID : "Use its best judgment";
 }
 
-/** The past-tense line the returned question carries: what the agent has been doing. */
+/**
+ * The past-tense line the returned question carries: what the agent has been doing.
+ *
+ * A message-mode question (`async-input`) snoozed on "Keep doing what it said" is the exception:
+ * nothing was sent, so this says only what the operator chose, never that the agent kept working.
+ * By the time the question comes back its agent may well have stopped on it, and the card's status
+ * line, read live, is the one place that says which.
+ */
 export function snoozeMeanwhileSince(
   review: Pick<ReviewItem, "decisions" | "waitMode">,
   snooze: Pick<ReviewSnooze, "mode" | "optionId">,
@@ -103,7 +110,7 @@ export function snoozeMeanwhileSince(
   if (label) return `The agent has kept working with "${label}" as a provisional answer.`;
   if (snooze.mode === "hold") return "The agent has held the work that depends on this and carried on with the rest.";
   return review.waitMode === "message"
-    ? "The agent has kept doing what it said it would when it asked."
+    ? "You left it to do what it said it would when it asked."
     : "The agent has kept working on its best judgment.";
 }
 

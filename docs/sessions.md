@@ -3044,8 +3044,10 @@ option or **Hold work that depends on this** changes what the agent does, so eit
 message, as for any question whose call has ended. The button's hint and the sheet follow the
 card's status line: while the agent is still working they say it keeps working, and once it has
 stopped on the question they say so, and that it hears nothing unless you choose a provisional
-option or **Hold**. The snoozed row and the reminder line say what the agent was doing, never that
-it stopped waiting.
+option or **Hold**. The snoozed row and the reminder line on the returned question say what you
+chose. For **Keep doing what it said** that is "You left it to do what it said it would when it
+asked", never a claim that the agent kept working: by the time the question comes back it may have
+stopped, which the card's own status line says.
 
 Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
 you select and have no agent told how to carry on: a public product issue confirmation, a

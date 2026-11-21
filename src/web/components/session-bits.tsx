@@ -43,7 +43,7 @@ import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
-import { questionBadge } from "../lib/async-questions.ts";
+import { questionBadge, useQuestionAgent } from "../lib/async-questions.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
   PIPELINE_PROVIDER_INFO,
@@ -1789,7 +1789,8 @@ export function StateBadge({
   // doing. The Console detail draws this component, so it follows.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = display ?? runtimeState;
-  const asks = onOpenReviews ? questionBadge(session, st) : null;
+  const agent = useQuestionAgent(session);
+  const asks = onOpenReviews ? questionBadge(agent, st) : null;
   if (asks && onOpenReviews) {
     return (
       <Tooltip label={asks.tooltip}>

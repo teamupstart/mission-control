@@ -3877,7 +3877,8 @@ export function App(): React.JSX.Element {
       // The gate is where DOM focus ACTUALLY is (`.cdetail` ancestry), never the
       // `consoleZone` React state, which lags and once desynced let a bare Tab fall through
       // to native browser tabbing (it walked to the next rail row). Reading focus is self-
-      // correcting: outside the reader Tab always enters, inside it Shift+Tab always steps.
+      // correcting: outside the reader Tab enters after any preview hold links, inside it
+      // Shift+Tab always steps.
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
@@ -3889,6 +3890,23 @@ export function App(): React.JSX.Element {
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // Preview hold links follow their rail row in the DOM. Visit those links before
+        // entering the reader, and let Shift+Tab return through them to their own row.
+        if (!inReader && (chord === "Tab" || chord === "shift+Tab")) {
+          const holds = target?.closest(".workflow-holds") ?? target?.closest(".rail-row")?.nextElementSibling;
+          const row = holds?.previousElementSibling;
+          if (holds?.matches(".workflow-holds") && row instanceof HTMLElement && row.matches(".rail-row")) {
+            const links = Array.from(holds.querySelectorAll<HTMLAnchorElement>("a[href]"));
+            const index = links.findIndex(link => link === target?.closest("a"));
+            const next = chord === "Tab" ? links[index + 1] : index >= 0 ? links[index - 1] ?? row : null;
+            if (next) {
+              e.preventDefault();
+              setConsoleZone("rail");
+              next.focus();
+              return;
+            }
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {

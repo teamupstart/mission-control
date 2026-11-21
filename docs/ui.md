@@ -1199,6 +1199,8 @@ available:
   to see each open run's reason, next actor, and an **Open run** link on Board cards and Console
   rows. Existing workflow chips still show only the newest run per repository with the preview
   on or off; the explanations include older open runs too.
+  From a selected rail row, **Tab** visits its hold links before entering the reader;
+  **Shift+Tab** from a hold link returns through the links to the row.
   A queued sibling links to **Open owning run**, unless its own run needs the operator
   or an independent blocker owner; that actionable wait keeps its **Open run** link.
   Manual and preview reviews name the operator unless an independent blocker is withholding
@@ -2055,7 +2057,7 @@ names the layouts where a shortcut's target exists:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | In **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. On **Scouts**, <kbd>↑</kbd>/<kbd>↓</kbd> open the adjacent report in the current results when focus is outside a text field or selector. With nothing selected, the first arrow selects the first session | Anywhere |
-| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
+| <kbd>Tab</kbd> | **Console & board drill-in:** visit any preview workflow hold links after the rail row, then step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Board** opens the drill-in; Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close an open panel, dialog, or away digest, then leave a focused text box, hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
 | <kbd>Esc</kbd> | Leave the [authoring surface](library-and-line.md#getting-back-out-of-an-authoring-surface) for `#/library`, one layer per press: an open dialog closes itself, then a focused editor or field is left, then the page. An unsaved draft raises the same leave-with-unsaved-changes question the **← Library** row does | Library: a Persona, Action, Command or workflow |
@@ -2104,7 +2106,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
-| <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
+| <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. From a preview workflow hold link, move to the preceding link or its rail row. On the rail row it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session, or the archive open on Scouts | Selected session or scout |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |

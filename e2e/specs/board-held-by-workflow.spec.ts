@@ -456,6 +456,31 @@ test("hold details leave existing Board and Console action chips on the newest r
       await expect(chips).toContainText("Newest review");
       await expect(chips).not.toContainText("Older review");
       const holds = dashboard.getByLabel("Workflow holds");
+      if (layout === "console") {
+        const row = dashboard.locator(".rail-row");
+        await row.click();
+        await expect(dashboard.locator(".cdetail")).toBeVisible();
+        await row.focus();
+        if (enabled) {
+          const links = holds.getByRole("link");
+          await dashboard.keyboard.press("Tab");
+          await expect(links.nth(0)).toBeFocused();
+          await dashboard.keyboard.press("Tab");
+          await expect(links.nth(1)).toBeFocused();
+          await dashboard.keyboard.press("Shift+Tab");
+          await expect(links.nth(0)).toBeFocused();
+          await dashboard.keyboard.press("Shift+Tab");
+          await expect(row).toBeFocused();
+          await dashboard.keyboard.press("Tab");
+          await dashboard.keyboard.press("Tab");
+          await expect(links.nth(1)).toBeFocused();
+          await shoot(dashboard, "hold-console-keyboard-focus");
+        }
+        await dashboard.keyboard.press("Tab");
+        await expect(dashboard.locator(".cdetail .detail-body")).toBeFocused();
+        await dashboard.keyboard.press("Shift+Tab");
+        await expect(row).toBeFocused();
+      }
       if (enabled) {
         await expect(holds.getByRole("link")).toHaveCount(2);
         await expect(holds).toContainText("Older review");

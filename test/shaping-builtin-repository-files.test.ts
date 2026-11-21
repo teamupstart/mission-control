@@ -253,7 +253,10 @@ test("the limits: at most 16 includes of at most 16 KiB each, and notes stay wit
   assert.ok(all.notes.every((note) => note.length <= SHAPING_LIMITS.replyNoteChars));
   const said = all.notes.join(" ");
   for (const path of paths) {
-    assert.ok(said.includes(`${JSON.stringify(`${path.slice(0, 200)}...`)} (missing).`), path.slice(0, 12));
+    const quoted = quotedPath(path);
+    assert.ok(quoted.length <= 200 + 5, "within its bound, with the quotes and the ellipsis");
+    assert.ok(quoted.startsWith(JSON.stringify(path.slice(0, 100)).slice(0, -1)) && quoted.endsWith(`${"p".repeat(97)}"`));
+    assert.ok(said.includes(`${quoted} (missing).`), path.slice(0, 12));
   }
   assert.equal(said.match(/Skipped /g)?.length, 18, "18 skips, none reduced to a count");
   assert.ok(ShapingResultSchema.safeParse(all).success);
@@ -341,8 +344,13 @@ test("a skipped path of control characters is quoted within its bound, so the re
 
   // The escaped form is what is bounded, and the cut never splits an escape or a surrogate pair.
   const quoted = quotedPath(control.repeat(3));
-  assert.equal(quoted, `"${"\\u0001".repeat(33)}..."`);
-  assert.equal(quotedPath("😀".repeat(150)), `"${"😀".repeat(100)}..."`);
+  assert.equal(quoted, `"${"\\u0001".repeat(16)}...${"\\u0001".repeat(17)}"`);
+  assert.equal(quotedPath("😀".repeat(150)), `"${"😀".repeat(50)}...${"😀".repeat(50)}"`);
+  // Two long paths under one deep directory keep their file names, so their notes differ.
+  const deep = Array.from({ length: 4 }, () => "d".repeat(80)).join("/");
+  const [first, second] = [quotedPath(`${deep}/first.md`), quotedPath(`${deep}/second.md`)];
+  assert.notEqual(first, second);
+  assert.ok(first.endsWith('/first.md"') && second.endsWith('/second.md"'));
   assert.equal(quotedPath('a "b" \\ c'), JSON.stringify('a "b" \\ c'), "a short path is quoted whole, as JSON");
   // Both caps are enforced even for sentences no gatherer writes: none longer than a note, never more than the count.
   const huge = Array.from({ length: 40 }, (_, i) => `${i}`.padEnd(1500, "x"));

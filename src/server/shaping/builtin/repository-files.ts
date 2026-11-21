@@ -290,17 +290,24 @@ const QUOTED_PATH_CHARS = 200;
 /**
  * A configured path as a note quotes it: JSON-escaped, with the escaped form held to
  * `QUOTED_PATH_CHARS`. The bound is applied after escaping, because one control character
- * escapes to six (`\u0001`), so a raw clip could still quote more than a note can carry. The
+ * escapes to six (`\u0001`), so a raw clip could still quote more than a note can carry.
+ *
+ * A longer path keeps its start and its end around `...`: the start names where it is, and the
+ * end is its file name, so two long paths under one deep directory still read differently. Each
  * cut is made between characters, never inside an escape or a surrogate pair.
  */
 export function quotedPath(configured: string): string {
-  let shown = "";
-  for (const char of configured) {
-    const escaped = JSON.stringify(char).slice(1, -1);
-    if (shown.length + escaped.length > QUOTED_PATH_CHARS) return `"${shown}..."`;
-    shown += escaped;
+  const escaped = Array.from(configured, (char) => JSON.stringify(char).slice(1, -1));
+  const whole = escaped.join("");
+  if (whole.length <= QUOTED_PATH_CHARS) return `"${whole}"`;
+  let head = "";
+  let start = 0;
+  while (start < escaped.length && head.length + escaped[start]!.length <= QUOTED_PATH_CHARS / 2) head += escaped[start++];
+  let tail = "";
+  for (let end = escaped.length - 1; end >= start && head.length + tail.length + escaped[end]!.length <= QUOTED_PATH_CHARS; end--) {
+    tail = escaped[end] + tail;
   }
-  return `"${shown}"`;
+  return `"${head}...${tail}"`;
 }
 
 /**

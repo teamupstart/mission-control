@@ -5305,6 +5305,15 @@ export class TaskManager {
     const writePane = innermostPane(live);
     // The baseline is read before the step's own clock starts, so it gets a short bound of its
     // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
+    // A turn the operator starts and finishes while shapers run leaves the session idle again, so
+    // its state alone cannot tell; any departure from idle after the reset is recorded here, until
+    // the delivery's own guard has had its say.
+    let leftIdle = false;
+    const watchTurns = (event: { type: string; session?: { id: string; state: string } }) => {
+      if (event.type === "session_upsert" && event.session?.id === s.id && event.session.state !== "idle") leftIdle = true;
+    };
+    if (shapingOn) this.registry.on("event", watchTurns);
+    const stopWatching = () => { this.registry.off("event", watchTurns); };
     const baseSha = shapingOn && live.cwd ? await boundedHeadCommit(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS) : null;
     const shaping = await shapeLaunch({
       // The baseline is the commit the reset left the checkout on, read only when shaping runs.
@@ -5327,12 +5336,14 @@ export class TaskManager {
     }, { shapeTask: opts.shapeTask, enabled: shapingOn });
     const after = this.registry.getTask(t.id);
     if (after?.status !== "backlog") {
+      stopWatching();
       return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
     }
     // An edit made while shapers ran would be handed over as the older text with context chosen
     // for it, while the card shows the newer one. The task stays in the backlog to be handed
     // over again, as it is for every other refusal after the reset.
     if (inputs(after) !== shapedFrom) {
+      stopWatching();
       return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
     }
     // The session was checked before the reset, and shapers can take seconds: an operator who
@@ -5349,15 +5360,20 @@ export class TaskManager {
       const receiving = this.registry.getSession(s.id);
       const changed = !receiving ? "went away"
         : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
+        : leftIdle ? "took a turn"
         : receiving.pendingReviews > 0 ? "got a review waiting on you"
         : null;
       return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
     };
     if (shapingOn) {
       const changed = sessionChanged();
-      if (changed) return { ok: false, error: changed, scope: "session" };
+      if (changed) {
+        stopWatching();
+        return { ok: false, error: changed, scope: "session" };
+      }
       const stillReady = await paneReady(this.registry.getSession(s.id)!);
       if (!stillReady.ok) {
+        stopWatching();
         return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
       }
     }
@@ -5378,6 +5394,8 @@ export class TaskManager {
     } catch (err) {
       discardScoutPromptBoundary(boundary);
       throw err;
+    } finally {
+      stopWatching();
     }
     // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
     // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`

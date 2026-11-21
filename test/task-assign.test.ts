@@ -1784,3 +1784,31 @@ test("an edit that lands during the handover's last pane probe is caught by the 
     setShaping(false);
   }
 });
+
+test("a turn the operator starts and finishes while shapers run stops the handover, though the session is idle again", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-turn-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const listeners = r.listenerCount("event");
+    const shapeTask: ShapeTask = async (input) => {
+      // A whole turn while shapers answer: submitted, then finished.
+      r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+      r.applyHook({ agent: "claude", event: "Stop", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {} });
+      assert.equal(r.getSession(sessionId)?.state, "idle", "the session is idle again");
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /took a turn while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into a conversation used since the reset");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.listenerCount("event"), listeners, "the turn watch was removed");
+  } finally {
+    setShaping(false);
+  }
+});

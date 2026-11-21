@@ -876,8 +876,9 @@ A SessionAction is a durable side effect, not an evaluator:
   sequentially per action so branch history cannot create an unbounded subprocess burst.
   Every page remains eligible; a matching historical publication is never truncated away.
   Successful immutable tree resolutions are cached by repository identity and commit in a
-  bounded manager cache. Unknown objects retry after a one-minute cooldown, and missing
-  accepted trees skip these lookups.
+  bounded manager cache. Unknown objects retry after a one-minute cooldown, held separately
+  until expiry so cache eviction cannot trigger immediate retries. Missing accepted trees
+  skip these lookups.
   Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
 - Rolled-over task settlement requires the latest terminal run's confirmed action delivery
   to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
@@ -892,7 +893,8 @@ A SessionAction is a durable side effect, not an evaluator:
   and retires the row in the next statement, so the open set loses a pull request on the very
   tick the adapter needed to see its final state, leaving a completed publication reported
   as an ordinary missing-PR wait. Read through
-  `loadAdoptedInspectorPrsSince(deliveredAt, branch)`, which keeps retired rows visible for exactly the
+  `loadAdoptedInspectorPrsSince(deliveredAt, branch, null)` for the first page, then pass the
+  preceding page's last row as the cursor. This keeps retired rows visible for exactly the
   window this action has been waiting, plus older merged observations on its branch. The
   caller resolves repository identity per distinct root and resolves merged content only
   inside the matching repository and branch. Closed-unmerged history stays outside the window.

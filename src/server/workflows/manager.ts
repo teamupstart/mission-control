@@ -659,7 +659,8 @@ export class WorkflowManager {
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
   /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
-  private readonly publicationTrees = new Map<string, { treeOid: string | null; retryAt: number }>();
+  private readonly publicationTrees = new Map<string, string>();
+  private readonly publicationTreeRetryAt = new Map<string, number>();
   private readonly pendingPublicationTrees = new Map<string, Promise<string | null>>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
@@ -6287,6 +6288,11 @@ export class WorkflowManager {
     now: number,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
+    // Missing-object cooldowns expire independently of the bounded successful-tree cache.
+    // Otherwise a history larger than that cache retries every missing object on every scan.
+    for (const [key, retryAt] of this.publicationTreeRetryAt) {
+      if (retryAt <= now) this.publicationTreeRetryAt.delete(key);
+    }
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
     // repository are the ordinary case, and this runs on the settle path of every waiting
     // action.
@@ -6311,23 +6317,32 @@ export class WorkflowManager {
         if (resolvePublishedTrees && pr.observedState === "MERGED" && pr.observedHeadSha && repository
           && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch) {
           const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
-          let cached = this.publicationTrees.get(key);
-          if (!cached || (!cached.treeOid && cached.retryAt <= now)) {
+          let treeOid = this.publicationTrees.get(key) ?? null;
+          if (!treeOid && !this.publicationTreeRetryAt.has(key)) {
             let pending = this.pendingPublicationTrees.get(key);
             if (!pending) {
-              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null);
+              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(error => {
+                workflowLog("warn", { event: "session_action_publication_tree_unavailable", call: pr.key,
+                  state: pr.observedHeadSha,
+                  error: error instanceof Error ? ("code" in error && typeof error.code === "string" ? error.code : error.name) : "unknown" });
+                return null;
+              });
               this.pendingPublicationTrees.set(key, pending);
             }
             try {
-              cached = { treeOid: await pending, retryAt: now + 60_000 };
+              treeOid = await pending;
+              if (!treeOid) this.publicationTreeRetryAt.set(key, now + 60_000);
             } finally {
               if (this.pendingPublicationTrees.get(key) === pending) this.pendingPublicationTrees.delete(key);
             }
           }
-          mergedContentTreeOid = cached.treeOid;
-          this.publicationTrees.delete(key);
-          this.publicationTrees.set(key, cached);
-          if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          mergedContentTreeOid = treeOid;
+          if (treeOid) {
+            this.publicationTreeRetryAt.delete(key);
+            this.publicationTrees.delete(key);
+            this.publicationTrees.set(key, treeOid);
+            if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          }
         }
         adopted.push({
           mergedContentTreeOid,

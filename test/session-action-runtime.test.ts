@@ -2366,8 +2366,10 @@ test("historical merge lookup bounds Git concurrency and reaches a later page's 
 });
 
 for (const proof of ["known", "unknown", "missing-review"] as const) {
-  test(`historical publication tree reuse: ${proof}`, async () => {
+  test(`historical publication tree reuse: ${proof}`, async (t) => {
     const { adoptInspectorPr, retargetInspectorPrCheckout } = await import("../src/server/db.ts");
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args.join(" ")));
     const candidate = "a".repeat(40);
     let reads = 0;
     const h = await harness(`tree-cache-${proof}`, { pullRequest: true, realLedger: true,
@@ -2376,7 +2378,7 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
         if (oid !== candidate) return h.contentTree.oid;
         reads++;
         if (proof === "unknown") {
-          if (reads === 1) throw new Error("commit has not been fetched");
+          if (reads === 1) throw Object.assign(new Error("private checkout detail"), { code: "ENOENT" });
           return h.contentTree.oid;
         }
         return h.full("different-tree");
@@ -2400,7 +2402,12 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(reads, proof === "missing-review" ? 0 : 1);
+      const failures = warnings.filter(line => line.includes("event=session_action_publication_tree_unavailable"));
+      assert.equal(failures.length, proof === "unknown" ? 1 : 0, "failed lookups log once during their cooldown");
       if (proof === "unknown") {
+        assert.ok(failures[0]?.includes(`call=${key}`));
+        assert.match(failures[0]!, /error=ENOENT/);
+        assert.doesNotMatch(failures[0]!, /private checkout detail/);
         await h.manager.sweepSessionActions(SETTLED() + 60_001);
         await waitFor(() => h.store.getRun(runId)?.status === "completed", "unknown tree must retry after it becomes available");
         assert.equal(reads, 2, "missing objects retry after their cooldown, not every sweep");
@@ -2413,6 +2420,48 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
     } finally { await h.stop(); }
   });
 }
+
+test("missing publication cooldown survives more candidates than the successful-tree cache holds", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const candidates = new Set<string>();
+  let reads = 0;
+  let available = false;
+  const h = await harness("missing-tree-overflow", { pullRequest: true, realLedger: true,
+    resolveCommitTree: async (_root, oid) => {
+      if (!candidates.has(oid)) return h.contentTree.oid;
+      reads++;
+      if (available && oid === h.full("missing-256")) return h.contentTree.oid;
+      throw new Error("commit has not been fetched");
+    },
+  });
+  h.repository.branch = "missing-tree-overflow";
+  try {
+    for (let i = 0; i < 257; i++) {
+      candidates.add(h.full(`missing-${i}`));
+      adoptInspectorPr({ key: `missing-overflow/repo#${1000 + i}`, owner: "missing-overflow", repo: "repo", number: 1000 + i,
+        url: `https://github.com/missing-overflow/repo/pull/${1000 + i}`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: null,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Unavailable publication", updatedAt: 1,
+        observedHeadSha: h.full(`missing-${i}`), adoptedAt: 1, observedAt: 1 });
+    }
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    assert.equal(reads, 257);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    await h.manager.sweepSessionActions(now + 1);
+    assert.equal(reads, 257, "all missing heads retain their cooldown across the next scan");
+    available = true;
+    await h.manager.sweepSessionActions(now + 60_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "the last candidate must retry after expiry");
+    assert.equal(reads, 514, "expired misses retry, including the candidate beyond cache capacity");
+  } finally { await h.stop(); }
+});
 
 test("overlapping sweep and Inspector observations share a pending publication-tree lookup", async () => {
   const { adoptInspectorPr } = await import("../src/server/db.ts");

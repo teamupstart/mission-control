@@ -2448,3 +2448,75 @@ for (const priorOverride of [false, true]) test(`existing eight-criterion run re
   assert.throws(() => reopened.freezeRunCriterionFulfillment({ runId: run.id,
     source: { ...legacyCriteria, acceptanceCriteria: ["foreign intent"] }, classifications: [], submissionId: child.id, now: Date.now() }), /does not match/);
 });
+
+test("draft PR evidence reaches review before publication and survives a Persona repair round", async (t) => {
+  const id = "draft-pr-before-publication";
+  const head = { sha: "abc" };
+  let compactions = 0;
+  let reviews = 0;
+  const criterion = "Draft PR title and deviation notes meet the requested content requirements";
+  const h = await harness(t, id, undefined, {
+    head,
+    humanDecisions: () => [{ decision: "Open a PR titled fix: preserve drafts, include deviation notes and return the PR URL",
+      rationale: null, source: { kind: "review", id: "pr-requirements" } }],
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true,
+      execute: async (prompt) => {
+        compactions++;
+        assert.match(prompt, /Draft PR title and body content/);
+        assert.match(prompt, /Preserve publication-only outcomes as canonical criteria/);
+        assert.match(prompt, /Record publication details in constraints/);
+        assert.doesNotMatch(prompt, /Do not make a published PR URL.*canonicalCriteria/);
+        assert.match(prompt, /Do not defer implementation, tests/);
+        assert.match(prompt, /Requests to inspect an existing PR still require the requested inspection evidence/);
+        assert.match(prompt, /fix: preserve drafts/);
+        // Tool-less model fixture: pin the extraction contract, then exercise the real
+        // readiness, freezing, feedback and round transitions without model tokens.
+        return { kind: "ok", value: {
+          constraints: ["At the Pull Request action, verify the published title, deviation notes and URL"],
+          acceptanceCriteria: [criterion],
+          canonicalCriteria: [{ text: criterion, material: true, suggestedProofClass: "focused_execution" }],
+        } };
+      },
+    }),
+    runner: { ...passingRunner, async run(prompt) {
+      reviews++;
+      assert.match(prompt, /Review draft PR title and body content/);
+      assert.match(prompt, /Do not demand a published PR URL/);
+      if (reviews === 1) return JSON.stringify({ verdict: "fail", summary: "Draft omits a deviation",
+        requestedChanges: [{ basis: "substantive", title: "Describe the deviation in the draft",
+          rationale: "Content review still applies before publication.",
+          evidence: [{ kind: "goal", quote: "include deviation notes" }] }], confidence: 1 });
+      return JSON.stringify({ verdict: "pass", summary: "Draft content is complete",
+        approvalDetails: { reason: "The draft now describes the deviation.", evidence: [] }, confidence: 1 });
+    } },
+  });
+  const stage = (clientItemId: string, output: string) => h.manager.stageAgentEvidence(id, {
+    images: [], commandOutputs: [{ kind: "command", clientItemId, command: "check draft-pr.md",
+      exitCode: 0, output, caption: "Draft content validation, no published PR", repositoryScope: "all" }],
+    coverage: [{ clientCriterionId: "draft-content", criterion, proofClass: "focused_execution",
+      repositoryScope: "all", links: [{ clientItemId, role: "execution" }] }],
+  });
+  await stage("draft-check-1", "Title: fix: preserve drafts; deviation notes checked");
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "draft-first" });
+  assert.equal(submitted.ok, true); if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(() => h.store.listDeliveries(runId).some(d => d.kind === "persona_feedback" && d.state === "delivered"),
+    "draft content must reach Persona review without a PR URL");
+  const first = h.store.latestSubmission(runId)!;
+  assert.equal(first.readiness?.status, "ready");
+  await stage("draft-check-2", "Title: fix: preserve drafts; deviation notes now describe the repaired behavior");
+  head.sha = "repaired-head";
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  await waitFor(() => h.store.getRun(runId)?.status === "completed", "repaired draft did not reach review");
+  const next = h.store.latestSubmission(runId)!;
+  assert.equal(next.round, 2);
+  assert.equal(next.readiness?.status, "ready");
+  assert.equal(compactions, 1);
+  assert.equal(reviews, 2);
+  assert.deepEqual(WorkflowContextSnapshotSchema.parse(next.context).canonicalCriteria,
+    WorkflowContextSnapshotSchema.parse(first.context).canonicalCriteria);
+  assert.equal(h.store.listReadinessOverrides(runId).length, 0);
+  assert.equal(h.injected.some(packet => packet.includes("# Evidence preflight needs repair")), false);
+});

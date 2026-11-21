@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -45,13 +46,7 @@ function failure(over: Partial<NonNullable<Task["launchFailure"]>> = {}): NonNul
 
 function mkRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "f.txt"), "x\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "first"]);
+  seedGitRepo(repo, { branch: "main", files: { "f.txt": "x\n" }, message: "first" });
   // The spelling the dispatch route stores, so a task filed here and one filed through the
   // route name the same repository the same way.
   return realpathSync(repo);

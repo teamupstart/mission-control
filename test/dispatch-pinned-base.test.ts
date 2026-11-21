@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitHistory } from "./helpers/git-fixture.ts";
 
 // What is at stake: two agents that were supposed to start from the same place, and did not.
 //
@@ -49,20 +50,15 @@ function git(dir: string, ...args: string[]): string {
 /** A repo with two commits, so "the base" and "where HEAD moved to" are different things. */
 function mkRepo(name: string): { repo: string; first: string; second: string } {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  git(repo, "config", "user.email", "t@test");
-  git(repo, "config", "user.name", "t");
-  writeFileSync(join(repo, "file.txt"), "first\n");
-  // In the BASE commit, because the rules that decide what a clean spares are the ones the
-  // tree is being reset to - a `.gitignore` added later is not in force at that moment.
-  writeFileSync(join(repo, ".gitignore"), "cache/\n");
-  git(repo, "add", "-A");
-  git(repo, "commit", "-qm", "first");
-  const first = git(repo, "rev-parse", "HEAD");
-  writeFileSync(join(repo, "file.txt"), "second\n");
-  git(repo, "commit", "-qam", "second");
-  return { repo, first, second: git(repo, "rev-parse", "HEAD") };
+  const [first, second] = seedGitHistory(repo, {
+    branch: "main",
+    // `.gitignore` is in the BASE commit, because the rules that decide what a clean spares are
+    // the ones the tree is being reset to - a `.gitignore` added later is not in force then.
+    files: { "file.txt": "first\n", ".gitignore": "cache/\n" },
+    message: "first",
+    later: [{ files: { "file.txt": "second\n" }, message: "second" }],
+  });
+  return { repo, first: first!, second: second! };
 }
 
 // ---- normal dispatch is unchanged ------------------------------------------------------

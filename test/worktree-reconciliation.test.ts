@@ -850,14 +850,18 @@ for (const confirmation of ["original", "same mismatch", "different mismatch", "
   });
 }
 
-for (const stdout of ["", " \n", "HEAD\n", "abc123\n", `${"a".repeat(40)}\n${"b".repeat(40)}\n`]) {
-  test(`inspection rejects malformed successful HEAD output ${JSON.stringify(stdout)}`, async () => {
+/** A successful `status --porcelain=v2 --branch -z` whose HEAD header names `oid`. */
+const statusNaming = (oid: string): string => `# branch.oid ${oid}\0# branch.head (detached)\0`;
+
+for (const oid of ["", " ", "HEAD", "abc123", `${"a".repeat(40)}\n${"b".repeat(40)}`]) {
+  test(`inspection rejects malformed successful HEAD output ${JSON.stringify(oid)}`, async () => {
     const repository = repo("mission-reconcile-head-invalid-");
     let headReads = 0;
     const git = new NativeWorktreeGit(async (bin, args, opts) => {
-      if (args.includes("rev-parse") && args.includes("HEAD")) {
+      // HEAD is read by the inspection's one `status --branch`.
+      if (args.includes("status") && args.includes("--branch")) {
         headReads++;
-        return { stdout, stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+        return { stdout: statusNaming(oid), stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
       }
       return run(bin, args, opts);
     }, async () => {});
@@ -899,9 +903,9 @@ test("malformed HEAD reads quarantine as observation and a later valid read reco
   let malformedReads = 0;
   let headReads = 0;
   const git = new NativeWorktreeGit(async (bin, args, opts) => {
-    if (args.includes("rev-parse") && args.includes("HEAD")) {
+    if (args.includes("status") && args.includes("--branch")) {
       headReads++;
-      if (malformedReads-- > 0) return { stdout: "", stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+      if (malformedReads-- > 0) return { stdout: statusNaming(""), stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
     }
     return run(bin, args, opts);
   }, async () => {});

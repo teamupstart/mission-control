@@ -1221,6 +1221,18 @@ mapping output leaves stable extraction intact and fails closed to deterministic
 attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
 fallback.
 
+Preflight checks locally inspectable work, including requested draft PR title and body content
+and deviation notes. Criterion extraction preserves publication-only outcomes as explicitly
+classified criteria and records publication details in constraints. The daemon defers their proof
+only while the pinned graph still has a pending Pull Request action.
+Personas apply the same boundary on initial and repair rounds, while continuing to check draft
+content, implementation, tests and other deliverables. The Pull Request action reads back the
+created or updated PR from GitHub, verifies its title and required notes, and returns the verified
+URL. This publication instruction also accompanies existing frozen action prompts. It does not
+change the action's durable adoption check, Inspector checks, CI policy, or other evidence gates.
+Already-frozen criterion identities and wording remain immutable; existing runs can classify
+missing publication timing without rewriting the rubric or historical submissions.
+
 A workflow-bound task whose published graph contains a Persona receives an evidence-readiness
 contract before completion, whatever its kind - a scout dispatched with such a workflow receives
 it alongside its report contract. Through `submit_workflow_evidence`, the agent can register three

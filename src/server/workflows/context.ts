@@ -582,6 +582,9 @@ function compactPrompt(raw: RawWorkflowContext): string {
     "Split mixed requirements into separate criteria.",
     "Proof class suggestions are advisory.",
     "Do not add decisions or infer intent that is not supported by the supplied sources.",
+    "These criteria drive evidence preflight before Persona review, including every repair round. Draft PR title and body content (including required deviation notes) can be reviewed here; phrase those content criteria in terms of the draft, not proof of publication.",
+    "Preserve publication-only outcomes as canonical criteria with fulfilledByAction=pull_request unless the human explicitly requires publication before review. Record publication details in constraints for verification when the Pull Request action creates or updates the PR. A request to open a PR is not a requirement to publish it before review; the daemon decides whether its pinned graph permits deferral.",
+    "Do not defer implementation, tests, draft content, or other locally inspectable deliverables merely because their requirements mention a PR. If the task changes PR-handling behavior, its implementation and test evidence still belong in preflight. Requests to inspect an existing PR still require the requested inspection evidence; only publication of this task's own PR is deferred. Preserve all other substantive criteria and evidence requirements.",
     JSON.stringify(workflowIntentFields(raw)),
   ].join("\n\n");
 }

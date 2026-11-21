@@ -15,7 +15,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { onlineDatabaseBackup } from "../src/server/database-backups/online.ts";
 import {
   DATABASE_BACKUP_RETENTION,
   DatabaseBackupService,
@@ -653,7 +654,7 @@ function wallClockLoop(t: test.TestContext, options: { intervalHours?: number } 
     onlineBackup: async (db, destination) => {
       state.attempts.push(state.clock);
       if (state.failing) throw new Error("ENOSPC: no space left on device");
-      await sqliteBackup(db, destination);
+      await onlineDatabaseBackup(db, destination);
     },
   });
   let service = newService();
@@ -808,7 +809,7 @@ test("a status write that fails never turns a capture's own outcome around", asy
     root: backupRoot,
     onlineBackup: async (db, destination) => {
       if (failing) throw new Error("ENOSPC: no space left on device");
-      await sqliteBackup(db, destination);
+      await onlineDatabaseBackup(db, destination);
     },
   });
   source.exec(`
@@ -998,7 +999,7 @@ test("captures are single-flight: the same kind joins, the other kind waits its 
       running += 1;
       overlapped ||= running > 1;
       await new Promise<void>((resolve) => releases.push(resolve));
-      await sqliteBackup(db, destination);
+      await onlineDatabaseBackup(db, destination);
       running -= 1;
     },
   });
@@ -1147,7 +1148,7 @@ test("a second Back up now joins the one running even with a scheduled capture q
     onlineBackup: async (db, destination) => {
       captures += 1;
       await new Promise<void>((resolve) => releases.push(resolve));
-      await sqliteBackup(db, destination);
+      await onlineDatabaseBackup(db, destination);
     },
   });
 
@@ -1177,7 +1178,7 @@ test("stop waits for a Back up now and the capture queued behind it, then refuse
     root: join(root, "backups"),
     onlineBackup: async (db, destination) => {
       await new Promise<void>((resolve) => releases.push(resolve));
-      await sqliteBackup(db, destination);
+      await onlineDatabaseBackup(db, destination);
     },
   });
 

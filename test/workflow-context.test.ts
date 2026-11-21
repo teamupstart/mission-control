@@ -7,10 +7,17 @@ import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
+
+// A checkout of its own for the cases that only need a session to stand somewhere. Reading
+// workflow context diffs the session's tree, and `process.cwd()` is the developer's checkout:
+// one git process per file it happens to have untracked, and a diff of whatever branch it is on.
+const checkout = join(home, "checkout");
+seedGitRepo(checkout, { branch: "main" });
 
 const {
   boundedWorkflowTranscript,
@@ -133,10 +140,10 @@ test("workflow context excludes a delivered workflow packet after live attributi
     agent: "claude",
     name: "workflow attribution",
     nameSource: "process",
-    cwd: process.cwd(),
+    cwd: checkout,
     gitBranch: "feature",
-    gitRoot: process.cwd(),
-    repoRoot: process.cwd(),
+    gitRoot: checkout,
+    repoRoot: checkout,
     pid: 7,
     tty: "ttys-workflow-attribution",
     terminals: [],
@@ -179,7 +186,7 @@ test("bounded feedback keeps recent entries in chronological order and marks the
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: "feedback-order", agent: "claude", name: "feedback", nameSource: "process",
-    cwd: process.cwd(), gitBranch: "feature", gitRoot: process.cwd(), repoRoot: process.cwd(),
+    cwd: checkout, gitBranch: "feature", gitRoot: checkout, repoRoot: checkout,
     pid: 8, tty: "ttys-feedback", terminals: [], startedAt: 1,
   } as DiscoveredSession]);
   const session = registry.getSession("feedback-order")!;

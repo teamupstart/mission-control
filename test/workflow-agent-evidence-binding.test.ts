@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PublishedWorkflowGraph } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 /**
@@ -442,6 +443,46 @@ test("session evidence eligibility follows the active immutable Persona binding"
     assert.ok(workflows.archiveBinding(sibling.id).ok);
     await assert.rejects(workflows.stageAgentEvidence(session.id, { images: [] }),
       (error: { code?: string }) => error.code === "workflow_unbound");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("Foreman's registered view retains captured evidence without refilling the staging tray", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-evidence-captured-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const { app, session, workflows, versionId } = harness(repo, "captured-session");
+    const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
+    assert.ok(bound.ok);
+    const staged = await workflows.stageAgentEvidence(session.id, {
+      images: [],
+      commandOutputs: [{ kind: "command", clientItemId: "captured-check", command: "npm run typecheck",
+        exitCode: 0, output: "passed", caption: "Typecheck passed", repositoryScope: "repo-01" }],
+    });
+    assert.ok(staged);
+    const first = workflows.store.createInitialSubmission(
+      { id: "captured-run", binding: bound.value, intent: FIXTURE_RUN_INTENT,
+        triggerSource: "manual", triggerKey: "captured-trigger", now: 3 },
+      { id: "captured-submission", triggerSource: "manual", triggerKey: "captured-trigger",
+        context: {}, evidence: {}, now: 3 },
+    );
+    const read = async (query = "") => {
+      const response = await app.request(`/api/sessions/${session.id}/workflow-evidence${query}`, {
+        headers: { host: "127.0.0.1:7317" },
+      });
+      assert.equal(response.status, 200);
+      return await response.json() as typeof staged;
+    };
+    assert.deepEqual((await read()).artifacts, [], "the composer still lists only staged evidence");
+    assert.deepEqual((await read("?view=registered")).artifacts.map(item => item.id),
+      staged.artifacts.map(item => item.id), "capture must not erase registration for Foreman");
+    assert.equal(workflows.store.listReservedWorkflowEvidence(first.submission.id).length, 1);
+    assert.deepEqual(workflows.store.listWorkflowEvidence(noteKeyFor(session)).artifacts, [],
+      "the read must not restage or mutate reservations");
+    const other = harness(repo, "other-evidence-session");
+    assert.deepEqual(other.workflows.stagedEvidenceForSession(other.session.id, "registered")?.artifacts, [],
+      "another conversation cannot inherit registration");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

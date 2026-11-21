@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { WorktreeClaimSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
@@ -163,6 +163,8 @@ test("a check lease runs the pool's claim in its slot, and a matching fingerprin
   assert.equal(leaseRows.get(first.attemptId)?.provider, "mission");
   assert.deepEqual(await leases.releaseForAttempt(first.attemptId), { outcome: "returned" });
 
+  mkdirSync(join(path, "deps"), { recursive: true });
+  writeFileSync(join(path, "deps/cache"), "warm");
   const second = attempt();
   assert.equal(
     await leases.acquireForAttempt({
@@ -173,6 +175,7 @@ test("a check lease runs the pool's claim in its slot, and a matching fingerprin
     }),
     path,
   );
+  assert.equal(readFileSync(join(path, "deps/cache"), "utf8"), "warm");
   assert.equal(fake.ran.length, 1, "a matching fingerprint must skip the steps");
   assert.equal(starts, 1, "a skipped claim must not release the attempt's check slot");
   assert.deepEqual(await leases.releaseForAttempt(second.attemptId), { outcome: "returned" });
@@ -1024,4 +1027,177 @@ test("archiving a binding stops the claims of the run it cancels", async () => {
     await engine.stop();
     await manager.stop();
   }
+});
+
+// Issue #1567: Git-clean does not mean filesystem discovery sees only this task's source.
+for (const observation of ["occupied", "unknown"] as const) {
+  test(`a check slot becoming ${observation} during its scan is refused before reset`, async () => {
+    const { clone, sha } = repository("mission-check-scan-occupancy-");
+    const fake = steps(() => ok);
+    let reservedObservations = 0;
+    let target: string | null = null;
+    const edits = "tracked edits made during the scan\n";
+    const manager = new WorktreeManager(db, {
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null, claim: LOCK_CLAIM }),
+      runClaimStep: fake.runClaimStep,
+      occupancy: async (paths) => {
+        if (target && paths.includes(target)
+          && db.prepare("SELECT state FROM worktree_slots WHERE path = ?").get(target)?.state === "provisioning") {
+          reservedObservations++;
+          if (reservedObservations === 1) {
+            // The first empty observation becomes stale while the scan runs. Tracked
+            // edits do not affect its ignored-source listing, but reset would erase them.
+            writeFileSync(join(target, "lock.txt"), edits);
+          } else {
+            const state: WorktreeOccupancy = observation === "unknown"
+              ? { status: "unknown", reason: "process listing unavailable after scan" }
+              : { status: "known", occupants: [{ pid: 91, ppid: 1, startRaw: "now", startMs: 1,
+                command: "editor", cwd: target, knownOwner: null }] };
+            return new Map([[target, state]]);
+          }
+        }
+        return emptyOccupancy(paths);
+      },
+    });
+    const prior = await manager.acquire({ repositoryPath: clone, baseSha: sha,
+      owner: { kind: "task", key: `prior-scan-${observation}` } });
+    assert.equal(prior.outcome, "acquired");
+    if (prior.outcome !== "acquired") return;
+    assert.equal((await manager.release(prior.lease)).outcome, "released");
+    target = prior.lease.path;
+    const leases = checkLeases(manager);
+    await assert.rejects(leases.acquireForAttempt({ ...attempt(), repoRoot: clone, headSha: sha }),
+      observation === "occupied" ? /process entered.*before reset/ : /process listing unavailable after scan/);
+    assert.equal(reservedObservations, 2, "occupancy must be checked again after scanning");
+    assert.equal(readFileSync(join(target, "lock.txt"), "utf8"), edits);
+    assert.equal(fake.ran.length, 0, "no dependency claim may start");
+    const slot = manager.store.slots().find((entry) => entry.path === target);
+    assert.equal(slot?.state, observation === "occupied" ? "quarantined" : "available");
+    assert.equal(slot?.activeLeaseId, null);
+    assert.deepEqual(leaseRows.listLive(), []);
+  });
+}
+
+test("a failed contamination scan blocks the check lease and preserves the slot", async () => {
+  const { clone, sha } = repository("mission-check-scan-failure-");
+  const fake = steps(() => ok);
+  let failScanFor: string | null = null;
+  let interrupted = false;
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null, claim: LOCK_CLAIM }),
+    runClaimStep: fake.runClaimStep,
+    occupancy: async (paths) => {
+      // Let idle screening succeed, then make Git metadata unreadable at the reserved
+      // slot's occupancy recheck. The real preflight's git ls-files must now fail.
+      if (failScanFor && paths.includes(failScanFor)
+        && db.prepare("SELECT state FROM worktree_slots WHERE path = ?").get(failScanFor)?.state === "provisioning") {
+        writeFileSync(join(failScanFor, ".git"), "gitdir: missing-git-directory\n");
+        interrupted = true;
+      }
+      return emptyOccupancy(paths);
+    },
+  });
+  const prior = await manager.acquire({ repositoryPath: clone, baseSha: sha,
+    owner: { kind: "task", key: "prior-scan-failure-task" } });
+  assert.equal(prior.outcome, "acquired");
+  if (prior.outcome !== "acquired") return;
+  const path = prior.lease.path;
+  const artifact = join(path, "deps/diagnostic.go");
+  const bytes = Buffer.from("package diagnostic\n// prior task's artifact\n");
+  mkdirSync(join(path, "deps"), { recursive: true });
+  writeFileSync(artifact, bytes);
+  assert.equal((await manager.release(prior.lease)).outcome, "released");
+  const gitPointer = readFileSync(join(path, ".git"));
+  const trackedBytes = readFileSync(join(path, "lock.txt"));
+  const marker = join(clone, "check-command-ran");
+  const leases = checkLeases(manager);
+  const runtime = new CheckRuntime(leases, { leaseStore: leaseRows, timeoutMs: 30_000 });
+  failScanFor = path;
+  try {
+    const result = await runtime.executorFor(attempt())({
+      slot: "lint", repoRoot: clone, headSha: sha, workingSubpath: "",
+      command: [process.execPath, "-e",
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+    });
+    assert.equal(interrupted, true, "the failure must occur after idle screening and reservation");
+    assert.equal(result.kind, "infrastructure", JSON.stringify(result));
+    if (result.kind !== "infrastructure") return;
+    assert.equal(result.started, false);
+    assert.match(result.reason, /Pool contamination inspection could not complete/);
+    assert.match(result.reason, /git ls-files/);
+    assert.ok(result.reason.includes(path));
+    assert.equal(fake.ran.length, 0, "the dependency claim must not start after an incomplete scan");
+    assert.equal(existsSync(marker), false, "the check command must not run");
+    const slot = manager.store.slots().find((entry) => entry.path === path);
+    assert.equal(slot?.state, "quarantined");
+    assert.equal(slot?.quarantineCategory, "observation");
+    assert.match(slot?.quarantineReason ?? "", /inspection could not complete/);
+    assert.equal(slot?.activeLeaseId, null, "the ungranted reservation must be cancelled");
+    assert.deepEqual(leaseRows.listLive(), []);
+    assert.deepEqual(readFileSync(artifact), bytes);
+    assert.deepEqual(readFileSync(join(path, "lock.txt")), trackedBytes);
+  } finally {
+    // Undo only the test's injected metadata fault, never a production cleanup step.
+    writeFileSync(join(path, ".git"), gitPointer);
+  }
+});
+
+test("reused check slots reject ignored Go source before claims or commands and preserve it", async () => {
+  const { clone, origin } = repository("mission-check-contamination-");
+  writeFileSync(join(origin, ".gitignore"), "deps/\n.local/\n.pipeline/\n");
+  writeFileSync(join(origin, "main.go"), "package main\nfunc main() {}\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "Go discovery fixture");
+  gitIn(clone, "fetch", "-q", "origin");
+  gitIn(clone, "reset", "-q", "--hard", "origin/main");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const fake = steps(() => ok);
+  const manager = worktrees(LOCK_CLAIM, fake.runClaimStep);
+  const first = await manager.acquire({ repositoryPath: clone, baseSha: sha,
+    owner: { kind: "task", key: "prior-task" } });
+  assert.equal(first.outcome, "acquired");
+  if (first.outcome !== "acquired") return;
+  const path = first.lease.path;
+  const residue = [".local/diagnostic.go", ".pipeline/review-repair-1/before/old.go", ".local/line\nbreak.go"];
+  const bytes = "package broken\nthis is not valid Go\n";
+  for (const relative of residue) {
+    mkdirSync(join(path, relative, ".."), { recursive: true });
+    writeFileSync(join(path, relative), bytes);
+  }
+  mkdirSync(join(path, "deps"), { recursive: true });
+  writeFileSync(join(path, "deps/cache"), "warm dependency bytes");
+  assert.equal((await manager.release(first.lease)).outcome, "released");
+  assert.equal(gitIn(path, "status", "--porcelain"), "", "Git reports the contaminated tree clean");
+
+  const leases = checkLeases(manager);
+  const runtime = new CheckRuntime(leases, { leaseStore: leaseRows, timeoutMs: 30_000 });
+  const command = [process.execPath, "-e",
+    "const fs = require('node:fs'); const paths = fs.readdirSync('.', {recursive: true}).filter(p => p.endsWith('.go')).sort(); console.log(JSON.stringify(paths)); process.exit(paths.length === 1 && paths[0] === 'main.go' ? 0 : 1)"];
+  const request = { slot: "lint" as const, repoRoot: clone, headSha: sha, workingSubpath: "", command };
+  const contaminated = await runtime.executorFor(attempt())(request);
+  assert.equal(contaminated.kind, "infrastructure", JSON.stringify(contaminated));
+  if (contaminated.kind !== "infrastructure") return;
+  assert.equal(contaminated.started, false);
+  assert.match(contaminated.reason, /pool contamination/i);
+  assert.ok(contaminated.reason.includes(path));
+  assert.ok(contaminated.reason.includes(".pipeline/review-repair-1/before/old.go"));
+  assert.equal(fake.ran.length, 0, "not even a dependency claim runs against the contaminated slot");
+  assert.equal(db.prepare("SELECT state FROM worktree_slots WHERE path = ?").get(path)?.state, "quarantined");
+  for (const relative of residue) assert.equal(readFileSync(join(path, relative), "utf8"), bytes);
+  assert.equal(readFileSync(join(path, "deps/cache"), "utf8"), "warm dependency bytes");
+  assert.equal(leaseRows.listLive().length, 0);
+  assert.equal(manager.store.slots().find((slot) => slot.path === path)?.activeLeaseId, null,
+    "quarantine cancels the ungranted reservation rather than leaking a check lease");
+  await manager.reconcile();
+  assert.equal(manager.store.slots().find((slot) => slot.path === path)?.state, "quarantined",
+    "ordinary reconciliation cannot silently recover known contamination");
+
+  // The quarantined slot cannot be reused. A fresh checkout at the SAME commit passes.
+  const fresh = await runtime.executorFor(attempt())(request);
+  assert.equal(fresh.kind, "exited", JSON.stringify(fresh));
+  if (fresh.kind === "exited") {
+    assert.equal(fresh.exitCode, 0);
+    assert.equal(fresh.output.trim(), '["main.go"]');
+  }
+  for (const relative of residue) assert.equal(readFileSync(join(path, relative), "utf8"), bytes);
 });

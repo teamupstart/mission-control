@@ -3453,3 +3453,45 @@ test("an image_changed capture failure does not sever previous coverage on resub
     assert.equal(readiness.status, "ready");
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
+
+test("registered evidence survives reservation once per item and stays conversation-owned", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-registered-reserved-")));
+  try {
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [
+      imageWrite({ id: "registered-image", clientItemId: "screen", root: checkout,
+        locator: "screen.png", caption: "Rendered proof", bytes: PNG }),
+      logWrite({ id: "registered-log", clientItemId: "check", root: checkout,
+        locator: "check.log", caption: "Execution proof", body: "passed" }),
+    ], 2, "intent:1:1");
+    const before = store.listWorkflowEvidence(noteKey);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "registered-root", now: 3 },
+      { id: "registered-first", triggerSource: "manual", triggerKey: "registered-root", context: {}, evidence: {}, now: 3 },
+    );
+    // A second submission reservation of these rows must not multiply their registered count.
+    const second = store.createRepairSubmission({
+      id: "registered-second", runId, round: 2, triggerSource: "manual",
+      triggerKey: "registered-next", evidenceGroupKey: "registered-root",
+      context: {}, evidence: {}, now: 4,
+    });
+    assert.equal(store.listReservedWorkflowEvidence(second.submission.id).length, 2);
+    const registered = store.listWorkflowEvidence(noteKey, "registered");
+    assert.deepEqual(registered.images.map(item => [item.id, item.episodeKey]),
+      before.images.map(item => [item.id, item.episodeKey]));
+    assert.deepEqual(registered.artifacts.map(item => [item.id, item.episodeKey]),
+      before.artifacts.map(item => [item.id, item.episodeKey]));
+    assert.deepEqual(store.listWorkflowEvidence(noteKey).images, []);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey).artifacts, []);
+    assert.deepEqual(store.listWorkflowEvidence("unrelated-conversation", "registered").images, []);
+    // An orphaned or foreign reservation cannot credit this conversation's completion.
+    openDb().prepare("UPDATE workflow_bindings SET note_key = ? WHERE id = ?")
+      .run("foreign-conversation", binding.id);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey, "registered").images, []);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey, "registered").artifacts, []);
+    assert.equal(store.listReservedWorkflowEvidence(first.submission.id).length, 2,
+      "projection never changes the captured reservation");
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});

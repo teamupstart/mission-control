@@ -123,11 +123,12 @@ test("a PR whose url carries no parsable number still draws, as a bare PR flag",
   assert.match(html, />PR</);
 });
 
-test("a failing check still rides along on the link rather than needing its own click", () => {
+test("a CI warning has its own results button beside the PR link", () => {
   const html = render({ ...withPr, prChecks: "failing" });
   const anchor = html.match(/<a [^>]*class="tile-flag tile-flag-link[^"]*"[^>]*>([^<]*)<\/a>/)?.[1];
   assert.ok(anchor != null, "expected the PR anchor");
-  assert.match(anchor, /⚠/);
+  assert.doesNotMatch(anchor, /⚠/);
+  assert.match(html, /<button[^>]*class="pr-checks-alert"/);
 });
 
 // The flag's tooltip is delivered by the shared `Tooltip` component rather than a native
@@ -135,7 +136,7 @@ test("a failing check still rides along on the link rather than needing its own 
 // only be asserted against the un-rendered element tree, not the rendered markup. See
 // `session-leaf-parity.test.ts` for why a rendered-markup assertion here couldn't catch a
 // regression back to a native `title`.
-test("the failing-check tooltip explains itself, not just the healthy case", () => {
+test("the PR tooltip describes its own destination independently of CI", () => {
   const session = mkSession({ ...withPr, prChecks: "failing" });
   const flagEl = PrTileFlag({ session });
   assert.ok(flagEl, "expected a PR flag for this session");
@@ -147,6 +148,6 @@ test("the failing-check tooltip explains itself, not just the healthy case", () 
   assert.equal(tooltip.props.children.props.href, withPr.prUrl);
   assert.equal(
     tooltip.props.label,
-    "A CI check failed on this pull request - open on GitHub",
+    `Open pull request #${withPr.prNumber} - open on GitHub`,
   );
 });

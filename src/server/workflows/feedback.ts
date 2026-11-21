@@ -367,7 +367,7 @@ export function renderEvidenceReadinessPacket(
   lines.push(
     "",
     "## How a criterion is matched",
-    "- Each criterion below needs a coverage claim with valid proof. Duplicate matches are warnings; one claim may answer several criteria.",
+    "- Each non-deferred criterion below needs a coverage claim with valid proof. Duplicate matches are warnings; one claim may answer several criteria.",
     "- Bind a claim by copying the criterion id into its `criterionId`. Copying the criterion text verbatim into `criterion` also binds it. Either one avoids a guess.",
     "- One evidence item may be linked from as many claims as apply. Proof you already registered does not need capturing again to cover a second criterion.",
     "- Evidence and coverage you already registered are carried into this repair segment. Register only what is genuinely missing.",
@@ -417,7 +417,15 @@ export function renderEvidenceReadinessPacket(
       lines.push("Advisory model warning: the suggested proof class differs from the author's declaration. The author declaration controls structural requirements.");
     }
   }
-  const satisfied = input.readiness.criteria.filter((item) => item.gaps.length === 0);
+  const deferred = input.readiness.criteria.filter((item) => item.deferredToAction === "pull_request");
+  if (deferred.length > 0) {
+    lines.push("", "## Criteria deferred to the Pull Request action",
+      "These outcomes remain owed after review. No publication proof or coverage claim is required before that action.");
+    for (const criterion of deferred) {
+      lines.push(`- ${bounded(criterion.criterionId)}: ${bounded(criterion.criterion)}`);
+    }
+  }
+  const satisfied = input.readiness.criteria.filter((item) => item.gaps.length === 0 && !item.deferredToAction);
   if (satisfied.length > 0) {
     lines.push("", "## Criteria already matched, for reference only");
     for (const criterion of satisfied) {

@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,7 +42,12 @@ const operations = new WorktreeOperationsService(manager, {
   },
 });
 
-after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
+// Every observation inspects every pool and slot in the database, so state one test leaves
+// behind is re-read with git by every test after it - an n-squared cost that grew this file
+// to thousands of git processes. Each test therefore starts from an empty inventory.
+const resetWorktreeState = (): void =>
+  db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';");
+afterEach(resetWorktreeState);
 
 /** Idle, clean, merged slots: exactly what Destroy and bulk Destroy may remove. */
 async function availableSlots(prefix: string, count: number, allocator = manager): Promise<Array<{ slotId: string; path: string }>> {

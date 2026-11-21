@@ -6571,6 +6571,7 @@ export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCove
   );
 
 export const WorkflowCanonicalCriterionSchema = z.object({
+  fulfilledByAction: z.literal("pull_request").nullable().optional(),
   id: z.string().min(1).max(200),
   text: z.string().trim().min(1)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
@@ -6613,6 +6614,7 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    deferredToAction: z.literal("pull_request").optional(),
     // Absent on every readiness row written before the repair packet could name a contested
     // claim, so it defaults rather than failing those rows open.
     contestedClientCriterionIds: z.array(
@@ -6907,6 +6909,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
   criteria: z.array(z.object({
     criterionId: z.string().min(1).max(200),
     material: z.boolean(),
+    deferredToAction: z.literal("pull_request").optional(),
     claimId: z.string().min(1).max(200).nullable(),
     evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
     gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
@@ -7765,7 +7768,7 @@ export const CodeRabbitComparisonSchema = z.object({
 export const CodeRabbitReviewSummarySchema = z.object({
   comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
   counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
-  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryableConnection: z.literal(true).optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
@@ -9444,7 +9447,32 @@ export const StoredPauseStateSchema = z.object({
 export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({
+  enabled: z.boolean(),
+  requestId: z.string().guid().optional(),
+  /**
+   * The session's own pending ask this click accepts, when the click came from its card. Bound
+   * only to which request is still on screen: the grant still needs the private click above,
+   * and a request the session no longer holds refuses the grant rather than applying it to a
+   * conversation that never asked.
+   */
+  controlRequestId: z.string().guid().optional(),
+}).strict();
+/** Longest reason a session may give for wanting Control other sessions. */
+export const SESSION_CONTROL_REQUEST_REASON_MAX = 2_000;
+/** `request_session_control`: the caller is the signed session credential, never a body id. */
+export const RequestSessionControlSchema = z.object({
+  reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX),
+}).strict();
+/** Where one ask stands. Only `granted` means the session holds the grant. */
+export const SESSION_CONTROL_REQUEST_STATUSES = ["pending", "granted", "declined", "expired"] as const;
+export type SessionControlRequestStatus = (typeof SESSION_CONTROL_REQUEST_STATUSES)[number];
+export interface SessionControlRequestResult {
+  id: string;
+  status: SessionControlRequestStatus;
+  /** Why an ask ended without a decision; set only on `expired`. */
+  detail?: string;
+}
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),

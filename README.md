@@ -312,6 +312,10 @@ Read more in [Foreman](docs/foreman.md).
 
 ## Workflows and Personas
 
+Reused workflow check slots with ignored Go source are quarantined before checks run, preserving
+the files and reporting pool contamination as infrastructure trouble. See
+[check isolation](docs/worktrees-and-checks.md#running-a-check-command).
+
 Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
@@ -349,7 +353,8 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 Local CodeRabbit reviews are available as a reusable Library Command and in the optional
 No-Mistakes review stage. Root YAML enables review without a Library override; the default
-allowance is ten executions, with warning skips on exhaustion. See
+allowance is ten executions. Recoverable connection failures retry automatically within that
+allowance; an incomplete review stays blocked when retries or allowance run out. See
 [CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
 
 Read more in [Workflows and Personas](docs/workflows.md) and

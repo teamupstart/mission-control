@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: 1200 });
+  await page.setViewportSize({ width: 1440, height: name === "revision-change-awaiting-preview" ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -417,8 +417,48 @@ test("Revert discards a staged pin and its preview before a later Save", async (
   await expect(dialog.getByRole("button", { name: "Revert" })).toBeDisabled();
   await dialog.getByRole("button", { name: "Change pinned revision" }).click();
   await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("");
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();
+  expect(await read()).toEqual(before);
+});
+
+test("an unpreviewed revision blocks Save and dispatch until previewed or cancelled", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  let writes = 0;
+  dashboard.on("request", request => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path === `/api/tasks/${before.id}/dispatch`
+      || (path === `/api/tasks/${before.id}/update` && !request.postDataJSON().previewOnly)) writes++;
+  });
+  const save = dialog.getByRole("button", { name: "Save", exact: true });
+  const launch = dialog.getByRole("button", { name: "Dispatch now", exact: true });
+  await expect(save).toBeDisabled();
+  await expect(launch).toBeDisabled();
+  await expect(save).toHaveAccessibleDescription("Preview or cancel the revision change before saving or dispatching");
+  await shoot(dashboard, "revision-change-awaiting-preview");
+  await dashboard.keyboard.press("ControlOrMeta+Enter");
+  await expect(dialog).toBeVisible();
+  expect(writes).toBe(0);
+  expect(await read()).toEqual(before);
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(save).toBeEnabled();
+  await expect(launch).toBeEnabled();
+  await dialog.getByLabel("Revision", { exact: true }).fill("999");
+  await expect(save).toBeDisabled();
+  await expect(launch).toBeDisabled();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(save).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  await expect(save).toBeEnabled();
+  await expect(launch).toBeEnabled();
+  await save.click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toBe(0);
   expect(await read()).toEqual(before);
 });
 

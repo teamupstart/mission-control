@@ -1546,6 +1546,8 @@ function DispatchModal({
   const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
   const [editingPin, setEditingPin] = useState<number | null>(null);
   const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
+  const pinPreviewRequired = editingPin !== null && pinChange === null;
+  const pinPreviewHint = "Preview or cancel the revision change before saving or dispatching";
   const dependencyEditsBlocked = pinPreviewPending || pinChange !== null;
   const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
@@ -2699,6 +2701,7 @@ function DispatchModal({
       !draft.repoRoot.trim() ||
       !draft.intent.trim() ||
       busy ||
+      pinPreviewRequired ||
       drop.uploading ||
       repoSetBlocked ||
       kindUnavailable ||
@@ -3882,12 +3885,13 @@ function DispatchModal({
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
         {!tourDemo && !ensembleMode && backlogCompatible && (
-          <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
+          <Tooltip label={pinPreviewRequired ? pinPreviewHint : editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
               className="btn btn-ghost"
               onClick={() => void submit(false)}
               disabled={
                 busy
+                || pinPreviewRequired
                 || drop.uploading
                 || !draft.repoRoot.trim()
                 || !draft.intent.trim()
@@ -3930,7 +3934,7 @@ function DispatchModal({
         ) : (
           <Tooltip
             label={
-              selectedDependenciesUnmet
+              pinPreviewRequired ? pinPreviewHint : selectedDependenciesUnmet
                 ? "Dependencies must complete first; schedule this in the backlog"
                 : selectedWorkflowBlocked
                   ? "Resolve the after-work Workflow requirement before dispatching"
@@ -3944,6 +3948,7 @@ function DispatchModal({
               onClick={() => void submit(true)}
               disabled={
                 busy ||
+                pinPreviewRequired ||
                 drop.uploading ||
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||

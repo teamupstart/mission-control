@@ -366,7 +366,8 @@ operator to close. An import's outcome that arrives after its dialog was closed 
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
 arrives while the dialog is open again. Only the latest save sent from a dialog closes it on success.
 An outcome for a shaper the list no longer shows, such as a removal refused because another
-window removed it first, is shown above the list under **Shapers no longer listed**. An
+window removed it first, is shown above the list under **Shapers no longer listed**, each with
+the id of the shaper it was for. An
 unconfirmed write that a stream update showed stored says so in the past tense, and leaves the
 current state to the list. A stream update counts as a switch's outcome only for the definition
 the switch was sent for, so a peer replacing the shaper and switching the replacement the same way

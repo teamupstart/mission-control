@@ -1425,6 +1425,9 @@ test("a refused removal of a shaper another window removed first is shown above 
   // The row is gone, so the refusal is shown above the list instead of vanishing with it.
   const orphans = panel(page).getByRole("group", { name: "Shapers no longer listed" });
   await expect(orphans.getByRole("alert")).toHaveText("No registered shaper has the id \"gone-notes\".");
+  // Its row is gone, so the outcome names the shaper itself.
+  await expect(orphans.getByRole("group", { name: "Outcome for gone-notes" })).toContainText("gone-notes");
+  await expect(orphans.getByRole("group", { name: "Outcome for gone-notes" }).locator("code")).toHaveText("gone-notes");
   await capture(page, "orphan-outcome");
   // The operator clears it: nothing else changes, and the group goes with its last outcome.
   await orphans.getByRole("button", { name: "Dismiss the outcome for gone-notes" }).click();
@@ -1820,14 +1823,19 @@ test("after an identical reimport an open window's next switch still goes throug
   await putShaping(daemon, { kind: "upsert", shaper });
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   const peer = await context.newPage();
+  await countShapingFrames(peer);
   await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(pill(peer, "Same import")).toHaveAccessibleName("Same import: off");
+  const framesBefore = await shapingFramesSeen(peer);
   // This window imports the same definition again: nothing stored changes but its revision.
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   const dialog = page.getByRole("dialog", { name: "Import a shaper" });
   await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
   await dialog.getByRole("button", { name: "Save switched off" }).click();
   await expect(dialog).toHaveCount(0);
+  // Nothing the peer draws changes, so it is checked to have read the frame with the new revision
+  // before it acts: an HTTP answer here can land before the peer's stream does.
+  await expect.poll(() => shapingFramesSeen(peer)).toBeGreaterThan(framesBefore);
   // Both windows' next action uses the new revision, so neither is refused as out of date.
   const switched = peer.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
   await pill(peer, "Same import").click();
@@ -1839,3 +1847,32 @@ test("after an identical reimport an open window's next switch still goes throug
   await expect(pill(peer, "Same import")).toHaveAccessibleName("Same import: off");
   await expect(row(peer, "Same import").getByRole("alert")).toHaveCount(0);
 });
+
+/**
+ * Counts, in a page not yet navigated, every `shaping_config` frame its event stream delivers, so
+ * a spec can wait for a frame that changes nothing the page draws, such as a new revision alone.
+ */
+async function countShapingFrames(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    const counter = window as unknown as { shapingFrames: number };
+    counter.shapingFrames = 0;
+    class CountingEvents extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = handler && ((event: MessageEvent) => {
+          handler(event);
+          try {
+            if ((JSON.parse(event.data as string) as { type?: string }).type === "shaping_config") counter.shapingFrames += 1;
+          } catch { /* Not JSON: not a shaping frame. */ }
+        });
+      }
+      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
+    }
+    window.EventSource = CountingEvents;
+  });
+}
+
+/** How many `shaping_config` frames the page has handled, once `countShapingFrames` is installed. */
+function shapingFramesSeen(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { shapingFrames: number }).shapingFrames);
+}

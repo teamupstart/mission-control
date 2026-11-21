@@ -256,15 +256,21 @@ export function TaskShapingView({
             so it is shown here instead. */}
         {orphans.length > 0 && (
           <div className="shaping-list-outcome" role="group" aria-label="Shapers no longer listed">
-            {orphans.map((key) => (
-              <div key={key} className="shaping-orphan-outcome">
-                <div className="shaping-orphan-copy">
-                  {errors[key] && <p role="alert">{errors[key]}</p>}
-                  <EarlierOutcomes messages={earlier[key]} />
+            {orphans.map((key) => {
+              const id = key.slice("row:".length);
+              // The row is gone, so the outcome names its shaper itself: a message such as an
+              // unconfirmed write says nothing of which shaper it was for.
+              return (
+                <div key={key} className="shaping-orphan-outcome" role="group" aria-label={`Outcome for ${id}`}>
+                  <div className="shaping-orphan-copy">
+                    <code className="shaping-row-id">{id}</code>
+                    {errors[key] && <p role="alert">{errors[key]}</p>}
+                    <EarlierOutcomes messages={earlier[key]} />
+                  </div>
+                  {onDismiss && <DismissOutcome label={id} onDismiss={() => onDismiss(key)} />}
                 </div>
-                {onDismiss && <DismissOutcome label={key.slice("row:".length)} onDismiss={() => onDismiss(key)} />}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
         {!importing && (errors.import || earlier.import) && (

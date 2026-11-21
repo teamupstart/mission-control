@@ -1,4 +1,5 @@
 import { WORKFLOW_HOLD_DETAILS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { actionWaitSentence } from "../workflows/run-model.ts";
 import { prCheckSummary } from "@shared/pr-check-details.ts";
 import { PrChecksStatus } from "./PrChecksStatus.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
@@ -1130,6 +1131,16 @@ export function EnsembleRailGroup({
   );
 }
 
+/** Same live action explanation as Runs, including when a question moves the card out of Idle. */
+export function WorkflowActionWait({ runs, idPrefix }: { runs: readonly WorkflowRunSummary[]; idPrefix?: string }): React.JSX.Element {
+  return <>{runs.filter(run => run.status === "waiting_for_action" && run.actionWait).map(run => (
+    <span className="workflow-action-wait" key={run.id} id={idPrefix ? `${idPrefix}-${run.id}` : undefined}>
+      <strong>{run.workflowName}</strong>
+      <span>{actionWaitSentence(run.actionWait!)}</span>
+    </span>
+  ))}</>;
+}
+
 /**
  * The rule that splits a tone group's genuinely-free sessions from the ones an open workflow
  * run is holding.
@@ -1168,7 +1179,7 @@ export function FleetSectionHead({
         // board column gets by default.
         <span className="fleet-section-why">
           {holdDetails ? "Open workflow runs own the next turn. See each session for who acts next."
-            : "Waiting on a run that is still open - it sends the next round on its own."}
+            : "A workflow owns the next turn. Open its run for the current step and available actions."}
         </span>
       )}
     </div>

@@ -3,6 +3,9 @@
 // injected stand-ins, so nothing here starts a process or opens a socket.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   canonicalJson,
@@ -122,9 +125,17 @@ test("gather settles before select starts, and selectors receive merged facts an
 
 test("calls in a stage run in parallel", async () => {
   const config = configWith([shaper("a", "select"), shaper("b", "select"), shaper("c", "select")]);
-  const started = Date.now();
-  const result = await run(config, async () => { await sleep(150); return data({}); });
-  assert.ok(Date.now() - started < 400, "six calls of 150 ms did not run one after another");
+  // Overlap, measured directly: elapsed time would also grow under a scheduler pause.
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(config, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(150);
+    inFlight--;
+    return data({});
+  });
+  assert.equal(peak, Math.min(6, SHAPING_LIMITS.concurrentCalls), "six calls were in flight together, up to the bound");
   assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok", "ok", "ok"]);
 });
 
@@ -323,6 +334,20 @@ test("a successful reply that lost an entry to redaction stays ok and says what 
   const row = result.summary!.shapers[0]!;
   assert.deepEqual([row.outcome, row.redacted], ["ok", true]);
   assert.equal(row.reason, "An entry was dropped because its id contained the value of ACME_TOKEN.");
+});
+
+test("what redaction dropped leads the reason, so notes that fill it never hide the diagnostic", async () => {
+  const drop = "An entry was dropped because its id contained the value of ACME_TOKEN.";
+  const long = "n".repeat(SHAPING_LIMITS.replyNoteChars);
+  for (const degraded of [false, true]) {
+    const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data",
+      data: JSON.stringify({ guidance: [{ id: "kept", body: "fine" }], notes: [long], degraded }), redacted: true,
+      redactionNotes: [drop] }), input(1));
+    const row = result.summary!.shapers[0]!;
+    assert.equal(row.outcome, degraded ? "degraded" : "ok");
+    assert.ok(row.reason?.startsWith(`${drop} n`), String(degraded));
+    assert.equal(row.reason?.length, SHAPING_LIMITS.reasonChars);
+  }
 });
 
 test("a transport receives the request as the wire contract parsed it, without undeclared fields", async () => {
@@ -534,13 +559,18 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport", async () => {
+test("the placeholder transports answer unavailable, naming the transport, and the built-in needs a worktree", async (t) => {
   const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
   const http = remote("http");
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
-  const result = await shapeTask(input(1), { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
+  // A worktree path this test controls and never creates, so the host's filesystem cannot answer for it.
+  const base = mkdtempSync(join(tmpdir(), "mission-shaping-absent-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const absent = input(1);
+  absent.context.repositories = absent.context.repositories.map((repo) => ({ ...repo, path: join(base, "billing-api") }));
+  const result = await shapeTask(absent, { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
-    ["files", "unavailable", "The built-in transport is not available in this build yet."],
+    ["files", "unavailable", "The repository's worktree is not available on this machine."],
     ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
     ["http", "unavailable", "The HTTP transport is not available in this build yet."],
   ]);
@@ -756,4 +786,20 @@ test("a dry run calls exactly one shaper, switched off or not", async () => {
   assert.deepEqual(await dryRunShaper("ghost", input(1), { config, discovered: [] }), {
     ok: false, error: "unknown_shaper", reason: 'No shaper has the id "ghost".',
   });
+});
+
+test("a reply the transport produced in time is kept, though the engine reads it after the deadline", async () => {
+  const config = configWith([shaper("s", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } });
+  const result = await run(config, (_request, _entry, ctx) => {
+    // The transport reports its outcome at once, inside the call's 100 ms.
+    ctx.settled?.();
+    // Synchronous work then runs ahead of the engine reading the reply, until well past the deadline.
+    queueMicrotask(() => {
+      const until = performance.now() + 250;
+      while (performance.now() < until) { /* busy */ }
+    });
+    return data({ guidance: [{ id: "on-time", body: "answered on time" }] });
+  }, input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok"], "judged by when the transport produced it");
+  assert.deepEqual(result.entries.map((entry) => entry.id), ["on-time"]);
 });

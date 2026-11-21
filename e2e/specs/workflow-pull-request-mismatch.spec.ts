@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -79,6 +81,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
+  await expectContentClearsBorder(dialog);
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill("hold a session for the PR spec");
@@ -128,11 +131,15 @@ const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string |
   (await api<{ summary: { actionWait?: string | null } }>(daemon, `/api/workflow-runs/${runId}`))
     .summary.actionWait ?? null;
 
-test("a durably adopted pull request completes before provider metadata arrives", async ({
+for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "merged"
+  ? "an earlier merged PR completes the action and names the publication in Runs"
+  : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
+  : "a durably adopted pull request completes before provider metadata arrives", async ({
   dashboard,
   daemon,
 }) => {
   test.setTimeout(360_000);
+  const alreadyMerged = scenario === "merged";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   const sessionId = await dispatch(dashboard, daemon);
@@ -170,6 +177,20 @@ test("a durably adopted pull request completes before provider metadata arrives"
     sessionId,
     deliveryMode: "live",
   });
+  if (alreadyMerged) {
+    await announcePullRequest(daemon, sessionId, "https://github.com/owner/repo/pull/77");
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions"))
+      .find(item => item.id === sessionId)!;
+    const head = execFileSync("git", ["-C", session.cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    // Seed the Inspector's historical provider observation in the disposable daemon only.
+    // Everything from the later delivery through continuation and rendering is production code.
+    withDaemonDb(daemon, db => {
+      const seeded = db.prepare(`UPDATE inspector_prs SET state = 'closed',
+        observed_state = 'MERGED', observed_head_sha = ?, head_ref_name = 'e2e/pr-mismatch',
+        observed_at = 1, merged_at = 1 WHERE url = ?`).run(head, "https://github.com/owner/repo/pull/77");
+      expect(Number(seeded.changes), "the hook must adopt PR #77 before seeding its merge").toBe(1);
+    });
+  }
   const submitted = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding.id}/submit`,
@@ -177,6 +198,19 @@ test("a durably adopted pull request completes before provider metadata arrives"
   );
   const runId = submitted.run.id;
 
+  if (alreadyMerged) {
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    await expect.poll(async () =>
+      (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+    { timeout: 180_000 }).toBe("completed");
+    const card = dashboard.locator("article.wf-run-action");
+    await expect(card).toContainText("Already published through merged pull request");
+    await expect(card).toContainText("no new pull request is needed");
+    await expect(card).not.toContainText("Awaiting PR");
+    await expect(card.getByRole("link", { name: "#77" })).toHaveAttribute("href", "https://github.com/owner/repo/pull/77");
+    await shoot(dashboard, "13-already-merged");
+    return;
+  }
   // The turn runs for real and settles, and with nothing adopted the honest answer is that no
   // pull request has appeared. This is the CONTROL for everything below: without it, a spec
   // that only ever saw the mismatch labels could not tell them from the state they replaced.
@@ -189,6 +223,47 @@ test("a durably adopted pull request completes before provider metadata arrives"
   const card = dashboard.locator("article.wf-run-action");
   await expect(card).toBeVisible();
   await expect(card).toContainText("Awaiting PR");
+
+  let expectedOwner = "Next: the session must open or identify the pull request.";
+  let expectedReason = "Waiting for a pull request";
+  if (scenario === "operator") {
+    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+    const asked = await fetch(`${daemon.baseURL}/mcp/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({ env: {}, sessionId, kind: "input", title: "Which branch should I publish?",
+        body: "Confirm the publication branch before continuing.",
+        decisions: [{ id: "branch", question: "Which branch should I publish?",
+          options: [{ id: "current", label: "Current branch" }], allowOther: true }] }),
+    });
+    expect(asked.status, await asked.clone().text()).toBe(200);
+    await expect.poll(() => actionWait(daemon, runId), { timeout: 60_000 }).toBe("needs_operator");
+    expectedOwner = "Next: you must answer the session's question.";
+    expectedReason = "waiting on an answer from you";
+  }
+  await expect(card).toContainText(expectedOwner);
+  await expect(card).toContainText(expectedReason);
+  await shoot(dashboard, `14-runs-wait-${scenario}`);
+
+  // Both Fleet layouts show the same reason/actor without opening workflow details.
+  for (const layout of ["board", "console"] as const) {
+    await api(daemon, "/api/ui/config", { layout }, "PUT");
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    await dashboard.reload();
+    const wait = dashboard.locator(layout === "board" ? ".tile .workflow-action-wait" : ".rail-row .workflow-action-wait");
+    await expect(wait).toContainText(expectedOwner);
+    await expect(wait).toContainText(expectedReason);
+    await expect(wait).toBeVisible();
+    if (layout === "console") {
+      const row = dashboard.locator(".rail-row").filter({ has: dashboard.locator(".workflow-action-wait") });
+      await expect(row).toHaveAccessibleName(await row.locator(".rail-name").innerText());
+      await expect(row).toHaveAccessibleDescription(new RegExp(expectedOwner));
+      await expect(row).toHaveAccessibleDescription(new RegExp(expectedReason));
+    }
+    await shoot(dashboard, `15-${layout}-wait-${scenario}`);
+  }
+  if (scenario === "operator") return;
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
 
   // The turn opened a pull request through the daemon's own adoption path. Do not fabricate a
   // provider poll: the newly adopted row deliberately still has null comparison metadata.

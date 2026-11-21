@@ -561,7 +561,14 @@ is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 gra
 v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
 Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
 repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
-readiness before that graph can create its first attempt. Exhausting a round's evidence
+readiness before that graph can create its first attempt. Canonical publication-only criteria may
+carry `fulfilledByAction: pull_request`; the evaluator defers their proof only while a forward
+successful route in the pinned graph still reaches a `pull_request` completion contract.
+Readiness and Persona review inputs preserve `deferredToAction` without marking the criterion
+satisfied or changing its materiality. The annotation survives run-criteria reuse. Existing runs classify missing timing metadata once
+without recompacting their stable rubric; the first successful result, including explicit nulls,
+is persisted on the run. A recovery segment can classify a paused run using its existing evidence.
+Past submission contexts and override records are never rewritten. Exhausting a round's evidence
 refinements advances the final packet with its gaps intact so the judges can evaluate it.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.

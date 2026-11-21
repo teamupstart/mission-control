@@ -69,13 +69,13 @@ test("session action holds name the actor, reason and progress for human and aut
     inProgress: boolean;
   }> = [
     { wait: "needs_operator", actor: "Operator", inProgress: false,
-      reason: "The session is waiting on an answer from you before it can continue." },
+      reason: "The session is waiting on an answer from you before it can continue. Next: you must answer the session's question." },
     { wait: "pull_request_wrong_branch", actor: "Operator", inProgress: false,
-      reason: "This turn opened a pull request from a different branch, so it does not carry the reviewed commit. Open one from this branch, or reset the run." },
+      reason: "This turn opened a pull request from a different branch, so it does not carry the reviewed commit. Open one from this branch, or reset the run. Next: the session must publish from the reviewed branch, or you can recover the run." },
     { wait: "working", actor: "Session", inProgress: true,
-      reason: "The session is working on the instruction." },
+      reason: "The session is working on the instruction. Next: the session must finish the instruction." },
     { wait: "awaiting_pickup", actor: "Session", inProgress: true,
-      reason: "Sent. Waiting for the session to pick the instruction up." },
+      reason: "Sent. Waiting for the session to pick the instruction up. Next: the session must pick up the delivered instruction." },
     { wait: null, actor: "Session", inProgress: true, reason: "Session action in progress." },
   ];
   for (const { wait, ...expected } of cases) {
@@ -124,7 +124,7 @@ test("only unsent Preview session actions require operator delivery", () => {
       actor: deliveryMode === "preview" ? "Operator" : "Session",
       reason: deliveryMode === "preview"
         ? "The instruction is ready in preview; send it to the session from the run."
-        : "The instruction is ready and has not been sent to the session yet.",
+        : "The instruction is ready and has not been sent to the session yet. Next: Mission Control sends the authorized instruction; in Preview, you send it from the run's delivery controls.",
       inProgress: deliveryMode === "live", runId: run.id,
     }, deliveryMode);
     for (const actionWait of ["awaiting_pickup", "working"] as const) {

@@ -39,6 +39,12 @@ what interrupts you. Escape closes it, like every overlay. Per-session entry poi
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
 
+A question filed with [Ask without stopping](sessions.md#asking-without-stopping) is in the inbox
+and the **to answer** count like any other while it is pending. Its session turns amber, reading
+**waiting on your answer**, only once the agent has stopped with it still open; a resident keeps
+its own colour and cadence. A merged pull request closes it unanswered with the reason `merged`,
+which takes it out of the inbox.
+
 ### Snoozed questions
 
 After the sections above, a **Snoozed** section lists the `request_input` questions you chose
@@ -295,7 +301,11 @@ permission. Sound and desktop notifications are independent switches.
 An agent's `request_input` uses the review channel. A growing pending-question/review
 count alerts even when an older question is still unanswered; a retry of the same pending
 question does not. The notification names the session or task, says **needs your answer** for an
-input question, and previews the newest pending question (up to 240 characters). Other
+input question, and previews the newest pending question (up to 240 characters). A question filed
+with [Ask without stopping](sessions.md#asking-without-stopping) (the `async-input` preview flag)
+alerts the same way when the session's count of open questions grows; its title says **has a
+question, still working** while the agent works past it, and **needs your answer** once it has
+stopped. No second alert fires when a working session later stops on it. Other
 reviews show their title rather than their raw diff or plan. Reconnect summaries retain
 that question or review detail. Opening the dashboard adopts existing questions silently. Reconnecting
 an already-open dashboard coalesces missed attention into one catch-up notification.

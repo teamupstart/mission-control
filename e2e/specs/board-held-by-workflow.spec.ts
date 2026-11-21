@@ -192,7 +192,7 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await expect(idle.locator(".fleet-section-free")).toBeVisible();
   await expect(idle.locator(".fleet-section-held")).toContainText("held by a workflow");
   await expect(idle.locator(".fleet-section-held"))
-    .toContainText("it sends the next round on its own");
+    .toContainText("Open its run for the current step and available actions");
 
   // The count stops being a single number that means neither thing. This is the assertion the
   // whole change exists for: 2 sessions, and only 1 of them can take work.
@@ -393,6 +393,7 @@ test("workflow hold details identify the next actor without creating a session b
   const holds = dashboard.getByLabel("Workflow holds");
   await expect(holds).toContainText("Review feedback is ready in preview");
   await expect(holds).toContainText("Action needed · Operator");
+  await expect(dashboard.locator(".fleet-section-held")).toContainText("See each session for who acts next.");
   await expect(holds.getByRole("link")).toHaveAttribute("href", `#/runs/${runId}`);
   await holds.getByRole("link").hover();
   await expect(dashboard.locator(".tooltip").filter({ hasText: "Open this workflow run" })).toBeVisible();

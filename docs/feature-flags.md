@@ -4,8 +4,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
-[Session control requests](sessions.md#when-a-session-asks-for-control) and
-[Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
+[Session control requests](sessions.md#when-a-session-asks-for-control),
+[Fold the drawer's Profiles](residents.md#the-residents-drawer) and
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls

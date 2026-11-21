@@ -724,10 +724,18 @@ function headlessAnswer(prompt) {
       acceptanceCriteria: [criterion],
       canonicalCriteria: [{
         text: criterion,
+        ...(criterion === "Pull request opened documenting the verified implementation" ? { fulfilledByAction: "pull_request" } : {}),
         material: true,
         suggestedProofClass: "visual",
       }],
     });
+  }
+  if (prompt.includes("Classify publication timing for existing frozen workflow criteria.")) {
+    const input = untrustedJsonInput(prompt, "workflow-criterion-fulfillment");
+    return JSON.stringify({ classifications: input.criteria.map((criterion) => ({
+      criterionId: criterion.criterionId,
+      fulfilledByAction: criterion.text === "Legacy pull request opened documenting the verified implementation" ? "pull_request" : null,
+    })) });
   }
   if (prompt.includes("Reconcile author coverage claims to stable workflow criteria without rewriting either.")) {
     const input = untrustedJsonInput(prompt, "workflow-criterion-reconciliation");

@@ -1,3 +1,10 @@
+import { run } from "./util/exec.ts";
+import { getInspectorPr } from "./db.ts";
+import { parsePrUrl } from "./inspector/github.ts";
+import { resolveCommitTree } from "./workflows/commit-id.ts";
+import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
+import { WorkflowStore } from "./workflows/store.ts";
+import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
@@ -698,6 +705,17 @@ interface CompletionInput {
    * agent nothing will ever revisit. See `completeTaskWithSessionClosure`.
    */
   closeSessionId?: string | null;
+  /**
+   * Durable state that must commit with this completion or not at all. `finishCompletion` runs
+   * `persist` inside the same transaction as the task's status write, after every check, so a
+   * throw or a failed write rolls back both and leaves the task untouched; `publish` runs only
+   * after the commit. Merge-driven completion closes the session's outstanding request_input
+   * questions this way: a scout whose archive check refuses never reaches it, and a failed
+   * status write cannot leave questions closed behind a task that is still running.
+   */
+  joinCompletion?: { persist: () => void; publish: () => void };
+  /** Auto-settlement must revalidate publication after archive I/O and state at the write. */
+  finishGuard?: { verify: () => Promise<boolean>; current: () => boolean };
 }
 
 /**
@@ -960,15 +978,57 @@ function closureRefusal(result: ActionResult): string {
   return result.error ?? "the agent could not be stopped";
 }
 
+/** A rolled-over episode can settle only if its current checkout still matches the merge. */
+export async function mergedPublicationCoversCheckout(session: Session, url: string, exec = run): Promise<boolean> {
+  const parsed = parsePrUrl(url);
+  const pr = parsed ? getInspectorPr(parsed.key) : null;
+  if (!session.cwd || !pr?.repoRoot || pr.observedState !== "MERGED" || !pr.observedHeadSha
+    || !pr.headRefName || pr.headRefName !== session.gitBranch) return false;
+  const git = (root: string, args: string[]) => exec("git", ["-C", root, ...args]);
+  const [localRepo, adoptedRepo, status, headTree, mergedTree, branch] = await Promise.all([
+    git(session.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(pr.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]),
+    git(session.cwd, ["rev-parse", "HEAD^{tree}"]),
+    resolveCommitTree(session.cwd, pr.observedHeadSha),
+    git(session.cwd, ["branch", "--show-current"]),
+  ]);
+  const matches = localRepo.code === 0 && adoptedRepo.code === 0
+    && realpathSync(localRepo.stdout.trim()) === realpathSync(adoptedRepo.stdout.trim())
+    && branch.code === 0 && branch.stdout.trim() === pr.headRefName
+    && status.code === 0 && !status.stdout.trim()
+    && headTree.code === 0 && headTree.stdout.trim() === mergedTree;
+  if (!matches) return false;
+  // Tree resolution may take time. Recheck after it, including files hidden by user config.
+  const freshStatus = await git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]);
+  const freshTree = await git(session.cwd, ["rev-parse", "HEAD^{tree}"]);
+  return freshStatus.code === 0 && !freshStatus.stdout.trim()
+    && freshTree.code === 0 && freshTree.stdout.trim() === mergedTree;
+}
+
+/** See `TaskManager.useMergeQuestions`. */
+export interface MergeQuestions {
+  /** The closure split for the completion's transaction; see `ReviewManager.mergeClosure`. */
+  closure(sessionId: string): { persist: () => void; publish: () => void };
+  blockedInCall(sessionId: string): boolean;
+}
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
+  mergedPublicationCoversCheckout?: typeof mergedPublicationCoversCheckout;
+  workflowDeliveredCurrentPrompt: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
   kill: typeof kill;
 }
 
-const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
-  resetWouldDestroyWork,
-  kill,
-};
+function defaultCloseMergedSessionDeps(): CloseMergedSessionDeps {
+  let workflows: WorkflowStore | undefined;
+  return {
+    mergedPublicationCoversCheckout,
+    workflowDeliveredCurrentPrompt: (...args) => (workflows ??= new WorkflowStore()).deliveredActionOwnsPrompt(...args),
+    resetWouldDestroyWork,
+    kill,
+  };
+}
 
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
@@ -1101,6 +1161,9 @@ export class TaskManager {
   private readonly subscriptions: (() => void)[] = [];
   private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
+  private readonly publicationSettlements = new Map<string, Promise<void>>();
+  private readonly publicationSettlementRechecks = new Set<string>();
+
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
@@ -1122,9 +1185,14 @@ export class TaskManager {
    */
   private stackReadiness: StackReadiness;
   private readonly stackDispatching = new Set<string>();
+  /** How a merge reaches a session's request_input questions; see `useMergeQuestions`. */
+  private mergeQuestions?: MergeQuestions;
+  /** Tasks inside `settleIfEpisodeFinished`'s close-then-complete, against re-entry. */
+  private readonly mergeSettling = new Set<string>();
+  private readonly closeMergedSessionDeps: CloseMergedSessionDeps;
   constructor(
     private registry: Registry,
-    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    closeMergedSessionDeps: Partial<CloseMergedSessionDeps> = {},
     /**
      * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
      *
@@ -1156,6 +1224,7 @@ export class TaskManager {
      */
     private pause?: TaskPause,
   ) {
+    this.closeMergedSessionDeps = { ...defaultCloseMergedSessionDeps(), ...closeMergedSessionDeps };
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
     this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
@@ -1254,6 +1323,11 @@ export class TaskManager {
       if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
         this.stackReadiness.schedule();
       }
+      if (e.type === "workflow_run_upsert" && e.run.sessionId
+        && !activeWorkflowOwnsSession([e.run])) {
+        const session = this.registry.getSession(e.run.sessionId);
+        if (session) this.settleIfEpisodeFinished(session);
+      }
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1301,6 +1375,7 @@ export class TaskManager {
     // it never had resources of ours - was skipped by it on every restart, forever.
     this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
+      for (const session of this.registry.snapshot().sessions) this.settleIfEpisodeFinished(session);
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession(sessionlessAtStartup);
       // And the closures a previous daemon left owed. Nothing before this point may act on
@@ -1704,8 +1779,18 @@ export class TaskManager {
    * `reopenIfWorkResumed`. Every other route to `done` is a human's and stays put.
    */
   private settleIfEpisodeFinished(s: Session): void {
-    if (s.state !== "idle") return;
+    // Deliberately no review hold (`async-input`): a merge is the operator's own conclusion, so
+    // an outstanding request_input question does not hold this completion. The questions are
+    // closed with the reason `merged` as part of it, below, rather than left behind it.
+    //
+    // The one non-idle state handled here: an agent blocked inside a request_input call. It can
+    // never go idle while it waits, so the merge completes the task and closes its questions in
+    // one transaction, which returns the call.
+    const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
+    if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
+    if (!blockedInCall && activeWorkflowOwnsSession(this.registry.workflowRunSummaries()
+      .filter(run => run.sessionId === s.id))) return;
     // The one task this agent is executing, per the serial invariant - never "the task
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
@@ -1721,7 +1806,10 @@ export class TaskManager {
     // answer for) has no such turn left, so any merge it produced IS the outcome. So this
     // path keeps the episode-currency gate and reads only THIS episode's evidence.
     const current = this.registry.workEpisodeForSession(s.id);
-    if (current && current.episodeId !== binding.episodeId) return;
+    if ((current && current.episodeId !== binding.episodeId) || !this.currentEpisodeLanded(t, binding)) {
+      this.settlePublishedWorkAfterWorkflow(t, s);
+      return;
+    }
     // This episode's own work has to have landed, and for a multi-repo task that is any repo
     // it shipped rather than the PRIMARY specifically. Gating on the primary's own binding -
     // the only thing this line used to read - meant a task that never touched the primary
@@ -1731,26 +1819,122 @@ export class TaskManager {
     if (!this.currentEpisodeLanded(t, binding)) return;
     const outcome = this.liveEpisodeOutcome(t, binding);
     if (!outcome) return;
-    // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
-    // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
-    // provenance that makes it reversible - still happens synchronously inside this call, so
-    // the reopen path sees exactly what it always did. For a scout it lands once the archive
-    // is verified, which is the only ordering that can be true: a scout is not done until its
-    // report is durable.
-    this.completeInBackground(t.id, {
-      outcome: outcome.outcome,
-      outcomeUrl: outcome.url,
-      satisfyDependents: false,
-      requireStopped: false,
-      confirmIncompleteScout: false,
-      inferredFrom: s.id,
-    }, undefined, () => {
-      this.closeMergedSessionAfterCompletion({
-        taskId: t.id,
-        sessionId: s.id,
-        episodeId: binding.episodeId,
+    // Closing a question publishes a `session_upsert`, which re-enters this listener for the
+    // same session before the close has returned. One settle per task at a time.
+    if (this.mergeSettling.has(t.id)) return;
+    const guarded = (fn: () => void) => {
+      const held = this.mergeSettling.has(t.id);
+      this.mergeSettling.add(t.id);
+      try { fn(); }
+      finally { if (!held) this.mergeSettling.delete(t.id); }
+    };
+    const closure = this.mergeQuestions?.closure(s.id);
+    this.mergeSettling.add(t.id);
+    try {
+      // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
+      // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
+      // provenance that makes it reversible - still happens synchronously inside this call, so
+      // the reopen path sees exactly what it always did. For a scout it lands once the archive
+      // is verified, which is the only ordering that can be true: a scout is not done until its
+      // report is durable.
+      //
+      // Closing the questions is part of that completion (`joinCompletion`), never ahead of it:
+      // their settles commit in the same transaction as the task's status write. A failed close
+      // or a failed write rolls back both, leaving the questions open and the task running for
+      // the next observation. A completion that refuses first (a scout whose archive is not
+      // ready) never reaches them, so the operator can still answer.
+      //
+      // An agent blocked inside a request_input call completes here too, in the same transaction:
+      // closing its question is what releases the call, so the two cannot be separated without
+      // leaving a closed question behind a running task. That completion is not recorded as
+      // inferred (`inferredFrom: null`): the agent is mid-turn by construction, and the turn it
+      // finishes reading the closure would otherwise reopen the task the merge concluded.
+      this.completeInBackground(t.id, {
+        outcome: outcome.outcome,
+        outcomeUrl: outcome.url,
+        satisfyDependents: false,
+        requireStopped: false,
+        confirmIncompleteScout: false,
+        inferredFrom: blockedInCall ? null : s.id,
+        ...(closure ? { joinCompletion: { persist: closure.persist, publish: () => guarded(closure.publish) } } : {}),
+      }, undefined, () => {
+        this.closeMergedSessionAfterCompletion({
+          taskId: t.id,
+          sessionId: s.id,
+          episodeId: binding.episodeId,
+        });
       });
-    });
+    } finally {
+      this.mergeSettling.delete(t.id);
+    }
+  }
+
+  /**
+   * Install how a merge reaches a session's request_input questions (`async-input`): `closure`
+   * settles every outstanding one with the reason `merged` inside the completion's own
+   * transaction; `blockedInCall` says the agent is waiting inside a call the merge must close,
+   * since it can never go idle on its own. A setter rather than a constructor argument,
+   * like `useStackGitHub`, because the review manager is the daemon's and every focused test
+   * that never asks a question constructs this class without one.
+   */
+  useMergeQuestions(questions: MergeQuestions): void {
+    this.mergeQuestions = questions;
+  }
+
+  /** Workflow delivery can roll the episode after merge; content proof closes that case. */
+  private settlePublishedWorkAfterWorkflow(task: Task, session: Session): void {
+    if (this.stopping || task.extraRepos.length > 0) return;
+    if (this.publicationSettlements.has(task.id)) {
+      this.publicationSettlementRechecks.add(task.id);
+      return;
+    }
+    const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+    const latestRun = this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0];
+    if (!episode || episode.promptedAt === null || !latestRun || activeWorkflowOwnsSession([latestRun])) return;
+    const promptRevision = this.registry.getGoal(session.id)?.promptRevision ?? null;
+    if (!this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt(
+      latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
+    const outcome = this.mergeOutcomeFor(task);
+    if (!outcome) return;
+    const current = () => {
+      const fresh = this.registry.getSession(session.id);
+      const latestTask = this.registry.getTask(task.id);
+      const latestEpisode = this.registry.recordedWorkEpisodeForSession(session.id);
+      return !this.stopping && !!fresh && fresh.state === "idle" && fresh.lastActivity === session.lastActivity
+        && fresh.workCycle?.generation === session.workCycle?.generation && !fresh.queue?.openCount
+        && latestTask?.status === "running" && latestTask.sessionId === session.id
+        && latestTask.dispatchedAt === task.dispatchedAt && this.mergeOutcomeFor(latestTask)?.url === outcome.url
+        && latestEpisode?.episodeId === episode.episodeId && latestEpisode.promptedAt === episode.promptedAt
+        && (this.registry.getGoal(session.id)?.promptRevision ?? null) === promptRevision
+        && !activeWorkflowOwnsSession(this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id));
+    };
+    const verify = async () => {
+      try {
+        return await (this.closeMergedSessionDeps.mergedPublicationCoversCheckout ?? mergedPublicationCoversCheckout)(session, outcome.url);
+      } catch {
+        // Unknown publication proof leaves the task running.
+        return false;
+      }
+    };
+    const pending = (async () => {
+      if (!await verify() || !current()) return;
+      await this.runCompletion(task.id, {
+        outcome: outcome.outcome, outcomeUrl: outcome.url, satisfyDependents: false,
+        requireStopped: false, confirmIncompleteScout: false, inferredFrom: session.id,
+        finishGuard: { verify, current },
+      });
+    })().catch((error: unknown) => {
+      console.error("[merge] settling published task after workflow failed:", task.id, error);
+    })
+      .finally(() => {
+        this.publicationSettlements.delete(task.id);
+        if (this.publicationSettlementRechecks.delete(task.id) && !this.stopping) {
+          const fresh = this.registry.getSession(session.id);
+          if (fresh) this.settleIfEpisodeFinished(fresh);
+        }
+      });
+    this.publicationSettlements.set(task.id, pending);
   }
 
   /**
@@ -1931,7 +2115,8 @@ export class TaskManager {
     this.stopMissionSessionClosures();
     this.stackReadiness.stop();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    this.stopping = this.settleWorktreeReturns();
+    this.stopping = Promise.all(this.publicationSettlements.values())
+      .then(() => this.settleWorktreeReturns());
     return this.stopping;
   }
 
@@ -4947,7 +5132,9 @@ export class TaskManager {
     // dashboard files such a session under "needs you" rather than "idle" and won't
     // offer it as a target; refuse it here too, so the API can't route around a rule
     // the operator can see being applied on screen.
-    if (s.pendingReviews > 0) {
+    // A message-mode question (`async-input`) counts too: its agent is waiting on the answer
+    // just as surely, and reassigning underneath it would lose the work it reconciles.
+    if (questionsAwaitingOperator(s) > 0) {
       return {
         ok: false,
         error: "that agent has a review waiting on you - clear it first",
@@ -5162,7 +5349,7 @@ export class TaskManager {
       !fresh ||
       !fresh.instrumented ||
       fresh.state !== "idle" ||
-      fresh.pendingReviews > 0
+      questionsAwaitingOperator(fresh) > 0
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }
@@ -5719,6 +5906,8 @@ export class TaskManager {
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
+        if (input.finishGuard) return input.finishGuard.verify()
+          .then(verified => verified ? this.finishCompletion(id, input) : null);
         return Promise.resolve(this.finishCompletion(id, input));
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
@@ -5770,6 +5959,7 @@ export class TaskManager {
         throw new ScoutArchiveNotReadyError(ready.problems);
       }
       this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      if (input.finishGuard && !await input.finishGuard.verify()) return null;
       return this.finishCompletion(id, input);
     };
     return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
@@ -5873,9 +6063,11 @@ export class TaskManager {
 
   /** The synchronous status write. Unchanged from before completion became awaitable. */
   private finishCompletion(id: string, input: CompletionInput): Task | null {
+    if (input.finishGuard && !input.finishGuard.current()) return null;
     this.assertCompletable(id, input.requireStopped);
     const t = this.registry.getTask(id);
     if (!t) return null;
+    const join = input.joinCompletion;
     this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {
@@ -5896,7 +6088,7 @@ export class TaskManager {
         sessionId: closeSessionId,
         requestedAt: now,
         deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
-      } : null);
+      } : null, join?.persist);
       this.registry.publishPersistedTask(updated, displaced);
       // Armed HERE, beside the write, and that placement is the invariant: a closure row is
       // never committed without something scheduled to settle it.
@@ -5911,6 +6103,9 @@ export class TaskManager {
       // The ordinary path pays one extra pass, which costs a stop attempt against a session
       // that is usually already exiting and refused by the guard at the top of the settle.
       this.scheduleMissionSessionClosureSweep(0);
+    } else if (join) {
+      const displaced = inTransaction(() => { join.persist(); return dbUpsertTask(updated); });
+      this.registry.publishPersistedTask(updated, displaced);
     } else {
       this.registry.upsertTask(updated);
     }
@@ -5921,6 +6116,9 @@ export class TaskManager {
     if (input.inferredFrom && !taskHasWorktrees(t) && this.registry.getTask(id) === updated) {
       this.autoCompleted.set(id, input.inferredFrom);
     }
+    // After the commit and the task's own broadcast, so a listener re-entering on the closed
+    // questions' `session_upsert` already reads the task as done.
+    join?.publish();
     // The task's upstream item, if it came from one, is owed a note. A LOCAL INSERT and
     // nothing else - the enqueuer spawns nothing and the worker does the delivering - so
     // this stays as synchronous as the rest of this function.

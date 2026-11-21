@@ -8,7 +8,8 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview, isConversationResolvedReview, isHomeDispatchResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
+import { ASYNC_INPUT_FLAG, asyncInputAnswer, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -23,12 +24,16 @@ import {
   transferPendingReviews,
   loadReviewContinuationCandidates,
   loadSnoozeInstructionCandidates,
+  markReviewWaitAttached,
+  reviewWaitAttached,
   markReviewWaitDetached,
+  cancelUnclaimedSnoozeInstruction,
   snoozeReviewRow,
   updateReviewStatus,
   wakeReviewRow,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
 import { isRewordedRetry } from "./review-retry.ts";
 
 /**
@@ -43,7 +48,7 @@ export const SNOOZE_SWEEP_MS = 15_000;
  * How close together two `request_input` asks from one session must arrive to be parallel calls
  * rather than a retry (`ReviewManager.retriesReplacedBy`).
  *
- * The call is blocking, so an agent still waiting on one question can only ask another in the
+ * A call-mode ask blocks, so an agent still waiting on one question can only ask another in the
  * same batch of parallel tool calls, which reach the daemon within milliseconds of each other.
  * A retry comes after the MCP client has given up, which takes minutes: five, in every
  * duplicate the live database recorded. Thirty seconds sits far from both.
@@ -62,6 +67,10 @@ export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
+export class OpenQuestionLimitError extends Error {}
+
+/** A merge could not close a session's questions yet (a runtime transfer is moving them). */
+export class MergeClosureDeferred extends Error {}
 
 /**
  * "Remind me later" asked for by anyone but the operator. Parking a question tells its agent to
@@ -185,7 +194,10 @@ export class ReviewManager {
       ? snoozedContinuationLead(review)
       : `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
         "Treat this as the result of your earlier review tool call:";
-    return `${lead}\n\n${result.text}` + addenda.map((text) => `\n\n${text}`).join("");
+    // Only settled, deliverable answers use the answer formatter. Snooze instructions have
+    // their own delivery path and must never acquire an answer heading.
+    const answer = review.waitMode === "message" && deliversContinuation(review);
+    return (answer ? asyncInputAnswer(review) : `${lead}\n\n${result.text}`) + addenda.map((text) => `\n\n${text}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
@@ -248,7 +260,7 @@ export class ReviewManager {
    * Open a question and publish it - or hand back the identical one already open.
    *
    * The re-attach is the whole point, and it is not a nicety. Every tool that lands here
-   * (`request_input`, `request_plan_decisions`, `request_review`) BLOCKS until a human
+   * (`request_input` in call mode, `request_plan_decisions`, `request_review`) BLOCKS until a human
    * decides, for as long as that takes. The MCP client in front of it does not wait that
    * long: it abandons the tool call on its own timeout and hands the model an error, and
    * the model's natural recovery is to ask the identical question again. Nothing here
@@ -283,7 +295,23 @@ export class ReviewManager {
     title: string,
     body: string,
     incomingDecisions: PlanDecision[] | null = null,
-    options: { snoozable?: boolean; now?: number } = {},
+    options: {
+      snoozable?: boolean;
+      now?: number;
+      /**
+       * `"message"`: the agent's `request_input` call returns at once and the answer reaches it
+       * as a message (`async-input`). Decided by the route (`decideWaitMode`), applied only to
+       * `request_input`'s own asks; absent is today's call-mode wait.
+       */
+      waitMode?: "message";
+      /** The agent's one line on what it does while a message-mode question is open. */
+      meanwhile?: string | null;
+      /**
+       * The asker will long-poll for the answer whatever it is told: an MCP child from an older
+       * build, which never says `asyncCapable` and cannot read a receipt.
+       */
+      callerPolls?: boolean;
+    } = {},
   ): ReviewItem {
     // An MCP process may still be running a previous build. Compare retries using the form
     // the operator will see, regardless of which version produced the request.
@@ -294,7 +322,12 @@ export class ReviewManager {
     const existing = this.registry
       .outstandingReviews(sessionId)
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
-    if (existing) return existing;
+    if (existing) {
+      // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
+      // Attach the row now, before this response leaves, so an answer given before its first
+      // poll arrives is that poll's result and is never also queued as a message.
+      return existing.waitMode === "message" && options.callerPolls === true ? this.attachCall(existing) : existing;
+    }
 
     const review: ReviewItem = {
       id: randomUUID(),
@@ -308,6 +341,11 @@ export class ReviewManager {
       selections: null,
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
+      ...(options.waitMode === "message" && options.snoozable === true && kind === "input" ? { waitMode: "message" as const } : {}),
+      // Only a filed question keeps it: a question its agent waits on inside the call must not
+      // tell the operator the agent is carrying on.
+      ...(options.meanwhile && options.waitMode === "message" && options.snoozable === true && kind === "input"
+        ? { meanwhile: options.meanwhile } : {}),
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
@@ -317,6 +355,18 @@ export class ReviewManager {
     const replaced = this.retriesReplacedBy(review);
     const resolvedAt = Date.now();
     inTransaction(() => {
+      if (isRequestInputQuestion(review) && (review.waitMode === "message" || featureEnabled(ASYNC_INPUT_FLAG))) {
+        // Count parked and call-mode questions too. A recognized retry replaces its older
+        // card in this transaction, so only questions that will remain consume a slot.
+        const open = this.openQuestions(sessionId).filter((r) => !replaced.some((older) => older.id === r.id));
+        if (open.length >= MAX_OPEN_QUESTIONS) {
+          throw new OpenQuestionLimitError(
+            `Not asked: this session already has ${open.length} open questions (limit ${MAX_OPEN_QUESTIONS}):\n` +
+            open.map((r) => `- ${r.title} (${r.id})`).join("\n") +
+            "\nWork on what you can or end your turn. Use withdraw_question for a message-mode question you no longer need.",
+          );
+        }
+      }
       insertReview(review);
       for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
     });
@@ -325,6 +375,39 @@ export class ReviewManager {
       this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
     }
     return review;
+  }
+
+  /** Both wait modes, including questions parked by the operator. */
+  openQuestions(sessionId: string): ReviewItem[] {
+    return this.registry.outstandingReviews(sessionId).filter(isRequestInputQuestion);
+  }
+
+  withdrawQuestion(sessionId: string, id: string, reason: string): ReviewItem {
+    const review = this.openQuestions(sessionId).find((r) => r.id === id);
+    if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
+    if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
+    if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
+    // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
+    // may already have reached the agent, so keep their records for delivery reconciliation.
+    let noteKey: string | null = null;
+    const withdrawn = this.settle(review, "withdrawn", reason, null, null, () => {
+      noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+    });
+    if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
+    return withdrawn;
+  }
+
+  /**
+   * An older MCP child is waiting in a call on a question filed without one: turn it into the
+   * call-mode question it now is (`markReviewWaitAttached`), and republish it so the session
+   * counts it as a pending review rather than an open question until it settles. Without this
+   * a session blocked in that call would read as still working past its question.
+   */
+  private attachCall(review: ReviewItem): ReviewItem {
+    if (!markReviewWaitAttached(review.id)) return review;
+    const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
+    this.registry.upsertReview(call);
+    return call;
   }
 
   /**
@@ -343,7 +426,7 @@ export class ReviewManager {
    * stays. Any
    * other older question stays exactly where it is, because a later, different ask is no
    * evidence that the operator no longer needs to answer it. Parallel calls are never retries:
-   * `request_input` blocks, so an agent still waiting on one question can only ask another in
+   * a call-mode `request_input` blocks, so an agent still waiting on one question can only ask another in
    * the same batch, and those arrive less than `PARALLEL_ASK_WINDOW_MS` apart.
    *
    * Only `request_input`'s own asks (`snoozable`), on both sides: plan approvals, diff reviews,
@@ -351,12 +434,20 @@ export class ReviewManager {
    * by it. A question the operator snoozed is excluded even after it comes back to `pending`,
    * because they chose to park it and its agent was told to carry on, so a later, different
    * question from that agent is expected rather than a retry.
+   *
+   * An older message-mode question (`async-input`) is never withdrawn. The withdrawal rests on
+   * the older call being blocking: only a timed-out call leaves a question its agent re-asks. A
+   * message-mode ask never times out, so a later, similar question is a new question. A newer
+   * message-mode ask CAN withdraw an older call-mode one: a call that timed out before the flag
+   * was turned on, re-asked in new words, is the same retry, and leaving both would let the
+   * operator answer a stale copy after the agent already heard the other.
    */
   private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
     if (newer.snoozable !== true) return [];
     const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
     return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
       older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
+      older.waitMode !== "message" &&
       !older.snooze && older.createdAt <= cutoff && isRewordedRetry(older, newer));
   }
 
@@ -605,7 +696,6 @@ export class ReviewManager {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-
     return new Promise<ReviewItem | null>((resolve) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
@@ -623,6 +713,14 @@ export class ReviewManager {
       set.add(waiter);
       if (signal?.aborted) early();
       else signal?.addEventListener("abort", early, { once: true });
+      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+      // older build re-asked it word for word, was handed the open row, and long-polls it because
+      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+      // closure that event triggers must be able to release this very call.
+      if (current.waitMode === "message") this.attachCall(current);
     });
   }
 
@@ -680,6 +778,78 @@ export class ReviewManager {
   private orphanReviewsFor(sessionId: string): void {
     if (transferForSource(sessionId)) return;
     for (const r of this.registry.outstandingReviews(sessionId)) this.settle(r, "orphaned", null);
+  }
+
+  /**
+   * A merge completed this session's task: close every outstanding `request_input` question as
+   * `orphaned`, with the close reason `merged`, at that moment rather than at a later eviction.
+   *
+   * The scope is the completion rules' (`questionHoldsCompletion`): pending or snoozed, a
+   * message-mode question always and a call-mode question while the flag is on. With the flag
+   * off a call-mode question is left exactly as before, to be orphaned without a reason when its
+   * session goes. Merging is the operator's own conclusion, so nothing here holds the
+   * completion; it only makes sure no question outlives it unexplained.
+   */
+  closeQuestionsForMerge(sessionId: string, flagOn: boolean): ReviewItem[] {
+    const closure = this.mergeClosure(sessionId, flagOn);
+    inTransaction(closure.persist);
+    return closure.publish();
+  }
+
+  /**
+   * The merge closure in two halves, so a caller can commit it inside its own transaction.
+   * `persist` writes every outstanding question's `orphaned`/`merged` settle and cancels its
+   * unclaimed snooze instruction. It must run inside a transaction, and throws
+   * `MergeClosureDeferred` mid runtime transfer.
+   * `publish` broadcasts what `persist` wrote and releases waiting calls; run it only after
+   * the commit. Merge-driven completion persists this with the task's own status write
+   * (`TaskManager` `joinCompletion`), so the two land together or not at all.
+   */
+  mergeClosure(sessionId: string, flagOn: boolean): { persist: () => void; publish: () => ReviewItem[] } {
+    let closing: ReviewItem[] = [];
+    let resolvedAt = 0;
+    const noteKeys = new Set<string>();
+    return {
+      persist: () => {
+        noteKeys.clear();
+        closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
+        if (closing.length === 0) return;
+        // Mid runtime transfer the questions are moving to the successor session, so they cannot
+        // be closed here. A skipped close is not a success: throw, and the merge settle keeps the
+        // task running until the transfer resolves and the next observation can close them.
+        if (transferForSource(sessionId)) {
+          closing = [];
+          throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
+        }
+        resolvedAt = Date.now();
+        for (const review of closing) {
+          updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+          const noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+          if (noteKey !== null) noteKeys.add(noteKey);
+        }
+      },
+      publish: () => {
+        for (const noteKey of noteKeys) this.registry.refreshPendingTurns(noteKey);
+        return closing.map((review) => this.publishSettled({
+          ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
+        }));
+      },
+    };
+  }
+
+  /**
+   * The agent is waiting inside a `request_input` call right now: a pending question of its own
+   * with a live long-poll attached, or whose call has not yet detached. Such an agent cannot go idle until the question
+   * settles, which is why a merge has to close it rather than wait for idleness.
+   */
+  blockedInRequestInputCall(sessionId: string, flagOn: boolean): boolean {
+    // Pending in either count: a filed question an older child re-asked is waited on in a call too.
+    // A live long-poll proves the call; so does a row whose call has not detached, which covers the
+    // moment between the ask and its first `/wait`, when no poll is attached yet. The in-memory
+    // filter runs first, so the row is read only for a question that could hold the merge.
+    return this.registry.outstandingReviews(sessionId).some((review) =>
+      review.status === "pending" && questionHoldsCompletion(review, flagOn)
+      && ((this.waiters.get(review.id)?.size ?? 0) > 0 || reviewWaitAttached(review.id)));
   }
 
   persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {
@@ -751,9 +921,11 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
-    // A late answer from a home session or mctl must also reach a detached wait. Only the delivery
-    // gate is widened: the conversation and timeline still read `isConversationResolvedReview`.
-    if (isConversationResolvedReview(updated) || isHomeDispatchResolvedReview(updated)) {
+    // One actor policy (`CONTINUATION_ACTOR_POLICY`): the operator, a controlling session, a home
+    // session or mctl always, and Foreman or a standing approval for a message-mode question, which
+    // has no call to return it through. The conversation and timeline still read
+    // `isConversationResolvedReview`.
+    if (deliversContinuation(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }

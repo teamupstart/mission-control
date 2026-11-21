@@ -76,6 +76,7 @@ import type {
   ReviewItem,
   ReviewKind,
   ReviewSnooze,
+  ReviewClosedReason,
   ReviewStatus,
   SessionCost,
   CostBasis,
@@ -107,6 +108,7 @@ import type {
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  REVIEW_CLOSED_REASONS,
   REVIEW_SNOOZE_MODES,
   SESSION_BLOCKER_KINDS,
   TASK_KINDS,
@@ -140,6 +142,7 @@ import {
   type WritebackSignal,
 } from "@shared/task-source.ts";
 import {
+  CONTINUATION_ACTOR_POLICY,
   HOME_DISPATCH_ACTOR_NAMES,
   HOME_DISPATCH_ACTOR_PREFIXES,
   HUMAN_REVIEW_STATUSES,
@@ -271,7 +274,10 @@ let db: DatabaseSync | undefined;
 //     backfill: no task was hibernated before it existed.
 // 38: enable CodeRabbit follow-up (`shipping.codeRabbitAutoResolve`) once, preserving every
 //     other Shipping setting and any later opt-out.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 38;
+// 39: the asynchronous input inbox (`reviews.wait_mode`, `meanwhile`, `closed_reason`), nullable
+//     with no backfill: every existing row is a question its agent waited for inside the call,
+//     filed no meanwhile line, and was never closed by a merge.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4411,6 +4417,16 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "reviews", "snooze_instruction_owed_at", "INTEGER");
   addColumn(d, "reviews", "snooze_instruction_queued_at", "INTEGER");
 
+  // The asynchronous input inbox (`async-input`). `wait_mode = 'message'` marks a
+  // `request_input` question whose call returned at once, so its answer can only reach the agent
+  // as a message; `meanwhile` is the agent's own line on what it does while the question is
+  // open; `closed_reason` records why the daemon closed a question nobody answered ('merged').
+  // All nullable with no default: an existing row is a call-mode question with no meanwhile line
+  // that no merge closed, which is exactly what every row written before this was.
+  addColumn(d, "reviews", "wait_mode", "TEXT");
+  addColumn(d, "reviews", "meanwhile", "TEXT");
+  addColumn(d, "reviews", "closed_reason", "TEXT");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -5329,10 +5345,14 @@ interface ReviewRow {
   snooze_reminded_at?: number | null;
   snooze_instruction_owed_at?: number | null;
   snooze_instruction_queued_at?: number | null;
+  wait_mode?: string | null;
+  meanwhile?: string | null;
+  closed_reason?: string | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
   const snooze = rowToSnooze(r);
+  const closedReason = readPersistedEnum(REVIEW_CLOSED_REASONS, r.closed_reason);
   const kind = r.kind as ReviewKind;
   const status = r.status as ReviewStatus;
   const decisions = parseJsonArray<PlanDecision>(r.decisions);
@@ -5354,6 +5374,11 @@ function rowToReview(r: ReviewRow): ReviewItem {
     // exactly the item it always did.
     ...(r.snoozable === 1 ? { snoozable: true } : {}),
     ...(snooze ? { snooze } : {}),
+    // Spread only when set, like the snooze, so a call-mode row decodes exactly as it always did.
+    // An unknown wait mode reads as call mode: the conservative reading holds and delivers less.
+    ...(r.wait_mode === "message" ? { waitMode: "message" as const } : {}),
+    ...(r.meanwhile ? { meanwhile: r.meanwhile } : {}),
+    ...(closedReason ? { closedReason } : {}),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
@@ -5392,11 +5417,21 @@ function parseJsonArray<T>(raw: string | null): T[] | null {
   }
 }
 
+/**
+ * Write a new review row.
+ *
+ * A message-mode question is born detached: `mcp_wait_detached_at` is its creation time, in the
+ * same statement, because no MCP call is waiting for its answer. That is what lets the existing
+ * continuation outbox, startup recovery, runtime transfer and orphaning carry it without a path
+ * of their own.
+ */
 export function insertReview(r: ReviewItem): void {
+  const message = r.waitMode === "message";
   openDb()
     .prepare(
-      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at,
+                            wait_mode, meanwhile, mcp_wait_detached_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       r.id,
@@ -5410,6 +5445,9 @@ export function insertReview(r: ReviewItem): void {
       r.snoozable === true ? 1 : null,
       r.createdAt,
       r.resolvedAt,
+      message ? "message" : null,
+      r.meanwhile ?? null,
+      message ? r.createdAt : null,
     );
 }
 
@@ -5518,14 +5556,16 @@ export function updateReviewStatus(
   resolvedAt: number | null,
   selections: PlanDecisionAnswer[] | null = null,
   resolvedBy: ReviewActor | null = null,
+  /** Why the daemon closed it unanswered, written in the same statement as the settle. */
+  closedReason: ReviewClosedReason | null = null,
 ): void {
   openDb()
     .prepare(
       `UPDATE reviews
-          SET status = ?, response = ?, resolved_at = ?, selections = ?, resolved_by = ?
+          SET status = ?, response = ?, resolved_at = ?, selections = ?, resolved_by = ?, closed_reason = ?
         WHERE id = ?`,
     )
-    .run(status, response, resolvedAt, jsonArrayColumn(selections), resolvedBy, id);
+    .run(status, response, resolvedAt, jsonArrayColumn(selections), resolvedBy, closedReason, id);
 }
 
 /**
@@ -5549,6 +5589,55 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
 }
 
 /**
+ * A call has started waiting on a message-mode question: an MCP child from an older build
+ * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
+ * wait mode is cleared, with the `meanwhile` line that no longer describes a blocked agent, and
+ * so is the detach it was born with, so it counts as a pending review,
+ * its answer is that call's result, and it reaches the outbox only if the call later detaches,
+ * exactly as any call-mode question's does. Only while still pending and not yet handed to the
+ * outbox. Returns whether the row changed.
+ */
+export function markReviewWaitAttached(id: string): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
+        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
+    )
+    .run(id);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * A call still owns this review's answer: its wait was never recorded as detached. True from the
+ * ask until a cancellation, a restart or a snooze detaches it, including before the first poll.
+ */
+export function reviewWaitAttached(id: string): boolean {
+  const row = openDb().prepare("SELECT mcp_wait_detached_at FROM reviews WHERE id = ?").get(id) as
+    | { mcp_wait_detached_at: number | null }
+    | undefined;
+  return row !== undefined && row.mcp_wait_detached_at === null;
+}
+
+/** Quote fixed identifiers from a shared policy as SQL string literals. Never pass input here. */
+function sqlLiterals(values: Iterable<string>): string {
+  return [...values].map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+/**
+ * The outbox's eligibility over a review row, built from the shared `CONTINUATION_ACTOR_POLICY`
+ * and `HUMAN_REVIEW_STATUSES` that `deliversContinuation` reads, so the in-memory publish
+ * decision and the atomic queue check cannot drift. Kept in SQL so `queueReviewPendingTurn`
+ * still decides inside its transaction.
+ */
+const CONTINUATION_ACTOR_SQL = (() => {
+  const { anyWait, messageWait } = CONTINUATION_ACTOR_POLICY;
+  return `(resolved_by IN (${sqlLiterals(anyWait.actors)})
+            ${anyWait.prefixes.map((prefix) => `OR resolved_by LIKE ${sqlLiterals([`${prefix}%`])}`).join(" ")}
+            OR (wait_mode = 'message' AND resolved_by IN (${sqlLiterals(messageWait.actors)})))`;
+})();
+const CONTINUATION_STATUS_SQL = `status IN (${sqlLiterals(HUMAN_REVIEW_STATUSES)})`;
+
+/**
  * SQL for "settled by a home session or mctl", built from the same list `isHomeDispatchActor` reads
  * (`@shared/review-item.ts`), so the TypeScript predicate and every query below cannot drift. The
  * values are fixed literals from that list, never request data.
@@ -5558,10 +5647,7 @@ const HOME_DISPATCH_ACTOR_SQL = [
   ...HOME_DISPATCH_ACTOR_PREFIXES.map((prefix) => `resolved_by LIKE '${prefix}%'`),
 ].join(" OR ");
 
-/** Answers whose result can still be carried to a detached session: the human, a delegated session, or a home actor. */
-const CONTINUATION_ACTOR_SQL = `(resolved_by = 'human' OR resolved_by LIKE 'session:%' OR ${HOME_DISPATCH_ACTOR_SQL})`;
-
-/** Human answers that have lost their MCP result channel and still need a session turn. */
+/** Resolutions that have lost (or never had) their MCP result channel and still need a session turn. */
 export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
   const suffix = id === undefined ? "" : " AND id = ?";
   const rows = openDb()
@@ -5570,7 +5656,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
         WHERE mcp_wait_detached_at IS NOT NULL
           AND continuation_queued_at IS NULL
           AND ${CONTINUATION_ACTOR_SQL}
-          AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
+          AND ${CONTINUATION_STATUS_SQL}${suffix}
         ORDER BY resolved_at ASC, created_at ASC`,
     )
     .all(...(id === undefined ? [] : [id])) as unknown as ReviewRow[];
@@ -5590,15 +5676,32 @@ export function createReviewContinuationPendingTurn(input: {
   text: string;
   now: number;
 }): PendingTurn | null {
+  // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
+  // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
+  // reading it outside the queueing transaction cannot race a change.
+  const mode = openDb().prepare("SELECT wait_mode FROM reviews WHERE id = ?").get(input.reviewId) as
+    | { wait_mode: string | null }
+    | undefined;
   return queueReviewPendingTurn(input, {
-    turnId: `review-continuation:${input.reviewId}`,
+    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : "review-continuation:"}${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
             AND ${CONTINUATION_ACTOR_SQL}
-            AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
+            AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
+    coalesce: mode?.wait_mode === "message",
   });
 }
+
+/**
+ * The turn id prefix of an answer to a message-mode question (`async-input`). Recorded as
+ * daemon-authored (`daemonAuthorOf` in `pending-turns.ts`): it is never captured as a Goal
+ * revision or echoed as an operator turn, because the operator's answer is already in the
+ * conversation as the answer entry and Foreman's or a standing approval's was never theirs.
+ * It keeps the `review-continuation:` prefix, which resident pacing reads. A call-mode answer
+ * that lost its call keeps the bare `review-continuation:<id>` and operator authorship.
+ */
+export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
 
 /**
  * Atomically hand a snoozed question's owed "carry on" instruction to the same outbox.
@@ -5608,6 +5711,14 @@ export function createReviewContinuationPendingTurn(input: {
  * review, which every reader of that prefix (a resident's pacing) already treats correctly.
  */
 export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+
+/** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
+export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE id = ? AND state = 'queued' AND claimed_at IS NULL
+    RETURNING note_key`).get(`${SNOOZE_INSTRUCTION_TURN_PREFIX}${reviewId}`) as { note_key: string } | undefined;
+  return row?.note_key ?? null;
+}
 
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
@@ -5629,6 +5740,7 @@ function queueReviewPendingTurn(
   input: { reviewId: string; noteKey: string; text: string; now: number },
   kind: {
     turnId: string;
+    coalesce?: boolean;
     /** SQL over the review row: whether this turn is still owed. */
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
@@ -5644,6 +5756,20 @@ function queueReviewPendingTurn(
     if (!eligible) {
       d.exec("COMMIT");
       return null;
+    }
+    // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
+    // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
+    // the conversation's tail: appending to an earlier answer would pass intervening turns.
+    if (kind.coalesce) {
+      const existing = d.prepare(`SELECT * FROM pending_turns
+        WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+        const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
+          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+        d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
+        d.exec("COMMIT");
+        return rowToPendingTurn(row);
+      }
     }
     const sequence = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
@@ -9178,10 +9304,13 @@ export function openTaskSessionClosure(
 export function completeTaskWithSessionClosure(
   task: Task,
   closure: { sessionId: string; requestedAt: number; deadlineAt: number } | null,
+  /** Other durable state that must commit with this completion or not at all. */
+  alsoPersist?: () => void,
 ): readonly string[] {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
+    alsoPersist?.();
     const displaced = upsertTask(task);
     if (taskHasWorktrees(task)) {
       d.prepare(`INSERT OR REPLACE INTO task_worktree_returns (task_id, completed_at, dispatched_at)
@@ -15775,7 +15904,7 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
 }
 
 /**
- * Every open adoption, plus the ones RETIRED since a given instant.
+ * A page of open adoptions, recent retirements, and historical merges on the action branch.
  *
  * The open set alone cannot answer a `pull_request` session action, and the reason is a
  * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
@@ -15791,18 +15920,26 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
  * which matters - the caller resolves a repository identity per distinct root, and that is a
  * git subprocess.
  *
- * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
- * a contradiction this turn produced, and the branch's next pull request is a new row.
+ * Older merged rows are included only for the requested branch. The caller still verifies
+ * repository identity and published content; an old merge alone never proves current work.
+ * Older closed-unmerged rows stay out. Walk pages using the last row as the cursor; the key
+ * breaks adoption-time ties without skipping candidates or loading the entire ledger at once.
  */
-export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+export function loadAdoptedInspectorPrsSince(
+  observedSince: number,
+  mergedBranch: string | null,
+  after: { adoptedAt: number; key: string } | null,
+): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'open'
+        WHERE (state = 'open'
            OR (observed_at IS NOT NULL AND observed_at >= ?)
-        ORDER BY adopted_at ASC`,
+           OR (observed_state = 'MERGED' AND head_ref_name = ?))
+          AND (? IS NULL OR (adopted_at, key) > (?, ?))
+        ORDER BY adopted_at ASC, key ASC LIMIT 50`,
     )
-    .all(observedSince) as unknown as InspectorPrRow[];
+    .all(observedSince, mergedBranch, after?.key ?? null, after?.adoptedAt ?? null, after?.key ?? null) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 

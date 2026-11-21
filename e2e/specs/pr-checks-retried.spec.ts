@@ -464,10 +464,20 @@ test("publication wait reason remains visible separately from the cancelled CI w
   await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status,
     { timeout: 40_000 }).toBe("completed");
 
-  // Seed the recorded gate state, as the completion-pane specs do. This test proves
-  // production UI reporting of that record, not how publication validation produces it.
+  // Seed the recorded gate and its matching unpublished evidence. Inspector re-observes
+  // historical publication holds, so a clean snapshot would correctly leave this state.
   const now = Date.now();
   withDaemonDb(daemon, db => {
+    const submission = db.prepare(`SELECT id, context_json FROM workflow_submissions
+      WHERE run_id = ? ORDER BY round DESC, segment DESC LIMIT 1`).get(submitted.run.id) as {
+        id: string; context_json: string;
+      };
+    const context = JSON.parse(submission.context_json);
+    context.evidence.workingTreeDirty = true;
+    context.evidence.workingTreeStatus = [" M unpublished.txt"];
+    context.evidence.publication.unpublishedPaths = ["unpublished.txt"];
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, evidence_json = ? WHERE id = ?")
+      .run(JSON.stringify(context), JSON.stringify(context.evidence), submission.id);
     db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
       JSON.stringify({ kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" }), published.version.id);
     db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_session',

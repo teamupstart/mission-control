@@ -1,5 +1,7 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { OpenQuestionLimitError } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -24,7 +26,7 @@ import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
-import { paneToken } from "@shared/pane.ts";
+import { canMessage, paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
@@ -37,6 +39,7 @@ import { registerSessionControlRoutes, sessionControlActor, sessionControlCaller
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
   localPlanAuthorityContext,
@@ -112,6 +115,8 @@ import {
   CostConfigPatchSchema,
   CreateReviewSchema,
   DetachReviewWaitSchema,
+  ListOpenQuestionsSchema,
+  WithdrawQuestionSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
@@ -5216,9 +5221,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null, { snoozable });
-      return c.json({ id: review.id, sessionId: session.id });
-    } catch (error) { return planFailure(c, error); }
+      // How this ask waits, decided here and said in the response (`async-input`). Read per ask
+      // so the flag takes effect without a restart. `call` is today's long poll; `message`
+      // returns the receipt for the MCP child to hand the agent at once.
+      const wait = decideWaitMode({
+        flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+        kind,
+        snoozable: snoozable === true,
+        asyncCapable: parsed.data.asyncCapable === true,
+        messageable: canMessage(session),
+      });
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
+        snoozable,
+        ...(wait === "message" ? { waitMode: "message" as const } : {}),
+        meanwhile: parsed.data.meanwhile || null,
+        callerPolls: parsed.data.asyncCapable !== true,
+      });
+      // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+      // answer names the row's own mode rather than the one this ask would have had.
+      return review.waitMode === "message"
+        ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
+        : c.json({ id: review.id, sessionId: session.id, wait: "call" });
+    } catch (error) {
+      if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
+      return planFailure(c, error);
+    }
   }
   app.post("/mcp/reviews", (c) => createMcpReview(c, false));
   app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
@@ -5450,6 +5477,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await tasks.completeRetroNoChange(session.id, cwd);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
+  });
+
+  app.post("/mcp/questions/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, ListOpenQuestionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    return c.json({ questions: reviews.openQuestions(session.id).map(({ id, title, createdAt, meanwhile, status }) =>
+      ({ id, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+  });
+
+  app.post("/mcp/questions/:id/withdraw", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, WithdrawQuestionSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, reason } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const review = reviews.withdrawQuestion(session.id, c.req.param("id"), reason);
+      return c.json({ id: review.id, status: review.status });
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
@@ -10160,28 +10216,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   return app;
 }
 
-/** True when the Host header names a loopback address (defeats DNS-rebinding). */
-export function hostIsLoopback(host: string | undefined): boolean {
-  if (!host) return false;
-  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
-  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
-
-/** Guard browser-write routes that accept an otherwise empty JSON object. */
-function trustedLoopbackJsonRequest(c: Context): boolean {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return false;
-  }
-  const origin = c.req.header("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
-  } catch {
-    return false;
-  }
-}
+export { hostIsLoopback } from "./loopback.ts";
 
 
 /**

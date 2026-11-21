@@ -11695,8 +11695,7 @@ span.task-outcome:hover {
   border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
-/* "A CI check failed" alert - sits right after the PR chip and links to the same
-   PR. Same pill recipe as the chip, in the danger tone so it reads as an alarm. */
+/* CI warning opens individual conclusions and job links. */
 .pr-checks-alert {
   flex: none;
   display: inline-flex;
@@ -13658,6 +13657,38 @@ select:not([multiple]) option:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Beside the drawer, a Board whose columns do not fit scrolls sideways - but a scroller clips at
+   its padding edge, so the overview's 20px right padding scrolled away and a cut-off column ran
+   flush into the drawer's border. With macOS's overlay scrollbar hidden at rest, that read as
+   the drawer laid over the Board (#1579). The gutter moves outside the scrollport, as a margin,
+   so a column is cut a gutter short of the drawer, the way the window's left edge already
+   holds one. A Board that fits is laid out exactly as before: 20px either way. Overview only:
+   the drill-in runs edge to edge, up to the drawer. */
+.residents-pinned-row > .board[data-focus="none"] {
+  padding-right: 0;
+  margin-right: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .residents-pinned-row > .board[data-focus="none"] {
+    transition: padding 0.34s ease, margin 0.34s ease;
+  }
+}
+/* And a visible track: declaring `::-webkit-scrollbar` opts out of the overlay scrollbar, so an
+   overflowing Board says it scrolls (as `.wf-pipeline-strip` does). Chromium reserves the track
+   only while the columns overflow, so a Board that fits is untouched. */
+.residents-pinned-row > .board::-webkit-scrollbar {
+  height: 10px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
 .residents-drawer-head {
   flex: none;
   display: flex;
@@ -14031,6 +14062,34 @@ select:not([multiple]) option:focus-visible {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+.residents-drawer-sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.residents-drawer-sec-toggle .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-sec-toggle:hover,
+.residents-drawer-sec-toggle:hover .brh-chevron {
+  color: var(--fg);
+}
+.residents-drawer-sec-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.residents-drawer-foot.is-collapsed {
+  padding-block: 8px;
 }
 /* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
    the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
@@ -41131,6 +41190,29 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
 
+/* A session's own ask for Control other sessions (SessionControlRequestCard.tsx). It borrows
+   the review card's head, body and action row so it reads like a `request_input` question,
+   inside its own attention-framed panel because it sits in the conversation, not a modal.
+   Like the blocker band it never shrinks under the transcript. Only the agent's reason
+   scrolls, inside its own capped box: capping the card instead scrolled Accept and Decline
+   out of view on a short window, and the decision is the one thing this card exists for. */
+.session-control-request {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.detail-conv > .session-control-request { flex: none; }
+.session-control-request .review-content {
+  margin-bottom: 10px;
+  max-height: min(9.5em, 16dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.session-control-request-note { margin: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.session-control-request .review-actions + .session-control-request-note { margin: 10px 0 0; }
+
 /* Resident skill sources share the profile editor's typography and spacing. */
 .resident-source-add, .resident-skill-filters { display: flex; gap: 12px; align-items: end; }
 .resident-source-add .field, .resident-skill-filters .field { flex: 1; min-width: 0; }
@@ -41957,3 +42039,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 10px; background: var(--panel-2); font-size: 12px; }
 .shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
 .shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
+.pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
+.pr-check-results li { margin-block: 8px; }

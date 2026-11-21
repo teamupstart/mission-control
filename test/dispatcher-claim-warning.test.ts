@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 // A dispatched task whose pool claim fails still launches, and its agent is told which step
@@ -39,14 +39,8 @@ after(() => {
 
 function seedRepo(name: string): { repo: string; sha: string } {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
-  return { repo, sha: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"]).toString().trim() };
+  const sha = seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
+  return { repo, sha };
 }
 
 function fakeSupervisor(registry: InstanceType<typeof Registry>) {

@@ -28,6 +28,8 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 const { workflowCaptureFailure } = await import("../src/shared/workflow-lifecycle.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 
 const repositoryRoot = process.cwd();
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] });
@@ -94,6 +96,8 @@ async function harness(
     resumptionPolicy?: "auto" | "manual";
     deliveryMode?: "live" | "preview";
     uncertainDelivery?: boolean;
+    publicationAction?: boolean;
+    classifyCriterionFulfillment?: NonNullable<ConstructorParameters<typeof WorkflowManager>[2]>["classifyCriterionFulfillment"];
   } = {},
 ) {
   const registry = new Registry();
@@ -115,6 +119,11 @@ async function harness(
     createdAt: 1,
     updatedAt: 1,
   });
+  if (options.publicationAction) store.insertSessionAction({
+    id: `publication-${id}`, name: `Publication ${id}`, normalizedName: `publication ${id}`,
+    description: "", promptMarkdown: "Open the reviewed PR", requiredSkillId: null,
+    completion: { kind: "pull_request" }, createdAt: 1, updatedAt: 1,
+  });
   const created = store.insertWorkflow({
     id: workflowId,
     name: `Preflight workflow ${id}`,
@@ -125,10 +134,14 @@ async function harness(
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
         { id: "persona", kind: "persona", personaId, position: { x: 200, y: 0 } },
         { id: "end", kind: "end", outcome: "Complete", position: { x: 400, y: 0 } },
+        ...(options.publicationAction ? [{ id: "publication", kind: "session_action" as const,
+          sessionActionId: `publication-${id}`, position: { x: 300, y: 0 } }] : []),
       ],
       edges: [
         { id: "start", source: "session", sourcePort: "submitted", target: "persona", targetPort: "activate" },
-        { id: "pass", source: "persona", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "pass", source: "persona", sourcePort: "pass", target: options.publicationAction ? "publication" : "end", targetPort: options.publicationAction ? "activate" : "terminal" },
+        ...(options.publicationAction ? [{ id: "published", source: "publication", sourcePort: "complete" as const,
+          target: "end", targetPort: "terminal" as const }] : []),
         { id: "repair", source: "persona", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
       ],
     },
@@ -217,6 +230,7 @@ async function harness(
       workingTreeStatus: [" M src/file.ts"], diffFingerprint: "diff",
     }),
     reconcileContext: options.reconcileContext,
+    classifyCriterionFulfillment: options.classifyCriterionFulfillment,
     ...(options.compactContext ? {
       compactContext: options.compactContext,
     } : !options.recordCompactionLedger ? {
@@ -1981,6 +1995,29 @@ test("capture repair holds a blocked session and resumes once its blocker is cle
   assert.equal(h.store.listSubmissions(h.run.id).length, 2);
 });
 
+test("capture repair holds a session with an outstanding request_input question until it is answered (async-input)", async (t) => {
+  const id = "capture-repair-asked";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "repair was not delivered");
+  h.registry.getSession(id)!.state = "idle";
+  await h.register("replacement-handoff");
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false }); });
+  const reviews = new ReviewManager(h.registry);
+  // Message mode, snoozed: in neither count and not amber, so only the completion hold sees it.
+  const question = reviews.create(id, "input", "Which linter?", "Which linter?", [
+    { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+  ], { snoozable: true, waitMode: "message" });
+  reviews.snooze(question.id, 60 * 60_000);
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "corrected proof was prepared around an outstanding question");
+
+  reviews.resolve(question.id, "answer", "eslint", "human");
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "answering the question did not release recovery");
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+});
+
 for (const options of [{ resumptionPolicy: "manual" as const }, { deliveryMode: "preview" as const }]) {
   test(`capture repair respects ${JSON.stringify(options)}`, async (t) => {
     const id = `capture-boundary-${Object.values(options)[0]}`;
@@ -2300,4 +2337,211 @@ for (const withdraw of [false, true]) test(`an existing ambiguous_mapping snapsh
     originalProof.map(item => [item.sha256, item.content]), "recovery retains the parent's frozen proof without capturing later staged evidence");
   assert.deepEqual(h.store.getSubmission(source.id), parent, "recovery never rewrites the old packet");
   if (withdraw) assert.deepEqual(h.store.listWorkflowEvidence(h.binding.noteKey).artifacts.map(item => item.clientItemId), ["later-proof"]);
+});
+
+for (const publicationAction of [true, false]) {
+  test(`PR criterion ${publicationAction ? "defers to the pinned action" : "still blocks without a publication action"}`, async (t) => {
+    const id = `publication-readiness-${publicationAction}`;
+    const h = await harness(t, id, undefined, {
+      publicationAction,
+      compactContext: (raw) => compactWorkflowContext(raw, {
+        deferReconciliation: true,
+        execute: async () => ({ kind: "ok", value: {
+          constraints: [], acceptanceCriteria: ["Implementation verified", "Pull request opened documenting implementation, verification, and deviations"],
+          canonicalCriteria: [
+            { text: "Implementation verified", material: true, suggestedProofClass: "focused_execution" },
+            { text: "Pull request opened documenting implementation, verification, and deviations", material: true,
+              suggestedProofClass: "state_confirmation", fulfilledByAction: "pull_request" },
+          ],
+        } }),
+      }),
+      reconcileContext: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
+    });
+    await h.manager.stageAgentEvidence(id, {
+      images: [], commandOutputs: [{ kind: "command", clientItemId: "tests", command: "node --test focused.test.ts",
+        exitCode: 0, output: "ok 1 - implementation verified", caption: "Focused verification", repositoryScope: "all" }],
+      coverage: [{ clientCriterionId: "implementation", criterion: "Implementation verified", proofClass: "focused_execution",
+        repositoryScope: "all", links: [{ clientItemId: "tests", role: "execution" }] }],
+    });
+    const result = await h.manager.submit(h.binding.id, { requestId: id });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const submission = h.store.getSubmission(result.value.submission.id)!;
+    assert.equal(submission.readiness?.status, publicationAction ? "ready" : "gaps");
+    const row = submission.readiness?.criteria[1];
+    assert.equal(row?.material, true);
+    assert.equal(row?.deferredToAction, publicationAction ? "pull_request" : undefined);
+    assert.deepEqual(row?.gaps, publicationAction ? [] : ["missing_coverage"]);
+    if (publicationAction) {
+      await waitFor(() => h.store.listAttempts(submission.id).some((attempt) => attempt.reviewInput !== undefined), "Reviewer should start without override");
+      const review = h.store.listAttempts(submission.id).find((attempt) => attempt.reviewInput)?.reviewInput;
+      assert.equal(review?.criteria[1]?.deferredToAction, "pull_request");
+      assert.deepEqual(h.store.listReadinessOverrides(result.value.run.id), []);
+    } else {
+      assert.equal(h.store.listAttempts(submission.id).length, 0);
+    }
+  });
+}
+
+
+for (const priorOverride of [false, true]) test(`existing eight-criterion run recovers publication timing without repeated overrides (prior override: ${priorOverride})`, async (t) => {
+  const id = `legacy-publication-${priorOverride}`;
+  const texts = [...Array.from({ length: 7 }, (_, i) => `Implementation requirement ${i + 1} verified`),
+    "Pull request opened documenting implementation, verification, and deviations"];
+  let classify = false; let classifications = 0; let compactions = 0;
+  let legacyCriteria: import("../src/shared/workflow.ts").WorkflowRunCriteria;
+  const h = await harness(t, id, undefined, {
+    publicationAction: true, deliveryMode: "preview",
+    runner: { ...passingRunner, async run() { return JSON.stringify({ verdict: "fail", summary: "Repair an implementation detail",
+      requestedChanges: [{ title: "Repair implementation", rationale: "A substantive repair is needed", basis: "substantive",
+        evidence: [{ kind: "goal", quote: texts[0] }] }], confidence: 1 }); } },
+    compactContext: async (raw) => {
+      compactions++;
+      const context = await compactWorkflowContext(raw, { deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+        constraints: [], acceptanceCriteria: texts,
+        canonicalCriteria: texts.map((text) => ({ text, material: true, suggestedProofClass: null })),
+      } }) });
+      // A real pre-upgrade payload has no timing field, even for ordinary requirements.
+      context.canonicalCriteria = context.canonicalCriteria?.map(({ fulfilledByAction: _timing, ...criterion }) => criterion);
+      return context;
+    },
+    classifyCriterionFulfillment: async (prompt) => {
+      classifications++;
+      if (!classify) return { kind: "failed", cause: "transport", reason: "Classifier unavailable" };
+      assert.match(prompt, /Do not recompact or rewrite/);
+      for (const criterion of legacyCriteria!.canonicalCriteria) assert.ok(prompt.includes(criterion.id));
+      return { kind: "ok", value: { classifications: legacyCriteria!.canonicalCriteria.map((criterion, i) => ({
+        criterionId: criterion.id, fulfilledByAction: i === 7 ? "pull_request" : null,
+      })) } };
+    },
+    reconcileContext: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
+  });
+  await h.manager.stageAgentEvidence(id, { images: [], commandOutputs: [{ kind: "command", clientItemId: "tests",
+    command: "node --test implementation.test.ts", exitCode: 0, output: "7 requirements verified", caption: "Implementation proof", repositoryScope: "all" }],
+    coverage: texts.slice(0, 7).map((criterion, i) => ({ clientCriterionId: `implementation-${i}`, criterion,
+      proofClass: "focused_execution", repositoryScope: "all", links: [{ clientItemId: "tests", role: "execution" }] })),
+  });
+  const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run, submission } = created.value;
+  legacyCriteria = h.store.getRun(run.id)!.criteria!;
+  assert.equal(legacyCriteria.canonicalCriteria.length, 8);
+  assert.ok(legacyCriteria.canonicalCriteria.every((criterion) => criterion.fulfilledByAction === undefined));
+  assert.deepEqual(h.store.getSubmission(submission.id)?.readiness?.gapCodes, ["missing_coverage"]);
+  if (priorOverride) {
+    assert.equal(h.manager.overrideEvidenceReadiness(run.id, submission.id, "prior-override", "Defer only the PR URL to the Pull Request action", true).ok, true);
+    await waitFor(() => h.store.getRun(run.id)?.status === "waiting_for_session", "review should request a substantive repair");
+  }
+  const historical = h.store.getSubmission(submission.id)!;
+  const overrides = h.store.listReadinessOverrides(run.id);
+  const detail = h.manager.run(run.id);
+  assert.equal(detail.kind, "found");
+  if (detail.kind === "found") assert.equal(detail.detail.evidenceRecovery?.kind, "publication");
+  classify = true;
+  const [recovery, replay] = await Promise.all([
+    h.manager.recoverEvidence(run.id, submission.id, "classify-publication"),
+    h.manager.recoverEvidence(run.id, submission.id, "classify-publication"),
+  ]);
+  assert.equal(recovery.ok, true); assert.equal(replay.ok, true); if (!recovery.ok || !replay.ok) return;
+  assert.equal(recovery.value.submission.id, replay.value.submission.id);
+  await waitFor(() => h.store.getRun(run.id)?.status === "waiting_for_session", "recovered review should run");
+  const child = h.store.getSubmission(recovery.value.submission.id)!;
+  assert.equal(child.readiness?.status, "ready");
+  assert.equal(child.readiness?.criteria[7]?.deferredToAction, "pull_request");
+  assert.deepEqual(h.store.getSubmission(submission.id), historical);
+  assert.deepEqual(h.store.listReadinessOverrides(run.id), overrides);
+  const reopened = new WorkflowStore(openDb());
+  const upgraded = reopened.getRun(run.id)!.criteria!;
+  assert.deepEqual(upgraded.canonicalCriteria.map(({ fulfilledByAction: _timing, ...criterion }) => criterion), legacyCriteria.canonicalCriteria);
+  assert.deepEqual(upgraded.canonicalCriteria.map((criterion) => criterion.fulfilledByAction), [null, null, null, null, null, null, null, "pull_request"]);
+  for (const round of [2, 3]) {
+    const next = await h.manager.resubmit(run.id, { requestId: `repair-${round}`, resubmitUnchanged: true });
+    assert.equal(next.ok, true); if (!next.ok) return;
+    await waitFor(() => h.store.getRun(run.id)?.status === "waiting_for_session", "later review should run");
+    assert.equal(next.value.submission.round, round);
+    assert.equal(h.store.getSubmission(next.value.submission.id)?.readiness?.status, "ready");
+  }
+  assert.equal(compactions, 1, "the frozen rubric is never recompacted");
+  assert.equal(classifications, 2, "one failed call, one durable success, then reuse across rounds");
+  assert.deepEqual(h.store.listReadinessOverrides(run.id), overrides);
+  assert.equal(h.store.listEvents(run.id).filter((event) => event.kind === "criterion_fulfillment_classified").length, 1);
+  // A racing/replayed classifier cannot reverse the first persisted answer.
+  const raced = reopened.freezeRunCriterionFulfillment({ runId: run.id, source: legacyCriteria,
+    classifications: legacyCriteria.canonicalCriteria.map((criterion) => ({ criterionId: criterion.id, fulfilledByAction: null })),
+    submissionId: child.id, now: Date.now() });
+  assert.deepEqual(raced, upgraded);
+  assert.throws(() => reopened.freezeRunCriterionFulfillment({ runId: run.id,
+    source: { ...legacyCriteria, acceptanceCriteria: ["foreign intent"] }, classifications: [], submissionId: child.id, now: Date.now() }), /does not match/);
+});
+
+test("draft PR evidence reaches review before publication and survives a Persona repair round", async (t) => {
+  const id = "draft-pr-before-publication";
+  const head = { sha: "abc" };
+  let compactions = 0;
+  let reviews = 0;
+  const criterion = "Draft PR title and deviation notes meet the requested content requirements";
+  const h = await harness(t, id, undefined, {
+    head,
+    humanDecisions: () => [{ decision: "Open a PR titled fix: preserve drafts, include deviation notes and return the PR URL",
+      rationale: null, source: { kind: "review", id: "pr-requirements" } }],
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true,
+      execute: async (prompt) => {
+        compactions++;
+        assert.match(prompt, /Draft PR title and body content/);
+        assert.match(prompt, /Preserve publication-only outcomes as canonical criteria/);
+        assert.match(prompt, /Record publication details in constraints/);
+        assert.doesNotMatch(prompt, /Do not make a published PR URL.*canonicalCriteria/);
+        assert.match(prompt, /Do not defer implementation, tests/);
+        assert.match(prompt, /Requests to inspect an existing PR still require the requested inspection evidence/);
+        assert.match(prompt, /fix: preserve drafts/);
+        // Tool-less model fixture: pin the extraction contract, then exercise the real
+        // readiness, freezing, feedback and round transitions without model tokens.
+        return { kind: "ok", value: {
+          constraints: ["At the Pull Request action, verify the published title, deviation notes and URL"],
+          acceptanceCriteria: [criterion],
+          canonicalCriteria: [{ text: criterion, material: true, suggestedProofClass: "focused_execution" }],
+        } };
+      },
+    }),
+    runner: { ...passingRunner, async run(prompt) {
+      reviews++;
+      assert.match(prompt, /Review draft PR title and body content/);
+      assert.match(prompt, /Do not demand a published PR URL/);
+      if (reviews === 1) return JSON.stringify({ verdict: "fail", summary: "Draft omits a deviation",
+        requestedChanges: [{ basis: "substantive", title: "Describe the deviation in the draft",
+          rationale: "Content review still applies before publication.",
+          evidence: [{ kind: "goal", quote: "include deviation notes" }] }], confidence: 1 });
+      return JSON.stringify({ verdict: "pass", summary: "Draft content is complete",
+        approvalDetails: { reason: "The draft now describes the deviation.", evidence: [] }, confidence: 1 });
+    } },
+  });
+  const stage = (clientItemId: string, output: string) => h.manager.stageAgentEvidence(id, {
+    images: [], commandOutputs: [{ kind: "command", clientItemId, command: "check draft-pr.md",
+      exitCode: 0, output, caption: "Draft content validation, no published PR", repositoryScope: "all" }],
+    coverage: [{ clientCriterionId: "draft-content", criterion, proofClass: "focused_execution",
+      repositoryScope: "all", links: [{ clientItemId, role: "execution" }] }],
+  });
+  await stage("draft-check-1", "Title: fix: preserve drafts; deviation notes checked");
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "draft-first" });
+  assert.equal(submitted.ok, true); if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(() => h.store.listDeliveries(runId).some(d => d.kind === "persona_feedback" && d.state === "delivered"),
+    "draft content must reach Persona review without a PR URL");
+  const first = h.store.latestSubmission(runId)!;
+  assert.equal(first.readiness?.status, "ready");
+  await stage("draft-check-2", "Title: fix: preserve drafts; deviation notes now describe the repaired behavior");
+  head.sha = "repaired-head";
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  await waitFor(() => h.store.getRun(runId)?.status === "completed", "repaired draft did not reach review");
+  const next = h.store.latestSubmission(runId)!;
+  assert.equal(next.round, 2);
+  assert.equal(next.readiness?.status, "ready");
+  assert.equal(compactions, 1);
+  assert.equal(reviews, 2);
+  assert.deepEqual(WorkflowContextSnapshotSchema.parse(next.context).canonicalCriteria,
+    WorkflowContextSnapshotSchema.parse(first.context).canonicalCriteria);
+  assert.equal(h.store.listReadinessOverrides(runId).length, 0);
+  assert.equal(h.injected.some(packet => packet.includes("# Evidence preflight needs repair")), false);
 });

@@ -3,7 +3,7 @@ import { hasBlocker } from "@shared/session.ts";
 import type { SessionBlocker } from "@shared/types.ts";
 import type { Context, Hono } from "hono";
 import {
-  SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
+  RequestSessionControlSchema, SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
   type SessionControlAction,
 } from "@shared/protocol.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
@@ -14,6 +14,8 @@ import { logEvent } from "./db.ts";
 import { parseBody } from "./http-body.ts";
 import { SESSION_CONTROL_DESKTOP_REQUIRED } from "@shared/session-control-authorization.ts";
 import { sessionControlAuthorization, type AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { requireFeature } from "./feature-flags/index.ts";
+import { SESSION_CONTROL_REQUESTS_FLAG, SessionControlRequests } from "./session-control-requests.ts";
 
 // Bound to the exact in-process Request, not headers or inherited async context.
 // Only the verified control endpoint can populate this map; direct HTTP cannot.
@@ -109,26 +111,86 @@ export function registerSessionControlRoutes(
    * apply again. A throw here refuses the revoke with the live grant untouched.
    */
   onRevoke: (sessionId: string) => void = () => {},
+  /** A session's own asks for the grant; built here unless a caller needs to hold it. */
+  requests?: SessionControlRequests,
 ): void {
+  // Built on first use, not here: it subscribes to the Registry and the flag store, and an app
+  // that never sees an ask - most of the HTTP tests' stub registries among them - owes neither.
+  let asks = requests ?? null;
+  const sessionAsks = (): SessionControlRequests => (asks ??= new SessionControlRequests(registry));
   app.put("/api/sessions/:id/session-control", async (c) => {
     // This is an operator setting. Neither a tool nor an attributed agent request can grant it.
     const refusal = sessionControlCallerRefusal(c);
     if (refusal) return c.json({ error: refusal }, 403);
     const parsed = await parseBody(c, SessionControlGrantSchema);
     if (!parsed.ok) return parsed.res;
-    const { enabled, requestId } = parsed.data;
+    const { enabled, requestId, controlRequestId } = parsed.data;
     const sessionId = c.req.param("id");
     if (!requestId) return c.json({ error: SESSION_CONTROL_DESKTOP_REQUIRED }, 403);
+    // Accepting a session's ask is this same grant, armed by the same private click. The ask
+    // only says which card was on screen: one the session no longer holds - answered, expired,
+    // or raised by a conversation since replaced - refuses rather than granting whoever holds
+    // the session now. Checked before the click is consumed, so a refusal costs no click.
+    if (controlRequestId !== undefined) {
+      if (!enabled) return c.json({ error: "Accepting a request can only turn session control on" }, 400);
+      if (!sessionAsks().isPending(sessionId, controlRequestId)) {
+        return c.json({ error: "This session is no longer asking for control" }, 409);
+      }
+    }
     // Hold the identity across the asynchronous private-channel check. A click for the
     // old conversation must not enable a replacement that appeared while it was in flight.
     // Revocation only removes authority, so an identity change must not block it.
     const before = registry.sessionControlIdentity(sessionId);
     if (!await authorize({ sessionId, enabled, requestId })) return c.json({ error: SESSION_CONTROL_DESKTOP_REQUIRED }, 403);
+    // The ask may have been declined in another window, or expired, while the click was checked.
+    if (controlRequestId !== undefined && !sessionAsks().isPending(sessionId, controlRequestId)) {
+      return c.json({ error: "This session is no longer asking for control" }, 409);
+    }
     if (!enabled) onRevoke(sessionId);
     if ((enabled && registry.sessionControlIdentity(sessionId) !== before) || !registry.setSessionControlEnabled(sessionId, enabled)) {
       return c.json({ error: "Session control requires a live, registered conversation" }, 409);
     }
-    logEvent(c.req.param("id"), Date.now(), "session_control_grant", { enabled: parsed.data.enabled });
+    logEvent(c.req.param("id"), Date.now(), "session_control_grant", {
+      enabled: parsed.data.enabled,
+      ...(controlRequestId ? { controlRequestId } : {}),
+    });
+    return c.json({ ok: true });
+  });
+
+  // --- A session's own ask for the grant (`request_session_control`) ---
+  //
+  // Raising and waiting are the asking session's alone: the machine token plus its signed
+  // Registry credential name the caller, never a body id. Neither route can grant anything.
+  app.post("/mcp/session-control/requests", requireFeature(SESSION_CONTROL_REQUESTS_FLAG), async (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, RequestSessionControlSchema);
+    if (!parsed.ok) return parsed.res;
+    const caller = sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!caller) return c.json({ error: "Only a live session Mission Control registered can ask for session control" }, 403);
+    const result = sessionAsks().request(caller, parsed.data.reason);
+    if (result.status === "pending") logEvent(caller, Date.now(), "session_control_request", { requestId: result.id });
+    return c.json(result);
+  });
+
+  app.get("/mcp/session-control/requests/:requestId/wait", requireFeature(SESSION_CONTROL_REQUESTS_FLAG), async (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const caller = sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!caller) return c.json({ error: "This conversation is no longer the one that asked for session control" }, 403);
+    const result = await sessionAsks().wait(caller, c.req.param("requestId"), undefined, c.req.raw.signal);
+    if (!result) return c.json({ error: "No such session control request for this session" }, 404);
+    return c.json(result);
+  });
+
+  // The operator's Decline. Like a revoke it only removes authority, so it needs no private
+  // click; it still refuses every caller that identifies itself as a tool or an agent.
+  app.post("/api/sessions/:id/session-control/requests/:requestId/decline", requireFeature(SESSION_CONTROL_REQUESTS_FLAG), (c) => {
+    const refusal = sessionControlCallerRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    const sessionId = c.req.param("id");
+    if (!sessionAsks().decline(sessionId, c.req.param("requestId"))) {
+      return c.json({ error: "This session is no longer asking for control" }, 409);
+    }
+    logEvent(sessionId, Date.now(), "session_control_request_declined", { requestId: c.req.param("requestId") });
     return c.json({ ok: true });
   });
 

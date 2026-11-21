@@ -1,14 +1,13 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
-import { mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 
 // Hiding launch instructions from conversations
 // (docs/plans/hidden-launch-instructions/phase-1-durable-launch-presentation.md): a fresh
@@ -669,17 +668,10 @@ test("a direct supervisor caller that supplies no presentation is unchanged", as
 /** A repo a worktree can actually be cut from, optionally carrying an agent-memory index. */
 function seedRepo(name: string, withMemory = false): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  if (withMemory) {
-    mkdirSync(join(repo, ".agents", "memory"), { recursive: true });
-    writeFileSync(join(repo, ".agents", "memory", "MEMORY.md"), "# Memory index\n");
-  }
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, {
+    branch: "main",
+    files: { "file.txt": "base\n", ...(withMemory ? { ".agents/memory/MEMORY.md": "# Memory index\n" } : {}) },
+  });
   return repo;
 }
 

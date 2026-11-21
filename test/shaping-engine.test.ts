@@ -3,6 +3,9 @@
 // injected stand-ins, so nothing here starts a process or opens a socket.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   canonicalJson,
@@ -333,6 +336,20 @@ test("a successful reply that lost an entry to redaction stays ok and says what 
   assert.equal(row.reason, "An entry was dropped because its id contained the value of ACME_TOKEN.");
 });
 
+test("what redaction dropped leads the reason, so notes that fill it never hide the diagnostic", async () => {
+  const drop = "An entry was dropped because its id contained the value of ACME_TOKEN.";
+  const long = "n".repeat(SHAPING_LIMITS.replyNoteChars);
+  for (const degraded of [false, true]) {
+    const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data",
+      data: JSON.stringify({ guidance: [{ id: "kept", body: "fine" }], notes: [long], degraded }), redacted: true,
+      redactionNotes: [drop] }), input(1));
+    const row = result.summary!.shapers[0]!;
+    assert.equal(row.outcome, degraded ? "degraded" : "ok");
+    assert.ok(row.reason?.startsWith(`${drop} n`), String(degraded));
+    assert.equal(row.reason?.length, SHAPING_LIMITS.reasonChars);
+  }
+});
+
 test("a transport receives the request as the wire contract parsed it, without undeclared fields", async () => {
   const seen: unknown[] = [];
   const extra = input(1);
@@ -542,13 +559,18 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport", async () => {
+test("the placeholder transports answer unavailable, naming the transport, and the built-in needs a worktree", async (t) => {
   const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
   const http = remote("http");
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
-  const result = await shapeTask(input(1), { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
+  // A worktree path this test controls and never creates, so the host's filesystem cannot answer for it.
+  const base = mkdtempSync(join(tmpdir(), "mission-shaping-absent-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const absent = input(1);
+  absent.context.repositories = absent.context.repositories.map((repo) => ({ ...repo, path: join(base, "billing-api") }));
+  const result = await shapeTask(absent, { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
-    ["files", "unavailable", "The built-in transport is not available in this build yet."],
+    ["files", "unavailable", "The repository's worktree is not available on this machine."],
     ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
     ["http", "unavailable", "The HTTP transport is not available in this build yet."],
   ]);

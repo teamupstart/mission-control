@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { onlineDatabaseBackup } from "./online.ts";
 import { upgradeDatabaseToCurrentSchema } from "../db.ts";
 import {
   validateDatabaseBackupForRestore,
@@ -27,7 +28,7 @@ export async function verifyDatabaseBackupForRestore(
   let staged: DatabaseSync | undefined;
   try {
     candidate = new DatabaseSync(candidatePath, { readOnly: true });
-    await sqliteBackup(candidate, stagedPath);
+    await onlineDatabaseBackup(candidate, stagedPath);
     candidate.close();
     candidate = undefined;
 

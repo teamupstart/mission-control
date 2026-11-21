@@ -72,6 +72,8 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
     "resident active hours ships as a preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-profiles-fold")?.stage, "preview",
+    "the Residents drawer's Profiles fold ships as a preview");
   assert.equal(registry.HEADLESS_MODE_FLAG_ID, "headless-mode");
   assert.deepEqual(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.HEADLESS_MODE_FLAG_ID), {
     id: "headless-mode",

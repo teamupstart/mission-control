@@ -48,6 +48,13 @@ export const FEATURE_FLAGS = [
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },
   {
+    id: "resident-profiles-fold",
+    label: "Fold the drawer's Profiles",
+    description: "Adds a chevron to the Residents drawer's Profiles heading that folds the launch list away, so the live residents above get the room.",
+    stage: "preview",
+    keywords: ["residents", "drawer", "profiles", "launch", "collapse"],
+  },
+  {
     id: "session-control-requests",
     label: "Session control requests",
     description: "Let a session ask, through Mission Control's MCP tools, for permission to control other sessions. "

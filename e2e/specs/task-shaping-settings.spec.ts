@@ -8,7 +8,6 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { SHAPING_IDENTITY_PROBE_MS } from "../../src/web/lib/shaping-write-identity.ts";
 
 // Settings > Task shaping, end to end against the shipped registry: the category follows its
 // flag in every open window with no reload, an import is reviewed and saved switched off, and
@@ -1977,7 +1976,7 @@ test("a save delayed past a reload of its tab never overwrites a newer save made
   await identity.fill("after-reload");
   await save.click();
   await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("after-reload");
-  // The save from before the reload now arrives: the tab kept its identity, so it is refused.
+  // The save from before the reload now arrives: the reloaded page named its page in its lineage, so it is refused.
   goes.open();
   await expect.poll(() => late, { timeout: 15_000 }).toBe(409);
   expect((await shapingConfig(daemon)).caller.user).toBe("after-reload");
@@ -2047,28 +2046,27 @@ test("after an identical reimport answers before its frame, the row waits for th
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["answered-first"]).toBe(true);
 });
 
-test("a duplicated tab takes a write identity of its own, and a reloaded tab keeps its identity", async ({ dashboard: page, context, daemon }) => {
+test("every page load takes a write identity of its own, and names the ones its tab held before", async ({ dashboard: page, context, daemon }) => {
   await setFlag(daemon, true);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(panel(page)).toBeVisible();
-  const identity = (target: Page) => target.evaluate(() => sessionStorage.getItem("mission.shaping.write-identity"));
-  await expect.poll(() => identity(page)).toMatch(/^[0-9a-f-]{36}$/);
-  const original = (await identity(page))!;
-  // A duplicate starts with a copy of the tab's session storage, its identity included.
-  const duplicate = await context.newPage();
-  await duplicate.addInitScript((copied) => {
-    if (!sessionStorage.getItem("mission.shaping.write-identity")) sessionStorage.setItem("mission.shaping.write-identity", copied);
-  }, original);
+  await expect.poll(() => writeIdentity(page)).toMatchObject({ window: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+  const original = await writeIdentity(page);
+  // A duplicate starts with a copy of the tab's session storage, and takes an identity of its own
+  // at once, with the original's in its lineage: it never writes under the one the original still holds.
+  const duplicate = await duplicateTab(page, context);
   await duplicate.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(panel(duplicate)).toBeVisible();
-  // The original tab still holds it, so the duplicate takes one of its own.
-  await expect.poll(() => identity(duplicate)).not.toBe(original);
-  expect(await identity(page)).toBe(original);
-  // A reload is not a duplicate: nothing else holds the identity, so the tab keeps it.
+  const copy = await writeIdentity(duplicate);
+  expect(copy.window).not.toBe(original.window);
+  expect(copy.lineage).toEqual([...original.lineage, original.window]);
+  expect((await writeIdentity(page)).window).toBe(original.window);
+  // A reload takes a new identity too, and names the one it replaced.
   await page.reload();
   await expect(panel(page)).toBeVisible();
-  await page.waitForTimeout(300);
-  expect(await identity(page)).toBe(original);
+  const reloaded = await writeIdentity(page);
+  expect(reloaded.window).not.toBe(original.window);
+  expect(reloaded.lineage).toEqual([...original.lineage, original.window]);
 });
 
 test("an import whose row another writer moved on meanwhile holds the row until the stream reaches the import", async ({ dashboard: page, daemon }) => {
@@ -2118,50 +2116,50 @@ test("an import whose row another writer moved on meanwhile holds the row until 
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["passed-by"]).toBe(true);
 });
 
-test("a duplicated tab's first save waits for the identity check, and goes out under an identity of its own", async ({ dashboard: page, context, daemon }) => {
+test("a duplicated tab's first save goes out at once under an identity of its own, and the original's next save still lands", async ({ dashboard: page, context, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("first-save", "First save") });
-  // The original tab holds its answer that the identity is taken until the test lets it go, as a
-  // busy tab answers late.
-  await page.addInitScript(() => {
-    const post = BroadcastChannel.prototype.postMessage;
-    const held: Array<() => void> = [];
-    (window as unknown as { answerIdentityProbe: () => void }).answerIdentityProbe = () => { for (const send of held.splice(0)) send(); };
-    BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
-      if ((message as { type?: string } | null)?.type === "taken") held.push(() => post.call(this, message));
-      else post.call(this, message);
-    };
-  });
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  await page.reload();
-  await expect(pill(page, "First save")).toBeVisible();
-  const identity = (target: Page) => target.evaluate(() => sessionStorage.getItem("mission.shaping.write-identity"));
-  await expect.poll(() => identity(page)).toMatch(/^[0-9a-f-]{36}$/);
-  const original = (await identity(page))!;
-  const duplicate = await context.newPage();
-  await duplicate.addInitScript(({ copied, probeMs }) => {
-    if (!sessionStorage.getItem("mission.shaping.write-identity")) sessionStorage.setItem("mission.shaping.write-identity", copied);
-    // However long this page takes to load, its wait for that answer outlasts the test's hold.
-    const native = window.setTimeout;
-    window.setTimeout = ((handler: TimerHandler, ms?: number, ...rest: unknown[]) =>
-      native(handler, ms === probeMs ? 60_000 : ms, ...rest)) as typeof window.setTimeout;
-  }, { copied: original, probeMs: SHAPING_IDENTITY_PROBE_MS });
-  const sends: string[] = [];
-  duplicate.on("request", (request) => {
-    if (request.url().endsWith("/api/shaping") && request.method() === "PUT") sends.push(request.headers()["x-mission-shaping-order"] ?? "");
-  });
+  await expect(pill(page, "First save")).toHaveAccessibleName("First save: off");
+  await expect.poll(() => writeIdentity(page)).toMatchObject({ window: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+  const original = await writeIdentity(page);
+  const duplicate = await duplicateTab(page, context);
   const sent = duplicate.waitForRequest((request) => request.url().endsWith("/api/shaping") && request.method() === "PUT");
   await duplicate.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  // Saved before the original tab has answered: the save waits for that answer.
+  // Saved the moment the panel can take it: nothing is waited for, and nothing is copied.
   await pill(duplicate, "First save").click();
-  await duplicate.waitForTimeout(300);
-  expect(sends, "nothing is sent under the copied identity while the check is open").toEqual([]);
-  await page.evaluate(() => { (window as unknown as { answerIdentityProbe: () => void }).answerIdentityProbe(); });
-  const sentUnder = ((await sent).headers()["x-mission-shaping-order"] ?? "").split(" ")[0];
-  expect(sentUnder).not.toBe(original);
-  expect(sentUnder).toBe(await identity(duplicate));
+  const [sentUnder, sequence, , , lineage] = ((await sent).headers()["x-mission-shaping-order"] ?? "").split(" ");
+  expect(sentUnder).not.toBe(original.window);
+  expect(sentUnder).toBe((await writeIdentity(duplicate)).window);
+  expect(lineage?.split(",")).toContain(original.window);
+  expect(Number(sequence)).toBeGreaterThan(0);
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["first-save"]).toBe(true);
+  // The original tab saves after the duplicate did: its own history holds nothing newer, so it lands.
+  await expect(pill(page, "First save")).toHaveAccessibleName("First save: on");
+  const switched = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "First save").click();
+  expect((await switched).status()).toBe(200);
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["first-save"]).toBe(false);
 });
+
+/** A page's shaping write identity and lineage, as its tab's session storage holds them. */
+function writeIdentity(target: Page): Promise<{ window: string | null; lineage: string[] }> {
+  return target.evaluate(() => ({
+    window: sessionStorage.getItem("mission.shaping.write-identity"),
+    lineage: (JSON.parse(sessionStorage.getItem("mission.shaping.write-lineage") ?? "[]") as Array<{ id: string }>).map((entry) => entry.id),
+  }));
+}
+
+/** A new page that starts with a copy of `page`'s session storage, as a duplicated tab does. */
+async function duplicateTab(page: Page, context: import("@playwright/test").BrowserContext): Promise<Page> {
+  const copied = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage)));
+  const duplicate = await context.newPage();
+  await duplicate.addInitScript((storage) => {
+    if (sessionStorage.length > 0) return;
+    for (const [key, value] of Object.entries(storage)) sessionStorage.setItem(key, value);
+  }, copied);
+  return duplicate;
+}
 
 test("a late answer for another row's write never lowers the commit an imported row waits for", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);

@@ -306,26 +306,29 @@ before the body limit, so such a request is refused as forbidden whatever its si
   removal, moves and dry runs off and asks the operator to reload. Any other refused intent
   answers 400 with `{ error, reason }`.
 
-  The dashboard sends each write with an `x-mission-shaping-order` header: its window's id, the
-  write's number in that window, and the controls it affects. As a write is about to apply, after
-  any wait such as shaper discovery, it answers 409 `superseded` and changes nothing once a later
-  write from the same window has been applied to one of those controls. So a write whose answer
-  the panel stopped waiting for, which it may then send again, never overwrites the newer edit.
+  The dashboard sends each write with an `x-mission-shaping-order` header: its page's id, the
+  write's number, and the controls it affects. As a write is about to apply, after any wait such
+  as shaper discovery, it answers 409 `superseded` and changes nothing once a later write from the
+  same page, or from a later page of the same tab, has been applied to one of those controls. So a
+  write whose answer the panel stopped waiting for, which it may then send again, never overwrites
+  the newer edit.
   That ordering lives in the daemon's memory, so the header also names the daemon process whose
   view the window last read (the view's `instance`, random per process): a write made against a
   process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
   the restarted daemon no longer knows what came after it. An ordered write that names no instance
-  was made against a daemon older than instances, so it is refused the same way. The window's id and its last sequence
-  are kept in the tab's session storage, and each sequence is the time the write was sent, in
-  microseconds, never lower than the last, so reloading the tab keeps its order: a write sent
-  before the reload and delayed past it is refused once one sent after it has applied. The daemon
-  keeps each record of an applied write for ten minutes after applying it, however many other
-  windows write meanwhile, and refuses a write sent more than ten minutes ago with 409 `expired`:
-  a record is forgotten only once every write it could refuse is refused that way instead. A
-  duplicated tab copies that storage, so a tab that loads asks the other open tabs whether its
-  identity is in use and takes a new one when it is; a reloaded tab hears no answer and keeps its
-  own. A save made in the first moment after the tab loads waits, up to 400 ms, for that answer,
-  so a duplicate never sends one under the identity it copied. A write without the header, from
+  was made against a daemon older than instances, so it is refused the same way. Every page load
+  takes an id of its own, so no two open pages share one, a duplicated tab included. The tab's
+  session storage keeps the ids it wrote under before, for ten minutes after each was replaced, and
+  the header names them too: an applied write is recorded against them as well as its own id, so a
+  write sent before a reload and delayed past it is refused once one sent after the reload has
+  applied. A duplicated tab copies that storage, so its writes are recorded against the original
+  tab's id as well, and an earlier write from the original, delayed past a later one from the
+  duplicate on the same control, is refused too, which keeps the newer edit either way; the
+  duplicate is never refused for the original's writes. Each sequence is the time the write was
+  sent, in microseconds, never lower than the last the tab sent. The daemon keeps each record of an
+  applied write for ten minutes after applying it, however many other pages write meanwhile, and
+  refuses a write sent more than ten minutes ago with 409 `expired`: a record is forgotten only
+  once every write it could refuse is refused that way instead. A write without the header, from
   any other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is

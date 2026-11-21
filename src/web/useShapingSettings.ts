@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { nextShapingWriteSequence, shapingWriteIdentity, shapingWriteIdentityReady } from "./lib/shaping-write-identity.ts";
+import { nextShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
@@ -64,7 +64,7 @@ export function useShapingSettings(
       return ids.length === Object.keys(current).length ? current : Object.fromEntries(ids.map((id) => [id, current[id]!]));
     });
   }, [confirmed]);
-  // Claim this tab's write identity as it mounts, before any write needs it.
+  // Take this page's write identity as it mounts, before any write needs it.
   useEffect(() => { shapingWriteIdentity(); }, []);
   // The controls with a request still awaiting its HTTP answer. A frame can free the panel before
   // that answer, but the same control stays locked until it arrives: a second write on it could
@@ -161,10 +161,9 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      // A tab that has just loaded may be a duplicate holding a copy of another tab's identity: its
-      // write waits until the other tabs have had the chance to say so.
-      const identity = await shapingWriteIdentityReady();
-      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(identity, nextShapingWriteSequence(), keys, viewInstance(confirmed)) });
+      const identity = shapingWriteIdentity();
+      const order = shapingWriteOrder(identity.window, nextShapingWriteSequence(), keys, viewInstance(confirmed), identity.lineage);
+      const result = await api.setShaping(request, { signal: timeout, order });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer

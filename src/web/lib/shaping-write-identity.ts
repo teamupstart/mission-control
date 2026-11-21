@@ -1,25 +1,27 @@
-// This tab's identity and sequence for the daemon's shaping write ordering.
+// This page's identity and sequence for the daemon's shaping write ordering.
 //
-// Kept in session storage, so a reload keeps them: a write sent before the reload and delayed
-// past it is ordered against the writes sent after it. Duplicating a tab copies its session
-// storage too, which would leave two live tabs sharing one history, so a tab that loads asks the
-// others over a broadcast channel whether its identity is already in use, and takes a new one if
-// it is. A reloaded tab hears no answer, since the page that held its identity is gone. Until the
-// other tabs have had the chance to answer, a write waits (`shapingWriteIdentityReady`), so a
-// duplicate never sends one under the identity it copied.
+// Every page load takes an identity of its own, so no two live pages ever share one, a duplicated
+// tab included, and nothing has to ask the other tabs or wait for their answer. The identities the
+// tab held before, its lineage, are kept in session storage and sent with each write: the daemon
+// records an applied write against them as well as against its own identity, so a write sent
+// before a reload and delayed past it is refused once a newer write from the reloaded page has
+// applied. A duplicated tab copies that storage, so it inherits the lineage but never the identity
+// the original tab still writes under.
+
+import { SHAPING_WRITE_WINDOW_MS } from "@shared/shaping.ts";
 
 const ID_KEY = "mission.shaping.write-identity";
+const LINEAGE_KEY = "mission.shaping.write-lineage";
 const SEQUENCE_KEY = "mission.shaping.write-sequence";
-const CHANNEL = "mission.shaping.write-identity";
-
-type IdentityMessage = { type: "probe"; id: string } | { type: "taken"; id: string };
 
 /**
- * How long a tab that has just loaded waits for another tab to say its identity is taken. Tabs of
- * one browser answer each other in a few milliseconds; this only delays a write made in the first
- * moment after the panel loads.
+ * The most earlier identities a write names. An earlier identity matters only while a write sent
+ * under it could still apply, `SHAPING_WRITE_WINDOW_MS` after it was replaced, so this bounds only a
+ * tab reloaded more often than this in that time.
  */
-export const SHAPING_IDENTITY_PROBE_MS = 400;
+export const SHAPING_LINEAGE_KEPT = 8;
+
+const IDENTITY = /^[A-Za-z0-9-]{1,64}$/;
 
 /** A random id, as the write-order header accepts it. */
 export function newShapingWriteIdentity(): string {
@@ -36,64 +38,47 @@ function writeStored(key: string, value: string): void {
   try { sessionStorage.setItem(key, value); } catch { /* Session storage unavailable: this load keeps its own. */ }
 }
 
-let identity: string | null = null;
-let channel: BroadcastChannel | null = null;
-let lastSequence = 0;
-/** Settles once the probe is answered or its time is up; null until a probe went out, or when none can. */
-let probed: Promise<void> | null = null;
-let probeAnswered: (() => void) | null = null;
-
-/** This tab's write identity: the stored one, unless another live tab already holds it. */
-export function shapingWriteIdentity(): string {
-  if (identity) return identity;
-  const stored = readStored(ID_KEY);
-  identity = stored && /^[A-Za-z0-9-]{1,64}$/.test(stored) ? stored : newShapingWriteIdentity();
-  writeStored(ID_KEY, identity);
-  claim();
-  return identity;
+/** An identity the tab held before, and when it was replaced, in milliseconds. */
+interface Earlier {
+  id: string;
+  until: number;
 }
 
-/** This tab's write identity, once the other live tabs have had the chance to say it is theirs. */
-export async function shapingWriteIdentityReady(): Promise<string> {
-  shapingWriteIdentity();
-  await probed;
-  return identity!;
-}
-
-/** Ask the other live tabs whether this identity is theirs, and answer their asking about ours. */
-function claim(): void {
-  if (channel || typeof BroadcastChannel === "undefined") return;
+function readLineage(): Earlier[] {
   try {
-    channel = new BroadcastChannel(CHANNEL);
+    const parsed: unknown = JSON.parse(readStored(LINEAGE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is Earlier => typeof entry === "object" && entry !== null
+      && typeof (entry as Earlier).id === "string" && IDENTITY.test((entry as Earlier).id)
+      && typeof (entry as Earlier).until === "number");
   } catch {
-    return;
+    return [];
   }
-  // Never what keeps a process alive where one runs outside a browser.
-  (channel as unknown as { unref?: () => void }).unref?.();
-  channel.onmessage = (event: MessageEvent<IdentityMessage>) => {
-    const message = event.data;
-    if (!message || message.id !== identity) return;
-    if (message.type === "probe") {
-      // Another tab loaded with this tab's identity: a duplicate. This tab keeps it.
-      channel?.postMessage({ type: "taken", id: message.id } satisfies IdentityMessage);
-    } else if (message.type === "taken") {
-      // This tab is the duplicate: it takes an identity of its own.
-      identity = newShapingWriteIdentity();
-      writeStored(ID_KEY, identity);
-      probeAnswered?.();
-    }
-  };
-  if (!identity) return;
-  probed = new Promise<void>((resolve) => {
-    const timer = setTimeout(() => settle(), SHAPING_IDENTITY_PROBE_MS);
-    const settle = (): void => {
-      clearTimeout(timer);
-      probeAnswered = null;
-      resolve();
-    };
-    probeAnswered = settle;
-  });
-  channel.postMessage({ type: "probe", id: identity } satisfies IdentityMessage);
+}
+
+/** The identity this page writes under, and the identities its tab held before it. */
+export interface ShapingWriteIdentity {
+  window: string;
+  lineage: readonly string[];
+}
+
+let current: ShapingWriteIdentity | null = null;
+let lastSequence = 0;
+
+/**
+ * This page's write identity, taken on first use: a new one, whose lineage is the identity the tab
+ * held before this load and that one's lineage, less any replaced longer ago than a write can wait.
+ */
+export function shapingWriteIdentity(now = Date.now()): ShapingWriteIdentity {
+  if (current) return current;
+  const earlier = readLineage().filter((entry) => now - entry.until <= SHAPING_WRITE_WINDOW_MS);
+  const previous = readStored(ID_KEY);
+  if (previous && IDENTITY.test(previous)) earlier.push({ id: previous, until: now });
+  const kept = earlier.slice(-SHAPING_LINEAGE_KEPT);
+  current = { window: newShapingWriteIdentity(), lineage: kept.map((entry) => entry.id) };
+  writeStored(ID_KEY, current.window);
+  writeStored(LINEAGE_KEY, JSON.stringify(kept));
+  return current;
 }
 
 /**

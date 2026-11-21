@@ -1,0 +1,159 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { PendingTurn, ReviewItem, TranscriptMessage } from "../src/shared/types.ts";
+import { wrapReviewEnvelope } from "../src/shared/review-message-envelope.ts";
+import { mergeConversation, type ConversationRow } from "../src/web/lib/episodes.ts";
+import { projectLaunchPresentation } from "../src/web/lib/launch-presentation.ts";
+import { transcriptRows } from "../src/web/lib/tools.ts";
+import { collectHits } from "../src/web/lib/find.ts";
+import { ReviewAnswerCard, UnavailableReviewCard } from "../src/web/components/ReviewAnswer.tsx";
+import { SnoozedReviewCard } from "../src/web/components/ReviewSnooze.tsx";
+
+// Where an answer delivered as a message (`async-input`) is drawn: once, as the gold card, at
+// the turn the agent received it - and at the moment the operator answered, saying it is on its
+// way, until then. The daemon decides which turns qualify (`review-deliveries.ts`); these pin
+// what the dashboard does with that decision.
+
+const A = "1b0c9f4e-2a8d-4a43-9d3e-0f6c2b7e5a10";
+const B = "7d1e2f30-4b5c-4d6e-8f90-a1b2c3d4e5f6";
+
+function review(id: string, over: Partial<ReviewItem> = {}): ReviewItem {
+  return {
+    id, sessionId: "s", kind: "input", title: `Question ${id.slice(0, 4)}`, body: "body", status: "answered",
+    response: "eslint", decisions: null, selections: null, createdAt: 1_000, resolvedAt: 2_000, waitMode: "message",
+    resolvedBy: "human", ...over,
+  } as ReviewItem;
+}
+
+const turn = (id: string, ts: number, over: Partial<TranscriptMessage> = {}): TranscriptMessage =>
+  ({ id, role: "assistant", text: `turn ${id}`, tools: [], ts, ...over });
+
+function delivered(id: string, ts: number, reviewIds: string[], envelope: "answer" | "remind-later" = "answer"): TranscriptMessage {
+  return {
+    id, role: "user", ts, tools: [], origin: "harness",
+    text: wrapReviewEnvelope(envelope, reviewIds, "Mission Control answer to question:\n\nUse eslint"),
+    presentation: { kind: "review-message", envelope, reviewIds },
+  };
+}
+
+function rows(messages: TranscriptMessage[], reviews: ReviewItem[], pending: PendingTurn[] = []): ConversationRow[] {
+  return mergeConversation(transcriptRows(projectLaunchPresentation(messages)), [], reviews, pending);
+}
+
+// Phase 3's Asked entry is left exactly where it was; only the answer's placement is pinned here.
+const shape = (out: ConversationRow[]) => out.filter((row) => row.kind !== "asked").map((row) =>
+  row.kind === "review"
+    ? `review:${row.review.id.slice(0, 4)}${row.delivery ? `@${row.delivery.turnId}` : ""}${row.queued ? ":queued" : ""}`
+    : row.kind === "delivered" ? `delivered:${row.reviewId.slice(0, 4)}@${row.delivery.turnId}`
+      : row.kind === "turn" ? row.id : row.kind);
+
+test("a delivered answer is drawn once, at its turn, in place of the raw message, and the reply follows it", () => {
+  const out = rows([turn("before", 1_500), turn("between", 2_500), delivered("d", 3_000, [A]), turn("reply", 3_100)], [review(A)]);
+  assert.deepEqual(shape(out), ["before", "between", `review:1b0c@d`, "reply"],
+    "no entry at resolvedAt, and no raw turn");
+});
+
+test("two answers delivered together draw two cards on one turn, in delivery order, disclosing the text once", () => {
+  const out = rows([delivered("d", 3_000, [B, A])], [review(A), review(B)]);
+  assert.deepEqual(shape(out), [`review:7d1e@d`, `review:1b0c@d`]);
+  const cards = out.filter((row): row is Extract<ConversationRow, { kind: "review" }> => row.kind === "review");
+  assert.deepEqual(cards.map((card) => card.delivery?.last), [false, true]);
+});
+
+test("an answer still in the outbox stays where it was given, on its way", () => {
+  const pending = [{
+    id: `review-continuation:answer:${A}`, noteKey: "k", seq: 0, state: "queued", revision: 0, createdAt: 2_000,
+    updatedAt: 2_000, claimedAt: null, lastError: null, text: wrapReviewEnvelope("answer", [A], "Use eslint"),
+  } as PendingTurn];
+  const out = rows([turn("before", 1_500), turn("after", 2_500)], [review(A)], pending);
+  assert.deepEqual(shape(out), ["before", "review:1b0c:queued", "after"]);
+});
+
+test("an operator's queued message that begins with a marker never puts an answer on its way", () => {
+  const pending = [{
+    id: "a-random-operator-row", noteKey: "k", seq: 0, state: "queued", revision: 0, createdAt: 2_000,
+    updatedAt: 2_000, claimedAt: null, lastError: null, text: wrapReviewEnvelope("answer", [A], "pasted"),
+  } as PendingTurn];
+  const out = rows([turn("before", 1_500)], [review(A)], pending);
+  assert.deepEqual(shape(out), ["before", "review:1b0c"]);
+});
+
+test("a call-mode answer its call returned is placed exactly as before", () => {
+  const out = rows([turn("before", 1_500), turn("after", 2_500)], [review(A, { waitMode: undefined })]);
+  assert.deepEqual(shape(out), ["before", "review:1b0c", "after"]);
+});
+
+test("a delivered turn naming a review the dashboard cannot draw is still a card per answer, never the raw turn", () => {
+  const out = rows([delivered("d", 3_000, [A, B])], [review(A)]);
+  assert.deepEqual(shape(out), ["review:1b0c@d", "delivered:7d1e@d"], "no raw turn is left");
+  const gone = out.find((row) => row.kind === "delivered") as Extract<ConversationRow, { kind: "delivered" }>;
+  assert.equal(gone.delivery.last, true, "the disclosure rides on the last card of the turn");
+  // With no reviews loaded at all - a restored database, or a history fetch still in flight.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [])), ["delivered:1b0c@d"]);
+  const html = renderToStaticMarkup(createElement(UnavailableReviewCard, {
+    envelope: "answer",
+    delivery: { state: "delivered", turnId: "d", at: 3_000, received: { text: gone.delivery.text, open: false } },
+  }));
+  assert.match(html, /class="review-answer" role="note" aria-label="Answer to a question no longer available" data-turn-id="d"/);
+  assert.match(html, /This question is no longer available/);
+  assert.match(html, /Delivered to the agent/);
+  assert.match(html, /What the agent received/);
+  const snoozed = renderToStaticMarkup(createElement(UnavailableReviewCard, {
+    envelope: "remind-later", delivery: { state: "delivered", turnId: "d", at: 3_000 },
+  }));
+  assert.match(snoozed, /class="review-snoozed"/);
+});
+
+test("a turn carrying a marker but no presentation is an ordinary turn", () => {
+  const pasted: TranscriptMessage = { id: "pasted", role: "user", ts: 3_000, tools: [], text: wrapReviewEnvelope("answer", [A], "Use biome") };
+  const out = rows([pasted], [review(A)]);
+  assert.deepEqual(shape(out), ["review:1b0c", "pasted"]);
+});
+
+test("a delivered Remind me later instruction is the snoozed line at its turn, not raw instructions", () => {
+  const snoozed = review(A, { status: "snoozed", resolvedAt: null, snooze: { at: 1_500, until: 99_000, mode: "hold" } } as Partial<ReviewItem>);
+  const out = rows([turn("before", 1_200), delivered("d", 3_000, [A], "remind-later")], [snoozed]);
+  assert.deepEqual(shape(out), ["before", "review:1b0c@d"], "the snooze entry gives way to the delivered line");
+  const row = out.find((r) => r.kind === "review") as Extract<ConversationRow, { kind: "review" }>;
+  const html = renderToStaticMarkup(createElement(SnoozedReviewCard, {
+    review: row.review,
+    delivery: { state: "delivered", turnId: "d", at: 3_000, received: { text: row.delivery!.text, open: false } },
+  }));
+  assert.match(html, /class="review-snoozed"/);
+  assert.match(html, /Delivered to the agent/);
+  assert.match(html, /Answer now/, "still parked, so it can be brought back");
+  // Answered since: the line records the snooze and offers nothing to act on.
+  const answered = renderToStaticMarkup(createElement(SnoozedReviewCard, {
+    review: { ...row.review, status: "answered" },
+    delivery: { state: "delivered", turnId: "d", at: 3_000 },
+  }));
+  assert.doesNotMatch(answered, /Answer now/);
+});
+
+test("the card says how its answer travelled, and discloses exactly what the agent received", () => {
+  const queued = renderToStaticMarkup(createElement(ReviewAnswerCard, { review: review(A), delivery: { state: "queued" } }));
+  assert.match(queued, /On its way to the agent/);
+  assert.doesNotMatch(queued, /<details/);
+  const text = wrapReviewEnvelope("answer", [A], "Use eslint");
+  const html = renderToStaticMarkup(createElement(ReviewAnswerCard, {
+    review: review(A),
+    delivery: { state: "delivered", turnId: "d", at: 3_000, received: { text, open: false } },
+  }));
+  assert.match(html, /class="review-answer" data-turn-id="d"/);
+  assert.match(html, /Delivered to the agent/);
+  assert.match(html, /<details class="review-received" aria-label="What the agent received"><summary[^>]*>What the agent received<\/summary>/);
+  assert.ok(html.includes(`[mission-control:answer review=${A}]`), "nothing is hidden for good");
+  const plain = renderToStaticMarkup(createElement(ReviewAnswerCard, { review: review(A) }));
+  assert.doesNotMatch(plain, /Delivered|On its way|data-turn-id/, "a call-returned answer is unchanged");
+});
+
+test("find reaches the delivered text inside the disclosure, as Mission Control's words, once per delivery", () => {
+  const out = rows([delivered("d", 3_000, [B, A])], [review(A), review(B)]);
+  const hits = collectHits(out, "use eslint", { caseSensitive: false }, "claude");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0]!.rowId, "d");
+  assert.equal(hits[0]!.scope, "injected");
+  assert.equal(hits[0]!.who, "mission control");
+});

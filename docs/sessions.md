@@ -2939,8 +2939,9 @@ restored after restart is treated as detached because the stdio request owned by
 process cannot have survived it.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
-session's conversation, at the point in time you answered. What the entry shows depends on
-how you were asked:
+session's conversation, at the point in time you answered (or, for an answer delivered as a
+message, where the agent received it; see [Asking without stopping](#asking-without-stopping)).
+What the entry shows depends on how you were asked:
 
 | You answered | The entry shows |
 |---|---|
@@ -3076,9 +3077,27 @@ of waiting inside the call:
   where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
   standing approval, is delivered the same way.
 - That message is Mission Control's, not yours, whoever answered. It is never captured as a new
-  Goal prompt for the session and is not drawn as a turn you typed; your answer already appears
-  in the conversation as the gold answer entry. An answer to a question that waited inside the
-  call and lost it keeps today's behavior.
+  Goal prompt for the session and is not drawn as a turn you typed. Its first line is a marker,
+  `[mission-control:answer review=<id>]` (or `reviews=<id>,<id>` when several answers travel
+  together), followed by a blank line and the answer text; the agent reads both. A **Remind me
+  later** instruction carries `[mission-control:remind-later review=<id>]`. With the flag on, an
+  answer to a question that waited inside the call and lost it, and a Remind me later instruction
+  sent as a message, carry the line too; with the flag off they are sent exactly as before.
+- In the conversation, the message is drawn as the gold answer entry, once, at the point the agent
+  received it, with **Delivered to the agent** and its time, and the agent's reply directly below.
+  Until the outbox delivers it, the entry stays where you answered and reads **On its way to the
+  agent**. Several answers delivered together draw one entry each on that one turn. A delivered
+  Remind me later instruction is drawn as the blue **Snoozed** entry rather than as its text.
+  **What the agent received** on the entry opens exactly the text the agent read, and find in
+  conversation searches it. This holds after a daemon restart and on a reload of an old
+  conversation.
+- Only a turn Mission Control recorded delivering is drawn this way. The daemon records each
+  delivery before it sends it and binds it to the turn it wrote, so a message you type that
+  starts with the same marker line, or a copy of a delivered message you send, stays your own
+  visible message and still moves the Goal. If another send of the same words races a delivery,
+  neither turn is drawn as an entry. A delivered message naming a question the dashboard can no
+  longer find (after a database restore, say) is still drawn as an entry, reading **This question
+  is no longer available**, with the delivery time and **What the agent received**.
 - While the agent works past its question, its session is not amber. Once it stops with the
   question still pending, it is amber and reads **waiting on your answer**, and it holds queue
   sends and backlog assignment like any session that needs you. A resident is the exception: it
@@ -3093,8 +3112,8 @@ of waiting inside the call:
   every stopped session has been reached (or at once, when it is the selected session); a board tile carries the same count as a flag. The
   conversation shows an **Asked** entry where the question was filed. While it is open, the entry
   says **Still working** or **Stopped, waiting on this answer** and offers **Answer**; once it has
-  ended, the entry says how instead: answered (your answer is still the gold entry where you gave
-  it), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
+  ended, the entry says how instead: answered (your answer is the gold entry where its agent
+  received it), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
   the agent** with its reason. A question that waited in a call and was closed by a merge shows the
   same merge line in a **Closed** entry: in place of its Snoozed entry if it had been snoozed, or
   at the moment the merge closed it if it never was. These Closed entries show only while the flag

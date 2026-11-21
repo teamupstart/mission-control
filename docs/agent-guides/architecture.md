@@ -376,6 +376,33 @@ controller twice cannot swap names and stays bindable. Withdrawing a send and re
 delivery both call `reconsider`, which clears a contest only when no other send is remembered
 and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
 
+The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
+uses it unchanged. The ledgers share one claim space: a turn is bound by at most one row of
+either table, and an unbound row of the same words in the other table is a rival that contests
+both, exactly as two controllers do. Every outbox row the daemon writes about a review (`review-continuation:`
+ids, `async-input`) starts with a marker line owned by `src/shared/review-message-envelope.ts`.
+At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row through
+`review-deliveries.ts` for such a row instead of noting another send, and only for a row with
+that id prefix, so an operator message that starts with the marker is noted like any other send.
+`attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
+(`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
+`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available"),
+never as the raw turn. A delivery's words on a turn no delivery claims drop the live label, as a
+delegated copy does. Bound review rows are never pruned by age; unbound ones past the delivery
+window are pruned on the goal tick. A steered delivery's plain echo record (the same words
+right after its mid-turn record, before any agent turn) is found by walking the file from the
+row's offset, so it is answered like its record whichever page holds it. That decision is
+persisted on the row (`steer_echo`), and any other send of the same words - an operator or
+Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
+`DeliveryLedger.reserve` - settles it from what the file already holds before that send is
+written (`onSend`), so an identical copy that lands right after a steered delivery is never
+taken for its echo. Each row also persists the one prompt-hook echo it owes:
+`captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
+delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
+work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
+operator sends of the same words always yield M Goal revisions. An arrival that spent the
+echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
+
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through
 `workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
 other targets require the existing Registry grant. The daemon enforces ownership for list,

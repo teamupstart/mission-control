@@ -8,6 +8,7 @@ import {
   INDEXED_REPOSITORIES_INFO,
   SETUP_REPOSITORY_ANCHORS,
   homeRelative,
+  setupRowAnchor,
   type SetupChecksSnapshot,
   type SetupRowView,
 } from "../src/shared/setup-catalog.ts";
@@ -352,6 +353,23 @@ test("the opening family is latched once, so a repair cannot move the rail", () 
     null,
     "nothing to change: the operator stays in the family they were reading",
   );
+});
+
+test("a deep link that already resolves is latched before the first snapshot lands", () => {
+  // The dispatch form's "Fix in Setup" names an environment-check row whose family the catalog
+  // fixes. The page stops passing the jump down as soon as it starts waiting for the row, so a
+  // first read slower than that render must not cost the jump its family.
+  assert.deepEqual(
+    nextSetupSelection({ chosen: null, seenRequest: null }, {
+      rows: [],
+      jumpRequestId: 9,
+      jumpFamily: familyForAnchor(setupRowAnchor({ source: "environment-check", id: "mission-hook-events" }), []),
+    }),
+    { chosen: "extensions", seenRequest: 9 },
+  );
+  // Once latched, the rows arriving with the jump gone keep it.
+  const after = nextSetupSelection({ chosen: "extensions", seenRequest: 9 }, { rows: [CLAUDE], jumpRequestId: null, jumpFamily: null });
+  assert.equal(after?.chosen ?? "extensions", "extensions", "the default does not take the rail back");
 });
 
 test("a deep link outranks the latch, and is not consumed before it can be resolved", () => {

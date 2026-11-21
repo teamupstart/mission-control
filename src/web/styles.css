@@ -37205,6 +37205,41 @@ body.foreman-sidecar-open .modal-backdrop {
   font: 13px/1.5 var(--sans);
   color: var(--fg);
 }
+/* How an answer filed as a message (async-input) reached its agent: "On its way to the
+   agent" while it waits in the outbox, then "Delivered to the agent" at the turn it went in
+   with. Quiet on purpose - it is the card's footnote, not a second byline. */
+.review-delivery {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--dim);
+}
+.review-delivery .turn-time {
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+}
+/* Exactly what the agent read, one click away, so the card hides nothing for good. */
+.review-received > summary {
+  cursor: pointer;
+  width: fit-content;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--muted);
+}
+.review-received-text {
+  margin-top: 6px;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
+}
 
 /* --- the rail + drawer --- */
 

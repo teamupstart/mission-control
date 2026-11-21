@@ -346,6 +346,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -3275,6 +3276,8 @@ export class Registry extends EventEmitter {
     // (idle noise, or the hook and the driver both reporting one Stop) changes nothing here.
     if (signal === "turn_completed" && workCycle) {
       expireHumanEchoes(s.id, logicalKey, workCycle.generation, updatedAt);
+      // And the echo each review message delivered into that turn owed (`review-deliveries.ts`).
+      expireReviewDeliveryEchoes(logicalKey, workCycle.generation, updatedAt);
     }
     const projected = workCycle ?? undefined;
     if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
@@ -8874,6 +8877,15 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Drop review-message deliveries that never bound and are past the delivery window. Liveness
+   * does not matter: an unbound row that old can bind nothing. Bound rows are kept for good, so
+   * an old conversation keeps its answer cards.
+   */
+  pruneReviewDeliveries(now: number): number {
+    return pruneReviewDeliveries(now);
+  }
+
+  /**
    * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
    *
    * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
@@ -9266,8 +9278,20 @@ export class Registry extends EventEmitter {
     // pending human follow-up, claiming first would hand the daemon's packet the human's
     // revision and leave the human's own echo to be swallowed as the daemon's. Checked first,
     // the packet spends its own owed echo and the human entry waits for its real one.
-    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
+    //
+    // A review message (`async-input`) owes its echo on its durable delivery row as well, so a
+    // restart between the delivery and its echo cannot capture the daemon's text as the Goal.
+    // Both debts describe the same one delivery, so one arrival spends both: evaluated without
+    // short-circuiting, or the in-memory claim would leave the durable one to swallow the
+    // operator's next copy of the same words.
     const noteKey = noteKeyFor(s);
+    const submittedText = spec.submittedPromptText(evt);
+    // An arrival that spends the echo of a delivery the runtime then refuses was never that
+    // delivery's echo: it is the operator's, and is captured once the refusal is known.
+    const reviewEcho = claimReviewDeliveryEcho(noteKey, submittedText === null ? [prompt] : [submittedText, prompt], now,
+      () => { this.captureAcceptedPrompt(s.id, prompt, noteKey); });
+    const daemonEcho = this.isDaemonAuthoredPrompt(s, spec, evt, prompt);
+    if (reviewEcho || daemonEcho) return;
     const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
     if (claim.kind === "skip") return;
     if (claim.kind === "capture") {

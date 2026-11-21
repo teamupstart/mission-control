@@ -176,6 +176,12 @@ import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
+  parseReviewEnvelope,
+  REVIEW_MESSAGE_TURN_PREFIX,
+  wrapReviewEnvelope,
+  type ReviewEnvelopeKind,
+} from "@shared/review-message-envelope.ts";
+import {
   isRetentionCandidate,
   isRetentionRetryable,
   taskHoldsCleanupResources,
@@ -279,7 +285,9 @@ let db: DatabaseSync | undefined;
 // 39: the asynchronous input inbox (`reviews.wait_mode`, `meanwhile`, `closed_reason`), nullable
 //     with no backfill: every existing row is a question its agent waited for inside the call,
 //     filed no meanwhile line, and was never closed by a merge.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
+// 40: review-message deliveries (`session_review_deliveries`), a new empty table: no turn was
+//     drawn as a delivered answer card before it existed, so older turns render as they did.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 40;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -924,6 +932,38 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON session_other_sends(note_key);
     CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
       ON session_other_sends(sent_at);
+
+    -- WHICH TURN A REVIEW MESSAGE WROTE, one row per delivery of a marked outbox message
+    -- (async-input): an answer, or a snoozed question's "carry on". Reserved before the send and
+    -- bound by the same rule as session_delegated_turns (delivery-binding.ts). Only a turn a
+    -- bound row names is drawn as an answer card; a pasted marker never is. Bound rows are never
+    -- pruned, so an old conversation keeps its cards; only unbound rows past the delivery window,
+    -- which can bind nothing, are pruned. No message text, only its fingerprint.
+    --
+    -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
+    -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it
+    -- belongs to (echo_turn_generation) completes, or HUMAN_ECHO_TTL_MS after echo_eligible_at.
+    CREATE TABLE IF NOT EXISTS session_review_deliveries (
+      id                   TEXT PRIMARY KEY,
+      note_key             TEXT NOT NULL,   -- the conversation's noteKeyFor(s)
+      fingerprint          TEXT NOT NULL,   -- injectionFingerprint of the delivered text
+      envelope             TEXT NOT NULL,   -- 'answer' | 'remind-later'
+      review_ids           TEXT NOT NULL,   -- JSON array, in delivery order
+      delivered_at         INTEGER NOT NULL,
+      transcript_offset    INTEGER,         -- transcript size at send; NULL if unknown, never binds
+      contested            INTEGER NOT NULL DEFAULT 0,
+      confirmed_at         INTEGER,         -- NULL until the runtime accepted it
+      message_id           TEXT,            -- native id of the bound turn
+      message_ts           INTEGER,
+      echo_owed            INTEGER NOT NULL DEFAULT 1,
+      echo_turn_generation INTEGER NOT NULL DEFAULT 0,
+      echo_eligible_at     INTEGER,
+      steer_echo           TEXT             -- a steered delivery's plain echo turn: NULL undecided, '' none
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_key
+      ON session_review_deliveries(note_key, fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_age
+      ON session_review_deliveries(delivered_at);
 
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
@@ -5690,12 +5730,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
  * neither or both, never a review claiming delivery with no queued turn and never two turns
  * for one review after startup reconciliation retries it.
  */
-export function createReviewContinuationPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createReviewContinuationPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
   // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
   // reading it outside the queueing transaction cannot race a change.
@@ -5703,13 +5738,14 @@ export function createReviewContinuationPendingTurn(input: {
     | { wait_mode: string | null }
     | undefined;
   return queueReviewPendingTurn(input, {
-    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : "review-continuation:"}${input.reviewId}`,
+    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : REVIEW_MESSAGE_TURN_PREFIX}${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
     coalesce: mode?.wait_mode === "message",
+    envelope: "answer",
   });
 }
 
@@ -5721,7 +5757,7 @@ export function createReviewContinuationPendingTurn(input: {
  * It keeps the `review-continuation:` prefix, which resident pacing reads. A call-mode answer
  * that lost its call keeps the bare `review-continuation:<id>` and operator authorship.
  */
-export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
+export const MESSAGE_ANSWER_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}answer:`;
 
 /**
  * Atomically hand a snoozed question's owed "carry on" instruction to the same outbox.
@@ -5730,7 +5766,7 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  * The id keeps the `review-continuation:` prefix on purpose: it is daemon-written news about a
  * review, which every reader of that prefix (a resident's pacing) already treats correctly.
  */
-export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+export const SNOOZE_INSTRUCTION_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}snooze:`;
 
 /** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
 export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
@@ -5740,12 +5776,7 @@ export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | nul
   return row?.note_key ?? null;
 }
 
-export function createSnoozeInstructionPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createSnoozeInstructionPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   return queueReviewPendingTurn(input, {
     turnId: `${SNOOZE_INSTRUCTION_TURN_PREFIX}${input.reviewId}`,
     eligible: `snooze_instruction_owed_at IS NOT NULL
@@ -5753,11 +5784,25 @@ export function createSnoozeInstructionPendingTurn(input: {
             AND continuation_queued_at IS NULL
             AND status IN ('snoozed', 'pending')`,
     stamp: "snooze_instruction_queued_at",
+    envelope: "remind-later",
   });
 }
 
+/** One review message for the outbox. `text` is what the agent receives below any marker line. */
+export interface ReviewPendingTurnInput {
+  reviewId: string;
+  noteKey: string;
+  text: string;
+  now: number;
+  /**
+   * Mark a call-mode question's message too (`async-input` on when it is queued). A
+   * message-mode question's message is always marked: it exists only because the flag was on.
+   */
+  markCallMode?: boolean;
+}
+
 function queueReviewPendingTurn(
-  input: { reviewId: string; noteKey: string; text: string; now: number },
+  input: ReviewPendingTurnInput,
   kind: {
     turnId: string;
     coalesce?: boolean;
@@ -5765,18 +5810,25 @@ function queueReviewPendingTurn(
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
     stamp: "continuation_queued_at" | "snooze_instruction_queued_at";
+    /** The marker line this message carries when it is marked (`review-message-envelope.ts`). */
+    envelope: ReviewEnvelopeKind;
   },
 ): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const eligible = d
-      .prepare(`SELECT 1 AS present FROM reviews WHERE id = ? AND ${kind.eligible}`)
-      .get(input.reviewId) as unknown as { present: number } | undefined;
+      .prepare(`SELECT wait_mode FROM reviews WHERE id = ? AND ${kind.eligible}`)
+      .get(input.reviewId) as unknown as { wait_mode: string | null } | undefined;
     if (!eligible) {
       d.exec("COMMIT");
       return null;
     }
+    // The marker line is composed here, where the row's final text is written, so a fold
+    // below can rewrite it to name every review the row carries. The text under it is exactly
+    // what the agent received before the marker existed.
+    const marked = eligible.wait_mode === "message" || input.markCallMode === true;
+    const text = marked ? wrapReviewEnvelope(kind.envelope, [input.reviewId], input.text) : input.text;
     // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
     // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
     // the conversation's tail: appending to an earlier answer would pass intervening turns.
@@ -5784,8 +5836,14 @@ function queueReviewPendingTurn(
       const existing = d.prepare(`SELECT * FROM pending_turns
         WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
       if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+        // A marked row names every answer it carries, in delivery order. One queued before the
+        // marker existed stays unmarked: it has no line to extend, and it renders as it did.
+        const prior = parseReviewEnvelope(existing.text);
+        const folded = prior && marked
+          ? wrapReviewEnvelope(prior.kind, [...prior.reviewIds, input.reviewId], `${prior.rest}\n\n---\n\n${input.text}`)
+          : `${existing.text}\n\n---\n\n${input.text}`;
         const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
-          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+          WHERE id = ? RETURNING *`).get(folded, input.now, existing.id) as unknown as PendingTurnRow;
         d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
         d.exec("COMMIT");
         return rowToPendingTurn(row);
@@ -5798,14 +5856,14 @@ function queueReviewPendingTurn(
       `INSERT INTO pending_turns
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
-    ).run(kind.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    ).run(kind.turnId, input.noteKey, sequence.seq, text, input.now, input.now);
     d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
     d.exec("COMMIT");
     return {
       id: kind.turnId,
       noteKey: input.noteKey,
       seq: sequence.seq,
-      text: input.text,
+      text,
       state: "queued",
       revision: 0,
       createdAt: input.now,
@@ -12477,6 +12535,145 @@ export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
 /** Drop sends past the race window, for every conversation. */
 export function pruneOtherSends(olderThan: number): number {
   return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
+}
+
+// ---- review-message deliveries (which turn carried an answer to the agent) ----
+
+/** One delivery of a marked review message into a conversation, bound to its turn once seen. */
+export interface ReviewDeliveryRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  envelope: ReviewEnvelopeKind;
+  /** In delivery order, from the row's marker line when it was sent. */
+  reviewIds: string[];
+  deliveredAt: number;
+  transcriptOffset: number | null;
+  contested: boolean;
+  /** When the runtime accepted it; null while only reserved, or when the outcome is uncertain. */
+  confirmedAt: number | null;
+  messageId: string | null;
+  messageTs: number | null;
+  /** Whether the one prompt-hook echo this delivery produces is still owed to the Goal reader. */
+  echoOwed: boolean;
+  /** The work-cycle generation whose completion ends the wait for that echo. */
+  echoTurnGeneration: number;
+  /** When the echo's wait started aging toward `HUMAN_ECHO_TTL_MS`; null until its turn is next. */
+  echoEligibleAt: number | null;
+  /**
+   * The plain record that echoes a steered delivery's mid-turn turn: null until decided, "" when
+   * it has none (including when another send of the same words could have written it).
+   */
+  steerEcho: string | null;
+}
+
+type ReviewDeliverySqlRow = Omit<ReviewDeliveryRow, "contested" | "reviewIds" | "echoOwed" | "envelope"> & {
+  contested: number;
+  reviewIds: string;
+  echoOwed: number;
+  envelope: string;
+};
+
+export function insertReviewDelivery(row: ReviewDeliveryRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_review_deliveries
+         (id, note_key, fingerprint, envelope, review_ids, delivered_at, transcript_offset, contested,
+          confirmed_at, message_id, message_ts, echo_owed, echo_turn_generation, echo_eligible_at, steer_echo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.envelope, JSON.stringify(row.reviewIds), row.deliveredAt,
+      row.transcriptOffset, row.contested ? 1 : 0, row.confirmedAt, row.messageId, row.messageTs,
+      row.echoOwed ? 1 : 0, row.echoTurnGeneration, row.echoEligibleAt, row.steerEcho);
+}
+
+/** Drop a delivery that provably did not land. */
+export function deleteReviewDelivery(id: string): void {
+  openDb().prepare(`DELETE FROM session_review_deliveries WHERE id = ?`).run(id);
+}
+
+/** In reservation order. A row whose stored ids or envelope no longer parse is skipped. */
+export function loadReviewDeliveries(noteKey: string): ReviewDeliveryRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, envelope, review_ids AS reviewIds, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, confirmed_at AS confirmedAt,
+              message_id AS messageId, message_ts AS messageTs, echo_owed AS echoOwed,
+              echo_turn_generation AS echoTurnGeneration, echo_eligible_at AS echoEligibleAt,
+              steer_echo AS steerEcho
+         FROM session_review_deliveries WHERE note_key = ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey) as unknown as ReviewDeliverySqlRow[];
+  return rows.flatMap((row) => {
+    let ids: unknown;
+    try {
+      ids = JSON.parse(row.reviewIds);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return [];
+    if (row.envelope !== "answer" && row.envelope !== "remind-later") return [];
+    return [{
+      ...row,
+      envelope: row.envelope,
+      reviewIds: ids as string[],
+      contested: row.contested === 1,
+      echoOwed: row.echoOwed === 1,
+    }];
+  });
+}
+
+export function contestReviewDelivery(id: string, contested = true): void {
+  openDb()
+    .prepare(`UPDATE session_review_deliveries SET contested = ? WHERE id = ? AND message_id IS NULL`)
+    .run(contested ? 1 : 0, id);
+}
+
+/** Write-once: a bound delivery is never re-pointed at a later turn with the same words. */
+export function bindReviewDelivery(id: string, messageId: string, messageTs: number): boolean {
+  const r = openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET message_id = ?, message_ts = ?
+         WHERE id = ? AND message_id IS NULL`,
+    )
+    .run(messageId, messageTs, id);
+  return Number(r.changes) > 0;
+}
+
+/** Write-once: a steered delivery's echo decision, "" for none. */
+export function settleReviewDeliverySteerEcho(id: string, echo: string): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET steer_echo = ? WHERE id = ? AND steer_echo IS NULL`).run(echo, id);
+}
+
+/** The runtime accepted it. */
+export function confirmReviewDelivery(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET confirmed_at = ? WHERE id = ?`).run(at, id);
+}
+
+/** Persist a delivery's echo debt as `review-deliveries.ts` settled it. */
+export function updateReviewDeliveryEcho(
+  id: string,
+  echo: { owed: boolean; turnGeneration: number; eligibleAt: number | null },
+): void {
+  openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET echo_owed = ?, echo_turn_generation = ?, echo_eligible_at = ?
+         WHERE id = ?`,
+    )
+    .run(echo.owed ? 1 : 0, echo.turnGeneration, echo.eligibleAt, id);
+}
+
+/**
+ * Delete unbound deliveries older than `olderThan`, live conversation or not: past the delivery
+ * window they can no longer bind anything. A bound row is never pruned, so an old conversation
+ * keeps its answer cards.
+ */
+export function pruneUnboundReviewDeliveries(olderThan: number): number {
+  return Number(
+    openDb()
+      .prepare(`DELETE FROM session_review_deliveries WHERE message_id IS NULL AND delivered_at < ?`)
+      .run(olderThan).changes,
+  );
 }
 
 // ---- session standing instructions (what a launch actually delivered) ----

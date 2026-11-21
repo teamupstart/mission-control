@@ -296,6 +296,20 @@ test("a request stranded by an ambiguous session is still listed, as dashboard-o
   assert.equal(item?.state, "waiting");
   assert.equal(item?.pending?.dashboardOnly, true);
   assert.equal(unattributedItems(fake, resolvedFor(other)).some((i) => i.taskId === `review:${review.id}`), false, "not shown to another repository");
+
+  // A pair of dashboard tasks is not a home-dispatch matter, so its question is never exposed; a pair
+  // with one home-dispatched task still is, and the dashboard one listed first does not decide it.
+  const dashA = addTask("t-amb-dash-a", h.repo, null);
+  addTask("t-amb-dash-b", h.repo, null);
+  const dashReview = reviews.create(dashA, "input", "Dashboard only", "Private?", [QUESTION]);
+  const pair = (ids: string[]) => ({
+    registry: Object.assign(Object.create(registry), {
+      listTasks: () => registry.listTasks().filter((t) => ids.includes(t.id)).map((t) => ({ ...t, sessionId: dashA })),
+    }),
+  });
+  const seen = (ids: string[]) => unattributedItems(pair(ids), resolvedFor(h)).some((i) => i.taskId === `review:${dashReview.id}`);
+  assert.equal(seen(["t-amb-dash-a", "t-amb-dash-b"]), false, "two dashboard tasks: nothing is exposed");
+  assert.equal(seen(["t-amb-dash-a", "t-amb-b"]), true, "a dashboard task first, a home-dispatched one second: still listed");
 });
 
 test("taskOwningSession refuses to guess when two active tasks claim one session", () => {

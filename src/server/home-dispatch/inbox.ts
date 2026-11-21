@@ -203,10 +203,13 @@ export function unattributedItems(
     if (!owner) continue;
     const holders = "unestablished" in owner ? [owner.task] : "ambiguous" in owner ? owner.tasks : [];
     if (holders.length === 0) continue;
-    if (!holders.some((t) => origins.get(t.id)?.originSurface != null)) continue;
+    // The holder that makes it a home-dispatch matter is the one the item is built from, not just the
+    // first of an ambiguous pair, so a dashboard task's details are never what the item shows.
+    const homeHolder = holders.find((t) => origins.get(t.id)?.originSurface != null);
+    if (!homeHolder) continue;
     const asked = deps.registry.getSession(review.sessionId);
     if (!resolved.allRepos && !sameRepo(asked?.repoRoot ?? null, resolved.caller.repoRoot)) continue;
-    out.push(unattributedItem(review, holders[0]!, asked));
+    out.push(unattributedItem(review, homeHolder, asked));
   }
   return out;
 }

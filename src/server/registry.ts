@@ -5,6 +5,7 @@ import { canonicalJson, shapingConfigView, type ShapingConfigView } from "@share
 import { getShapingConfig } from "./shaping/index.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
+import { judgeLatePrompt, judgeTurn, recordAutomatedDelivery, recordPersonDelivery } from "./awaiting-attribution.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
@@ -316,8 +317,6 @@ import {
   upsertSessionAwaiting,
   deleteSessionAwaiting,
   moveSessionAwaiting,
-  nudgeContested,
-  type PendingNudge,
   type SessionAwaitingRecord,
   type StandingInstructionsSnapshot,
   upsertSessionNote,
@@ -1080,8 +1079,8 @@ export class Registry extends EventEmitter {
   /**
    * The state each waiting session was last emitted in. In memory only: the declaring turn's
    * end is an observed TRANSITION into idle, or a fresher idle reading after the declaration
-   * (`declaringTurnEnded`), so a state that lagged the declaration (already idle when the tool
-   * was called) cannot settle the turn that is still making the call.
+   * (`declaringTurnEnded` in `awaiting-attribution.ts`), so a state that lagged the
+   * declaration (already idle when the tool was called) cannot settle the turn still making it.
    */
   private awaitingLastState = new Map<string, Session["state"]>();
   /**
@@ -9535,25 +9534,13 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Watch the session that declared a wait, on every emit, for the two transitions that end it.
+   * Watch the session that declared a wait, on every emit, for the turn that ends it.
    *
-   * The wake is the session's own NEXT turn. The declaration is made mid-turn, so a working
-   * state seen before that turn ends says nothing; the turn's end is recorded (`settledAt`) the
-   * first time the session is seen idle (`declaringTurnEnded`, which also covers a wait declared
-   * while the registry already read idle), and a turn starting after that is the notification
-   * that woke it, or someone typing to it, and either ends the wait.
-   *
-   * Mission Control's own nudges are not a wake. Past the deadline Foreman, a workflow or a
-   * resident may type into the session again. Each of those deliveries is stored on the wait with
-   * its text's fingerprint as it is claimed (`noteAutomatedDelivery`), and a turn is matched to
-   * one by its prompt: a turn whose prompt is a pending delivery uses up that delivery and only
-   * re-arms the watch, while a turn with any other prompt is the wake. A turn whose prompt is not
-   * known when it starts is stored as undecided until its prompt arrives, or, if none comes, its
-   * end decides it (`observeAwaitingPrompt`). Only confirmed states are read, so a restart neither
-   * invents a turn from discovery's presumed `working` nor misses one already under way.
-   *
-   * An exit ends it too, unlike a blocker: the wake source the agent declared was its own
-   * background command, monitor or wakeup, and it is presumed gone with the process.
+   * Which turn that is, and whether a turn is the session's own wake or one of Mission Control's
+   * own nudges, is decided by `judgeTurn` (`awaiting-attribution.ts`), a pure function of the
+   * stored wait and this reading. This gathers the reading, stores what it decides, and
+   * publishes a wake. Only confirmed states are read, so a restart neither invents a turn from
+   * discovery's presumed `working` nor misses one already under way.
    *
    * Mutates `s` rather than re-syncing, because this runs inside `emitSession` on the very
    * object about to be emitted: re-syncing would emit the session twice.
@@ -9581,109 +9568,37 @@ export class Registry extends EventEmitter {
       return;
     }
     // A presumed state says nothing about turns: discovery presumes `working` until a hook, a
-    // transcript or a driver confirms what the session is doing. Only confirmed readings move
-    // the watch, so the first one after a restart is a real observation, not a guess.
+    // transcript or a driver confirms what the session is doing.
     if (!s.stateConfirmed) return;
     const last = this.awaitingLastState.get(key);
     this.awaitingLastState.set(key, s.state);
-    // A turn STARTING, as seen: the last confirmed state was not a turn and this one is. With
-    // none seen yet in this process (a restart, or a wait reloaded at startup), a session
-    // confirmed in a turn while its wait stood settled started that turn unobserved, and it is
-    // judged as a turn start all the same; while the wait is mid-turn it is the same turn.
-    const turnStarted = agentActive(s) && last !== "starting" && last !== "working";
-    if (record.settledAt !== null && turnStarted) {
-      // Whose turn is this? Settled by the turn's prompt when it is already known here (a prompt
-      // hook that started the turn): a prompt that is one of Mission Control's pending deliveries
-      // is that nudge, and any other prompt is the wake. With no delivery outstanding, nothing of
-      // Mission Control's can have started it. Otherwise it is decided when its prompt arrives
-      // (`observeAwaitingPrompt`), or when it ends without one.
-      const prompt = this.awaitingTurnPrompts.get(s.id);
-      if (record.pendingNudges.length === 0) {
-        this.endAwaitingFromTurn(s, key, "wake", now);
-        return;
-      }
-      if (prompt) {
-        if (!this.useUpAwaitingNudge(key, record, prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false })) {
-          this.endAwaitingFromTurn(s, key, "wake", now);
-        }
-        return;
-      }
-      // Stored, so a restart before the prompt arrives can still decide this turn.
-      const undecided = { ...record, settledAt: null, undecidedTurn: true, redeclaredInTurn: false };
-      upsertSessionAwaiting(undecided);
-      this.awaitings.set(key, undecided);
+    // A fresh idle report is one from the session's own lifecycle source other than the very
+    // report the wait was declared against, judged by identity rather than by its millisecond.
+    const report = this.lifecycleReport(s);
+    const judged = judgeTurn(record, {
+      now,
+      state: s.state,
+      last,
+      active: agentActive(s),
+      prompt: this.awaitingTurnPrompts.get(s.id) ?? null,
+      reportsPrompts: this.promptReporters.has(s.id),
+      freshIdleAt: report && report.state === "idle" && report.ref !== this.awaitingDeclaredReport.get(key) ? report.at : null,
+      // The transcript's turn marker is read only for a session without hooks, whose turns a
+      // sweep can miss whole; a hooked session reports each turn as it starts.
+      passiveTurnStartedAt: s.hooksSeen ? null : this.passiveTurnStartedAt(s),
+    });
+    if (judged.wake) {
+      this.endAwaitingFromTurn(s, key, "wake", now);
       return;
     }
-    // A turn a session without hooks started and finished between two discovery sweeps: the
-    // transcript read is idle again, but its turn marker has moved past the wait's settle. It is
-    // judged as a turn that has already ended, the way an undecided turn's end is: with no
-    // delivery outstanding it is the wake, and otherwise it uses up the oldest delivery unless
-    // that one is contested.
-    if (record.settledAt !== null && !turnStarted && s.state === "idle" && !s.hooksSeen) {
-      const started = this.passiveTurnStartedAt(s);
-      if (started !== null && started > record.settledAt) {
-        const oldest = record.pendingNudges[0];
-        if (!oldest || nudgeContested(oldest)) {
-          this.endAwaitingFromTurn(s, key, "wake", now);
-          return;
-        }
-        const next = { ...record, settledAt: Math.max(now, started), pendingNudges: record.pendingNudges.slice(1) };
-        upsertSessionAwaiting(next);
-        this.awaitings.set(key, next);
-        return;
-      }
-    }
-    if (record.settledAt === null && this.declaringTurnEnded(s, record, last)) {
-      if (record.undecidedTurn) {
-        // The turn ended with no prompt ever reported. On a session whose hooks report prompts,
-        // every delivery Mission Control types reports its prompt, so a turn without one is the
-        // session's own: the wake. On one that never reports a prompt (no hooks, or a driver with
-        // no prompt hook, though marked instrumented) no turn does, and the oldest delivery still
-        // outstanding is the best reading of whose turn it was.
-        // A contested oldest delivery is not a nudge either (see `useUpAwaitingNudge`).
-        const oldest = record.pendingNudges[0];
-        const ownTurn = this.promptReporters.has(s.id) || (oldest !== undefined && nudgeContested(oldest));
-        // Unless the session declared its wait again during this very turn: then the wake, if
-        // this turn was one, came and went inside it, and the wait it declared stands.
-        if (ownTurn && !record.redeclaredInTurn) {
-          this.endAwaitingFromTurn(s, key, "wake", now);
-          return;
-        }
-        const next = {
-          ...record, settledAt: now, undecidedTurn: false, redeclaredInTurn: false,
-          pendingNudges: ownTurn ? record.pendingNudges : record.pendingNudges.slice(1),
-        };
-        upsertSessionAwaiting(next);
-        this.awaitings.set(key, next);
-        return;
-      }
-      const next = { ...record, settledAt: now };
-      upsertSessionAwaiting(next);
-      this.awaitings.set(key, next);
-    }
+    this.storeAwaiting(key, record, judged.next);
   }
 
-  /**
-   * Has the turn that declared (or re-declared) this wait ended, as `s` reads now? `last` is
-   * the last confirmed state the watch saw.
-   *
-   * Ordinarily that is the session leaving its turn for idle. A wait declared while the registry
-   * already read idle sees no such transition: the turn was too short for a discovery sweep to
-   * catch, or its hooks lost the race with the MCP call. Its end is then a fresh idle report from
-   * the session's own lifecycle source (`lifecycleReport`): any report other than the one the
-   * wait was declared against, stamped no earlier than the declaration, which a Stop hook or a
-   * transcript read can only be once the declaring call has returned. Judged by which report it
-   * is, not by its millisecond, so a Stop stamped in the same millisecond as the declaration
-   * still settles it, and the reading declared against never does. Never `Session.lastActivity`:
-   * `report_status` and a driver dialog stamp that mid-turn without the turn ending.
-   */
-  private declaringTurnEnded(s: Session, record: SessionAwaitingRecord, last: Session["state"] | undefined): boolean {
-    if (s.state !== "idle") return false;
-    if (last !== "idle") return true;
-    const report = this.lifecycleReport(s);
-    if (!report || report.state !== "idle") return false;
-    if (report.ref === this.awaitingDeclaredReport.get(noteKeyFor(s))) return false;
-    return report.at >= record.awaiting.updatedAt;
+  /** Persist and cache a wait a judgement changed; an unchanged record is left alone. */
+  private storeAwaiting(key: string, record: SessionAwaitingRecord, next: SessionAwaitingRecord): void {
+    if (next === record) return;
+    upsertSessionAwaiting(next);
+    this.awaitings.set(key, next);
   }
 
   /**
@@ -9720,53 +9635,19 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * If one of `prompt`'s fingerprints is a pending delivery of Mission Control's, use that one
-   * up (the turn is its nudge), write `patch` with it, and answer true. False leaves the record
-   * untouched: the prompt is someone else's.
-   *
-   * A contested delivery is never used up: a person also sent those exact words, so this turn
-   * is either theirs or the nudge's with theirs still to come, and a person's turn is the wake
-   * either way. Answering false ends the wait now rather than one turn late, or never, when the
-   * automated delivery is folded into the person's turn or never lands.
-   */
-  private useUpAwaitingNudge(
-    key: string,
-    record: SessionAwaitingRecord,
-    prompt: readonly string[],
-    patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn" | "redeclaredInTurn">>,
-  ): boolean {
-    const i = record.pendingNudges.findIndex((nudge) => prompt.includes(nudge.key));
-    if (i < 0 || nudgeContested(record.pendingNudges[i]!)) return false;
-    const next = {
-      ...record,
-      ...patch,
-      pendingNudges: [...record.pendingNudges.slice(0, i), ...record.pendingNudges.slice(i + 1)],
-    };
-    upsertSessionAwaiting(next);
-    this.awaitings.set(key, next);
-    return true;
-  }
-
-  /**
    * A prompt reported for a waiting session whose turn started before its prompt was known
-   * (an SDK driver's state can arrive before the prompt hook). The prompt decides the turn: one
-   * of Mission Control's pending deliveries is that nudge; anything else is the wake, which ends
-   * the wait now, unless the session already declared its wait again during this turn.
+   * (an SDK driver's state can arrive before the prompt hook), decided by `judgeLatePrompt`.
    */
   private observeAwaitingPrompt(s: Session, prompt: readonly string[]): void {
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record?.undecidedTurn) return;
-    if (this.useUpAwaitingNudge(key, record, prompt, { undecidedTurn: false, redeclaredInTurn: false })) return;
-    if (record.redeclaredInTurn) {
-      // The wake came and went inside this turn, and the agent has already said it is still
-      // waiting: the turn is decided, and the wait it re-declared settles at the turn's end.
-      const next = { ...record, undecidedTurn: false, redeclaredInTurn: false };
-      upsertSessionAwaiting(next);
-      this.awaitings.set(key, next);
+    const judged = judgeLatePrompt(record, prompt);
+    if (judged.wake) {
+      this.clearAwaiting(s.id, "wake");
       return;
     }
-    this.clearAwaiting(s.id, "wake");
+    this.storeAwaiting(key, record, judged.next);
   }
 
   /** The fingerprints a prompt hook event reports for its turn, or null for any other event. */
@@ -9795,29 +9676,10 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record) return;
-    let pendingNudges: PendingNudge[];
-    if (released) {
-      let i = -1;
-      for (let j = record.pendingNudges.length - 1; j >= 0; j--) {
-        const nudge = record.pendingNudges[j]!;
-        if (nudge.at === at && nudge.key === textKey) {
-          i = j;
-          break;
-        }
-      }
-      if (i < 0) return;
-      pendingNudges = [...record.pendingNudges.slice(0, i), ...record.pendingNudges.slice(i + 1)];
-    } else {
-      // A person sent these exact words moments ago and their turn may not have started yet:
-      // this delivery is contested by those sends from the start (see `notePersonDelivery`).
-      const by = this.recentPersonSends(key, at).filter((send) => send.key === textKey).map((send) => send.id);
-      // Bounded like the claims behind it: far more than ever overlap, never unbounded.
-      pendingNudges = [...record.pendingNudges, { at, key: textKey, ...(by.length > 0 ? { contestedBy: by } : {}) }]
-        .slice(-32);
-    }
-    const next = { ...record, pendingNudges };
-    upsertSessionAwaiting(next);
-    this.awaitings.set(key, next);
+    // A person sent these exact words moments ago and their turn may not have started yet: this
+    // delivery is contested by those sends from the start (see `notePersonDelivery`).
+    const contestedBy = released ? [] : this.recentPersonSends(key, at).filter((send) => send.key === textKey).map((send) => send.id);
+    this.storeAwaiting(key, record, recordAutomatedDelivery(record, { at, key: textKey, released }, contestedBy));
   }
 
   /**
@@ -9829,7 +9691,7 @@ export class Registry extends EventEmitter {
    * own. It does when the words are byte-for-byte those of an automated delivery still pending
    * on the wait: the prompt then matches that nudge, and the person's turn would be used up as
    * Mission Control's. So every pending delivery of the same words records this send as
-   * contesting it (`contestedBy`), stored on the wait, which `useUpAwaitingNudge` reads as the
+   * contesting it (`contestedBy`), stored on the wait, which `useUpNudge` reads as the
    * wake. The send is also remembered for a couple of minutes, for an automated delivery of the
    * same words claimed after it.
    *
@@ -9844,31 +9706,19 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record) return;
-    const textKey = delivery.key;
-    let pendingNudges: PendingNudge[];
+    // The recent-sends window is the Registry's own in-memory bookkeeping; the claims on the
+    // stored wait are `recordPersonDelivery`'s.
     if (delivery.released) {
       const sends = (this.awaitingPersonSends.get(key) ?? []).filter((send) => send.id !== delivery.id);
       if (sends.length > 0) this.awaitingPersonSends.set(key, sends);
       else this.awaitingPersonSends.delete(key);
-      if (!record.pendingNudges.some((nudge) => nudge.contestedBy?.includes(delivery.id))) return;
-      pendingNudges = record.pendingNudges.map((nudge) => {
-        if (!nudge.contestedBy?.includes(delivery.id)) return nudge;
-        const by = nudge.contestedBy.filter((id) => id !== delivery.id);
-        return { at: nudge.at, key: nudge.key, ...(by.length > 0 ? { contestedBy: by } : {}) };
-      });
     } else {
       this.awaitingPersonSends.set(
         key,
-        [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: textKey }].slice(-32),
+        [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: delivery.key }].slice(-32),
       );
-      if (!record.pendingNudges.some((nudge) => nudge.key === textKey)) return;
-      pendingNudges = record.pendingNudges.map((nudge) => nudge.key === textKey
-        ? { ...nudge, contestedBy: [...(nudge.contestedBy ?? []), delivery.id].slice(-8) }
-        : nudge);
     }
-    const next = { ...record, pendingNudges };
-    upsertSessionAwaiting(next);
-    this.awaitings.set(key, next);
+    this.storeAwaiting(key, record, recordPersonDelivery(record, delivery));
   }
 
   /** The person deliveries into this wait's session still inside the contest window at `now`. */

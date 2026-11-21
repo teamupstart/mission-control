@@ -252,10 +252,10 @@ export function ConsoleView(props: SessionViewProps & {
       {/* The same free/held rule the board draws. `orderSessions` sorts held sessions
           last within `idle` for every layout, so without this the rail would reorder
           with nothing on screen saying why. */}
-      {fleetRows(g).map((row) =>
+      {fleetRows(g).map((row, at) =>
         row.kind === "section" ? (
           <FleetSectionHead
-            key={`section-${row.section}`}
+            key={`section-${row.section}-${at}`}
             kind={row.section}
             count={row.count}
           />

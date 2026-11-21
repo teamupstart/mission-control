@@ -716,6 +716,31 @@ test("a pinned resident inside a wait sits above the Free rule, which counts onl
   assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 2, held: 1 });
 });
 
+test("pinned free residents above an Awaiting section sit under a Free rule of their own", () => {
+  // One pinned free resident, one unpinned waiting session, one free session: the head reads
+  // 2 free, and the two Free rules count 1 each, one over each free card.
+  const fleet = [plain("alpha-resident", IDLE), awaiting("bravo", 60_000), plain("charlie", IDLE)];
+  const idle = orderSessions(
+    fleet, new Set(), false, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
+    awaitingSessionIds(fleet, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  const rows = fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster"));
+  assert.deepEqual(rows, ["--free:1", "alpha-resident", "--awaiting:1", "bravo", "--free:1", "charlie"]);
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 2, held: null });
+  const freeRuleTotal = fleetRows(idle).reduce((n, r) => n + (r.kind === "section" && r.section === "free" ? r.count : 0), 0);
+  assert.equal(freeRuleTotal, idleHeadCounts(idle).free, "the Free rules do not add up to the head's free count");
+  // A waiting pinned resident still leads, above the pinned free one's rule.
+  const both = [awaiting("alpha-resident", 30 * 60_000), plain("bravo-resident", IDLE), awaiting("charlie", 60_000), plain("delta", IDLE)];
+  const bothIdle = orderSessions(
+    both, new Set(), false, undefined, undefined, new Set(["plain-alpha-resident", "plain-bravo-resident"]), undefined,
+    awaitingSessionIds(both, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(
+    fleetRows(bothIdle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster")),
+    ["alpha-resident", "--free:1", "bravo-resident", "--awaiting:1", "charlie", "--free:1", "delta"],
+  );
+});
+
 test("a paused idle session is not counted as free beside a wait, and is not labelled held", () => {
   const pause = { reason: "operator", phase: "frozen", since: AT - 60_000, interrupted: null, stopped: false } as unknown as Session["pause"];
   const fleet = [awaiting("bravo", 60_000), plain("charlie", { ...IDLE, pause }), plain("delta", IDLE)];

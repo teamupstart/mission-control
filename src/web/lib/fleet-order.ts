@@ -769,6 +769,12 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
   let at = 0;
   const step = (block: FleetBlock): number => (block.kind === "session" ? 1 : block.sessions.length);
   while (at < blocks.length) {
+    // Pinned residents that are free sit above the Awaiting rule, after any pinned residents in
+    // a wait: they get a Free rule of their own, so every free card sits under a Free rule and
+    // the rules' counts add up to the head's free count.
+    if (awaiting && index === pinnedAwaiting && awaiting.startIndex > pinnedAwaiting) {
+      rows.push({ kind: "section", section: "free", count: awaiting.startIndex - pinnedAwaiting });
+    }
     if (awaiting && index === awaiting.startIndex) {
       rows.push({ kind: "section", section: "awaiting", count: awaiting.length });
     }

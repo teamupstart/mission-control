@@ -12854,10 +12854,6 @@ export interface PendingNudge {
   contestedBy?: string[];
 }
 
-/** Whether a person's send of the same words still contests this delivery. */
-export function nudgeContested(nudge: PendingNudge): boolean {
-  return (nudge.contestedBy?.length ?? 0) > 0;
-}
 
 /** A stored `pending_nudges` array, or empty for NULL or anything that is not one. */
 function parsePendingNudges(raw: string | null): PendingNudge[] {

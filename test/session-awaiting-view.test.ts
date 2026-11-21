@@ -155,3 +155,33 @@ test("the Board draws the Awaiting section from App's set, not from a clock of i
   assert.match(idleColumn(new Set(["aw-b"])), /class="board-col-n n-awaiting"[^>]*>1 awaiting</);
   assert.doesNotMatch(idleColumn(undefined), /n-awaiting/, "with no set from App the Board drew a section of its own");
 });
+
+test("a pinned free resident above the Awaiting section is drawn under a Free rule of its own", () => {
+  const idle = { state: "idle" as const, activity: null };
+  const resident = mkSession({ id: "res-free", name: "Release Watch", pid: 31, ...idle });
+  const waiting = mkSession({ id: "aw-mid", name: "Awaiting CI", pid: 32, ...idle, awaiting: wait({ id: "aw-mid" }) });
+  const free = mkSession({ id: "free-2", name: "Docs cleanup", pid: 33, ...idle });
+  const mark = {
+    name: "Release Watch", colorId: "amber", label: "REL", pin: true, revision: 1, runId: "run-2", taskId: "task-2",
+    profileId: "profile-2", personaName: null, changedTo: null, controlOtherSessions: false,
+  } as unknown as ResidentSessionMark;
+  const props = {
+    sessions: [resident, waiting, free], tasks: [], backlog: [], onEditTask: () => {}, backlogPlan: null, selectedId: null,
+    consoleZone: "rail", onConsoleZoneChange: () => {}, onSelect: () => {}, onCursorTo: () => {}, onDeselect: () => {},
+    detailId: null, onOpenReviews: () => {}, onRequeue: () => {}, onOpenFiles: () => {}, onOpenFile: () => false,
+    onOpenFilePath: () => {}, fileTabRequest: null, conversationTabRequest: null, workflowsTabRequest: null,
+    diffTabRequest: null, files: {} as SessionFilesController, onReset: () => {}, onComplete: () => {}, onKill: () => {},
+    onKilled: () => {}, resetNonces: {}, registerEl: () => {}, registerActions: () => {}, registerLaunchers: () => {},
+    registerFind: () => {}, registerDetailScroll: () => {}, registerReaderTab: () => {}, renamingId: null,
+    onRenameStart: () => {}, onRenameClose: () => {}, foremanMode: "dry-run", foremanEnabled: false, foremanAllowlist: [],
+    inputReviewBySession: new Map<string, string>(), pendingReviewIds: new Set<string>(), reviews: [],
+    residentBySession: new Map([["res-free", mark]]), awaitingIds: new Set(["aw-mid"]),
+  } as unknown as SessionViewProps;
+  const html = render(createElement(BoardView, props), true);
+  const idleColumn = html.slice(html.indexOf('class="board-col tone-idle'));
+  const freeRule = idleColumn.indexOf("fleet-section-free");
+  assert.ok(freeRule >= 0 && freeRule < idleColumn.indexOf("Release Watch"), "the pinned free resident is not under a Free rule");
+  assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("fleet-section-awaiting"));
+  assert.ok(idleColumn.indexOf("fleet-section-free", freeRule + 1) > idleColumn.indexOf("Awaiting CI"), "no Free rule below the Awaiting section");
+  assert.match(idleColumn, /class="board-col-n n-free"[^>]*>2 free</);
+});

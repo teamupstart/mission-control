@@ -359,9 +359,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     render: (block: FleetBlock) => React.JSX.Element,
     wrapRepo: (row: FleetRepoRow, children: React.ReactNode) => React.JSX.Element,
   ): React.ReactNode[] =>
-    fleetRows(g).map((row) =>
+    fleetRows(g).map((row, at) =>
       row.kind === "section" ? (
-        <FleetSectionHead key={`section-${row.section}`} kind={row.section} count={row.count} />
+        // Keyed by position too: a group can draw two Free rules (pinned free residents above an
+        // Awaiting section, and the free sessions below it).
+        <FleetSectionHead key={`section-${row.section}-${at}`} kind={row.section} count={row.count} />
       ) : row.kind === "repo" ? (
         wrapRepo(row, repoCollapsed.has(row.key) ? null : row.blocks.map(render))
       ) : (

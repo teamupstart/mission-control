@@ -121,6 +121,11 @@ expires after it and is pruned, and any later Mission Control send of the same w
 it, so a delivery whose turn was altered or dropped cannot claim an operator's later copy. No
 reviews are deleted by any retention today; the wording that assumed one was corrected.
 
+Revision 8 bounds the Goal reader's echo debt. A delivery's owed echo is cleared when it arrives,
+when the delivery's work cycle completes, or after `HUMAN_ECHO_TTL_MS`. These are the rules
+operator follow-up echoes already follow, so a dropped or altered echo cannot swallow a later
+operator copy.
+
 ## Final verification
 
 With async-input Phases 1 to 3 and this phase merged and the flag on: `npm run typecheck`,

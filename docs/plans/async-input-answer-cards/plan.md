@@ -1,7 +1,7 @@
 # Asynchronous input: answers render as answer cards
 
 Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
-phased in `phased-plan.md`. Revisions 3 to 7 bind recognition to a recorded daemon delivery after
+phased in `phased-plan.md`. Revisions 3 to 8 bind recognition to a recorded daemon delivery after
 the plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
@@ -129,6 +129,12 @@ echo ticket, and each arrival spends exactly one owed echo. Review messages join
 - Each delivery row owes exactly one echo, recorded durably on the row, so a restart cannot
   reset it. An arrival whose fingerprint matches a delivery with an echo still owed spends it and
   is not captured.
+- The debt does not outlive the turn it belongs to. It is cleared when its echo arrives, when the
+  work cycle the delivery started or steered into completes, or `HUMAN_ECHO_TTL_MS` after delivery
+  was confirmed, whichever comes first. These are the rules `expireHumanEchoes` and
+  `HUMAN_ECHO_TTL_MS` (`src/server/injections.ts`) already apply to an operator follow-up's
+  expected echo. The expiry time is stored on the row, so a restart honours it. A harness that
+  drops or alters the echo therefore cannot leave a debt that swallows a later operator copy.
 - Each operator send of the same words keeps its own capture, through its existing human-echo
   ticket or, for a copy Mission Control did not relay, as an ordinary prompt.
 - Because the words are identical, which arrival spends which owed echo cannot change what is
@@ -245,6 +251,7 @@ two renderings.
 | A delivery cannot bind (transcript size unreadable before sending, or contested). | Its turn renders as raw text, as today, never as a card on a guess. |
 | A harness alters or drops a delivered turn, so the row stays unbound. | The row can bind only inside the delivery window and expires after it. Within the window, any later Mission Control send of the same words contests it. An operator's later copy stays an operator turn either way. |
 | An old conversation is reopened long after its answers were delivered. | Bound rows are never pruned by age, so its cards still render. |
+| A harness accepts a delivery but drops or alters its prompt-hook echo. | The owed echo is cleared when the delivery's work cycle completes, or after `HUMAN_ECHO_TTL_MS`. A later operator copy is then captured as usual. |
 | The card moves from `resolvedAt` to the delivery turn when the answer is delivered. | Accepted for a single card per answer; the "On its way" line explains the interim state. |
 
 ## Verification
@@ -261,7 +268,9 @@ two renderings.
   delivery so neither turn becomes a card; the binding and `origin: harness` survive a
   restart with an empty injection record; an operator send of the same words before, between or
   after the delivery's echo yields exactly one Goal revision and the delivery none, and two
-  deliveries with one operator send yield one, in every arrival order; projection and `mergeConversation` draw one card per review, at the delivery turn
+  deliveries with one operator send yield one, in every arrival order; after a delivery whose echo
+  was dropped or altered, the debt clears at the work cycle's completion or the TTL (also across
+  a restart) and a later operator copy is captured as a Goal revision; projection and `mergeConversation` draw one card per review, at the delivery turn
   when present and at `resolvedAt` with "On its way" when queued; a call-mode answer returned
   through its call is unchanged; flag off writes no line.
 - Playwright (`e2e/`, fake agents, no model tokens): with the flag on, an answer given from the

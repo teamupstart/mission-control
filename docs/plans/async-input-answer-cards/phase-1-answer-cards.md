@@ -90,7 +90,11 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
    the existing order: owed daemon echoes are checked before an operator follow-up's echo ticket
    is claimed. Each delivery row owes one echo, persisted on the row. An arrival matching a row
    with an echo still owed spends it in the same step and is not captured; any other arrival takes
-   the existing human-ticket or plain capture path. Do not try to pair an arrival with its sender:
+   the existing human-ticket or plain capture path. Clear a row's debt when its echo arrives, when
+   the work cycle the delivery started or steered into completes, or `HUMAN_ECHO_TTL_MS` after
+   delivery was confirmed, whichever is first. Store the expiry time on the row so a restart
+   honours it. This mirrors `expireHumanEchoes` for operator follow-ups and should reuse its
+   generation tracking, not a second clock. Do not try to pair an arrival with its sender:
    identical words cannot be told apart, and counting makes the pairing irrelevant, so N
    deliveries and M operator sends of the same text always yield exactly M Goal revisions.
 6. **Presentation type.** Make `TranscriptPresentation` a discriminated union: the existing
@@ -144,7 +148,9 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
   `origin: harness` survive a restart with an empty injection record; the Goal reader captures
   nothing from a delivery, and an operator send of the same words before, between or after the
   delivery's echo yields exactly one Goal revision, as do two deliveries with one operator send,
-  in every arrival order; the count survives a restart; delegated-turn binding tests still pass
+  in every arrival order; the count survives a restart; a delivery whose echo is dropped or
+  altered, followed by an operator copy, has its debt cleared at the work cycle's completion or
+  the TTL, so the copy is captured, including when a restart falls between them; delegated-turn binding tests still pass
   against the shared helper;
   `mergeConversation` places one card per review at the delivery turn, at `resolvedAt` with "On
   its way" while queued, and leaves a call-returned answer unchanged; authorship and escalation
@@ -194,5 +200,8 @@ about a review. Retiring the flag makes the writer unconditional; it must not ch
   conversations keep their cards; unbound rows bind only inside the delivery window, then expire
   and are pruned; a later Mission Control send contests an unbound row. The assumption that
   reviews are deleted by retention was removed.
+- Plan pull request review (#1612, revision 8): a delivery's echo debt is cleared when the echo
+  arrives, when its work cycle completes, or after `HUMAN_ECHO_TTL_MS`, with a durable expiry, so
+  a dropped or altered echo cannot swallow a later operator copy.
 - Final audit: owns every requirement of the source plan, sections 1 to 5, and all three adopted
   decisions.

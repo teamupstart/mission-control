@@ -909,15 +909,18 @@ export interface Session {
    * live card offering re-attach, never an automatic rebind. Null normally.
    */
   orphanedQueue: OrphanedQueueHint | null;
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   /**
    * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
-   * if any check failed, else `pending` while any is still running, else
+   * if any check has a blocking conclusion (including cancellation), else `pending`
+   * while any is still running, else
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
-  /** Latest branch-update feedback for this session’s owned pull requests. */
-  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /**
    * The Inspector's state for this session's pull request, or null when there is no PR
    * or the Inspector never adopted it.
@@ -2872,6 +2875,8 @@ export interface RepoPrFeedback {
   prNumber: number;
   /** That pull request's CI rollup as of the last poll, or null when it reported none. */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /** The Inspector's state for it, or null when the Inspector never adopted it. */
   inspector: InspectorSummary | null;
 }

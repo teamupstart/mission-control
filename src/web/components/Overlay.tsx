@@ -93,6 +93,7 @@ export const OVERLAY_IDS = {
   residentMcpAllSources: "resident-mcp-all-sources",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
+  prChecks: "pr-checks",
   featureFlagsConfirm: "feature-flags-confirm",
   // Settings > Task shaping's manifest import, and its dry run of one shaper.
   shapingImport: "shaping-import",

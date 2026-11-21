@@ -501,6 +501,7 @@ export type PrMatch = {
   state: PrState;
   /** Rolled-up CI status for the PR, or null when it carries no checks. */
   checks: PrChecks | null;
+  checkDetails?: import("@shared/pr-check-details.ts").PrCheckDetails | null;
   branch: string;
   agentSessionId: string | null;
   episodeId: string | null;
@@ -549,6 +550,7 @@ interface LivePrObservation {
   url: string;
   number: number;
   checks: PrChecks | null;
+  checkDetails?: import("@shared/pr-check-details.ts").PrCheckDetails | null;
 }
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
@@ -2951,6 +2953,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prCheckDetails: prev?.prCheckDetails ?? null,
       prBranchUpdates: prev?.prBranchUpdates,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
@@ -3157,6 +3160,7 @@ export class Registry extends EventEmitter {
       prNumber: null,
       prState: null,
       prChecks: null,
+      prCheckDetails: null,
       meta: null,
       effortBaselineReady: false,
       pendingEffort: null,
@@ -3567,6 +3571,7 @@ export class Registry extends EventEmitter {
       prState: "open",
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
+      prCheckDetails: null,
     };
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3748,6 +3753,7 @@ export class Registry extends EventEmitter {
             // Checks are unknown at creation; the poller fills them in. Reset so a
             // reused session can't carry the previous PR's status onto a new one.
             prChecks: null,
+            prCheckDetails: null,
           }
         : {};
       const agentSessionId = evt.sessionId ?? target.agentSessionId;
@@ -5565,7 +5571,7 @@ export class Registry extends EventEmitter {
       const moved = this.recordLivePr(
         target.key,
         match && match.state === "open" && match.number !== null
-          ? { url: match.url, number: match.number, checks: match.checks }
+          ? { url: match.url, number: match.number, checks: match.checks, checkDetails: match.checkDetails }
           : null,
       );
       // A live observation moving changes this session's card and nothing in the DATABASE, so
@@ -5707,7 +5713,8 @@ export class Registry extends EventEmitter {
     if (
       prev?.url === observed?.url &&
       prev?.number === observed?.number &&
-      prev?.checks === observed?.checks
+      prev?.checks === observed?.checks &&
+      JSON.stringify(prev?.checkDetails) === JSON.stringify(observed?.checkDetails)
     ) {
       return false;
     }
@@ -5735,6 +5742,7 @@ export class Registry extends EventEmitter {
     return {
       prNumber: live.number,
       prChecks: live.checks,
+      prCheckDetails: live.checkDetails,
       inspector: this.inspectorSummaryForUrl(prUrl, this.sessions.get(sessionId)),
     };
   }
@@ -5929,6 +5937,7 @@ export class Registry extends EventEmitter {
       const number = match?.number ?? null;
       const state = match?.state ?? null;
       const checks = match?.checks ?? null;
+      const checkDetails = match?.checkDetails ?? null;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
@@ -5950,7 +5959,7 @@ export class Registry extends EventEmitter {
         this.recordLivePr(
           repoPrTargetKey(id, primaryRoot),
           match && state === "open" && number !== null
-            ? { url: match.url, number, checks }
+            ? { url: match.url, number, checks, checkDetails }
             : null,
         );
       }
@@ -5967,7 +5976,8 @@ export class Registry extends EventEmitter {
         live.prUrl === url &&
         live.prNumber === number &&
         live.prState === state &&
-        live.prChecks === checks
+        live.prChecks === checks &&
+        JSON.stringify(live.prCheckDetails) === JSON.stringify(checkDetails)
       )
         continue;
       const next: Session = {
@@ -5976,6 +5986,7 @@ export class Registry extends EventEmitter {
         prNumber: number,
         prState: state,
         prChecks: checks,
+        prCheckDetails: checkDetails,
         task,
       };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
@@ -11146,6 +11157,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  prCheckDetails: byJson,
   prBranchUpdates: byJson,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.

@@ -312,6 +312,10 @@ Read more in [Foreman](docs/foreman.md).
 
 ## Workflows and Personas
 
+Reused workflow check slots with ignored Go source are quarantined before checks run, preserving
+the files and reporting pool contamination as infrastructure trouble. See
+[check isolation](docs/worktrees-and-checks.md#running-a-check-command).
+
 Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries

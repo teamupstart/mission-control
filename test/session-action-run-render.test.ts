@@ -760,3 +760,10 @@ test("the footer is the projection, so it is unconditional at every call site", 
     "",
   );
 });
+
+test("session-action waiting copy names the actor and the required next step", () => {
+  assert.match(actionWaitSentence("awaiting_pull_request"), /Next: the session must open or identify the pull request/);
+  assert.match(actionWaitSentence("needs_operator"), /Next: you must answer the session's question/);
+  assert.match(actionWaitSentence("queued_for_conversation"), /Next: Mission Control/);
+  for (const reason of SESSION_ACTION_WAIT_REASONS) assert.match(actionWaitSentence(reason), /Next:/, reason);
+});

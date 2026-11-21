@@ -15880,7 +15880,7 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
 }
 
 /**
- * Every open adoption, plus the ones RETIRED since a given instant.
+ * A page of open adoptions, recent retirements, and historical merges on the action branch.
  *
  * The open set alone cannot answer a `pull_request` session action, and the reason is a
  * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
@@ -15896,18 +15896,26 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
  * which matters - the caller resolves a repository identity per distinct root, and that is a
  * git subprocess.
  *
- * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
- * a contradiction this turn produced, and the branch's next pull request is a new row.
+ * Older merged rows are included only for the requested branch. The caller still verifies
+ * repository identity and published content; an old merge alone never proves current work.
+ * Older closed-unmerged rows stay out. Walk pages using the last row as the cursor; the key
+ * breaks adoption-time ties without skipping candidates or loading the entire ledger at once.
  */
-export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+export function loadAdoptedInspectorPrsSince(
+  observedSince: number,
+  mergedBranch: string | null,
+  after: { adoptedAt: number; key: string } | null,
+): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'open'
+        WHERE (state = 'open'
            OR (observed_at IS NOT NULL AND observed_at >= ?)
-        ORDER BY adopted_at ASC`,
+           OR (observed_state = 'MERGED' AND head_ref_name = ?))
+          AND (? IS NULL OR (adopted_at, key) > (?, ?))
+        ORDER BY adopted_at ASC, key ASC LIMIT 50`,
     )
-    .all(observedSince) as unknown as InspectorPrRow[];
+    .all(observedSince, mergedBranch, after?.key ?? null, after?.adoptedAt ?? null, after?.key ?? null) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 

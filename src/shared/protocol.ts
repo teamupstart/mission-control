@@ -6305,6 +6305,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     branch: z.string().min(1).max(400).nullable(),
     expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    mergedContentTreeOid: CommitOidSchema.nullable().optional(),
     observedAt: z.number().int(),
   }),
 ]);

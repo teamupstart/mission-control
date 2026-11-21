@@ -7,9 +7,11 @@ at stage `select` chooses guidance for the task. How Mission Control reaches a s
 
 **What this build does.** You register a `command` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
-the API, and dry-run it against a repository. Mission Control calls it at the gather and
-select stages, validates and caps what it returns, and reports the section it would add to a
-worker's first prompt and an outcome for each shaper. Nothing is called at dispatch: no worker
+the API, and dry-run it against a repository. Mission Control calls it at the stage it is
+registered for, validates and caps what it returns, and reports the section it would add to a
+worker's first prompt and an outcome for each shaper. A `command` shaper can serve either
+stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that
+places it at `select` is refused. Nothing is called at dispatch: no worker
 receives shaped context yet.
 
 **What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and

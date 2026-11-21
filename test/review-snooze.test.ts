@@ -363,6 +363,39 @@ test("withdrawing a message-mode question cancels only its unclaimed snooze inst
   assert.deepEqual(f.turns(), retained, "recovery does not requeue a withdrawn question's instruction");
 });
 
+test("a failed snooze-instruction deletion rolls back withdrawal and leaves the question and instruction open", () => {
+  const f = fixture("withdraw-snooze-fails");
+  const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  f.reviews.snooze(review.id, HOUR, { mode: "hold" });
+  const instruction = f.turns()[0]!;
+  assert.equal(instruction.id, `review-continuation:snooze:${review.id}`);
+  assert.equal(instruction.state, "queued");
+  assert.equal(instruction.claimedAt, null);
+  const before = f.registry.getReview(review.id);
+  const db = openDb();
+  const stored = db.prepare("SELECT status, response, resolved_at FROM reviews WHERE id = ?");
+  const beforeStored = stored.get(review.id);
+  assert.equal(beforeStored?.status, "snoozed");
+
+  db.exec(`CREATE TRIGGER refuse_snooze_delete BEFORE DELETE ON pending_turns
+    WHEN OLD.id = '${instruction.id}' BEGIN SELECT RAISE(ABORT, 'snooze instruction deletion refused'); END`);
+  try {
+    assert.throws(
+      () => f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed"),
+      /snooze instruction deletion refused/,
+    );
+    assert.deepEqual(stored.get(review.id), beforeStored, "the question's settlement is rolled back on disk");
+    assert.deepEqual(f.registry.getReview(review.id), before, "no withdrawal is published to the live registry");
+    assert.deepEqual(f.reviews.openQuestions(f.id).map((r) => r.id), [review.id]);
+    assert.deepEqual(listPendingTurns(instruction.noteKey), [instruction], "the instruction stays queued with no answer replacing it");
+    assert.deepEqual(f.turns(), [instruction], "the live outbox retains the same unclaimed instruction");
+  } finally {
+    db.exec("DROP TRIGGER refuse_snooze_delete");
+  }
+});
+
 for (const state of ["sending", "uncertain"] as const) {
   test(`withdrawing a message-mode question preserves its ${state} snooze instruction`, () => {
     const f = fixture(`withdraw-snooze-${state}`);

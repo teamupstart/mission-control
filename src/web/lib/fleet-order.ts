@@ -740,11 +740,14 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
   const blocks = fleetBlocks(group);
   const heldFrom = group.heldFrom;
   const awaiting = group.awaiting;
-  if (heldFrom === null && awaiting === null && group.repos.length === 0) return blocks;
+  // One kind of thing, drawn without rules: nothing held, nothing waiting (a pinned resident in a
+  // wait counts, though it has no span of its own) and no repository frames.
+  if (heldFrom === null && awaiting === null && group.awaitingCount === 0 && group.repos.length === 0) return blocks;
   // The Awaiting rule sits on its span, and the free rule moves to where the span ends: the
   // cards below an Awaiting section are the ones that are not waiting on anything, so they are
-  // labelled whether or not anything is held. With no awaiting span the free rule stays where it
-  // always was, at the top, and only when something is held.
+  // labelled whether or not anything is held. With no awaiting span the free rule sits at the
+  // top, after any pinned residents in a wait, whenever something is held or such a resident is
+  // waiting, so the head's "N free" always has a rule over exactly those cards.
   const awaitingEnd = awaiting ? awaiting.startIndex + awaiting.length : null;
   const freeEnd = heldFrom ?? group.sessions.length;
   const pinnedAwaiting = group.awaitingCount - (awaiting?.length ?? 0);
@@ -771,16 +774,17 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
     if (awaitingEnd !== null && index === awaitingEnd && freeEnd > awaitingEnd) {
       rows.push({ kind: "section", section: "free", count: freeEnd - awaitingEnd });
     }
-    if (heldFrom !== null) {
-      // Pinned residents inside a wait lead the group as their own partition (`clusterGroup`) and
-  // are not free, so with
-      // no Awaiting span the Free rule starts after them and counts only what follows.
-      if (awaitingEnd === null && index === pinnedAwaiting && heldFrom > pinnedAwaiting) {
-        rows.push({ kind: "section", section: "free", count: heldFrom - pinnedAwaiting });
-      }
-      if (index === heldFrom) {
-        rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
-      }
+    // Pinned residents inside a wait lead the group as their own partition (`clusterGroup`) and
+    // are not free, so with no Awaiting span the Free rule starts after them and counts only what
+    // follows, up to the held split.
+    if (
+      awaitingEnd === null && index === pinnedAwaiting && (heldFrom !== null || pinnedAwaiting > 0)
+      && freeEnd > pinnedAwaiting
+    ) {
+      rows.push({ kind: "section", section: "free", count: freeEnd - pinnedAwaiting });
+    }
+    if (heldFrom !== null && index === heldFrom) {
+      rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
     }
     const span = repoAt.get(index);
     if (span) {

@@ -716,6 +716,37 @@ test("a pinned resident inside a wait sits above the Free rule, which counts onl
   assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 2, held: 1 });
 });
 
+test("a pinned resident that is the only wait, with nothing held, still has the free cards under a Free rule", () => {
+  // No Awaiting span (the resident keeps its pinned place) and no held split, but the head reads
+  // "1 awaiting" and "2 free": the two free cards sit under a Free rule that counts them.
+  const fleet = [awaiting("alpha-resident", 30 * 60_000), plain("bravo", IDLE), plain("charlie", IDLE)];
+  const rowsOf = (byRepo: boolean, sessions: Session[]) => {
+    const idle = orderSessions(
+      sessions, new Set(), byRepo, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
+      awaitingSessionIds(sessions, true, AT),
+    ).groups.find((g) => g.tone === "idle")!;
+    return { idle, rows: fleetRows(idle) };
+  };
+  const plainRows = rowsOf(false, fleet);
+  assert.equal(plainRows.idle.awaiting, null);
+  assert.deepEqual(idleHeadCounts(plainRows.idle), { awaiting: 1, free: 2, held: null });
+  assert.deepEqual(
+    plainRows.rows.map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : r.kind)),
+    ["alpha-resident", "--free:2", "bravo", "charlie"],
+  );
+  // With repository grouping on, the Free rule still sits over the free cards, outside their frame.
+  const grouped = rowsOf(true, [awaiting("alpha-resident", 30 * 60_000), inRepo("bravo", REPO_A, IDLE), inRepo("charlie", REPO_A, IDLE)]);
+  assert.deepEqual(
+    grouped.rows.map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : r.kind)),
+    ["alpha-resident", "--free:2", "repo"],
+  );
+  // Only the waiting resident in the column: nothing free, so no Free rule.
+  assert.deepEqual(
+    rowsOf(false, [awaiting("alpha-resident", 30 * 60_000)]).rows.map((r) => (r.kind === "section" ? `--${r.section}` : r.kind === "session" ? r.session.name : r.kind)),
+    ["alpha-resident"],
+  );
+});
+
 test("pinned free residents above an Awaiting section sit under a Free rule of their own", () => {
   // One pinned free resident, one unpinned waiting session, one free session: the head reads
   // 2 free, and the two Free rules count 1 each, one over each free card.

@@ -2347,8 +2347,7 @@ export class WorkflowManager {
      */
     // The latest snapshot is packaging evidence, not a semantic review of this tree.
     // An explicit fresh-review request must not demand another code change first.
-    const needsFreshReview = run.currentPhase === "inspector_reviewed_tree_changed"
-      && activeGate?.waitReason === "reviewed_tree_changed";
+    const needsFreshReview = activeGate?.waitReason === "reviewed_tree_changed";
     if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
@@ -7003,6 +7002,8 @@ export class WorkflowManager {
     // actually holds before it can say whether the capture is the one the adapter proved.
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    // The root's durable boundary also covers Foreman capture and interrupted retries.
+    allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling

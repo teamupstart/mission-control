@@ -7135,7 +7135,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
-      const freshPublishedReview = this.mustRun(input.runId).currentPhase === "inspector_reviewed_tree_changed";
+      const freshPublishedReview = inspectorGateState(this.mustRun(input.runId))?.waitReason === "reviewed_tree_changed";
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -7296,11 +7296,10 @@ export class WorkflowStore {
         const latest = this.latestSubmission(run.id);
         if (latest && latest.round <= run.maxRepairRounds) {
           previousFingerprint = latest.evidenceFingerprint;
-          this.insertSubmissionInTransaction({
+          const repair = this.createRepairSubmission({
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
-            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -7308,15 +7307,8 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
-          assertRunLifecycle(run.id, "capturing", "capturing", null);
-          this.db.prepare(
-            `UPDATE workflow_runs
-                SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
-              WHERE id = ?`,
-          ).run(input.now, run.id);
-          run = this.mustRun(run.id);
-          submission = this.mustSubmission(input.submissionId);
+          run = repair.run;
+          submission = repair.submission;
           state = "resubmitted";
           created = true;
         } else {
@@ -8677,6 +8669,16 @@ export class WorkflowStore {
           AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
+  }
+
+  /** Capture retries read the boundary frozen when the root left the reviewed-tree hold. */
+  submissionRequiresFreshPublishedReview(submissionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events
+      WHERE run_id = (SELECT run_id FROM workflow_submissions WHERE id = ?)
+        AND event_kind = 'submission_created'
+        AND json_extract(payload_json, '$.submissionId') = ?
+        AND json_extract(payload_json, '$.freshPublishedReview') = 1 LIMIT 1`)
+      .get(submissionId, submissionId);
   }
 
   /** The newest executed verdict must pass, and pre-publication-review passes cannot cross

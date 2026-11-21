@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SHAPING_LIMITS, type Shaper, type ShapingConfigView, type ShapingRun } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, shapingViewHasRevisions, type Shaper, type ShapingConfigView, type ShapingRun } from "@shared/shaping.ts";
 import {
   isUnsupportedShaper,
   readShaperManifest,
@@ -184,9 +184,13 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, fres
             <ShaperReview shaper={reading.shaper} />
             {existing && (
               <p className="shaping-note">
-                {isUnsupportedShaper(existing) && existing.replaceable !== true
-                  ? `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be switched off or removed, so this import will be refused.`
-                  : `This replaces the registered shaper "${existing.label}" and switches it off.`}
+                {!isUnsupportedShaper(existing) || existing.replaceable === true
+                  ? `This replaces the registered shaper "${existing.label}" and switches it off.`
+                  // A daemon older than this dashboard sends neither revisions nor `replaceable`:
+                  // the flag's absence says nothing there, so the copy does not predict its answer.
+                  : !shapingViewHasRevisions(config)
+                    ? `A shaper this build cannot run already has the id "${reading.shaper.id}". The daemon decides whether this import replaces it.`
+                    : `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be switched off or removed, so this import will be refused.`}
               </p>
             )}
             {reading.ignoredEnabled && (

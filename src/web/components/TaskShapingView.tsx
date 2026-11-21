@@ -391,6 +391,9 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
   // Bumped by every edit of a field, so a save's answer clears only the edits it sent: typing a
   // field away and back to the submitted text while the save is in flight is a new edit.
   const generations = useRef<Partial<Record<keyof SettingsFields, number>>>({});
+  /** Numbers each save, and records per field the latest save that sent it. */
+  const submissions = useRef(0);
+  const latestSubmission = useRef<Partial<Record<keyof SettingsFields, number>>>({});
   const edit = (patch: Partial<SettingsFields>) => {
     for (const field of Object.keys(patch) as Array<keyof SettingsFields>) {
       generations.current[field] = (generations.current[field] ?? 0) + 1;
@@ -416,6 +419,11 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
     if (intent.limits?.totalBytes !== undefined) sentFields.push("totalKiB");
     const submitted = Object.fromEntries(sentFields.map((field) => [field, generations.current[field]])) as
       Partial<Record<keyof SettingsFields, number>>;
+    // The same draft can be sent twice without an edit, once the stream frees the form and a peer
+    // changes the stored value again, so its generation alone cannot tell the two saves apart.
+    // Each save is numbered, and a reply clears a field only while it answers the latest save of it.
+    const submission = ++submissions.current;
+    for (const field of sentFields) latestSubmission.current[field] = submission;
     const outcome = await onSet(intent, "settings");
     // An unconfirmed save may not have been stored, and one never sent certainly was not: the
     // fields keep what the operator entered, to compare with what the list shows and send again.
@@ -423,7 +431,7 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
     setDraft((current) => {
       const next = { ...current };
       for (const field of Object.keys(submitted) as Array<keyof SettingsFields>) {
-        if (generations.current[field] === submitted[field]) delete next[field];
+        if (generations.current[field] === submitted[field] && latestSubmission.current[field] === submission) delete next[field];
       }
       return next;
     });

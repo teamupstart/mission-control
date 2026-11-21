@@ -1542,28 +1542,7 @@ test("an import matching what is stored is not taken as saved when its answer is
 test("a view without revisions, as a rolled-back daemon sends, turns revision-bound actions off and asks for a reload", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("older-notes", "Older notes") });
-  // Stands in for a daemon older than this dashboard: every shaping view arrives without revisions.
-  await page.addInitScript(() => {
-    const Native = window.EventSource;
-    const strip = (data: string): string => {
-      try {
-        const msg = JSON.parse(data) as { type?: string; shaping?: { revisions?: unknown }; config?: { revisions?: unknown } };
-        if (msg.type === "snapshot" && msg.shaping) delete msg.shaping.revisions;
-        if (msg.type === "shaping_config" && msg.config) delete msg.config.revisions;
-        return JSON.stringify(msg);
-      } catch {
-        return data;
-      }
-    };
-    class OlderDaemonEvents extends Native {
-      set onmessage(handler: ((event: MessageEvent) => void) | null) {
-        super.onmessage = handler && ((event: MessageEvent) => handler(new MessageEvent("message", { data: strip(event.data as string) })));
-      }
-      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
-    }
-    window.EventSource = OlderDaemonEvents;
-  });
-  await page.reload();
+  await simulateOlderDaemon(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(row(page, "Older notes")).toBeVisible();
   await expect(panel(page).getByRole("status").filter({ hasText: "did not say which definition" })).toHaveText(
@@ -1632,4 +1611,99 @@ test("a settings save whose answer is lost keeps what the operator entered, to r
   await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("kept-identity");
   await expect.poll(async () => (await shapingConfig(daemon)).limits.totalBytes).toBe(40 * 1024);
   await expect(save).toBeDisabled();
+});
+
+/**
+ * Stands in for a daemon older than this dashboard: every shaping view the page receives arrives
+ * without `revisions`, and without `replaceable` on any entry, as that daemon sends them.
+ */
+async function simulateOlderDaemon(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    type View = { revisions?: unknown; shapers?: Array<{ replaceable?: unknown }> };
+    const older = (view: View | undefined): void => {
+      if (!view) return;
+      delete view.revisions;
+      for (const entry of view.shapers ?? []) delete entry.replaceable;
+    };
+    const strip = (data: string): string => {
+      try {
+        const msg = JSON.parse(data) as { type?: string; shaping?: View; config?: View };
+        if (msg.type === "snapshot") older(msg.shaping);
+        if (msg.type === "shaping_config") older(msg.config);
+        return JSON.stringify(msg);
+      } catch {
+        return data;
+      }
+    };
+    class OlderDaemonEvents extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = handler && ((event: MessageEvent) => handler(new MessageEvent("message", { data: strip(event.data as string) })));
+      }
+      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
+    }
+    window.EventSource = OlderDaemonEvents;
+  });
+  // The dashboard fixture has already loaded the page; the script runs once it loads again.
+  await page.reload();
+}
+
+test("with a daemon older than the replacement flag, the import dialog does not predict its answer", async ({ dashboard: page, daemon }) => {
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run("shaping", JSON.stringify({
+        shapers: [commandShaper("stripped-notes", "Stripped notes", {
+          transport: { type: "command", command: process.execPath, args: [FAKE_SHAPER, "ok", "ghp_" + "a".repeat(36)] },
+        })],
+      }));
+  });
+  await setFlag(daemon, true);
+  await simulateOlderDaemon(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(row(page, "Stripped notes")).toContainText("A literal credential was removed");
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(commandShaper("stripped-notes", "Stripped notes")));
+  // That daemon sends no replacement flag at all, so its absence is no refusal: the copy is neutral.
+  await expect(dialog).toContainText('A shaper this build cannot run already has the id "stripped-notes". The daemon decides whether this import replaces it.');
+  await expect(dialog).not.toContainText("will be refused");
+  await expect(dialog.getByRole("button", { name: "Save switched off" })).toBeEnabled();
+});
+
+test("a late refusal of an earlier settings save never clears the same draft sent again after it", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The first save is held before the daemon and then refused by the test; the second is lost.
+  const firstSent = gate();
+  const firstAnswers = gate();
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    if (++puts === 1) {
+      firstSent.open();
+      await firstAnswers.opened;
+      return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_settings", reason: "The first save was refused." }) });
+    }
+    await route.abort("connectionreset");
+  });
+  await identity.fill("resent-draft");
+  await save.click();
+  await firstSent.opened;
+  // A peer stores that same value, so the frame frees the form; then it stores another.
+  await putShaping(daemon, { kind: "settings", caller: { user: "resent-draft" } });
+  await expect(identity).toBeEnabled();
+  await putShaping(daemon, { kind: "settings", caller: { user: "peer-value" } });
+  // The draft is unchanged and differs from what is stored now: it is sent again as it is.
+  await expect(save).toBeEnabled();
+  await expect(identity).toHaveValue("resent-draft");
+  await save.click();
+  await expect(form.getByRole("alert")).toContainText("Whether this change was stored is unknown");
+  // The first save's refusal lands last. It answers a save that is no longer the field's latest.
+  firstAnswers.open();
+  await expect(form.getByRole("list", { name: "Earlier outcomes" })).toContainText("The first save was refused.");
+  await expect(identity).toHaveValue("resent-draft");
+  await page.unroute("**/api/shaping");
 });

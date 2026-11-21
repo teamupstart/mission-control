@@ -1138,8 +1138,10 @@ test("a placement is bound to the revision shown, and a kind this daemon does no
 test("a write from a window is refused once a later one of its on the same control was applied", async () => {
   const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
   const instance = ((await (await get()).json()) as { config: { instance: string } }).config.instance;
+  // Sequences are the time each write was sent, in microseconds: these were sent a moment apart.
+  const sentAt = Date.now() * 1000;
   const ordered = (intent: unknown, sequence: number, controls: string[], window = "http-order-window") => app.request("/api/shaping", {
-    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder(window, sequence, controls, instance) }, body: JSON.stringify(intent),
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder(window, sentAt + sequence, controls, instance) }, body: JSON.stringify(intent),
   });
   // The newer save lands first: its earlier one waited, say for discovery, after its window gave up on it.
   assert.equal((await ordered({ kind: "settings", caller: { user: "newer" } }, 2, ["settings"])).status, 200);
@@ -1157,6 +1159,15 @@ test("a write from a window is refused once a later one of its on the same contr
   const staleImport = await ordered({ kind: "upsert", shaper }, 4, ["import", "row:ordered-row"]);
   assert.equal(((await staleImport.json()) as { error: string }).error, "superseded");
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["ordered-row"], true, "the switch stands");
+  // A write sent longer ago than the daemon keeps the records that order it is refused outright.
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const expired = await app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("long-ago-window", (Date.now() - 11 * 60_000) * 1000, ["settings"], instance) },
+    body: JSON.stringify({ kind: "settings", caller: { user: "sent-long-ago" } }),
+  });
+  assert.equal(expired.status, 409);
+  assert.equal(((await expired.json()) as { error: string }).error, "expired");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
 });
 
 test("a write made against an earlier daemon process is refused, so a restart cannot reorder writes", async () => {
@@ -1164,7 +1175,7 @@ test("a write made against an earlier daemon process is refused, so a restart ca
   const view = ((await (await get()).json()) as { config: { instance?: string } }).config;
   assert.match(view.instance ?? "", /^[0-9a-f-]{36}$/, "the view names this daemon process");
   const write = (instance: string, user: string) => app.request("/api/shaping", {
-    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("restart-window", 1, ["settings"], instance) },
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("restart-window", Date.now() * 1000, ["settings"], instance) },
     body: JSON.stringify({ kind: "settings", caller: { user } }),
   });
   const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
@@ -1189,4 +1200,19 @@ test("an ordered write that names no daemon instance is refused, as one made aga
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
   // A client that sends no order at all is not ordered, as before.
   assert.equal((await put({ kind: "settings", caller: { user: "no-order-at-all" } })).status, 200);
+});
+
+test("a view names the commit it shows, which every write that changes it advances and no restatement does", async () => {
+  const commit = async (res: Response) => ((await res.json()) as { config: { commit: number } }).config.commit;
+  const start = await commit(await get());
+  assert.ok(Number.isSafeInteger(start));
+  const changed = await commit(await put({ kind: "settings", caller: { user: "commit-change" } }));
+  assert.ok(changed > start, "a change takes the next commit");
+  assert.equal(await commit(await put({ kind: "settings", caller: { user: "commit-change" } })), changed, "a restatement keeps it");
+  assert.equal(await commit(await get()), changed);
+  // An identical reimport changes nothing a view shows but its revision, and that is a commit too.
+  const shaper = fixture("commit-row", "gather", "ok");
+  const imported = await commit(await put({ kind: "upsert", shaper }));
+  assert.ok(imported > changed);
+  assert.ok(await commit(await put({ kind: "upsert", shaper })) > imported, "the reimport advanced it");
 });

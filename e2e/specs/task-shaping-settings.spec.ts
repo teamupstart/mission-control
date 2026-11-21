@@ -8,6 +8,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { SHAPING_IDENTITY_PROBE_MS } from "../../src/web/lib/shaping-write-identity.ts";
 
 // Settings > Task shaping, end to end against the shipped registry: the category follows its
 // flag in every open window with no reload, an import is reviewed and saved switched off, and
@@ -1990,9 +1991,10 @@ test("a save delayed past a reload of its tab never overwrites a newer save made
 async function holdShapingFrames(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const Native = window.EventSource;
-    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: () => void };
+    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: () => void; shapingFramesDelivered: number };
     const queued: Array<() => void> = [];
     hooks.holdShapingFrames = false;
+    hooks.shapingFramesDelivered = 0;
     hooks.releaseShapingFrames = () => {
       hooks.holdShapingFrames = false;
       for (const deliver of queued.splice(0)) deliver();
@@ -2002,8 +2004,12 @@ async function holdShapingFrames(page: Page): Promise<void> {
         super.onmessage = handler && ((event: MessageEvent) => {
           let shaping = false;
           try { shaping = (JSON.parse(event.data as string) as { type?: string }).type === "shaping_config"; } catch { /* Not JSON. */ }
-          if (shaping && hooks.holdShapingFrames) queued.push(() => handler(event));
-          else handler(event);
+          const deliver = () => {
+            handler(event);
+            if (shaping) hooks.shapingFramesDelivered += 1;
+          };
+          if (shaping && hooks.holdShapingFrames) queued.push(deliver);
+          else deliver();
         });
       }
       get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
@@ -2062,4 +2068,96 @@ test("a duplicated tab takes a write identity of its own, and a reloaded tab kee
   await expect(panel(page)).toBeVisible();
   await page.waitForTimeout(300);
   expect(await identity(page)).toBe(original);
+});
+
+test("an import whose row another writer moved on meanwhile holds the row until the stream reaches the import", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("passed-by", "Passed by");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await holdShapingFrames(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Passed by")).toHaveAccessibleName("Passed by: off");
+  const delivered = () => page.evaluate(() => (window as unknown as { shapingFramesDelivered: number }).shapingFramesDelivered);
+  // The import is held on its way to the daemon.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Meanwhile another writer imports the same manifest: its frame reaches this tab and moves the
+  // row's revision on, though not to the one this tab's import is about to make.
+  const before = await delivered();
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect.poll(delivered).toBeGreaterThan(before);
+  // The import's own frame is held, so its answer lands first.
+  await page.evaluate(() => { (window as unknown as { holdShapingFrames: boolean }).holdShapingFrames = true; });
+  const answered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  goes.open();
+  expect((await answered).status()).toBe(200);
+  await page.unroute("**/api/shaping");
+  await expect(dialog).toHaveCount(0);
+  // The view shows the other writer's revision, which the daemon has moved past: nothing is offered.
+  await expect(pill(page, "Passed by")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Dry-run Passed by" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Remove Passed by" })).toBeDisabled();
+  // The stream reaches the import's commit, and the switch then goes through.
+  await page.evaluate(() => { (window as unknown as { releaseShapingFrames: () => void }).releaseShapingFrames(); });
+  await expect(pill(page, "Passed by")).toBeEnabled();
+  const switched = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Passed by").click();
+  expect((await switched).status()).toBe(200);
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["passed-by"]).toBe(true);
+});
+
+test("a duplicated tab's first save waits for the identity check, and goes out under an identity of its own", async ({ dashboard: page, context, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("first-save", "First save") });
+  // The original tab holds its answer that the identity is taken until the test lets it go, as a
+  // busy tab answers late.
+  await page.addInitScript(() => {
+    const post = BroadcastChannel.prototype.postMessage;
+    const held: Array<() => void> = [];
+    (window as unknown as { answerIdentityProbe: () => void }).answerIdentityProbe = () => { for (const send of held.splice(0)) send(); };
+    BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
+      if ((message as { type?: string } | null)?.type === "taken") held.push(() => post.call(this, message));
+      else post.call(this, message);
+    };
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await page.reload();
+  await expect(pill(page, "First save")).toBeVisible();
+  const identity = (target: Page) => target.evaluate(() => sessionStorage.getItem("mission.shaping.write-identity"));
+  await expect.poll(() => identity(page)).toMatch(/^[0-9a-f-]{36}$/);
+  const original = (await identity(page))!;
+  const duplicate = await context.newPage();
+  await duplicate.addInitScript(({ copied, probeMs }) => {
+    if (!sessionStorage.getItem("mission.shaping.write-identity")) sessionStorage.setItem("mission.shaping.write-identity", copied);
+    // However long this page takes to load, its wait for that answer outlasts the test's hold.
+    const native = window.setTimeout;
+    window.setTimeout = ((handler: TimerHandler, ms?: number, ...rest: unknown[]) =>
+      native(handler, ms === probeMs ? 60_000 : ms, ...rest)) as typeof window.setTimeout;
+  }, { copied: original, probeMs: SHAPING_IDENTITY_PROBE_MS });
+  const sends: string[] = [];
+  duplicate.on("request", (request) => {
+    if (request.url().endsWith("/api/shaping") && request.method() === "PUT") sends.push(request.headers()["x-mission-shaping-order"] ?? "");
+  });
+  const sent = duplicate.waitForRequest((request) => request.url().endsWith("/api/shaping") && request.method() === "PUT");
+  await duplicate.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // Saved before the original tab has answered: the save waits for that answer.
+  await pill(duplicate, "First save").click();
+  await duplicate.waitForTimeout(300);
+  expect(sends, "nothing is sent under the copied identity while the check is open").toEqual([]);
+  await page.evaluate(() => { (window as unknown as { answerIdentityProbe: () => void }).answerIdentityProbe(); });
+  const sentUnder = ((await sent).headers()["x-mission-shaping-order"] ?? "").split(" ")[0];
+  expect(sentUnder).not.toBe(original);
+  expect(sentUnder).toBe(await identity(duplicate));
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["first-save"]).toBe(true);
 });

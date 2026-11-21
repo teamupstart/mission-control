@@ -35,6 +35,9 @@ import {
   shapingList,
   shapingLockKeys,
   shapingRefusalText,
+  shapingRowsAhead,
+  shapingViewCommit,
+  shapingViewReached,
 } from "../src/web/lib/shaping-settings.ts";
 
 const gatherer = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -692,4 +695,26 @@ test("a placement whose shaper was replaced by one this build cannot run is chan
   const gone = ShapingConfigSchema.parse({ shapers: [gatherer("a")] });
   const missing = applyShapingIntent(gone, placement, [], { revise: shapingReviser });
   assert.equal(missing.ok ? "" : missing.error, "unknown_shaper");
+});
+
+test("a write's answer holds the rows it changed until the stream reaches its commit, whatever lands in between", () => {
+  const at = (commit: number | undefined, revisions: Record<string, string>, instance = "daemon-a"): ShapingConfigView => {
+    const { commit: _published, ...base } = view({});
+    return { ...base, revisions, instance, ...(commit === undefined ? {} : { commit }) };
+  };
+  assert.deepEqual(shapingViewCommit(at(4, {})), { instance: "daemon-a", commit: 4 });
+  assert.equal(shapingViewCommit(at(undefined, {})), null, "a daemon older than commits names none");
+  // The import committed at 7. A peer's write to the same row, at 5, reached the view first: its
+  // revision differs from the one before the import, yet it is not the import's.
+  const answer = at(7, { a: "rev-import", b: "rev-b" });
+  const peer = at(5, { a: "rev-peer", b: "rev-b" });
+  assert.deepEqual(shapingRowsAhead(peer, answer), ["a"], "the row waits; the unchanged one does not");
+  assert.equal(shapingViewReached(peer, { instance: "daemon-a", commit: 7 }), false);
+  // The stream reaches the commit, or passes it, and the row is free.
+  assert.equal(shapingViewReached(at(7, { a: "rev-import", b: "rev-b" }), { instance: "daemon-a", commit: 7 }), true);
+  assert.equal(shapingViewReached(at(9, { a: "rev-later", b: "rev-b" }), { instance: "daemon-a", commit: 7 }), true);
+  assert.deepEqual(shapingRowsAhead(at(7, { a: "rev-import", b: "rev-b" }), answer), [], "the frame already arrived");
+  // Another daemon process's snapshot, or an answer that names no commit, holds nothing.
+  assert.equal(shapingViewReached(at(1, { a: "x" }, "daemon-b"), { instance: "daemon-a", commit: 7 }), true);
+  assert.deepEqual(shapingRowsAhead(peer, at(undefined, { a: "rev-import" })), []);
 });

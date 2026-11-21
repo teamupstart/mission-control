@@ -16,9 +16,11 @@ import { applyShapingIntent, getShapingConfig } from "./index.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
   EARLIER_INSTANCE_REFUSAL,
+  EXPIRED_WRITE_REFUSAL,
   noteShapingWriteApplied,
   readShapingWriteOrder,
   SHAPING_WRITE_ORDER_HEADER,
+  shapingWriteExpired,
   shapingWriteFromEarlierInstance,
   shapingWriteSuperseded,
   SUPERSEDED_WRITE_REFUSAL,
@@ -115,6 +117,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
       // Checked here, as the write is about to apply and after every wait: a write that waited for
       // discovery while its window gave up on it and sent a newer one never overwrites that one.
       if (order && shapingWriteFromEarlierInstance(order)) return c.json(EARLIER_INSTANCE_REFUSAL, 409);
+      if (order && shapingWriteExpired(order)) return c.json(EXPIRED_WRITE_REFUSAL, 409);
       if (order && shapingWriteSuperseded(order)) return c.json(SUPERSEDED_WRITE_REFUSAL, 409);
       const result = applyShapingIntent(parsed.data, discovered);
       if (result.ok && order) noteShapingWriteApplied(order);

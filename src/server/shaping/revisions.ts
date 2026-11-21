@@ -87,14 +87,26 @@ export const shapingReviser: ShapingReviser = (entries) => {
  */
 const committedViews = new WeakMap<ShapingConfig, ShapingConfigView>();
 
-/** Take `config`'s view now, as it is committed, for every reader of that config to see. */
-export function captureShapingView(config: ShapingConfig): void {
-  committedViews.set(config, withInstance(shapingConfigView(config, shapingReviser)));
+/**
+ * How many commits that changed what a view shows this process has made. Each such commit's view
+ * carries the count as it stood then, so a window holding a write's answer can tell whether the
+ * stream has reached that commit yet, whatever other writers committed in between.
+ */
+let lastCommit = 0;
+
+/**
+ * Take `config`'s view now, as it is committed, for every reader of that config to see. `advanced`
+ * when the commit changed what the view shows, revisions included: it then takes the next commit
+ * number. A commit that restated the same config keeps the number of the one before.
+ */
+export function captureShapingView(config: ShapingConfig, advanced: boolean): void {
+  if (advanced) lastCommit += 1;
+  committedViews.set(config, published(shapingConfigView(config, shapingReviser)));
 }
 
-/** A view as this daemon process publishes it: naming the process, for write ordering. */
-function withInstance(view: ShapingConfigView): ShapingConfigView {
-  return { ...view, instance: DAEMON_SHAPING_INSTANCE };
+/** A view as this daemon process publishes it: naming the process and the commit, for write ordering. */
+function published(view: ShapingConfigView): ShapingConfigView {
+  return { ...view, instance: DAEMON_SHAPING_INSTANCE, commit: lastCommit };
 }
 
 /**
@@ -102,7 +114,7 @@ function withInstance(view: ShapingConfigView): ShapingConfigView {
  * were when `config` was committed when it was, otherwise as they are now.
  */
 export function daemonShapingView(config: ShapingConfig): ShapingConfigView {
-  return committedViews.get(config) ?? withInstance(shapingConfigView(config, shapingReviser));
+  return committedViews.get(config) ?? published(shapingConfigView(config, shapingReviser));
 }
 
 /**

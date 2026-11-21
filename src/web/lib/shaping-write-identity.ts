@@ -4,13 +4,22 @@
 // past it is ordered against the writes sent after it. Duplicating a tab copies its session
 // storage too, which would leave two live tabs sharing one history, so a tab that loads asks the
 // others over a broadcast channel whether its identity is already in use, and takes a new one if
-// it is. A reloaded tab hears no answer, since the page that held its identity is gone.
+// it is. A reloaded tab hears no answer, since the page that held its identity is gone. Until the
+// other tabs have had the chance to answer, a write waits (`shapingWriteIdentityReady`), so a
+// duplicate never sends one under the identity it copied.
 
 const ID_KEY = "mission.shaping.write-identity";
 const SEQUENCE_KEY = "mission.shaping.write-sequence";
 const CHANNEL = "mission.shaping.write-identity";
 
 type IdentityMessage = { type: "probe"; id: string } | { type: "taken"; id: string };
+
+/**
+ * How long a tab that has just loaded waits for another tab to say its identity is taken. Tabs of
+ * one browser answer each other in a few milliseconds; this only delays a write made in the first
+ * moment after the panel loads.
+ */
+export const SHAPING_IDENTITY_PROBE_MS = 400;
 
 /** A random id, as the write-order header accepts it. */
 export function newShapingWriteIdentity(): string {
@@ -30,6 +39,9 @@ function writeStored(key: string, value: string): void {
 let identity: string | null = null;
 let channel: BroadcastChannel | null = null;
 let lastSequence = 0;
+/** Settles once the probe is answered or its time is up; null until a probe went out, or when none can. */
+let probed: Promise<void> | null = null;
+let probeAnswered: (() => void) | null = null;
 
 /** This tab's write identity: the stored one, unless another live tab already holds it. */
 export function shapingWriteIdentity(): string {
@@ -39,6 +51,13 @@ export function shapingWriteIdentity(): string {
   writeStored(ID_KEY, identity);
   claim();
   return identity;
+}
+
+/** This tab's write identity, once the other live tabs have had the chance to say it is theirs. */
+export async function shapingWriteIdentityReady(): Promise<string> {
+  shapingWriteIdentity();
+  await probed;
+  return identity!;
 }
 
 /** Ask the other live tabs whether this identity is theirs, and answer their asking about ours. */
@@ -61,9 +80,20 @@ function claim(): void {
       // This tab is the duplicate: it takes an identity of its own.
       identity = newShapingWriteIdentity();
       writeStored(ID_KEY, identity);
+      probeAnswered?.();
     }
   };
-  if (identity) channel.postMessage({ type: "probe", id: identity } satisfies IdentityMessage);
+  if (!identity) return;
+  probed = new Promise<void>((resolve) => {
+    const timer = setTimeout(() => settle(), SHAPING_IDENTITY_PROBE_MS);
+    const settle = (): void => {
+      clearTimeout(timer);
+      probeAnswered = null;
+      resolve();
+    };
+    probeAnswered = settle;
+  });
+  channel.postMessage({ type: "probe", id: identity } satisfies IdentityMessage);
 }
 
 /**

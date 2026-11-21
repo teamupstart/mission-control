@@ -581,8 +581,9 @@ test("the config view shows known shapers in full and an unsupported entry only 
   assert.deepEqual(Object.keys(view.shapers[2]!).sort(), ["id", "label", "unsupported"]);
   const text = JSON.stringify(view);
   assert.equal(/sk-live/.test(text), false, "no stored value of an unsupported entry leaves, its stage included");
-  const { revisions, instance, ...rest } = view;
+  const { revisions, instance, commit, ...rest } = view;
   assert.match(instance ?? "", /^[0-9a-f-]{36}$/, "the view names the daemon process that published it");
+  assert.ok(Number.isSafeInteger(commit) && commit! >= 0, "and the commit of that process it shows");
   assert.deepEqual({ ...rest, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
   assert.deepEqual(Object.keys(revisions).sort(), ["bad", "known", "skill-router"], "the daemon derives one revision per stored shaper");
   assert.ok(Object.values(revisions).every((revision) => /^[0-9a-f]{16}$/.test(revision)));

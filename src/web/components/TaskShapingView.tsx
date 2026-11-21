@@ -60,7 +60,7 @@ export function TaskShapingView({
   outcomeSubjects?: Record<string, string>;
   /** Controls whose request still awaits its answer: each takes no new write until it arrives. */
   locked?: ReadonlySet<string>;
-  /** Rows whose import was accepted but whose new revision the view does not show yet. */
+  /** Rows an accepted write left at a revision the view does not show yet. */
   awaitingRevision?: ReadonlySet<string>;
   /** Clears the outcomes shown under one control, for those drawn above the list. */
   onDismiss?: (key: string) => void;
@@ -135,8 +135,8 @@ export function TaskShapingView({
     const canSwitch = entry.on || entry.problem === null;
     // Without the daemon's revision nothing here can say which definition it acts on: a view from
     // a daemon older than this dashboard carries none, and an import still being drawn has none yet.
-    // An import of it was accepted, but the revision it now has has not reached the view: any
-    // action here would name the old one and be refused, so none is offered until it arrives.
+    // A write that changed it was accepted, but the revision it now has has not reached the view:
+    // any action here would name an older one and be refused, so none is offered until it arrives.
     const awaitingUpdate = awaitingRevision.has(`row:${entry.id}`);
     const unbound = entry.revision === null || awaitingUpdate;
     // This row's own write still awaits its answer: none of its writes is offered until it arrives.
@@ -222,7 +222,7 @@ export function TaskShapingView({
             </Tooltip>
           )}
           <Tooltip label={awaitingUpdate
-            ? "Waiting for the update that carries this shaper's import."
+            ? "Waiting for the update that carries this shaper's latest change."
             : unbound
             ? "Unavailable until the daemon says which definition this is. Reload the page."
             : !canSwitch

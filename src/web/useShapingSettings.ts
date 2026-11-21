@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, shapingViewRevision, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { nextShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
+import { nextShapingWriteSequence, shapingWriteIdentity, shapingWriteIdentityReady } from "./lib/shaping-write-identity.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
   shapingIntentSuperseded,
   shapingLockKeys,
   shapingRefusalText,
+  shapingRowsAhead,
   shapingUnconfirmedText,
+  shapingViewCommit,
+  shapingViewReached,
+  type ShapingCommit,
   type ShapingWriteOutcome,
 } from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
@@ -42,15 +46,17 @@ export function useShapingSettings(
   // answers. The newest is the control's error; any older ones are shown apart from it, so a
   // refusal that arrives late never replaces the reason the latest action failed.
   const [refusals, setRefusals] = useState<Record<string, Refusal[]>>({});
-  // Shapers an accepted import stored again whose new revision the stream has not yet shown, each
-  // with the revision the view showed before. Until it changes, a switch, removal, move or dry run
-  // of the row would name the old revision and be refused, so the row offers none.
-  const [awaiting, setAwaiting] = useState<Record<string, string | null>>({});
+  // Shapers an accepted write left at a revision the view does not show yet, each with the daemon
+  // commit that write made. Its answer can arrive before the frame that carries it, and another
+  // writer's frame can land in between: until the stream reaches that commit, a switch, removal,
+  // move or dry run of the row would name a revision the daemon has moved past and be refused, so
+  // the row offers none.
+  const [awaiting, setAwaiting] = useState<Record<string, ShapingCommit>>({});
   const confirmedNow = useRef(confirmed);
   confirmedNow.current = confirmed;
   useEffect(() => {
     setAwaiting((current) => {
-      const ids = Object.keys(current).filter((id) => confirmed !== null && shapingViewRevision(confirmed, id) === current[id]);
+      const ids = Object.keys(current).filter((id) => confirmed !== null && !shapingViewReached(confirmed, current[id]!));
       return ids.length === Object.keys(current).length ? current : Object.fromEntries(ids.map((id) => [id, current[id]!]));
     });
   }, [confirmed]);
@@ -139,9 +145,9 @@ export function useShapingSettings(
       return "refused";
     }
     const request = parsed.data;
-    const importing = request.kind === "upsert" ? (request.shaper as { id: string }).id : null;
-    const before = importing !== null && confirmed !== null ? shapingViewRevision(confirmed, importing) : null;
-    if (importing !== null) revisionBefore.current.set(request, before);
+    if (request.kind === "upsert") {
+      revisionBefore.current.set(request, confirmed !== null ? shapingViewRevision(confirmed, (request.shaper as { id: string }).id) : null);
+    }
     lock(keys, true);
     const number = ++sent.current;
     writing.current = request;
@@ -154,7 +160,10 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(shapingWriteIdentity(), nextShapingWriteSequence(), keys, viewInstance(confirmed)) });
+      // A tab that has just loaded may be a duplicate holding a copy of another tab's identity: its
+      // write waits until the other tabs have had the chance to say so.
+      const identity = await shapingWriteIdentityReady();
+      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(identity, nextShapingWriteSequence(), keys, viewInstance(confirmed)) });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
@@ -185,11 +194,11 @@ export function useShapingSettings(
           setPending((current) => current && { ...current, accepted: true });
         }
       }
-      // An import that stored the same config again can be answered before the frame that carries
-      // its new revision: until the view shows a revision other than the one before, the row waits.
-      if (importing !== null && confirmedNow.current !== null && shapingViewRevision(confirmedNow.current, importing) === before) {
-        setAwaiting((current) => ({ ...current, [importing]: before }));
-      }
+      // Answered ahead of the frame that carries it: each row it left at a revision the view does
+      // not show yet waits for the stream to reach the commit it made.
+      const made = result.config ? shapingViewCommit(result.config) : null;
+      const ahead = made && result.config && confirmedNow.current ? shapingRowsAhead(confirmedNow.current, result.config) : [];
+      if (made && ahead.length > 0) setAwaiting((current) => ({ ...current, ...Object.fromEntries(ahead.map((id) => [id, made])) }));
       // A later write on this control succeeded, so an earlier one's refusal no longer describes
       // it. A refusal of a request sent after this one is still news and stays.
       setRefusals((current) => withRefusals(current, key, (current[key] ?? []).filter((refusal) => refusal.number > number)));
@@ -237,7 +246,7 @@ export function useShapingSettings(
     outcomeSubjects: Object.fromEntries(Object.entries(refusals).flatMap(([key, list]) => list[0]!.subject === null ? [] : [[key, list[0]!.subject]])),
     /** Controls whose request still awaits its HTTP answer: each takes no new write until it arrives. */
     locked,
-    /** Rows an accepted import stored again whose new revision the view does not show yet. */
+    /** Rows an accepted write left at a revision the view does not show yet. */
     awaitingRevision: new Set(Object.keys(awaiting).map((id) => `row:${id}`)) as ReadonlySet<string>,
     ready: live,
     set,

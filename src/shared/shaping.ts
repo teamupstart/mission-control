@@ -995,6 +995,13 @@ export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
    * Absent from a view a daemon older than it sends.
    */
   instance?: string;
+  /**
+   * The commit of the daemon process `instance` names that this view shows: it grows with every
+   * commit that changes the view, by any writer. A write's answer carries the commit it made, so
+   * a window can tell when the event stream has reached it, or gone past it. Absent from a view a
+   * daemon older than it sends.
+   */
+  commit?: number;
 };
 
 /**
@@ -1967,8 +1974,10 @@ export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
 /**
  * The header a dashboard window sends with each shaping write: `<window> <sequence> <controls>`,
  * its id, the write's number in that window, and the comma-separated controls it affects. The
- * daemon refuses a write, as it is about to apply, once a later write from the same window was
- * applied to one of those controls (`src/server/shaping/write-order.ts`).
+ * sequence is the time the write was sent, in microseconds since the epoch, raised past the last
+ * one the window sent. The daemon refuses a write, as it is about to apply, once a later write from
+ * the same window was applied to one of those controls, or once it was sent more than ten minutes
+ * ago (`src/server/shaping/write-order.ts`).
  */
 export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
 

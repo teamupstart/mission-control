@@ -25,9 +25,19 @@ export interface ShapingWriteOrder {
   instance: string | null;
 }
 
-/** The newest sequence applied per window and control. Bounded: the oldest entries go first. */
-const applied = new Map<string, number>();
-const APPLIED_KEPT = 4096;
+/**
+ * How long a write stays able to apply after it was sent, and so how long the daemon keeps each
+ * record of a write it applied. A sequence is the time the window sent the write, in microseconds
+ * (`nextShapingWriteSequence`), on the same clock as the daemon's, since only a loopback client
+ * may write. A write sent longer ago than this is refused outright, and a record is dropped only
+ * once it is older than this: by then every write sent before the one it records is past the
+ * window too, so a record is never forgotten while a write it must refuse could still apply.
+ * Never bounded by count, which enough traffic from other windows could exhaust.
+ */
+export const SHAPING_WRITE_WINDOW_MS = 10 * 60_000;
+
+/** The newest sequence applied per window and control, and when, oldest first. */
+const applied = new Map<string, { sequence: number; at: number }>();
 
 const slot = (window: string, control: string): string => `${window}\n${control}`;
 
@@ -47,18 +57,35 @@ export function readShapingWriteOrder(header: string | undefined): ShapingWriteO
 
 /** Whether a write from the same window, sent after this one, has already been applied to one of its controls. */
 export function shapingWriteSuperseded(order: ShapingWriteOrder): boolean {
-  return order.controls.some((control) => (applied.get(slot(order.window, control)) ?? 0) > order.sequence);
+  return order.controls.some((control) => (applied.get(slot(order.window, control))?.sequence ?? 0) > order.sequence);
+}
+
+/**
+ * Whether the write was sent longer ago than `SHAPING_WRITE_WINDOW_MS`, by its sequence: the record
+ * of a newer write that must refuse it may already be gone, so it is refused itself.
+ */
+export function shapingWriteExpired(order: ShapingWriteOrder, now = Date.now()): boolean {
+  return order.sequence / 1000 < now - SHAPING_WRITE_WINDOW_MS;
 }
 
 /** Record that this write was applied, for the writes from the same window that come after it. */
-export function noteShapingWriteApplied(order: ShapingWriteOrder): void {
+export function noteShapingWriteApplied(order: ShapingWriteOrder, now = Date.now()): void {
   for (const control of order.controls) {
     const key = slot(order.window, control);
-    const newest = Math.max(applied.get(key) ?? 0, order.sequence);
+    const sequence = Math.max(applied.get(key)?.sequence ?? 0, order.sequence);
     applied.delete(key);
-    applied.set(key, newest);
+    applied.set(key, { sequence, at: now });
   }
-  while (applied.size > APPLIED_KEPT) applied.delete(applied.keys().next().value!);
+  // Oldest first, so the expired records are the leading ones.
+  for (const [key, record] of applied) {
+    if (now - record.at <= SHAPING_WRITE_WINDOW_MS) break;
+    applied.delete(key);
+  }
+}
+
+/** How many window and control records the daemon holds. For tests. */
+export function heldShapingWriteRecords(): number {
+  return applied.size;
 }
 
 /**
@@ -75,6 +102,12 @@ export function shapingWriteFromEarlierInstance(order: ShapingWriteOrder): boole
 export const EARLIER_INSTANCE_REFUSAL = {
   error: "daemon_restarted",
   reason: "This change was made before the daemon restarted or was upgraded, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
+} as const;
+
+/** The refusal for a write sent longer ago than `SHAPING_WRITE_WINDOW_MS`. */
+export const EXPIRED_WRITE_REFUSAL = {
+  error: "expired",
+  reason: "This change was sent more than 10 minutes ago, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
 } as const;
 
 /** The refusal for a write a newer one from the same window already overtook. */

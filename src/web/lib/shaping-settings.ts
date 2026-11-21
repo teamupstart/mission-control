@@ -224,6 +224,40 @@ export function shapingStageLockKey(stage: string): string {
   return `stage:${stage}`;
 }
 
+/** A daemon commit: the process that made it, and its number in that process. */
+export interface ShapingCommit {
+  instance: string;
+  commit: number;
+}
+
+/** The commit a view shows, or null for a view that names none, from a daemon older than commits. */
+export function shapingViewCommit(view: { readonly instance?: unknown; readonly commit?: unknown }): ShapingCommit | null {
+  const { instance, commit } = view;
+  return typeof instance === "string" && typeof commit === "number" && Number.isSafeInteger(commit) ? { instance, commit } : null;
+}
+
+/**
+ * Whether `view` shows `awaited` or a later commit. A view from another daemon process is past it
+ * too: that process sent its own snapshot, which is what is stored now, whatever came before.
+ */
+export function shapingViewReached(view: ShapingConfigView, awaited: ShapingCommit): boolean {
+  const shown = shapingViewCommit(view);
+  return shown === null || shown.instance !== awaited.instance || shown.commit >= awaited.commit;
+}
+
+/**
+ * The shapers an accepted write's `answer` shows at a revision `view` does not, when `view` shows
+ * an earlier commit than the answer. A write's answer can arrive before the frame that carries it,
+ * and a frame from another writer can land in between, moving a row's revision on without reaching
+ * this write's: either way, until the stream reaches the answer's commit, an action on such a row
+ * would name a revision the daemon has moved past, and be refused.
+ */
+export function shapingRowsAhead(view: ShapingConfigView, answer: ShapingConfigView): string[] {
+  const made = shapingViewCommit(answer);
+  if (made === null || shapingViewReached(view, made) || !shapingViewHasRevisions(answer)) return [];
+  return Object.keys(answer.revisions).filter((id) => shapingViewRevision(answer, id) !== shapingViewRevision(view, id));
+}
+
 /**
  * Every control a write can affect, all locked while it awaits its answer and all required free
  * before it is sent. An import stores its shaper switched off, so it also holds that shaper's row:

@@ -316,12 +316,17 @@ before the body limit, so such a request is refused as forbidden whatever its si
   process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
   the restarted daemon no longer knows what came after it. An ordered write that names no instance
   was made against a daemon older than instances, so it is refused the same way. The window's id and its last sequence
-  are kept in the tab's session storage, and each sequence is grounded in the clock and never
-  lower than the last, so reloading the tab keeps its order: a write sent before the reload and
-  delayed past it is refused once one sent after it has applied. A duplicated tab copies that
-  storage, so a tab that loads asks the other open tabs whether its identity is in use and takes a
-  new one when it is; a reloaded tab hears no answer and keeps its own. A write without the header,
-  from any other client, is not ordered.
+  are kept in the tab's session storage, and each sequence is the time the write was sent, in
+  microseconds, never lower than the last, so reloading the tab keeps its order: a write sent
+  before the reload and delayed past it is refused once one sent after it has applied. The daemon
+  keeps each record of an applied write for ten minutes after applying it, however many other
+  windows write meanwhile, and refuses a write sent more than ten minutes ago with 409 `expired`:
+  a record is forgotten only once every write it could refuse is refused that way instead. A
+  duplicated tab copies that storage, so a tab that loads asks the other open tabs whether its
+  identity is in use and takes a new one when it is; a reloaded tab hears no answer and keeps its
+  own. A save made in the first moment after the tab loads waits, up to 400 ms, for that answer,
+  so a duplicate never sends one under the identity it copied. A write without the header, from
+  any other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
@@ -405,9 +410,13 @@ the switch was sent for, so a peer replacing the shaper and switching the replac
 is never taken for it, nor drawn on it: while a switch or removal waits for its answer, a
 replacement written meanwhile is shown as stored. Such a frame also releases the panel at once for the next
 edit, since the old request can no longer reach what is stored; its answer is still shown when it
-arrives. An import answered before the frame that carries its new revision, as an identical
-reimport can be, leaves its row's switch, removal, moves and dry run unavailable until the view
-shows that revision, since any of them would name the old one and be refused. An outcome shown above the list, for a shaper no longer listed or for the
+arrives. A write answered before the frame that carries it, as an identical reimport can be,
+leaves each row it moved to a revision the view does not show yet with its switch, removal, moves
+and dry run unavailable, since any of them would name an older revision and be refused. Each view
+names the daemon commit it shows (`commit`, which every change of the view advances, by any
+writer), and the write's answer names the commit it made, so the row waits until the stream
+reaches that commit or a later one, even when another writer's frame moved the row's revision on
+in between. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears

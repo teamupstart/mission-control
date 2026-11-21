@@ -13658,6 +13658,38 @@ select:not([multiple]) option:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Beside the drawer, a Board whose columns do not fit scrolls sideways - but a scroller clips at
+   its padding edge, so the overview's 20px right padding scrolled away and a cut-off column ran
+   flush into the drawer's border. With macOS's overlay scrollbar hidden at rest, that read as
+   the drawer laid over the Board (#1579). The gutter moves outside the scrollport, as a margin,
+   so a column is cut a gutter short of the drawer, the way the window's left edge already
+   holds one. A Board that fits is laid out exactly as before: 20px either way. Overview only:
+   the drill-in runs edge to edge, up to the drawer. */
+.residents-pinned-row > .board[data-focus="none"] {
+  padding-right: 0;
+  margin-right: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .residents-pinned-row > .board[data-focus="none"] {
+    transition: padding 0.34s ease, margin 0.34s ease;
+  }
+}
+/* And a visible track: declaring `::-webkit-scrollbar` opts out of the overlay scrollbar, so an
+   overflowing Board says it scrolls (as `.wf-pipeline-strip` does). Chromium reserves the track
+   only while the columns overflow, so a Board that fits is untouched. */
+.residents-pinned-row > .board::-webkit-scrollbar {
+  height: 10px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
 .residents-drawer-head {
   flex: none;
   display: flex;

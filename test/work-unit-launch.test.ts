@@ -33,6 +33,7 @@ const { codexAppServerEnv } = await import("../src/server/harness/codex/sdk-deps
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
@@ -295,6 +296,67 @@ test("an embedded launch's record is installed before its first event, and a res
   assert.equal(calls.at(-1)?.workUnitId, null);
   assert.equal(off?.launchWorkUnitId ?? null, null);
   assert.equal(storedRecord("wu-conversation"), null);
+});
+
+test("a managed Pipeline host's agent carries its task's work unit with the preview on, and none with it off", async (t) => {
+  // The real dispatch, supervisor and Claude adapter; only the SDK's query is scripted, so the
+  // environment observed is the one the host's agent process would be started with - over a
+  // base environment that already holds another unit's id.
+  const envs: Array<Record<string, string | undefined>> = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = claudeSdkSpec({
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin", WORK_UNIT_ID: WU_B }),
+    query: async ({ options }) => {
+      envs.push(options.env ?? {});
+      // Ends when the host is stopped, so teardown does not wait on a turn that never comes.
+      let end: (() => void) | null = null;
+      const ended = new Promise<IteratorResult<never>>((resolve) => { end = () => resolve({ done: true, value: undefined as never }); });
+      return {
+        [Symbol.asyncIterator]: () => ({ next: () => ended, return: async () => { end?.(); return ended; } }),
+        interrupt: async () => { end?.(); },
+        close: () => { end?.(); },
+      } as unknown as ClaudeSdkQuery;
+    },
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  t.after(async () => {
+    HARNESSES.claude.sdk = real;
+    preview(false);
+    for (const session of registry.snapshot().sessions) await supervisor.stop(session.id).catch(() => {});
+  });
+  const dispatcher = new Dispatcher(registry, async () => assert.fail("a managed Pipeline host owns no worktree"), {
+    supervisor,
+    missionMcpDescriptor: async () => MISSION_MCP,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true, launchRuntime: "agent-sdk", cwd: "/repo/pipeline",
+      pipelineRun: { provider: "ai-conductor" as const, repoRoot: "/repo/pipeline", slug: "work-unit-host" },
+    }),
+    spawn: async () => assert.fail("the managed host opens no terminal"),
+  });
+  for (const [enabled, id] of [[true, "pipeline-on"], [false, "pipeline-off"]] as const) {
+    preview(enabled);
+    registry.upsertTask(mkTask({
+      id, agent: "claude", kind: "pipeline", repoRoot: "/repo/pipeline", title: "Host a pipeline",
+      intent: "Host a pipeline", workflowId: null, workUnitId: WU_A,
+    }));
+    await dispatcher.dispatch(id);
+    const task = registry.getTask(id)!;
+    assert.equal(task.status, "running", task.error ?? "");
+    const env = envs.at(-1)!;
+    const host = registry.getSession(task.sessionId!)!;
+    if (enabled) {
+      assert.equal(env.WORK_UNIT_ID, WU_A, "the host's agent carries its task's work unit");
+      assert.equal(host.launchWorkUnitId, WU_A, "and its record says so");
+    } else {
+      assert.equal("WORK_UNIT_ID" in env, false, "off: none, and not the inherited one either");
+      assert.equal(host.launchWorkUnitId ?? null, null);
+    }
+    registry.upsertTask({ ...task, status: "done" });
+  }
+  assert.equal(envs.length, 2);
 });
 
 // ---- the launch record: terminal launches ----

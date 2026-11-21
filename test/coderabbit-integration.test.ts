@@ -265,5 +265,9 @@ test("an incomplete review cannot skip the gate when a competing node consumes t
  const i=input();i.coderabbit!.incompleteReview=true;i.reserveRun=()=>({granted:false,spent:10});
  const d=deps();d.execute=async()=>{throw new Error("must not execute");};d.codeRabbitProbe=async()=>{throw new Error("must not probe");};
  const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
- if(r.kind==="action_required"){assert.match(r.reason,/review remains incomplete.*allowance is exhausted/);assert.equal(r.setup,undefined);}
+ if(r.kind==="action_required"){
+  assert.match(r.reason,/review remains incomplete.*allowance is exhausted/);
+  assert.match(r.reason,/raise the run allowance in Library > Commands, then submit a new round/);
+  assert.equal(r.setup,undefined);
+ }
 });

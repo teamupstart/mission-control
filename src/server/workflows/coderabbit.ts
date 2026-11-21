@@ -11,6 +11,7 @@ import { workflowLog } from "./log.ts";
 import { CODERABBIT_OPERATOR_ACTION, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
 
 export const CODERABBIT_SETUP = "Settings > Setup";
+export const CODERABBIT_ALLOWANCE_REMEDY = "Inspect retained output and explicitly raise the run allowance in Library > Commands, then submit a new round to capture it";
 export const CODERABBIT_MANAGED_ENV = { CODERABBIT_CLI_DISABLE_AUTO_UPDATE: "true", CR_CLI_AUTH_TIMEOUT: "5000" };
 
 export function codeRabbitVersionCompatible(output: string): boolean {
@@ -213,7 +214,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   reservation = input.reserveRun?.();
   if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
     "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
-    "Inspect retained output and explicitly raise the run allowance before retrying; no additional credits were authorized");
+    `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
   if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
   try {
     if (input.coderabbit?.retryAt && input.coderabbit.retryAt > Date.now()) return block(`CodeRabbit vendor wait is active until ${new Date(input.coderabbit.retryAt).toISOString()}. Retry after that time`);

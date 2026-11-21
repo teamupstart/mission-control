@@ -2992,8 +2992,10 @@ The default allowance is **10 executions per workflow run**, shared by all CodeR
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
-unavailable. A node retrying an incomplete review blocks on exhaustion instead; it cannot
-earn approval by spending its allowance. YAML-enabled reviews with
+unavailable. A node with an incomplete review anywhere in this run blocks on exhaustion,
+including on a fresh submission; it cannot earn approval by spending its allowance. To recover,
+explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
+Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
 and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
 or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
@@ -3005,7 +3007,8 @@ update, remote-ref fetch or paid-credit continuation happens automatically.
 When the provider explicitly marks an error as `errorType: connection` and `recoverable: true`,
 Mission Control automatically retries the same step and captured comparison, up to three total
 attempts. The delays are 30 and 60 seconds plus up to 50% jitter; a longer vendor wait takes
-precedence. Pending retries survive daemon restart. Every launched attempt spends the existing
+precedence, including a deadline extended by another node after the retry was scheduled.
+Pending retries survive daemon restart. Every launched attempt spends the existing
 shared review allowance, and retries never authorize extra credits. Missing completion,
 authentication, usage and credit errors do not qualify. Exhaustion retains the connection cause
 and asks the operator to inspect output and retry after connectivity recovers. A heartbeat or

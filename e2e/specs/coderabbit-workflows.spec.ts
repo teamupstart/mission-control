@@ -263,6 +263,49 @@ test("an arbitrary workflow's graph palette authors CodeRabbit and explains its 
  await shot(dashboard,"custom-graph-authoring");
 });
 
+test("exhausted incomplete review needs a fresh submission with an increased allowance", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ connectionFailures: 1 }));
+ const r = await start(dashboard, daemon, { maxRuns: 1 });
+ await expect.poll(async () => (await detail(daemon, r.id)).run.status, { timeout: 60_000 }).toBe("blocked");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ const guidance = "raise the run allowance in Library > Commands, then submit a new round";
+ const message = dashboard.locator(".wf-run-error").filter({ hasText: guidance }).first();
+ await expect(message).toContainText("WebSocket closed");
+ await message.scrollIntoViewIfNeeded();
+ await expect(message).toBeInViewport({ ratio: 1 });
+ await shot(dashboard, "connection-allowance-guidance-pr-repair");
+ const allowance = async (maxRuns: number) => {
+  const command = await api<Record<string, unknown>>(daemon, "/api/workflow-commands/coderabbit");
+  await api(daemon, "/api/workflow-commands/coderabbit", { ...command, expectedRevision: command.revision, maxRuns }, "PUT");
+ };
+ const resubmit = (requestId: string) => api(daemon, `/api/workflow-runs/${r.id}/resubmit`, { requestId, resubmitUnchanged: true });
+ const reviews = () => readFileSync(join(daemon.recordDir, "coderabbit.jsonl"), "utf8").trim().split("\n")
+  .map(line => JSON.parse(line)).filter(call => call.args[0] === "review");
+ // A catalog edit cannot change the comparison frozen by this submission.
+ await allowance(2);
+ await dashboard.getByRole("button", { name: /Retry the failed call/ }).click();
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.filter(a => a.nodeId === "cr")).toHaveLength(2);
+ await expect.poll(async () => (await detail(daemon, r.id)).run.status).toBe("blocked");
+ await expect(dashboard.getByRole("main")).toContainText(guidance);
+ expect(reviews()).toHaveLength(1);
+ // Resubmitting alone must not turn the exhausted, incomplete review into a pass.
+ await allowance(1);
+ await resubmit("cr-allowance-unchanged");
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.filter(a => a.nodeId === "cr")).toHaveLength(3);
+ await expect.poll(async () => (await detail(daemon, r.id)).run.status).toBe("blocked");
+ expect((await detail(daemon, r.id)).attempts.filter(a => a.nodeId === "cr").every(a => a.verdict === null)).toBe(true);
+ expect(reviews()).toHaveLength(1);
+ // Follow the rendered remedy: a new round captures the explicitly increased allowance.
+ await allowance(2);
+ await resubmit("cr-allowance-increased");
+ await expect.poll(async () => (await detail(daemon, r.id)).run.status, { timeout: 60_000 }).toBe("completed");
+ await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review");
+ expect(reviews()).toHaveLength(2);
+ expect(reviews().every(call => !call.args.includes("--use-credits"))).toBe(true);
+ await shot(dashboard, "connection-allowance-recovered-pr-repair");
+});
+
 for (const [name, failures, maxRuns] of [["recovers", 1, 10], ["retry limit", 3, 10], ["allowance", 1, 1]] as const) {
  test(`recoverable connection ${name} preserves the review gate`, async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);

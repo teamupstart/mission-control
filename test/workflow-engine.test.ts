@@ -2935,7 +2935,7 @@ test("a disabled node with an override still launches nothing and stamps no prov
 });
 
 // A disconnect must retain the review gate across retries, restart and allowance exhaustion.
-for (const scenario of ["recover", "limit", "allowance", "cancel", "vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
+for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
   const timerLimit = 2_147_483_647;
   const vendorWaitMs = scenario === "long-vendor-wait" ? timerLimit + 120_000 : 120_000;
   const id = `cr-connection-${scenario}`;
@@ -2944,14 +2944,14 @@ for (const scenario of ["recover", "limit", "allowance", "cancel", "vendor-wait"
   const store = seedSubmission(id, crGraph, { ...context, evidence: { ...context.evidence, coderabbit: yaml } });
   const comparison = store.freezeCodeRabbitComparison(`submission-${id}`, {
     interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
-    baseRef: "main", severity: "major", maxRuns: scenario === "allowance" ? 1 : 10,
+    baseRef: "main", severity: "major", maxRuns: ["allowance", "resubmit"].includes(scenario) ? 1 : 10,
     timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
   });
   let clock = Date.now();
   let calls = 0;
   const makeEngine = () => new WorkflowEngine(store, () => {}, {
     now: () => clock, runnerFor: passingRunner, resolveExecution: passingExecution, workflowPolicy: () => checkPolicy(),
-    workflowCommand: () => emptyWorkflowCommandView("coderabbit"),
+    workflowCommand: () => ({ ...emptyWorkflowCommandView("coderabbit"), maxRuns: comparison.maxRuns }),
     checkDeps: () => ({
       codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
       execute: async request => {
@@ -2973,10 +2973,27 @@ for (const scenario of ["recover", "limit", "allowance", "cancel", "vendor-wait"
   let engine = makeEngine();
   engine.start(); engine.activateSubmission(`submission-${id}`);
   try {
-    if (scenario === "allowance") {
+    if (scenario === "allowance" || scenario === "resubmit") {
       await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
       assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /allowance exhausted/);
       assert.equal(calls, 1);
+      if (scenario === "resubmit") {
+        const repair = store.createRepairSubmission({
+          id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
+          triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
+        });
+        const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
+        store.updateSubmissionCapture(repair.submission.id, {
+          context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+          fingerprint: `${id}-round-2`, status: "running",
+        }, clock);
+        engine.activateSubmission(repair.submission.id);
+        await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
+        assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
+        assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
+        assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        assert.equal(calls, 1, "resubmission cannot grant another execution");
+      }
     } else {
       await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.state === "retry_wait");
       const waiting = store.latestAttemptForNode(`submission-${id}`, "gate")!;
@@ -2984,6 +3001,35 @@ for (const scenario of ["recover", "limit", "allowance", "cancel", "vendor-wait"
       assert.ok(waiting.retryAt! <= clock + (["vendor-wait", "long-vendor-wait"].includes(scenario) ? vendorWaitMs + 15_000 : 45_000));
       assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
       await engine.stop();
+      if (scenario === "extended-vendor-wait") {
+        // Another node records a longer vendor wait after this retry was scheduled.
+        const extended = waiting.retryAt! + 120_000;
+        store.insertAttempt({ id: `${id}-peer`, submissionId: waiting.submissionId,
+          nodeId: "peer-coderabbit", attempt: 1, state: "running", persona: null,
+          inputFingerprint: "peer", now: clock });
+        const failed = store.listAttempts(waiting.submissionId).find(a => a.nodeId === "gate" && a.attempt === 1)!;
+        const output = failed.output as { review: Record<string, unknown> };
+        store.finishAttempt(`${id}-peer`, { state: "error",
+          output: workflowJson({ review: { ...output.review, retryAt: extended } }) }, clock);
+        t.mock.timers.enable({ apis: ["Date"], now: waiting.retryAt! });
+        clock = waiting.retryAt!;
+        engine = makeEngine(); engine.start();
+        await waitFor(() => store.latestAttemptForNode(waiting.submissionId, "gate")!.retryAt === extended
+          || store.getRun(`run-${id}`)!.status === "blocked");
+        assert.equal(store.getRun(`run-${id}`)!.status, "running", "a later shared vendor wait must defer rather than block");
+        const deferred = store.getAttempt(waiting.id)!;
+        assert.equal(deferred.state, "retry_wait");
+        assert.equal(deferred.retryAt, extended);
+        assert.equal(deferred.startedAt, null);
+        assert.equal(calls, 1);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+        assert.equal(store.listReceipts(waiting.submissionId).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        clock = extended;
+        t.mock.timers.setTime(clock);
+        engine.wake();
+        await waitFor(() => calls === 2);
+        return;
+      }
       if (scenario === "long-vendor-wait") {
         // Mock time only after the first real attempt settles. Spy on the actual scheduler
         // boundary too: MockTimers does not emulate Node's overflow-to-1ms behavior.

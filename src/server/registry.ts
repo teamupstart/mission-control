@@ -1,8 +1,9 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
-import { canonicalJson, shapingConfigView, type ShapingConfigView } from "@shared/shaping.ts";
+import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
+import { daemonShapingView } from "./shaping/revisions.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
@@ -1390,7 +1391,7 @@ export class Registry extends EventEmitter {
       featureFlags: getFeatureFlagsConfig(),
       // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
       // window is handed them. The view, never raw envelopes.
-      ...(featureEnabled("task-shaping") ? { shaping: shapingConfigView(getShapingConfig()) } : {}),
+      ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),

@@ -6,6 +6,7 @@
 // same words, so no two readers can disagree about what an open question is or what the agent
 // was told about it.
 
+import { reviewToolResult } from "./review-item.ts";
 import type { ReviewItem, ReviewKind, Session } from "./types.ts";
 
 /** The preview flag that turns `request_input` into an ask that returns at once. */
@@ -13,6 +14,9 @@ export const ASYNC_INPUT_FLAG = "async-input" as const;
 
 /** The longest `meanwhile` line an agent may file with a question. */
 export const MEANWHILE_MAX_CHARS = 300;
+
+/** With async-input enabled, pending and snoozed questions in either wait mode consume a slot. */
+export const MAX_OPEN_QUESTIONS = 10;
 
 /** Collapse a `meanwhile` line's whitespace, line breaks included, so it reads as one line on a card. */
 export function oneLine(text: string): string {
@@ -64,7 +68,7 @@ export function asyncInputReceipt(review: Pick<ReviewItem, "id">): string {
   return [
     `Filed, not answered: your question is in the operator's Mission Control inbox (review ${review.id}), and this call does not wait for the answer.`,
     "Keep working. Do every part of your task that does not depend on the answer. Where your work does depend on it, proceed only on a choice that is easy to reverse (the recommended option, if you offered one) and say which assumption you made. Hold anything irreversible or outward-facing until the answer arrives.",
-    "Do not ask this question again and do not poll for it. The answer arrives as a message in this conversation; reconcile your work with it then.",
+    `Do not ask this question again and do not poll for it. The answer arrives as a message in this conversation; reconcile your work with it then. Use list_open_questions to inspect your outstanding questions, or withdraw_question with id ${review.id} and a reason when this question is no longer needed. Do not use listing to poll for answers.`,
     "If nothing else remains, say what is waiting on this question and end your turn. Mission Control shows this session as waiting on the operator and wakes it with the answer.",
   ].join("\n\n");
 }
@@ -133,3 +137,18 @@ export function waitingOnOpenQuestion(
 
 /** The reason a stopped session with a pending message-mode question needs you. */
 export const WAITING_ON_ANSWER_REASON = "waiting on your answer";
+
+/** Self-contained news for an agent whose context may have changed since it asked. */
+export function asyncInputAnswer(review: ReviewItem, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - review.createdAt) / 1000));
+  return [
+    `Mission Control answer to question ${review.id} (asked ${seconds} seconds ago):`,
+    `Question and context:\n${review.body || review.decisions?.[0]?.question || review.title}`,
+    `You said you would do meanwhile: ${review.meanwhile || "No meanwhile plan was supplied."}`,
+    reviewToolResult(review).text,
+    review.status === "dismissed"
+      ? "The question was dismissed. Keep the choice you made while waiting."
+      : "Reconcile any work or assumptions made meanwhile with this response. Follow any instruction to discuss the question before deciding.",
+    "Resume anything this message interrupted.",
+  ].join("\n\n");
+}

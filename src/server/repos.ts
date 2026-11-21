@@ -556,8 +556,9 @@ export async function insideWorkTree(
 ): Promise<"worktree" | "not-worktree" | "unknown"> {
   if (!existsSync(p)) return "not-worktree";
   const r = await git("git", ["-C", p, "rev-parse", "--is-inside-work-tree"]);
-  // No exit code at all is a check that never ran, such as Git failing to start.
-  if (r.outcomeUnknown || r.overflowed || r.code === null) return "unknown";
+  // A check that never ran is no answer: no exit code at all, or no process, which is how `run`
+  // reports Git failing to start (not found, or refused by the kernel) alongside a `code` of 1.
+  if (r.outcomeUnknown || r.overflowed || r.code === null || r.childPid === null) return "unknown";
   return r.code === 0 && r.stdout.trim() === "true" ? "worktree" : "not-worktree";
 }
 

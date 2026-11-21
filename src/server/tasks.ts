@@ -1,3 +1,9 @@
+import { run } from "./util/exec.ts";
+import { getInspectorPr } from "./db.ts";
+import { parsePrUrl } from "./inspector/github.ts";
+import { resolveCommitTree } from "./workflows/commit-id.ts";
+import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
+import { WorkflowStore } from "./workflows/store.ts";
 import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
@@ -728,6 +734,8 @@ interface CompletionInput {
    * status write cannot leave questions closed behind a task that is still running.
    */
   joinCompletion?: { persist: () => void; publish: () => void };
+  /** Auto-settlement must revalidate publication after archive I/O and state at the write. */
+  finishGuard?: { verify: () => Promise<boolean>; current: () => boolean };
 }
 
 /**
@@ -990,6 +998,34 @@ function closureRefusal(result: ActionResult): string {
   return result.error ?? "the agent could not be stopped";
 }
 
+/** A rolled-over episode can settle only if its current checkout still matches the merge. */
+export async function mergedPublicationCoversCheckout(session: Session, url: string, exec = run): Promise<boolean> {
+  const parsed = parsePrUrl(url);
+  const pr = parsed ? getInspectorPr(parsed.key) : null;
+  if (!session.cwd || !pr?.repoRoot || pr.observedState !== "MERGED" || !pr.observedHeadSha
+    || !pr.headRefName || pr.headRefName !== session.gitBranch) return false;
+  const git = (root: string, args: string[]) => exec("git", ["-C", root, ...args]);
+  const [localRepo, adoptedRepo, status, headTree, mergedTree, branch] = await Promise.all([
+    git(session.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(pr.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]),
+    git(session.cwd, ["rev-parse", "HEAD^{tree}"]),
+    resolveCommitTree(session.cwd, pr.observedHeadSha),
+    git(session.cwd, ["branch", "--show-current"]),
+  ]);
+  const matches = localRepo.code === 0 && adoptedRepo.code === 0
+    && realpathSync(localRepo.stdout.trim()) === realpathSync(adoptedRepo.stdout.trim())
+    && branch.code === 0 && branch.stdout.trim() === pr.headRefName
+    && status.code === 0 && !status.stdout.trim()
+    && headTree.code === 0 && headTree.stdout.trim() === mergedTree;
+  if (!matches) return false;
+  // Tree resolution may take time. Recheck after it, including files hidden by user config.
+  const freshStatus = await git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]);
+  const freshTree = await git(session.cwd, ["rev-parse", "HEAD^{tree}"]);
+  return freshStatus.code === 0 && !freshStatus.stdout.trim()
+    && freshTree.code === 0 && freshTree.stdout.trim() === mergedTree;
+}
+
 /** See `TaskManager.useMergeQuestions`. */
 export interface MergeQuestions {
   /** The closure split for the completion's transaction; see `ReviewManager.mergeClosure`. */
@@ -999,13 +1035,20 @@ export interface MergeQuestions {
 
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
+  mergedPublicationCoversCheckout?: typeof mergedPublicationCoversCheckout;
+  workflowDeliveredCurrentPrompt: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
   kill: typeof kill;
 }
 
-const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
-  resetWouldDestroyWork,
-  kill,
-};
+function defaultCloseMergedSessionDeps(): CloseMergedSessionDeps {
+  let workflows: WorkflowStore | undefined;
+  return {
+    mergedPublicationCoversCheckout,
+    workflowDeliveredCurrentPrompt: (...args) => (workflows ??= new WorkflowStore()).deliveredActionOwnsPrompt(...args),
+    resetWouldDestroyWork,
+    kill,
+  };
+}
 
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
@@ -1144,6 +1187,9 @@ export class TaskManager {
    * `reconcileTasksWithNoLiveSession`. `ensureWorkUnit` is the one write that does not count.
    */
   private readonly sessionlessAtStartup = new Set<Task>();
+  private readonly publicationSettlements = new Map<string, Promise<void>>();
+  private readonly publicationSettlementRechecks = new Set<string>();
+
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
@@ -1169,9 +1215,10 @@ export class TaskManager {
   private mergeQuestions?: MergeQuestions;
   /** Tasks inside `settleIfEpisodeFinished`'s close-then-complete, against re-entry. */
   private readonly mergeSettling = new Set<string>();
+  private readonly closeMergedSessionDeps: CloseMergedSessionDeps;
   constructor(
     private registry: Registry,
-    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    closeMergedSessionDeps: Partial<CloseMergedSessionDeps> = {},
     /**
      * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
      *
@@ -1203,6 +1250,7 @@ export class TaskManager {
      */
     private pause?: TaskPause,
   ) {
+    this.closeMergedSessionDeps = { ...defaultCloseMergedSessionDeps(), ...closeMergedSessionDeps };
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
     this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
@@ -1302,6 +1350,11 @@ export class TaskManager {
       if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
         this.stackReadiness.schedule();
       }
+      if (e.type === "workflow_run_upsert" && e.run.sessionId
+        && !activeWorkflowOwnsSession([e.run])) {
+        const session = this.registry.getSession(e.run.sessionId);
+        if (session) this.settleIfEpisodeFinished(session);
+      }
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1349,6 +1402,7 @@ export class TaskManager {
     // it never had resources of ours - was skipped by it on every restart, forever.
     this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
+      for (const session of this.registry.snapshot().sessions) this.settleIfEpisodeFinished(session);
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession(sessionlessAtStartup);
       // And the closures a previous daemon left owed. Nothing before this point may act on
@@ -1762,6 +1816,8 @@ export class TaskManager {
     const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
     if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
+    if (!blockedInCall && activeWorkflowOwnsSession(this.registry.workflowRunSummaries()
+      .filter(run => run.sessionId === s.id))) return;
     // The one task this agent is executing, per the serial invariant - never "the task
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
@@ -1777,7 +1833,10 @@ export class TaskManager {
     // answer for) has no such turn left, so any merge it produced IS the outcome. So this
     // path keeps the episode-currency gate and reads only THIS episode's evidence.
     const current = this.registry.workEpisodeForSession(s.id);
-    if (current && current.episodeId !== binding.episodeId) return;
+    if ((current && current.episodeId !== binding.episodeId) || !this.currentEpisodeLanded(t, binding)) {
+      this.settlePublishedWorkAfterWorkflow(t, s);
+      return;
+    }
     // This episode's own work has to have landed, and for a multi-repo task that is any repo
     // it shipped rather than the PRIMARY specifically. Gating on the primary's own binding -
     // the only thing this line used to read - meant a task that never touched the primary
@@ -1847,6 +1906,62 @@ export class TaskManager {
    */
   useMergeQuestions(questions: MergeQuestions): void {
     this.mergeQuestions = questions;
+  }
+
+  /** Workflow delivery can roll the episode after merge; content proof closes that case. */
+  private settlePublishedWorkAfterWorkflow(task: Task, session: Session): void {
+    if (this.stopping || task.extraRepos.length > 0) return;
+    if (this.publicationSettlements.has(task.id)) {
+      this.publicationSettlementRechecks.add(task.id);
+      return;
+    }
+    const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+    const latestRun = this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0];
+    if (!episode || episode.promptedAt === null || !latestRun || activeWorkflowOwnsSession([latestRun])) return;
+    const promptRevision = this.registry.getGoal(session.id)?.promptRevision ?? null;
+    if (!this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt(
+      latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
+    const outcome = this.mergeOutcomeFor(task);
+    if (!outcome) return;
+    const current = () => {
+      const fresh = this.registry.getSession(session.id);
+      const latestTask = this.registry.getTask(task.id);
+      const latestEpisode = this.registry.recordedWorkEpisodeForSession(session.id);
+      return !this.stopping && !!fresh && fresh.state === "idle" && fresh.lastActivity === session.lastActivity
+        && fresh.workCycle?.generation === session.workCycle?.generation && !fresh.queue?.openCount
+        && latestTask?.status === "running" && latestTask.sessionId === session.id
+        && latestTask.dispatchedAt === task.dispatchedAt && this.mergeOutcomeFor(latestTask)?.url === outcome.url
+        && latestEpisode?.episodeId === episode.episodeId && latestEpisode.promptedAt === episode.promptedAt
+        && (this.registry.getGoal(session.id)?.promptRevision ?? null) === promptRevision
+        && !activeWorkflowOwnsSession(this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id));
+    };
+    const verify = async () => {
+      try {
+        return await (this.closeMergedSessionDeps.mergedPublicationCoversCheckout ?? mergedPublicationCoversCheckout)(session, outcome.url);
+      } catch {
+        // Unknown publication proof leaves the task running.
+        return false;
+      }
+    };
+    const pending = (async () => {
+      if (!await verify() || !current()) return;
+      await this.runCompletion(task.id, {
+        outcome: outcome.outcome, outcomeUrl: outcome.url, satisfyDependents: false,
+        requireStopped: false, confirmIncompleteScout: false, inferredFrom: session.id,
+        finishGuard: { verify, current },
+      });
+    })().catch((error: unknown) => {
+      console.error("[merge] settling published task after workflow failed:", task.id, error);
+    })
+      .finally(() => {
+        this.publicationSettlements.delete(task.id);
+        if (this.publicationSettlementRechecks.delete(task.id) && !this.stopping) {
+          const fresh = this.registry.getSession(session.id);
+          if (fresh) this.settleIfEpisodeFinished(fresh);
+        }
+      });
+    this.publicationSettlements.set(task.id, pending);
   }
 
   /**
@@ -2027,7 +2142,8 @@ export class TaskManager {
     this.stopMissionSessionClosures();
     this.stackReadiness.stop();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    this.stopping = this.settleWorktreeReturns();
+    this.stopping = Promise.all(this.publicationSettlements.values())
+      .then(() => this.settleWorktreeReturns());
     return this.stopping;
   }
 
@@ -5872,6 +5988,8 @@ export class TaskManager {
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
+        if (input.finishGuard) return input.finishGuard.verify()
+          .then(verified => verified ? this.finishCompletion(id, input) : null);
         return Promise.resolve(this.finishCompletion(id, input));
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
@@ -5923,6 +6041,7 @@ export class TaskManager {
         throw new ScoutArchiveNotReadyError(ready.problems);
       }
       this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      if (input.finishGuard && !await input.finishGuard.verify()) return null;
       return this.finishCompletion(id, input);
     };
     return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
@@ -6026,6 +6145,7 @@ export class TaskManager {
 
   /** The synchronous status write. Unchanged from before completion became awaitable. */
   private finishCompletion(id: string, input: CompletionInput): Task | null {
+    if (input.finishGuard && !input.finishGuard.current()) return null;
     this.assertCompletable(id, input.requireStopped);
     const t = this.registry.getTask(id);
     if (!t) return null;

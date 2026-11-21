@@ -2973,3 +2973,55 @@ test("daemon authorship does not exempt a filed question's answer from the inter
   f.manager.stop();
   clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
 });
+
+// Phase 2 exercises the same delivery owner with the new text and durable coalescing.
+for (const count of [1, 5]) {
+  test(`${count} self-contained answers wake once with daemon authorship and no Goal or human echo`, async (t) => {
+    const { asyncInputAnswer } = await import("../src/shared/async-input.ts");
+    const f = sdkFixture(`self-contained-${count}`, async () => "started");
+    const episode = scoutEpisode(f.registry, f.id);
+    observeInjections((sessionId, text, origin) => journalScoutPrompt(f.registry, sessionId, text, origin));
+    t.after(() => observeInjections(null));
+    const texts: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = `self-contained-${count}-${i}`;
+      settledQuestion(id, f.id, "foreman", "message");
+      const text = asyncInputAnswer({ id, sessionId: f.id, kind: "input", title: "Which?", body: `Question ${i}?`,
+        status: "answered", response: "eslint", meanwhile: "Prepare the tests", createdAt: 1, resolvedAt: 2 });
+      texts.push(text);
+      assert.equal(f.manager.submitReviewContinuation(id, f.id, text).ok, true);
+    }
+    const combined = texts.join("\n\n---\n\n");
+    idle(f.registry, f.id);
+    await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(f.calls, [combined]);
+    assert.equal(f.registry.getGoal(f.id), null);
+    assert.equal(originOf(f.id, combined), "harness");
+    assert.equal(claimHumanEcho(f.id, f.key, combined).kind, "none");
+    assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId).map((turn) => turn.origin), ["harness"]);
+    f.manager.stop(); clearPendingTurns(f.key); clearScoutPromptContext(episode.taskId, episode.episodeId);
+  });
+}
+
+for (const mode of ["steer", "interrupt"] as const) test(`coalescing preserves the first answer's ${mode} deadline`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 2000000 });
+  const f = steeringFixture(`coalesced-${mode}`, mode === "interrupt" ? { beforeSteer: async () => { throw new Error("steer refused"); } } : {});
+  settledQuestion(`first-${mode}`, f.id, "human", "message");
+  f.manager.submitReviewContinuation(`first-${mode}`, f.id, "First answer");
+  t.mock.timers.tick(30000);
+  settledQuestion(`second-${mode}`, f.id, "foreman", "message");
+  f.manager.submitReviewContinuation(`second-${mode}`, f.id, "Second answer");
+  const deadline = mode === "steer" ? 60000 : 180000;
+  t.mock.timers.tick(deadline - 30001);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") assert.deepEqual(f.sends, []);
+  else assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") {
+    assert.deepEqual(f.sends, ["First answer\n\n---\n\nSecond answer"]);
+    assert.equal(f.registry.getGoal(f.id), null);
+    assert.equal(originOf(f.id, f.sends[0]!), "harness");
+  } else assert.equal(f.interrupts(), 1);
+  f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});

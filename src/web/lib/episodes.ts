@@ -1,15 +1,54 @@
 import type { ForemanEpisode, ReviewItem } from "@shared/types.ts";
+import { isConversationResolvedReview } from "@shared/review-item.ts";
 import type { TranscriptRow } from "./tools.ts";
 
 /**
- * A transcript row, or one of the two things that happened ALONGSIDE the transcript and
- * belong in the same reading: a decision Foreman made about the session, and an answer the
- * human gave it.
+ * A transcript row, or one of the things that happened ALONGSIDE the transcript and belong in
+ * the same reading: a decision Foreman made about the session, an answer the human gave it, and
+ * a question its agent filed and kept working past.
+ *
+ * - `asked`: a message-mode question (`async-input`), where it was filed. The agent's turn does
+ *   not stop there, so without this the log would show the agent carrying on past a question it
+ *   never appears to have asked. The entry also says how the question ended.
+ * - `closed`: a question its agent waited on inside the call that a merge closed while it was
+ *   snoozed or still pending. Drawn in place of its Snoozed entry, so the closure the operator's
+ *   merge caused is said in the conversation whichever way the question waited.
  */
 export type ConversationRow =
   | TranscriptRow
   | { kind: "episode"; ts: number; episode: ForemanEpisode }
-  | { kind: "review"; ts: number; review: ReviewItem };
+  | { kind: "review"; ts: number; review: ReviewItem }
+  | { kind: "asked"; ts: number; review: ReviewItem }
+  | { kind: "closed"; ts: number; review: ReviewItem };
+
+type ReviewEntry = Extract<ConversationRow, { kind: "review" | "asked" | "closed" }>;
+
+/**
+ * Where one review appears in the conversation: none, one or two entries.
+ *
+ * - A message-mode question gets its Asked entry at the moment it was filed, always.
+ * - A human answer is the gold entry at `resolvedAt`, the moment the human spoke, never where
+ *   the agent asked: a review left open across a long stretch of work would otherwise file the
+ *   reply above everything the agent did while waiting for it.
+ * - A snoozed question sits where the operator chose "Remind me later", the moment its agent
+ *   was told to carry on (or, for a message-mode question, kept on carrying on).
+ * - A call-mode question a merge closed is a closure entry where it was snoozed, or where the
+ *   merge closed it if it never was. A message-mode one says so on its Asked entry instead.
+ *
+ * A stamp of zero cannot be placed and is returned with `ts: 0`, which the merge files last.
+ */
+export function reviewEntries(review: ReviewItem): ReviewEntry[] {
+  const entries: ReviewEntry[] = [];
+  if (review.waitMode === "message") entries.push({ kind: "asked", ts: review.createdAt, review });
+  if (review.status === "snoozed") {
+    entries.push({ kind: "review", ts: review.snooze?.at ?? 0, review });
+  } else if (isConversationResolvedReview(review)) {
+    entries.push({ kind: "review", ts: review.resolvedAt ?? 0, review });
+  } else if (review.waitMode !== "message" && review.status === "orphaned" && review.closedReason === "merged") {
+    entries.push({ kind: "closed", ts: review.snooze?.at ?? review.resolvedAt ?? 0, review });
+  }
+  return entries;
+}
 
 function precedesTranscript(row: ConversationRow, transcriptTs: number): boolean {
   if (row.ts !== transcriptTs) return row.ts < transcriptTs;
@@ -54,14 +93,8 @@ export function mergeConversation(
     (e.createdAt > 0 ? dated : undated).push({ kind: "episode", ts: e.createdAt, episode: e });
   }
   for (const r of reviews) {
-    // `resolvedAt` and not `createdAt`: the entry is the ANSWER, so it belongs where the
-    // human spoke, not where the agent asked. A review left open across a long stretch of
-    // work would otherwise file your reply above everything the agent did while waiting
-    // for it. A resolved review without a stamp cannot be placed at all and goes to the end.
-    // A snoozed question has no answer yet; it sits where the operator chose "Remind me
-    // later", which is the moment the agent stopped waiting and carried on.
-    const ts = (r.status === "snoozed" ? r.snooze?.at : r.resolvedAt) ?? 0;
-    (ts > 0 ? dated : undated).push({ kind: "review", ts, review: r });
+    // See `reviewEntries` for where each entry is placed and why.
+    for (const entry of reviewEntries(r)) (entry.ts > 0 ? dated : undated).push(entry);
   }
   // The episodes API hands its rows back newest-first (the drawer's order) and the reviews
   // API oldest-first, and the two are now interleaved with each other as well as with the

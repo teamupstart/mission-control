@@ -953,6 +953,7 @@ export function ConsoleDetail({
               dialogOpen={Boolean(dialog)}
               episodes={visibleEpisodes}
               reviews={timelineReviews}
+              onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               onCommentInFiles={view.onCommentInFiles

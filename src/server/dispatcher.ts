@@ -1101,8 +1101,11 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
+      // Closed only by the identity this spawn returned, never by its name: a name a cancel freed can
+      // already belong to the replacement. With no identity the terminal is left standing.
       retireOwnHome = async () => {
-        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId ?? null).catch(() => {});
+        if (!home.terminalResourceId) return;
+        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId).catch(() => {});
       };
       // From here every checkpoint also asks whether a cancel and a redispatch replaced this
       // attempt while it waited, and if so retires its worker before it can bind the task.

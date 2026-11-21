@@ -1096,7 +1096,7 @@ test("a terminal launch replaced while its prompt was being delivered retires it
       registry.applyHook({ agent: "claude", event: "SessionStart", sessionId: nativeId, cwd, transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
       homes.push(`home-replaced-terminal-${n}`);
-      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: `multiplexer:tmux:launch-${n}-${seq}` };
     },
     inject: async (session, text) => {
       const n = sessions.push(session.id) - 1;
@@ -1192,14 +1192,15 @@ test("a terminal launch replaced while it waited for readiness never writes its 
   // The first agent becomes ready while its replacement has no terminal yet.
   readyHooks[0]!();
   await original;
-  assert.deepEqual(killed, [homes[0]], "the replaced attempt retired its own home");
+  // Its spawn reported no launch identity, so nothing was closed: never a terminal by its name.
+  assert.deepEqual(killed, [], "a home with no launch identity is left standing, not closed by name");
   assert.equal(registry.getTask(taskId)?.terminalResourceId ?? null, null, "and wrote no terminal onto the replacement");
   assert.equal(registry.getTask(taskId)?.homeName ?? null, null);
   releaseSecondShaping();
   await replacement;
   assertRunning(registry.getTask(taskId)!);
   assert.equal(registry.getTask(taskId)?.homeName, homes[1]);
-  assert.deepEqual(killed, [homes[0]]);
+  assert.deepEqual(killed, []);
 });
 
 test("a section the final check drops counts nothing as delivered, and keeps each shaper's outcome", async () => {

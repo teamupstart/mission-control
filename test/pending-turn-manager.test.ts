@@ -24,6 +24,8 @@ const {
 } = await import("../src/server/db.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { reportBucket } = await import("../src/shared/session.ts");
 const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
 const { collapseSteerEchoes } = await import("../src/shared/message-delivery.ts");
 const { resetSession } = await import("../src/server/reset.ts");
@@ -35,7 +37,8 @@ const {
   claimHumanEcho, HUMAN_ECHO_TTL_MS, injectionFingerprint, observeInjections, onPersonDelivery, originOf,
 } = await import("../src/server/injections.ts");
 const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
-const { SNOOZE_INSTRUCTION_TURN_PREFIX } = await import("../src/server/db.ts");
+const { SNOOZE_INSTRUCTION_TURN_PREFIX, MESSAGE_ANSWER_TURN_PREFIX, insertReview, updateReviewStatus, markReviewWaitDetached } = await import("../src/server/db.ts");
+const { noteKeyFor } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -365,6 +368,19 @@ test("the manager sends one FIFO row per observed completion", async () => {
   await tick();
   assert.deepEqual(f.calls, ["first", "second"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  f.manager.stop();
+});
+
+test("a session stopped on a filed question still receives the operator's message (async-input)", async () => {
+  const f = sdkFixture("asked", async () => "started");
+  idle(f.registry, f.id);
+  const reviews = new ReviewManager(f.registry);
+  reviews.create(f.id, "input", "Which linter?", "Which linter?", null, { snoozable: true, waitMode: "message" });
+  // Amber on the board, yet an operator message is not one of the rows a question holds.
+  assert.equal(reportBucket(f.registry.getSession(f.id)!), "needs-you");
+  f.manager.submit(f.id, "use eslint, and carry on");
+  await tick();
+  assert.deepEqual(f.calls, ["use eslint, and carry on"]);
   f.manager.stop();
 });
 
@@ -2909,4 +2925,93 @@ test("a snoozed question's carry-on instruction is delivered as the daemon's wor
   f.manager.stop();
   clearPendingTurns(f.key);
   clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+// ---- async-input: answers to filed questions are the daemon's words ----------------------
+
+/** A settled `request_input` question, as the review manager leaves it before handing it on. */
+function settledQuestion(id: string, sessionId: string, actor: "human" | "foreman" | "standing-approval", waitMode?: "message") {
+  insertReview({
+    id, sessionId, kind: "input", title: "Which linter?", body: "Which linter?", status: "pending",
+    response: null, snoozable: true, ...(waitMode ? { waitMode } : {}), createdAt: 1, resolvedAt: null,
+  });
+  // A call-mode answer reaches the outbox only once its call has ended.
+  if (!waitMode) markReviewWaitDetached(id, 1);
+  updateReviewStatus(id, "answered", "Answered: eslint", 2, null, actor);
+}
+
+for (const actor of ["human", "foreman", "standing-approval"] as const) {
+  test(`an answer to a filed question from ${actor} is delivered as the daemon's words: no Goal, no human echo (async-input)`, async (t) => {
+    const f = sdkFixture(`filed-answer-${actor}`, async () => "started");
+    const episode = scoutEpisode(f.registry, f.id);
+    observeInjections((sessionId, text, origin) => journalScoutPrompt(f.registry, sessionId, text, origin));
+    t.after(() => observeInjections(null));
+    const reviewId = `filed-${actor}`;
+    settledQuestion(reviewId, f.id, actor, "message");
+    const text = `Mission Control review ${reviewId} was answered after its MCP wait ended. Answered: eslint (${actor})`;
+    const queued = f.manager.submitReviewContinuation(reviewId, f.id, text);
+    assert.equal(queued.ok, true);
+    assert.equal(queued.ok && queued.pendingTurn?.id, `${MESSAGE_ANSWER_TURN_PREFIX}${reviewId}`);
+    assert.ok(`${MESSAGE_ANSWER_TURN_PREFIX}${reviewId}`.startsWith("review-continuation:"), "resident pacing still reads it as review news");
+
+    idle(f.registry, f.id);
+    await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(f.calls, [text], "delivered once");
+    assert.equal(f.registry.getGoal(f.id), null, "never captured as a Goal revision");
+    assert.equal(originOf(f.id, text), "harness", "attributed to the daemon, not drawn as an operator turn");
+    assert.equal(claimHumanEcho(f.id, f.key, text).kind, "none", "no human echo was expected");
+    assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId).map((turn) => turn.origin), ["harness"]);
+    f.manager.stop();
+    clearPendingTurns(f.key);
+    clearScoutPromptContext(episode.taskId, episode.episodeId);
+  });
+}
+
+test("a call-mode answer that lost its call keeps operator authorship, as today (async-input)", async () => {
+  const f = sdkFixture("call-answer", async () => "started");
+  settledQuestion("call-human", f.id, "human");
+  const text = "Mission Control review call-human was answered after its MCP wait ended. Answered: biome";
+  const queued = f.manager.submitReviewContinuation("call-human", f.id, text);
+  assert.equal(queued.ok && queued.pendingTurn?.id, "review-continuation:call-human");
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(f.calls, [text]);
+  assert.notEqual(originOf(f.id, text), "harness", "the operator's answer stays theirs");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("daemon authorship does not exempt a filed question's answer from the steer at 60 s (async-input)", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 900000 });
+  const f = steeringFixture("filed-answer-steer");
+  settledQuestion("filed-steer", f.id, "foreman", "message");
+  const text = "Mission Control review filed-steer was answered. Answered: eslint";
+  assert.equal(f.manager.submitReviewContinuation("filed-steer", f.id, text).ok, true);
+  t.mock.timers.tick(59999);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "inside the quiet minute an operator message gets too");
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.sends, [text], "steered into the working turn at 60 s");
+  assert.equal(f.registry.getGoal(f.id), null, "a steered answer is not a Goal revision either");
+  assert.equal(originOf(f.id, text), "harness");
+  f.manager.stop();
+  clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});
+
+test("daemon authorship does not exempt a filed question's answer from the interrupt at 180 s (async-input)", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000000 });
+  const f = steeringFixture("filed-answer-interrupt", { beforeSteer: async () => {
+    throw new Error("the driver refused this steer");
+  } });
+  settledQuestion("filed-interrupt", f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation("filed-interrupt", f.id, "Answered: eslint, interrupt").ok, true);
+  t.mock.timers.tick(179999);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(f.interrupts(), 1, "interrupted at 180 s, like an operator message");
+  f.manager.stop();
+  clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
 });

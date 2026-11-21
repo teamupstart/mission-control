@@ -210,7 +210,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
       completedAt: now - 120_000,
       updatedAt: now - 120_000,
     },
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,

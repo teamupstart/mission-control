@@ -83,7 +83,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -622,6 +622,18 @@ test("an UNINSTRUMENTED agent is never handed a task, however idle it looks", ()
 test("an agent with a review waiting on you is not free", () => {
   const s = mkSession({ pendingReviews: 1 });
   assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an agent stopped on a filed question is not free; one working past it, or with only a snoozed one, follows its state (async-input)", () => {
+  const stopped = mkSession({ state: "idle", openQuestions: 1 });
+  assert.equal(agentIsFree(stopped, [stopped], [], CFG, NOW), false, "backlog assignment is held while a question is pending");
+  const working = mkSession({ state: "working", openQuestions: 1 });
+  assert.equal(agentIsFree(working, [working], [], CFG, NOW), false, "a working agent is never free");
+  // A snoozed question is in neither count, so assignment reads the session as it does today.
+  const parked = mkSession({ state: "idle", openQuestions: 0 });
+  const parkedFree = agentIsFree(parked, [parked], [], CFG, NOW);
+  const plain = mkSession({ state: "idle" });
+  assert.equal(parkedFree, agentIsFree(plain, [plain], [], CFG, NOW));
 });
 
 test("an agent with an open work queue is already being fed", () => {

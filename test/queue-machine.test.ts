@@ -81,7 +81,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,

@@ -101,6 +101,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  workflowHasPendingPullRequestAction,
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
@@ -113,6 +114,7 @@ import {
   workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -155,6 +157,7 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
@@ -387,6 +390,7 @@ export interface WorkflowManagerOptions {
   ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
+  classifyCriterionFulfillment?: NonNullable<Parameters<typeof classifyWorkflowCriterionFulfillment>[1]>["execute"];
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   /** The authorship sink's older name, still honoured. See `confirmInjection`. */
@@ -2349,7 +2353,10 @@ export class WorkflowManager {
      * one click away. `resubmitUnchanged` is that click, which is why it skips this
      * entirely rather than getting a flag of its own to keep in step.
      */
-    if (!input.resubmitUnchanged) {
+    // The latest snapshot is packaging evidence, not a semantic review of this tree.
+    // An explicit fresh-review request must not demand another code change first.
+    const needsFreshReview = workflowInspectorGateNeedsFreshReview(activeGate);
+    if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
@@ -2399,7 +2406,7 @@ export class WorkflowManager {
       created.run,
       created.submission,
       latest.evidenceFingerprint,
-      input.resubmitUnchanged,
+      input.resubmitUnchanged || needsFreshReview,
     );
   }
 
@@ -2413,6 +2420,11 @@ export class WorkflowManager {
     if (!["evidence_reconciliation_error", "evidence_readiness", "preflight_refinement_exhausted", "persona_feedback", "round_limit", "infrastructure_error"].includes(run.currentPhase)) return null;
     const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!parsed.success) return null;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (run.criteria?.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)
+        && version && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+      return { submissionId: submission.id, kind: "publication", label: "Classify publication criteria" };
+    }
     if (run.currentPhase === "evidence_reconciliation_error" || submission.readiness?.gapCodes.includes("missing_coverage")) {
       let cursor: WorkflowSubmission | null = submission;
       for (let depth = 0; cursor && depth < 128; depth++) {
@@ -4618,7 +4630,8 @@ export class WorkflowManager {
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
-      && run.currentPhase === "inspector_head_mismatch";
+      && ["inspector_head_mismatch", "inspector_working_tree_not_pushed",
+        "inspector_reviewed_tree_changed"].includes(run.currentPhase);
     if (
       !run
       || !state
@@ -4981,6 +4994,21 @@ export class WorkflowManager {
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
       const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
+        && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
+        && publishedTree !== acceptedTree) {
+        this.transitionInspectorGate(run, state, {
+          ...state,
+          waitReason: "reviewed_tree_changed",
+          reviewedContent: {
+            submissionId: parent.id,
+            headSha: accepted.data.evidence.headSha,
+            treeOid: acceptedTree,
+            publishedTreeOid: publishedTree,
+          },
+        }, "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        return;
+      }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
         || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
@@ -5433,6 +5461,8 @@ export class WorkflowManager {
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      // An outstanding request_input question, snoozed or not, holds evidence preparation too.
+      && !this.registry.completionHeldByQuestion(session)
       && !hasBlocker(session)
       && !isAwaiting(session, now);
     if (!eligible) {
@@ -6988,6 +7018,8 @@ export class WorkflowManager {
     // actually holds before it can say whether the capture is the one the adapter proved.
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    // The root's durable boundary also covers Foreman capture and interrupted retries.
+    allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling
@@ -7417,6 +7449,32 @@ export class WorkflowManager {
           }
         }
       }
+      // Old runs already have their criterion identities. Classify only missing timing metadata,
+      // against that frozen intent, rather than recompacting or reusing a broad override.
+      const fulfillmentSource = this.store.getRun(run.id)?.criteria;
+      if (context.compaction.status === "model" && fulfillmentSource && version
+          && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+        let classified = fulfillmentSource;
+        if (fulfillmentSource.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)) {
+          const classificationContext = { ...context, canonicalCriteria: fulfillmentSource.canonicalCriteria };
+          const classifications = await this.schedule(() => classifyWorkflowCriterionFulfillment(classificationContext, {
+            execute: this.options.classifyCriterionFulfillment
+              ?? (this.options.compactContext ? async () => ({ kind: "failed" as const,
+                cause: "transport" as const, reason: "No injected criterion fulfillment classifier" }) : undefined),
+            observer: observerFor("criterion_fulfillment"),
+            onExecution: (execution) => contextExecutions.set("criterion_fulfillment", execution),
+          }), "capture");
+          if (classifications && this.captureIsActive(run.id, submission.id)) {
+            classified = this.store.freezeRunCriterionFulfillment({ runId: run.id, source: fulfillmentSource,
+              classifications, submissionId: submission.id, now: Date.now() }) ?? fulfillmentSource;
+          }
+        }
+        // A recovery child's context may predate the successful classification. Copy only
+        // timing from the durable result; every other field and all historical contexts stay put.
+        const timing = new Map(classified.canonicalCriteria.map((criterion) => [criterion.id, criterion.fulfilledByAction]));
+        context = { ...context, canonicalCriteria: context.canonicalCriteria?.map((criterion) =>
+          timing.get(criterion.id) === undefined ? criterion : { ...criterion, fulfilledByAction: timing.get(criterion.id) }) };
+      }
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
@@ -7501,6 +7559,8 @@ export class WorkflowManager {
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
             enforceCoverage: enforcingReadiness,
+            pendingPullRequestAction: version != null
+              && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
@@ -8275,6 +8335,10 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    // `async-input`'s completion hold: an outstanding request_input question, snoozed or not,
+    // is still the operator's to answer, so the run does not resume around it. Reported as the
+    // same reason, because to the operator it is the same fact: the session is waiting on them.
+    if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
     // Idle on purpose while its own CI or build finishes: resuming now would hand it a round
     // before the result it is waiting for exists. Past its deadline it resumes as usual.

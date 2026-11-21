@@ -491,6 +491,14 @@ answering a review. Legacy automatic `needs-you` pauses recover on observation u
 cadence because their old pacing intent was already discarded. Pausing does not interrupt an
 already running turn.
 
+With the `async-input` preview flag on ([Ask without stopping](sessions.md#asking-without-stopping)),
+a resident's `request_input` questions are filed and do not hold its wakes: it keeps iterating on
+its cadence while they wait in the attention inbox, and Resume is not refused for them. A question
+still waiting inside a call, a plan or diff review, and a permission dialog hold wakes exactly as
+above. An answer arrives as a message, which counts as human input and preserves pending pacing.
+The loop prompt asks the resident to check whether its earlier questions were answered before it
+asks again, and never to repeat a question that is still open.
+
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
 When the resident is busy - a turn in progress, a human message waiting, an open request for

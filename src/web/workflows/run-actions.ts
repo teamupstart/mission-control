@@ -521,6 +521,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     return null;
   }
   const nextRound = detail.summary.round + 1;
+  const needsFreshReview = detail.inspectorGate?.state.waitReason === "reviewed_tree_changed";
   return {
     // One action-store intent per repair round. A fresh capture that is refused as unchanged
     // must retain its request id for the exact replay, but once that replay runs the NEXT fresh
@@ -537,19 +538,20 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
      * picked up where it left off, which made the round it actually spends look like a bug
      * rather than the documented cost. The action id one line above always knew the number.
      */
-    label: preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
+    label: needsFreshReview ? "Review pushed head" : preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
     tooltip: "Re-read the session's current diff and run every reviewer again from the top",
     path: runPath(detail, "resubmit"),
     body: {},
     confirm: {
-      title: preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
+      title: needsFreshReview ? "Review pushed head" : preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
       body: "This re-reads the bound session, takes a fresh immutable evidence submission,"
         + " and runs every reviewer again from the top - including the ones that passed."
         + (availability.resuming
           ? " The run is stopped, so this is what restarts it, and it spends one repair round."
           : " It spends one repair round.")
-        + " If the repository has not moved since the last round, it will say so instead of"
-        + " spending one.",
+        + (needsFreshReview
+          ? " The pushed head needs fresh review even though the checkout has not changed since publication."
+          : " If the repository has not moved since the last round, it will say so instead of spending one."),
       confirmLabel: preview ? "Preview fresh evidence" : `Start round ${nextRound}`,
       confirmHint: "Captures the session again with this image evidence packet",
       captureEvidence: true,

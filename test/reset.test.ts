@@ -22,7 +22,7 @@ function sess(cwd: string | null, branch: string | null = "main"): Session {
     cwd, gitBranch: branch, gitRoot: null, repoRoot: null, pid: 1, tty: null,
     permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,
     instrumented: false, stateConfirmed: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
-    lastActivity: null, pendingReviews: 0, task: null,
+    lastActivity: null, pendingReviews: 0, openQuestions: 0, task: null,
     prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
     meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null, pipeline: null, paneDialog: null,
   };

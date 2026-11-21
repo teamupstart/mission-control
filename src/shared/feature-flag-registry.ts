@@ -65,6 +65,16 @@ export const FEATURE_FLAGS = [
     keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
   },
   {
+    id: "async-input",
+    label: "Ask without stopping",
+    description:
+      "request_input files the question in the attention inbox and returns at once, so the agent keeps " +
+      "working; your answer reaches it later as a message. A session that stops with a question open shows " +
+      "as waiting on your answer.",
+    stage: "preview",
+    keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
+  },
+  {
     id: SESSION_AWAITING_FLAG_ID,
     label: "Awaiting background work",
     description: "Let a session declare, with report_awaiting, that it is idle on purpose while a background process "

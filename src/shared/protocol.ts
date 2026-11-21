@@ -48,6 +48,7 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
+import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -678,10 +679,25 @@ export const CreateReviewSchema = z
      * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
      */
     snoozable: z.boolean().optional(),
+    /**
+     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
+     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
+     * older build never sends this and is always told `call`.
+     */
+    asyncCapable: z.boolean().optional(),
+    /** What the agent does while the question is open: one line, `input` only. */
+    meanwhile: z.string()
+      .transform((line) => oneLine(line))
+      .pipe(z.string().max(MEANWHILE_MAX_CHARS))
+      .optional(),
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",
     path: ["snoozable"],
+  })
+  .refine((r) => r.kind === "input" || r.meanwhile === undefined, {
+    message: "only kind 'input' can carry a meanwhile line",
+    path: ["meanwhile"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -6617,6 +6633,7 @@ export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCove
   );
 
 export const WorkflowCanonicalCriterionSchema = z.object({
+  fulfilledByAction: z.literal("pull_request").nullable().optional(),
   id: z.string().min(1).max(200),
   text: z.string().trim().min(1)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
@@ -6659,6 +6676,7 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    deferredToAction: z.literal("pull_request").optional(),
     // Absent on every readiness row written before the repair packet could name a contested
     // claim, so it defaults rather than failing those rows open.
     contestedClientCriterionIds: z.array(
@@ -6953,6 +6971,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
   criteria: z.array(z.object({
     criterionId: z.string().min(1).max(200),
     material: z.boolean(),
+    deferredToAction: z.literal("pull_request").optional(),
     claimId: z.string().min(1).max(200).nullable(),
     evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
     gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
@@ -7558,6 +7577,13 @@ export const WorkflowInspectorGateStateSchema = z.object({
   findingFingerprints: z
     .array(z.string().min(1).max(200))
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
+  // Gate CAS compares serialized state; append new optional fields in writer order.
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
 });
 
 /**

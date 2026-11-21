@@ -188,7 +188,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, pid: 1, tty: null,
     permissionMode: null, terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })],
     agentSessionId: null, transcriptPath: null, instrumented: true, stateConfirmed: true, hooksSeen: true, activity: HOOK_LINE,
-    startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0,
+    startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, openQuestions: 0,
     task: null, prUrl: null, prNumber: null, prState: null,
     prChecks: null, meta: null, effortBaselineReady: false, pendingEffort: null, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null,
     inspector: null,

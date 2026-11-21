@@ -100,7 +100,7 @@ function mkSession(over: Partial<Session> = {}): Session {
       completedAt: NOW - 60_000,
       updatedAt: NOW - 60_000,
     },
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,

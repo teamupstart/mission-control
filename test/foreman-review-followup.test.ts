@@ -118,7 +118,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     firstSeen: 0,
     lastSeen: NOW,
     lastActivity: NOW - 20_000, // older than SETTLE, so settledIdle is true
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: "https://github.com/owner/repo/pull/7",
     prNumber: 7,

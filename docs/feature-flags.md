@@ -5,8 +5,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
-[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) and
-[Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
+[Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) and
+[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls

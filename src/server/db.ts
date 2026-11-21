@@ -30,6 +30,7 @@ import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
+  type RepoTaskSkillRecord,
   type StandingInstructionsMechanism,
   type StandingInstructionsSource,
 } from "@shared/standing-instructions.ts";
@@ -12552,6 +12553,8 @@ export interface StandingInstructionsSnapshot {
   /** One entry per contributing repository, in the launch manifest's order. */
   sources: StandingInstructionsSource[];
   createdAt: number;
+  /** What repository task skills this launch included or skipped (spec 7.15). Absent when none applied. */
+  repoTaskSkills?: RepoTaskSkillRecord | null;
 }
 
 interface StandingInstructionsRow {
@@ -12560,6 +12563,39 @@ interface StandingInstructionsRow {
   mechanism: string;
   sources: string;
   created_at: number;
+  repo_task_skills: string | null;
+}
+
+/** Parse the stored skill record, tolerating anything a newer build wrote: unreadable is null. */
+function parseRepoTaskSkills(raw: string | null): RepoTaskSkillRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { included, skipped } = parsed as { included?: unknown; skipped?: unknown };
+    if (!Array.isArray(included) || !Array.isArray(skipped)) return null;
+    // Entries are checked by field TYPE, not against today's vocabularies: a newer build may
+    // add a kind or a skip reason, and an entry that is merely unfamiliar must survive. One
+    // that lacks the fields a reader dereferences is dropped rather than surfaced as typed.
+    const isStr = (v: unknown): v is string => typeof v === "string";
+    const keptIncluded = included.filter(
+      (e): e is RepoTaskSkillRecord["included"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) &&
+        typeof (e as { bytes?: unknown }).bytes === "number" &&
+        typeof (e as { truncated?: unknown }).truncated === "boolean",
+    );
+    const keptSkipped = skipped.filter(
+      (e): e is RepoTaskSkillRecord["skipped"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) && isStr((e as { reason?: unknown }).reason),
+    );
+    return { included: keptIncluded, skipped: keptSkipped };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -12596,6 +12632,7 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
     mechanism,
     sources,
     createdAt: r.created_at,
+    repoTaskSkills: parseRepoTaskSkills(r.repo_task_skills),
   };
 }
 
@@ -12610,13 +12647,14 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
 export function insertStandingInstructions(snapshot: StandingInstructionsSnapshot): void {
   openDb()
     .prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
     )
     .run(
       snapshot.noteKey,
@@ -12624,6 +12662,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
       snapshot.mechanism,
       JSON.stringify(snapshot.sources),
       snapshot.createdAt,
+      snapshot.repoTaskSkills ? JSON.stringify(snapshot.repoTaskSkills) : null,
     );
 }
 
@@ -12631,7 +12670,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
 export function getStandingInstructions(noteKey: string): StandingInstructionsSnapshot | undefined {
   const row = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as StandingInstructionsRow | undefined;
@@ -12642,7 +12681,7 @@ export function getStandingInstructions(noteKey: string): StandingInstructionsSn
 export function loadStandingInstructions(): StandingInstructionsSnapshot[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions ORDER BY created_at DESC`,
     )
     .all() as unknown as StandingInstructionsRow[];
@@ -12677,14 +12716,22 @@ export function moveStandingInstructions(fromKey: string, toKey: string): void {
   d.exec("BEGIN IMMEDIATE");
   try {
     d.prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
-    ).run(toKey, row.text, row.mechanism, JSON.stringify(row.sources), row.createdAt);
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
+    ).run(
+      toKey,
+      row.text,
+      row.mechanism,
+      JSON.stringify(row.sources),
+      row.createdAt,
+      row.repoTaskSkills ? JSON.stringify(row.repoTaskSkills) : null,
+    );
     d.prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(fromKey);
     d.exec("COMMIT");
   } catch (err) {

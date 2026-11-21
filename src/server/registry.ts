@@ -1495,12 +1495,13 @@ export class Registry extends EventEmitter {
 
   /**
    * Task shaping was just turned back on: a window that connected while it was off holds tasks
-   * and session cards with their records stripped (`taskShapingForReads`), and nothing else
+   * and session cards with their records and progress marks stripped (`taskShapingForReads`), and nothing else
    * would send them again until each one changed. Publish every task and card that has one.
    */
   private republishShaping(): void {
     for (const task of this.tasks.values()) {
-      if (currentShaping(task)) this.emitEvent({ type: "task_upsert", task });
+      // A record to show, or a step still running whose "Shaping context" mark was stripped too.
+      if (currentShaping(task) || task.shapingContext) this.emitEvent({ type: "task_upsert", task });
     }
     for (const session of this.sessions.values()) {
       if (session.task?.shaping !== undefined) this.emitEvent({ type: "session_upsert", session });

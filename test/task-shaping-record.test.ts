@@ -378,13 +378,16 @@ test("turning the flag back on publishes every task and session card that has a 
   registry.registerSdkSession({ id: "sdk:republish", agent: "claude", name: "Republish", cwd: "/repo/republish" });
   registry.upsertTask(mkTask({ id: "republish", status: "running", sessionId: "sdk:republish", worktreePath: "/repo/republish" }));
   registry.upsertTask(mkTask({ id: "republish-plain", status: "backlog" }));
+  // A first dispatch still in its shaping step: no record yet, only the progress mark.
+  registry.upsertTask(mkTask({ id: "republish-shaping", status: "dispatching" }));
+  registry.setTaskShapingContext("republish-shaping", true);
   registry.commitTaskShaping("republish", "sdk:republish", record("sdk:republish"), "text");
   setFlag(false);
   registry.emitFeatureFlags(flags.getFeatureFlagsConfig());
-  const tasks: Array<{ id: string; shaping: unknown }> = [];
+  const tasks: Array<{ id: string; shaping: unknown; shapingContext?: unknown }> = [];
   const cards: unknown[] = [];
   const onEvent = (event: { type: string; task?: { id: string; shaping?: unknown }; session?: { id: string; task?: { shaping?: unknown } | null } }) => {
-    if (event.type === "task_upsert" && event.task) tasks.push({ id: event.task.id, shaping: event.task.shaping });
+    if (event.type === "task_upsert" && event.task) tasks.push({ id: event.task.id, shaping: event.task.shaping, shapingContext: (event.task as { shapingContext?: unknown }).shapingContext });
     if (event.type === "session_upsert" && event.session?.id === "sdk:republish") cards.push(event.session.task?.shaping);
   };
   registry.on("event", onEvent);
@@ -398,8 +401,10 @@ test("turning the flag back on publishes every task and session card that has a 
   }
   // Tasks earlier tests left in this database carry records too; these two are this test's.
   const own = tasks.filter((task) => task.id.startsWith("republish"));
-  assert.deepEqual(own.map((task) => task.id), ["republish"], "only the task with a record, once");
-  assert.ok(tasks.every((task) => task.shaping !== undefined), "a task with no record is not sent again");
+  assert.deepEqual(own.map((task) => task.id).sort(), ["republish", "republish-shaping"], "the task with a record and the one still shaping, once each");
+  assert.ok(own.find((task) => task.id === "republish-shaping")?.shapingContext, "the running step's mark goes out again");
+  registry.setTaskShapingContext("republish-shaping", false);
+  assert.ok(tasks.every((task) => task.shaping !== undefined || task.shapingContext), "a task with neither is not sent again");
   assert.equal((own[0]?.shaping as TaskShaping | undefined)?.sessionId, "sdk:republish");
   assert.equal(cards.length, 1);
   assert.equal((cards[0] as TaskShaping | undefined)?.sessionId, "sdk:republish");

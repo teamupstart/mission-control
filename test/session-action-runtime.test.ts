@@ -2024,7 +2024,7 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, childProof, changed, number, disableInspector = false, findingsPolicy } of [
+for (const { parentProof, childProof, changed, number, disableInspector = false, findingsPolicy, autoResumption = false } of [
   { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
   { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
@@ -2037,18 +2037,20 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
   { parentProof: "publication", childProof: "publication", changed: true, number: 80, disableInspector: true },
   ...(["restart_workflow", "inspector_only"] as const).map((findingsPolicy, i) => ({
     parentProof: "publication", childProof: "publication", changed: true, number: 81 + i, findingsPolicy, disableInspector: false,
+    autoResumption: false,
   })),
+  { parentProof: "publication", childProof: "publication", changed: true, number: 83, autoResumption: true },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}, findings=${findingsPolicy}`, async (t) => {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}, findings=${findingsPolicy}, auto=${autoResumption}`, async (t) => {
     const { adoptInspectorPr, updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
     const options: HarnessOptions = {
       pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
       omitContentTree: parentProof === "missing", inspectorFindingsPolicy: findingsPolicy,
-      resumptionPolicy: findingsPolicy ? "auto" : "manual",
+      resumptionPolicy: findingsPolicy || autoResumption ? "auto" : "manual",
     };
-    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}-${findingsPolicy}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}-${findingsPolicy}-${autoResumption}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -2117,6 +2119,19 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
         assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
         assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
           "reviewed_tree_changed");
+        if (autoResumption) {
+          assert.equal(h.store.listDeliveries(runId).filter((delivery) => delivery.kind === "inspector_feedback").length, 0);
+          h.runActionTurn();
+          await h.manager.sweepResumptions(SETTLED());
+          assert.equal(h.store.latestSubmission(runId)?.id, child.id,
+            "an unrelated settled turn must not spend a round on the operator-owned reviewed-tree hold");
+          assert.equal(h.store.getRun(runId)?.currentPhase, "inspector_reviewed_tree_changed");
+          const withheld = h.store.listEvents(runId).filter((event) => event.kind === "resumption_withheld").at(-1);
+          assert.deepEqual(withheld?.payload, {
+            submissionId: child.id, round: child.round, reason: "repository_unchanged",
+          });
+          assert.equal(h.store.listEvents(runId).some((event) => event.kind === "resumption_started"), false);
+        }
         if (findingsPolicy) {
           upsertInspectorComment({
             id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,

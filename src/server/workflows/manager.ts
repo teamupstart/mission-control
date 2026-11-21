@@ -8741,9 +8741,16 @@ export class WorkflowManager {
     }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
-    // An evidence-only thread reply can settle the findings without changing Git. The
-    // published tree still owes a full review; createRepairSubmission records that boundary.
-    if (unchanged && !workflowInspectorGateNeedsFreshReview(this.gateState(run))) {
+    // An evidence-only reply to delivered findings can leave Git unchanged while the
+    // published tree still owes review. A plain reviewed-tree hold remains operator-owned.
+    const gate = this.gateState(run);
+    const reviewAfterDeliveredFindings = gate?.waitReason === "findings"
+      && workflowInspectorGateNeedsFreshReview(gate)
+      && this.store.listDeliveries(run.id).some((delivery) =>
+        delivery.submissionId === latest.id
+        && delivery.kind === "inspector_feedback"
+        && delivery.state === "delivered");
+    if (unchanged && !reviewAfterDeliveredFindings) {
       this.recordResumptionWithheld(run, latest, "repository_unchanged", now);
       this.maybeRemindParkedRound(run, binding, latest, now);
       if (run.currentPhase === "pr_handoff") {

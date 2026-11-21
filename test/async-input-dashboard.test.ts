@@ -240,6 +240,15 @@ test("a stopped resident in the drawer comes before a fleet session still workin
   assert.deepEqual(reviewChordTarget([], null, [watcher]), { kind: "resident", sessionId: "watcher", opens: "review" });
 });
 
+test("a stopped resident whose conversation is already open does not keep the chord from a working fleet session", () => {
+  const busy = working({ id: "busy" });
+  const parked = mkSession({ id: "parked", state: "awaiting_input", stateConfirmed: true, task: mkTaskSummary({ kind: "resident" }) });
+  // Its conversation is the one open and it has no queue to open: step 4 reaches the fleet session.
+  assert.deepEqual(reviewChordTarget([busy], null, [parked], "parked"), { kind: "fleet", sessionId: "busy", refocus: true });
+  // With nothing else asking, the last step still falls back to it, as before.
+  assert.deepEqual(reviewChordTarget([], null, [parked], "parked"), { kind: "resident", sessionId: "parked", opens: "conversation" });
+});
+
 test("a resident with open questions opens its review queue, not its conversation", () => {
   const r = resident({ id: "watcher" });
   assert.deepEqual(reviewChordTarget([], null, [r]), { kind: "resident", sessionId: "watcher", opens: "review" });

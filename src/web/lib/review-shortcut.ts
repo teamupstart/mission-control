@@ -117,15 +117,27 @@ export function reviewChordTarget(
   // exactly what it was.
   const fleetNow = fleetRows.find(asksNow);
   if (fleetNow) return { kind: "fleet", sessionId: fleetNow.id, refocus: true };
-  const residentNow = firstResident(drawerAsking.filter((session) => asksNow(session) || !asksAtAll(session)), openDetailId);
+  // No fallback here: a stopped resident whose conversation is already open, with nothing to open
+  // a queue on, must not keep the chord from reaching a working fleet session's questions (step 4).
+  // It is still reached by the last step when nothing else is asking.
+  const residentNow = firstResident(
+    drawerAsking.filter((session) => asksNow(session) || !asksAtAll(session)),
+    openDetailId,
+    false,
+  );
   if (residentNow) return residentNow;
   const fleetLater = fleetRows.find(asksAtAll);
   if (fleetLater) return { kind: "fleet", sessionId: fleetLater.id, refocus: true };
   return firstResident(drawerAsking, openDetailId);
 }
 
-function firstResident(asking: readonly ChordSession[], openDetailId: string | null): ReviewChordTarget | null {
-  const resident = asking.find((session) => session.id !== openDetailId || asksAtAll(session)) ?? asking[0];
+function firstResident(
+  asking: readonly ChordSession[],
+  openDetailId: string | null,
+  fallBackToOpenDetail = true,
+): ReviewChordTarget | null {
+  const resident = asking.find((session) => session.id !== openDetailId || asksAtAll(session))
+    ?? (fallBackToOpenDetail ? asking[0] : undefined);
   if (!resident) return null;
   return { kind: "resident", sessionId: resident.id, opens: asksAtAll(resident) ? "review" : "conversation" };
 }

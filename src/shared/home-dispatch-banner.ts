@@ -5,9 +5,10 @@ import type { AgentType } from "./types.ts";
  * The start-up banner of headless mode (spec 7.21): three lines, written in one place.
  *
  * `dispatchBanner` is pure. It returns each line as plain text plus the spans a surface may
- * colour, so the mod draws colour through its own text styles and never writes an escape code,
- * and Codex and Pi can print the same lines by passing their own harness name. Browser safe: no
- * `node:` imports.
+ * colour, so a future consumer can colour them through its own text styles without writing an
+ * escape code, and Codex and Pi can print the same lines by passing their own harness name.
+ * Today the daemon calls `dispatchBannerPlain` for the registration answer's `banner` lines;
+ * nothing consumes the spans yet. Browser safe: no `node:` imports.
  */
 
 /** The widest a banner line may be (columns). Nothing wraps or pads to the window. */

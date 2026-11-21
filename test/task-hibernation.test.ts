@@ -24,6 +24,7 @@ const { getSdkSession, setSdkSessionStatus } = await import("../src/server/sdk/s
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { HibernationManager } = await import("../src/server/hibernation/manager.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const {
   hibernateRefusal,
@@ -238,6 +239,8 @@ test("only an idle session of a running task, with a known conversation, can be 
   assert.match(hibernateRefusal({ ...base, state: "exited" }) ?? "", /already ending/);
   assert.match(hibernateRefusal({ ...base, agentSessionId: null }) ?? "", /could not reopen/);
   assert.match(hibernateRefusal({ ...base, pendingReviews: 1 }) ?? "", /question waiting/);
+  // A question filed without stopping (async-input) is in `openQuestions`, not `pendingReviews`.
+  assert.match(hibernateRefusal({ ...base, openQuestions: 1 }) ?? "", /question waiting/);
   assert.match(hibernateRefusal({ ...base, pendingTurns: [{} as never] }) ?? "", /Messages/);
   void task;
 });
@@ -371,6 +374,28 @@ async function hibernated(f: Fleet, t: import("node:test").TestContext, id: stri
   assert.equal(f.registry.getSession(sessionId), undefined);
   return sessionId;
 }
+
+test("hibernate is refused while a snoozed question filed without stopping is outstanding (async-input)", async (t) => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const { sessionId } = await idleTask(f, handle, "snoozed-ask", checkout("snoozed-ask"));
+  const reviews = new ReviewManager(f.registry);
+  const asked = reviews.create(sessionId, "input", "Which linter?", "Which linter?", [
+    { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+  ], { snoozable: true, waitMode: "message" });
+  reviews.snooze(asked.id, 60 * 60_000);
+  // Parked: in neither session count, so the shared predicate alone would allow it.
+  assert.equal(hibernateRefusal(f.registry.getSession(sessionId)!), null);
+
+  const refused = await f.hibernation.hibernate(sessionId);
+  assert.match(refused.ok ? "" : refused.error, /question waiting/);
+  assert.equal(f.registry.getTask("snoozed-ask")?.status, "running");
+  assert.equal(f.registry.getReview(asked.id)?.status, "snoozed", "the question is still answerable");
+  reviews.resolve(asked.id, "dismiss", null, "human");
+});
 
 test("resume reopens the same conversation under the same session id and binds the task back", async (t) => {
   const f = fleet();

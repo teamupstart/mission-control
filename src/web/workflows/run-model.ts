@@ -2022,6 +2022,7 @@ function criterionVerdict(
   criterion: WorkflowEvidenceReadinessCriterion,
   claimed: boolean,
 ): Pick<RunEvidenceCriterionRow, "label" | "tone"> {
+  if (criterion.deferredToAction === "pull_request") return { label: "deferred to Pull Request", tone: "waiting" };
   if (criterion.gaps.length > 0) return { label: "gaps", tone: "failed" };
   if (!claimed) return { label: "no author claim", tone: "waiting" };
   if (criterion.matchedClientCriterionId === null) return { label: "contested", tone: "waiting" };

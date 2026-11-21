@@ -5,10 +5,13 @@ Task shaping asks operator-configured programs for context about a task. Each pr
 at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
-**What this build does.** You register a `command` shaper in **Settings > Task shaping** or
-through the API, and dry-run it against a repository. Mission Control calls it at the gather and
-select stages, validates and caps what it returns, and reports the section it would add to a
-worker's first prompt and an outcome for each shaper. Nothing is called at dispatch: no worker
+**What this build does.** You register a `command` shaper, or the built-in
+[`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
+the API, and dry-run it against a repository. Mission Control calls it at the stage it is
+registered for, validates and caps what it returns, and reports the section it would add to a
+worker's first prompt and an outcome for each shaper. A `command` shaper can serve either
+stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that
+places it at `select` is refused. Nothing is called at dispatch: no worker
 receives shaped context yet.
 
 **What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
@@ -112,7 +115,8 @@ The result:
 - A gatherer's `repo.facts` and `repo.summary` are handed to the selectors and are not injected
   by themselves. Facts are a flat object whose values are strings or lists of strings.
 - `degraded: true` still contributes its entries, and marks the run degraded. `notes` become the
-  reason.
+  reason. A reply that is not degraded keeps its `notes` as its reason too, such as the files a
+  gatherer skipped, without marking the run degraded.
 - `truncated: true`, on the reply or on an entry, marks that shaper truncated in the record, so
   the run says its context is incomplete. Truncation alone does not make the run degraded.
 - A reply of the form `{ "error": "denied" }` or `{ "error": { "code": "denied", "message": "..." } }`
@@ -386,6 +390,108 @@ is `unavailable`.
 
 ## The built-in gatherer
 
-Arrives with `repository-files`. Its options, `include`, `summary` and `facts`, are already
-accepted, and until that phase lands its outcome is `unavailable`. It runs at the `gather` stage
-only, so a definition that places it at `select` is refused.
+`repository-files` ships inside Mission Control, so an operator can have named files added as
+context without writing a program. It is a gatherer: it runs at the `gather` stage only, so a
+definition that places it at `select` is refused. It is called once per attached repository,
+in that repository's worktree, and reads only what its options name. It never lists the
+worktree, follows a link out of it, or opens a file it was not told to.
+
+```sh
+curl -s -X PUT http://127.0.0.1:7317/api/shaping \
+  -H 'content-type: application/json' \
+  -d '{"kind":"upsert","shaper":{"id":"repo-files","label":"Repository files","stage":"gather",
+       "transport":{"type":"builtin","builtin":"repository-files","options":{
+         "include":[{"path":"AGENTS.md"},{"path":"docs/architecture.md","maxBytes":8192}],
+         "summary":"docs/summary.md",
+         "facts":".mission/facts.json"}}}}'
+```
+
+Like every registered shaper it is stored switched off. Dry-run it, then switch it on.
+
+- **`include`.** Up to 16 paths, each with a `maxBytes` of at most 16 KiB, the default. Each
+  file read becomes one context entry whose id and title are its path, marked `truncated` when
+  it was cut. Entries share the shaper's and the run's budget like any other shaper's. An entry's
+  id is at most 512 characters, so a longer path is skipped unread with a note.
+- **`summary`.** One path, cut to 4 KiB and returned as the repository's `summary`. A cut summary
+  marks the reply `truncated`, and so does an include or summary cut to nothing.
+- **`facts`.** One path to a JSON object whose values are strings or lists of strings, at most
+  64 KiB in all, such as
+  `{ "language": "python", "framework": ["django"] }`. It is returned as the repository's
+  `facts`. It holds at most 64 names of 1 to 128 characters each. A value is one string, or a
+  list of at most 64 strings, and every string, in a list or not, is at most 1024 characters.
+  A file that is not such an object is skipped with a note, and no facts are returned.
+
+The summary and facts are handed to the selectors in their requests. They are not added to the
+section by themselves. A path is relative to the worktree, and every repository attached to a
+task is read at the same paths in its own worktree, so two worktrees give two entries.
+
+### How a file is read
+
+Every check is made on the file that is read, never on a path looked up beforehand, because a
+worktree file can be replaced while shaping runs.
+
+1. **Path.** A path that is absolute or has a `..` segment is refused. Its real path, with
+   every link resolved, must lie inside the worktree's real path, so a link to another file
+   inside the worktree is followed and a link out of it is not. Anything that is not a regular
+   file, such as a directory or a named pipe, is skipped without being opened.
+2. **Open.** The real path is opened without following a final link, and non-blocking, so a
+   named pipe swapped in meanwhile, or a device whose driver honours non-blocking opens, cannot
+   make the open wait for a writer. Non-blocking does not bound every open: one on a hung
+   network filesystem can still wait, and the checks below run only once it returns.
+3. **Identity.** The opened file must be a regular file of at most 4 MiB, and the real path,
+   looked up again, must still be free of links, inside the worktree, and name the same file as
+   the one opened. A file moved or hard-linked into the worktree is a worktree file.
+4. **Read.** At most the file's cap plus five bytes is read from the opened file, so one that
+   grows meanwhile is still cut off. The five bytes are three for a byte order mark, which is
+   dropped before the cap applies so it never counts against it, and two to see whether a line
+   ends just past the cap. The cap applies to the text returned: invalid UTF-8 is replaced, and
+   the text is cut at the last line boundary, LF or CRLF, within the cap.
+
+These checks prove that no file outside the worktree is read while the worktree's directories
+are not being rearranged during the read. A process running as you that swaps a directory on
+the path in a tight race between the open and the identity check can still get an outside file
+read. That process could read the file itself, so it is outside the threat model.
+
+### Skipped files
+
+A file that cannot be used is skipped, and each skip becomes one short sentence naming its path
+and reason, such as `Skipped include 2 "docs/architecture.md" (missing).` or
+`Skipped the summary "docs/summary.md" (empty).` Every skip is kept: past the reply's 16 notes,
+consecutive sentences share a note. The sentences become the shaper's reason, which the record
+holds to 500 characters. A skip is not a failure: the outcome stays `ok`, the run is not
+degraded, and the launch is never affected.
+
+| Reason | When |
+| --- | --- |
+| `missing` | No file at that path |
+| `outside-worktree` | The path is absolute, has a `..` segment or resolves outside the worktree, or the opened file is not the one inside it |
+| `not-a-regular-file` | A directory, or a path written as one (ending in `/` or `/.`, even when a file has that name), a named pipe, a device or a socket, or a link swapped in after the lookup |
+| `too-large` | Larger than 4 MiB |
+| `unreadable` | The operator cannot read it |
+| `empty` | The whole file is nothing but white space once decoded |
+
+A file that is cut to nothing is not `empty`: a longer file whose first bytes, up to its cap,
+are only white space, or a short one whose replacement characters outgrow its cap so no whole
+line fits. It is skipped with a sentence that says so, and a facts file like it still
+reports that it is larger than 64 KiB once decoded. An incomplete UTF-8 sequence at the very end of a file
+is replaced like any other invalid byte, so a facts file with trailing garbage is not valid
+JSON. Only one at a cut, where the read stopped inside the file, is dropped.
+
+A facts file that is not valid JSON, not a flat object of strings or string lists, or larger
+than 64 KiB is skipped with a sentence that says so. A worktree that is not on this machine
+makes the call `unavailable`. The call's signal is checked before every filesystem call, so a
+call stopped at the step's deadline starts no further lookup, open or read.
+
+The gatherer runs in the daemon, on Node's shared pool of file-I/O threads, and a call already
+running on a hung network mount cannot be cancelled. So every `repository-files` call in the
+daemon shares two gates, each with one filesystem call in flight at a time: one for lookups,
+opens and reads, and one for closing files, so a stalled lookup never keeps another run's file
+open. A stalled worktree can hold at most two of the pool's threads, and other daemon file work
+keeps the rest. A call waiting for a gate holds no thread, and a lookup or read waiting for one
+gives up at its deadline. A close is never given up, so an opened file is always closed.
+
+The gatherer also keeps at most one file open at a time, daemon-wide. A run takes that one slot
+before it opens a file and gives it back only once the file's close has finished, so a close
+stalled on a hung mount holds the slot, and later runs wait for it instead of opening more files.
+However long a mount hangs, the gatherer holds at most one file descriptor, and a run waiting
+for the slot holds none and gives up at its deadline.

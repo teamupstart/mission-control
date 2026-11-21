@@ -1,5 +1,6 @@
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { questionOutcome, questionStatusLine, useQuestionAgent } from "../lib/async-questions.ts";
+import { inputBody } from "../lib/reviews.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -34,6 +35,7 @@ export function AskedQuestionCard({
         <span className="review-answer-title">{review.title}</span>
         <ConversationTimestamp at={review.createdAt} className="turn-time" />
       </div>
+      <QuestionText review={review} />
       {review.meanwhile && (
         <p className="review-asked-meanwhile">
           <span className="review-wait-tag">Meanwhile</span> {review.meanwhile}
@@ -78,9 +80,22 @@ export function ClosedQuestionCard({ review }: { review: ReviewItem }): React.JS
         <span className="review-answer-title">{review.title}</span>
         <ConversationTimestamp at={review.snooze?.at ?? review.resolvedAt ?? review.createdAt} className="turn-time" />
       </div>
+      <QuestionText review={review} />
       <div className="review-asked-foot">
         <span className="review-asked-outcome">{outcome.text}</span>
       </div>
     </div>
   );
+}
+
+/**
+ * The rest of the question beneath the entry's heading. `request_input` files a clipped heading as
+ * the title and the whole question and its context as the body, so the heading alone would drop
+ * text from a long or multi-line question, and nothing else in the conversation shows it once the
+ * question has ended. The card's own rule decides what to add (`inputBody`): a question that fit
+ * in the heading shows only its context, and nothing at all when there is none.
+ */
+function QuestionText({ review }: { review: ReviewItem }): React.JSX.Element | null {
+  const text = review.kind === "input" ? inputBody(review) : "";
+  return text ? <p className="review-asked-question">{text}</p> : null;
 }

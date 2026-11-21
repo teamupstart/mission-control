@@ -191,6 +191,8 @@ test("a question says whether its agent is still working or has stopped, on the 
   // The conversation records the question where it was asked, with a way to answer it.
   const asked = detail.getByRole("note", { name: `Asked: ${LINTER}` });
   await expect(asked).toContainText(MEANWHILE);
+  // The rest of the question beneath its heading: here, the context it was filed with.
+  await expect(asked.locator(".review-asked-question")).toHaveText("The repo has no linter. CI runs Prettier only.");
   await expect(asked).toContainText("Open, not answered yet");
   await expect(asked.locator(".review-asked-status")).toHaveText("Still working");
   await capture(asked, "04-conversation-asked-open", page);
@@ -360,6 +362,7 @@ test("a merge's closure is recorded in the conversation for a filed question and
   await expect(askedEntry).toContainText("Closed unanswered: pull request merged");
   await expect(askedEntry.getByRole("button", { name: "Answer" })).toHaveCount(0);
   await expect(closedEntry).toContainText("Closed unanswered: pull request merged");
+  await expect(closedEntry.locator(".review-asked-question")).toHaveText("The repo has no linter. CI runs Prettier only.");
   // In place of its Snoozed entry, not beside it.
   await expect(detail.getByRole("note", { name: `Snoozed: ${PARSER}` })).toHaveCount(0);
   await capture(page, "09-merge-closure", page);

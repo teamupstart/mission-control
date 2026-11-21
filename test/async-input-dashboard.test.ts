@@ -314,6 +314,35 @@ test("an open Asked entry says whether its agent is still working or has stopped
   assert.match(ended, />Answered</);
 });
 
+test("Asked and Closed entries show the whole question, never repeating a heading that already says it", () => {
+  const long = "Which linter should this repo use, given that CI runs Prettier only and the monorepo has three packages with different TypeScript configs?";
+  const clipped = question({ title: "Which linter should this repo use, given that CI runs…", body: `${long}\n\nThe repo has no linter.` });
+  const asked = renderToStaticMarkup(createElement(AskedQuestionCard, { review: clipped }));
+  assert.match(asked, /review-asked-question/);
+  assert.ok(asked.includes("three packages with different TypeScript configs?"), "the clipped part is shown");
+  const closed = renderToStaticMarkup(createElement(ClosedQuestionCard, {
+    review: { ...clipped, waitMode: undefined, status: "orphaned", closedReason: "merged" },
+  }));
+  assert.ok(closed.includes("three packages with different TypeScript configs?"));
+  // A question that fit in the heading adds only its context, and nothing when it has none.
+  const short = renderToStaticMarkup(createElement(AskedQuestionCard, {
+    review: question({ body: "Which linter should this repo use?\n\nCI runs Prettier only." }),
+  }));
+  // Counted as visible text only: the entry's accessible name also carries the title.
+  assert.equal(short.split(">Which linter should this repo use?").length - 1, 1, "the heading is not repeated");
+  assert.match(short, /CI runs Prettier only\./);
+  const bare = renderToStaticMarkup(createElement(AskedQuestionCard, { review: question() }));
+  assert.doesNotMatch(bare, /review-asked-question/);
+});
+
+test("a filed question turned back into a blocking call retires its stored Asked entry", () => {
+  const stored = question({ id: "q1" });
+  const reattached = { ...stored, waitMode: undefined, meanwhile: undefined };
+  assert.deepEqual(timelineReviewsFor("s1", [stored], [reattached], true), []);
+  // A live row that still qualifies replaces its stored copy as before.
+  assert.equal(timelineReviewsFor("s1", [stored], [{ ...stored, meanwhile: "newer" }], true)[0]?.meanwhile, "newer");
+});
+
 test("the Asked entry has an Answer button only while the question is open", () => {
   const open = renderToStaticMarkup(createElement(AskedQuestionCard, { review: question(), onAnswer: () => {} }));
   assert.match(open, />Asked</);

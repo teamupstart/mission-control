@@ -106,7 +106,13 @@ export function timelineReviewsFor(
   // Stored first so the live copy overwrites it, not the other way round: a review in both is
   // the same row, and the live one is never older.
   for (const r of stored) if (keep(r)) byId.set(r.id, r);
-  for (const r of live) if (keep(r) || isSnoozedHere(r, sessionId)) byId.set(r.id, r);
+  // A live row that no longer qualifies retires its stored copy: the live one is never older, so
+  // a filed question an older MCP child turned back into a blocking call (it loses `waitMode` and
+  // its meanwhile line) must not keep the Asked entry the stale stored row would still draw.
+  for (const r of live) {
+    if (keep(r) || isSnoozedHere(r, sessionId)) byId.set(r.id, r);
+    else byId.delete(r.id);
+  }
   return [...byId.values()];
 }
 

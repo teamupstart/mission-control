@@ -8396,6 +8396,14 @@ a.btn {
 .review-asked:not(.is-open) .review-asked-who {
   color: var(--muted);
 }
+.review-asked-question {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .review-asked-meanwhile {
   margin: 0;
   font-size: 12.5px;

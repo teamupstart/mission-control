@@ -5,6 +5,7 @@ import type { Task } from "@shared/types.ts";
 import { PlanPublicationReceiptSchema, TaskPlanInputsSchema, type PlanIdentity, type PlanPublicationReceipt, type TaskPlanInput, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { openDb } from "../db.ts";
 import { planRecord, planRevisionRecord, planRepositoryLocation, readPlanRevision, PlanStoreError } from "./store.ts";
+import { planInputEdgesForOrigin } from "./pin-change.ts";
 
 export function publicationReceipt(input: PlanIdentity): PlanPublicationReceipt | null {
   const found = openDb().prepare("SELECT receipt FROM managed_plan_publications WHERE plan_id = ? AND revision = ?").get(input.planId, input.revision) as { receipt: string } | undefined;
@@ -29,11 +30,7 @@ export function validatePlanInputs(inputs: TaskPlanInput[], roots: string[]): vo
 
 /** Keep editor guidance and save/delivery validation on the same exact-origin matcher. */
 export function planInputEdges(input: TaskPlanInput, dependencies: Task["dependencies"]): Task["dependencies"] {
-  const saved = planRevisionRecord(input.planId, input.revision);
-  return dependencies.filter((edge) => edge.type === "plan"
-    ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision
-    : edge.type === "task" ? edge.taskId === saved.task_id && edge.episodeId === saved.episode_id
-      : edge.type === "session" && saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
+  return planInputEdgesForOrigin(input, planRevisionRecord(input.planId, input.revision), dependencies);
 }
 
 function missingPlanEdge(input: TaskPlanInput): string {

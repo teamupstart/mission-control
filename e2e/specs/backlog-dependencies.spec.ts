@@ -558,6 +558,9 @@ test("Save and dependency edits wait for revision editing and its pending previe
     await expect(mode.getByRole("button", { name: "After merge", exact: true })).toBeDisabled();
     await dialog.getByRole("textbox", { name: /^Title/ }).fill("Title edited during preview");
     await dialog.getByPlaceholder("What should this agent do?").fill("Intent edited during preview");
+    await expect(dialog.getByRole("button", { name: "Revert" })).toBeDisabled();
+    await dialog.getByRole("button", { name: "Revert" }).evaluate((button: HTMLButtonElement) => button.click());
+    await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue("Title edited during preview");
     // A queued change event must also be refused by the handler, not just the DOM guard.
     await add.evaluate((select: HTMLSelectElement, id) => {
       select.value = `task:${id}`;
@@ -570,6 +573,7 @@ test("Save and dependency edits wait for revision editing and its pending previe
     expect(await read()).toEqual(before);
   } finally { release(); }
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Revert" })).toBeEnabled();
   await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue("Title edited during preview");
   await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("Intent edited during preview");
   await expect(add).toBeDisabled();

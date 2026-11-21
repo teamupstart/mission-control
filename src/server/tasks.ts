@@ -1,6 +1,6 @@
 import { featureEnabled } from "./feature-flags/index.ts";
 import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
-import { planInputEdges } from "./plans/inputs.ts";
+import { selectPinChangeDependencies } from "./plans/pin-change.ts";
 import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
@@ -4291,34 +4291,30 @@ export class TaskManager {
         validatePlanInputs([to], [t.repoRoot, ...t.extraRepos.map(r => r.repoRoot)]);
         const planInputs = [...t.planInputs!];
         planInputs[index] = to;
-        // Remove only this pin's superseded edges, retaining any still used by another pin.
-        const oldEdges = planInputEdges(from, t.dependencies);
-        const dependencies = t.dependencies.filter(edge => !oldEdges.includes(edge)
-          || planInputs.some(input => planInputEdges(input, [edge]).length > 0));
-        if (!planInputEdges(to, dependencies).length && !publicationReceipt(to)) {
-          const saved = planRevisionRecord(to.planId, to.revision);
-          const manifest = readPlanRevision(to.planId, to.revision).manifest;
-          const source = saved.task_id ? this.getDurable(saved.task_id) : null;
-          const input: TaskDependencyInput = manifest.policy.storage === "local" && source?.kind === "plan" && source.planPolicy?.storage === "local"
-            ? { type: "plan", repoKey: to.repoKey, planId: to.planId, revision: to.revision }
-            : saved.task_id ? { type: "task", taskId: saved.task_id }
-              : { type: "session", sessionId: saved.session_id };
+        const saved = planRevisionRecord(to.planId, to.revision);
+        const selection = selectPinChangeDependencies({
+          current: t.dependencies,
+          from: { input: from, origin: planRevisionRecord(from.planId, from.revision) },
+          to: { input: to, origin: saved },
+          remainingPins: planInputs.map(input => ({ input, origin: planRevisionRecord(input.planId, input.revision) })),
+          storage: readPlanRevision(to.planId, to.revision).manifest.policy.storage,
+          published: Boolean(publicationReceipt(to)),
+          source: saved.task_id ? this.getDurable(saved.task_id) ?? null : null,
+          bindings: saved.task_id
+            ? [taskWorkEpisodeForTask(saved.task_id), ...historicalTaskWorkEpisodeBindingsForTask(saved.task_id)]
+              .filter((binding): binding is TaskWorkEpisodeBinding => binding !== null)
+            : [],
+          now: Date.now(),
+        });
+        const { dependencies, addition, mergeCandidate } = selection;
+        if (addition) {
           const candidates = [...dependencies];
-          // A finished source can be selected only with merge proof for the revision's
-          // exact episode. Completion status alone never manufactures a satisfied edge.
-          if (input.type === "task" && !candidates.some(edge => dependencyKey(edge) === dependencyKey(input))) {
-            const target = this.getDurable(input.taskId);
-            const binding = [taskWorkEpisodeForTask(input.taskId), ...historicalTaskWorkEpisodeBindingsForTask(input.taskId)]
-              .find(bound => bound?.episodeId === saved.episode_id && bound.sessionId === saved.session_id);
-            if (target && binding) {
-              const edge: TaskDependency = { type: "task", taskId: target.id, title: target.title,
-                sessionId: binding.sessionId, episodeId: binding.episodeId, agentSessionId: binding.agentSessionId,
-                branch: binding.branch, prUrl: binding.prUrl, selectedAt: Date.now(), satisfiedAt: null };
-              const mergedUrl = this.mergeUrlForDependency(edge, "");
-              if (mergedUrl) candidates.push({ ...edge, prUrl: mergedUrl, satisfiedAt: binding.mergedAt ?? Date.now() });
-            }
+          if (mergeCandidate) {
+            const mergedUrl = this.mergeUrlForDependency(mergeCandidate.edge, "");
+            if (mergedUrl) candidates.push({ ...mergeCandidate.edge, prUrl: mergedUrl,
+              satisfiedAt: mergeCandidate.mergedAt ?? Date.now() });
           }
-          dependencies.push(...this.resolveDependencies([input], t.id, candidates));
+          dependencies.push(...this.resolveDependencies([addition], t.id, candidates));
         }
         if (dependencies.length > MAX_TASK_DEPENDENCIES) throw new TaskDependencyError("Too many task dependencies");
         planChangeDependencies = dependencies;

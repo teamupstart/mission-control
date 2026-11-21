@@ -13,3 +13,15 @@ export function taskShapingForReads<T extends { shaping?: TaskShaping | null; se
   const { shaping: _hidden, ...rest } = task;
   return rest as T;
 }
+
+/**
+ * A session as every daemon read returns it: its task card carries `shaping` only while the
+ * `task-shaping` flag is on. The card already holds only its own launch's record
+ * (`taskSummaryFor`); the flag is applied here, where the session leaves the daemon, because a
+ * card cached before a toggle would otherwise keep it.
+ */
+export function sessionShapingForReads<T extends { task?: { shaping?: TaskShaping | null } | null }>(session: T): T {
+  if (session.task?.shaping === undefined || featureEnabled("task-shaping")) return session;
+  const { shaping: _hidden, ...task } = session.task;
+  return { ...session, task };
+}

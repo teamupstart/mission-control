@@ -319,6 +319,35 @@ test("with the flag off, task events and the snapshot carry no record, and turni
   assert.equal(registry.snapshot().tasks.find((task) => task.id === "flag-events")?.shaping?.sessionId, "s1");
 });
 
+test("with the flag off, a session's task card carries no record in the snapshot or its updates", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.registerSdkSession({ id: "sdk:card-session", agent: "claude", name: "Card", cwd: "/repo/card" });
+  registry.upsertTask(mkTask({ id: "card", status: "running", sessionId: "sdk:card-session", worktreePath: "/repo/card" }));
+  registry.commitTaskShaping("card", "sdk:card-session", record("sdk:card-session"), "text");
+  const card = () => registry.snapshot().sessions.find((session) => session.id === "sdk:card-session")?.task;
+  assert.equal(card()?.shaping?.sessionId, "sdk:card-session", "the card carries its launch's record while the flag is on");
+  setFlag(false);
+  const cards: unknown[] = [];
+  const onEvent = (event: { type: string; session?: { id: string; task?: { shaping?: unknown } | null } }) => {
+    if (event.type === "session_upsert" && event.session?.id === "sdk:card-session") cards.push(event.session.task?.shaping);
+  };
+  registry.on("event", onEvent);
+  try {
+    assert.ok(card(), "the card itself is still there");
+    assert.equal(card()?.shaping, undefined, "a reconnect's snapshot hides it");
+    registry.upsertTask({ ...registry.getTask("card")!, priority: "high" });
+    // The card was cached while the flag was on; what leaves the daemon is gated anyway.
+    registry.commitTaskShaping("card", "sdk:card-session", record("sdk:card-session", "degraded"), "");
+  } finally {
+    registry.off("event", onEvent);
+    setFlag(true);
+  }
+  assert.ok(cards.length > 0, "the session was published");
+  assert.deepEqual(cards.filter((shaping) => shaping !== undefined), [], "and no update carried a record");
+  assert.equal(card()?.shaping?.state, "degraded", "turning the flag back on shows it again");
+});
+
 test("a failed commit for the same session hides the record it was meant to replace", () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "same-session", status: "running", sessionId: "kept" }));

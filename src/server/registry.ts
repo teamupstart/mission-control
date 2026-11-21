@@ -19,7 +19,7 @@ import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
 import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
-import { taskShapingForReads } from "./shaping/reads.ts";
+import { sessionShapingForReads, taskShapingForReads } from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -1349,7 +1349,7 @@ export class Registry extends EventEmitter {
   } {
     return {
       sessionTransfers: sessionTransferPage(),
-      sessions: [...this.sessions.values()],
+      sessions: [...this.sessions.values()].map(sessionShapingForReads),
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
       // Memory keeps an earlier launch's record so a later publish can carry it forward; what
@@ -2139,9 +2139,12 @@ export class Registry extends EventEmitter {
     // A task leaves the daemon as every task read returns it: with only its current session's
     // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
     // (see `withShaping`).
+    // A session's task card is gated the same way.
     const e: ServerEvent = event.type === "task_upsert" && event.task.shaping !== undefined
       ? { ...event, task: taskShapingForReads(event.task) }
-      : event;
+      : event.type === "session_upsert" && event.session.task?.shaping !== undefined
+        ? { ...event, session: sessionShapingForReads(event.session) }
+        : event;
     this.emit("event", e);
     // The Line's one hook into the stores it folds over.
     //

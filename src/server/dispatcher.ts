@@ -957,7 +957,11 @@ export class Dispatcher {
           // shaper applied, nothing saw that id, and the supervisor mints its own exactly as an
           // unshaped launch always has.
           shaping.summary ? sdkSessionId : null,
+          currentAttempt,
         );
+        // A later attempt took the task while this driver started: `dispatchEmbedded` stopped
+        // the worker, and nothing of this attempt is recorded or reported as a launch.
+        if (!currentAttempt()) return;
         // Turn one IS the start on this runtime, so the launch reached its worker the moment
         // `supervisor.start` returned - cancelled underneath or not.
         this.commitShaping(taskId, attempt, shaping, embeddedSession);
@@ -2016,6 +2020,8 @@ export class Dispatcher {
     residentMcp: ResidentMcpLaunch | null = null,
     /** The session id to start under, minted before shaping so both share its trace context. */
     sessionId: string | null = null,
+    /** Whether this dispatch is still the task's current attempt. */
+    currentAttempt: () => boolean = () => true,
   ): Promise<string> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -2117,6 +2123,13 @@ export class Dispatcher {
       repoRoot: taskHasRepository(task) ? task.repoRoot : null,
     });
     supervisorOwnsStateHome = true;
+    // A cancel and a redispatch while the driver started put the task back in `dispatching`
+    // under a later attempt. That attempt owns the task row and its resources, so this worker
+    // is stopped alone, before anything binds it, and nothing else is torn down.
+    if (!currentAttempt()) {
+      await supervisor.stop(session.id).catch(() => {});
+      return session.id;
+    }
     if (await this.abortIfSettled(taskId)) {
       // A cancel landed while the driver was starting. `abortIfSettled` tore down the
       // worktree; the session it would have worked in has to go with it.

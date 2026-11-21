@@ -340,21 +340,17 @@ test("the section follows the kind contract in both turn-one variants", async ()
   assert.equal(fallback.indexOf(SECTION), fallback.length - SECTION.length);
 });
 
-test("Claude, Codex and Pi receive identical text on the terminal and SDK runtimes", async () => {
+test("Claude, Codex and Pi each receive their own turn one followed by the section, on the terminal and SDK runtimes", async () => {
   const repo = seedRepo("identical-text");
   const intent = "THE-OPERATOR-REQUEST";
-  const prompts: string[] = [];
   for (const agent of ["claude", "codex", "pi"] as const) {
     const terminal = await terminalDispatch({ agent, repo, taskId: `text-${agent}-terminal`, intent, shapeTask: standIn(SECTION).shapeTask });
     assertRunning(terminal.task);
     assert.equal(terminal.prompt, `${await unshapedExpectation(terminal.task, intent)}\n\n${SECTION}`, `${agent} · terminal`);
-    prompts.push(terminal.prompt.slice(terminal.prompt.indexOf(SECTION)));
     const sdk = await sdkDispatch({ agent, repo, taskId: `text-${agent}-sdk`, intent, shapeTask: standIn(SECTION).shapeTask });
     assertRunning(sdk.task);
     assert.equal(sdk.start!.prompt, `${await unshapedExpectation(sdk.task, intent)}\n\n${SECTION}`, `${agent} · sdk`);
-    prompts.push(sdk.start!.prompt.slice(sdk.start!.prompt.indexOf(SECTION)));
   }
-  assert.equal(new Set(prompts).size, 1);
 });
 
 // ---- nothing stops the launch ----
@@ -737,25 +733,34 @@ function heldSupervisor(registry: InstanceType<typeof Registry>) {
 /** A supervisor that records each start and holds it until the test releases them all. */
 function gatedSupervisor(registry: InstanceType<typeof Registry>) {
   const starts: Parameters<SdkSupervisor["start"]>[0][] = [];
+  /** The session each start returned, in start order, once it returned. */
+  const sessions: string[] = [];
+  const stopped: string[] = [];
   let release!: () => void;
   const released = new Promise<void>((resolve) => { release = resolve; });
+  const gates: Array<() => void> = [];
   const waiters: Array<{ count: number; resolve: () => void }> = [];
   const supervisor = {
     starts,
     async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
-      starts.push(input);
+      const index = starts.push(input) - 1;
+      const own = new Promise<void>((resolve) => { gates[index] = resolve; });
       for (const waiter of waiters) if (starts.length >= waiter.count) waiter.resolve();
-      await released;
-      return registry.registerSdkSession({ id: input.sessionId ?? `sdk:${++seq}`, agent: input.agent, name: input.name, cwd: input.cwd });
+      await Promise.race([released, own]);
+      const session = registry.registerSdkSession({ id: input.sessionId ?? `sdk:${++seq}`, agent: input.agent, name: input.name, cwd: input.cwd });
+      sessions[index] = session.id;
+      return session;
     },
-    async stop(): Promise<void> {},
+    async stop(id: string): Promise<void> { stopped.push(id); },
     taskLiveness: () => null,
   };
   const reached = (count: number) => new Promise<void>((resolve) => {
     if (starts.length >= count) resolve();
     else waiters.push({ count, resolve });
   });
-  return { supervisor: supervisor as typeof supervisor & SdkSupervisor, release, reached };
+  /** Let one start, by its order, return while the others stay held. */
+  const releaseOne = (index: number) => gates[index]!();
+  return { supervisor: supervisor as typeof supervisor & SdkSupervisor, release, releaseOne, reached, sessions, stopped };
 }
 
 /** Both attempts of one task through the SAME dispatcher, as a cancel and a redispatch run them. */
@@ -788,9 +793,20 @@ test("a launch a later dispatch replaced never overwrites the record its success
   await run.gate.reached(1);
   const replacement = run.redispatch();
   await run.gate.reached(2);
-  run.gate.release();
-  await Promise.all([original, replacement]);
+  // The first driver comes up while its replacement is still starting, with the task back in
+  // `dispatching`: its worker is stopped and never bound to the task.
+  run.gate.releaseOne(0);
+  await original;
+  const firstSession = run.gate.sessions[0]!;
+  assert.deepEqual(run.gate.stopped, [firstSession], "the superseded worker alone was stopped");
+  assert.equal(run.registry.getTask("superseded")?.status, "dispatching", "the replacement still owns the launch");
+  assert.notEqual(run.registry.getTask("superseded")?.sessionId, firstSession, "the superseded worker was never bound");
+  assert.equal(getTaskShapingText("superseded"), null, "and recorded nothing");
+  run.gate.releaseOne(1);
+  await replacement;
   assertRunning(run.registry.getTask("superseded")!);
+  assert.equal(run.registry.getTask("superseded")?.sessionId, run.gate.sessions[1], "the replacement's worker is the task's");
+  assert.deepEqual(run.gate.stopped, [firstSession]);
   assert.equal(getTaskShapingText("superseded")?.text, SECTION, "only the successor's launch recorded its context");
   assert.equal(currentShaping(getDurableTask("superseded")!)?.entries, 1);
 });

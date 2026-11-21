@@ -153,6 +153,8 @@ interface HarnessOptions {
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
+  inspectorFindingsPolicy?: "restart_workflow" | "inspector_only";
+  resumptionPolicy?: "manual" | "auto";
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
@@ -433,12 +435,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     description: "",
     draft: { nodes, edges } as never,
     completionPolicy: options.inspector
-      ? { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }
+      ? { kind: "inspector", onFindings: options.inspectorFindingsPolicy ?? "restart_workflow", missingPrAction: "wait" }
       : { kind: "none" },
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
-    // The resumption observer is the OTHER way a parked round reopens and would race the
-    // assertions below about which path produced round two.
-    resumptionPolicy: "manual",
+    // Opt into the observer only when the test drives automatic resumption itself.
+    resumptionPolicy: options.resumptionPolicy ?? "manual",
     bindingDefaults: {
       triggerMode: "manual",
       deliveryMode: options.deliveryMode ?? "live",
@@ -568,6 +569,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     runActionTurn,
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
+    settle: () => manager.settleBackgroundWork(),
     stop: () => manager.stop(),
   };
 }
@@ -2022,7 +2024,7 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, childProof, changed, number, disableInspector = false } of [
+for (const { parentProof, childProof, changed, number, disableInspector = false, findingsPolicy, autoResumption = false } of [
   { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
   { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
@@ -2033,16 +2035,22 @@ for (const { parentProof, childProof, changed, number, disableInspector = false 
   { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
   { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 80, disableInspector: true },
+  ...(["restart_workflow", "inspector_only"] as const).map((findingsPolicy, i) => ({
+    parentProof: "publication", childProof: "publication", changed: true, number: 81 + i, findingsPolicy, disableInspector: false,
+    autoResumption: false,
+  })),
+  { parentProof: "publication", childProof: "publication", changed: true, number: 83, autoResumption: true },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}`, async (t) => {
-    const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}, findings=${findingsPolicy}, auto=${autoResumption}`, async (t) => {
+    const { adoptInspectorPr, updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
-    const options = {
+    const options: HarnessOptions = {
       pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
-      omitContentTree: parentProof === "missing",
+      omitContentTree: parentProof === "missing", inspectorFindingsPolicy: findingsPolicy,
+      resumptionPolicy: findingsPolicy || autoResumption ? "auto" : "manual",
     };
-    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}-${findingsPolicy}-${autoResumption}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -2111,6 +2119,85 @@ for (const { parentProof, childProof, changed, number, disableInspector = false 
         assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
         assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
           "reviewed_tree_changed");
+        if (autoResumption) {
+          assert.equal(h.store.listDeliveries(runId).filter((delivery) => delivery.kind === "inspector_feedback").length, 0);
+          h.runActionTurn();
+          await h.manager.sweepResumptions(SETTLED());
+          assert.equal(h.store.latestSubmission(runId)?.id, child.id,
+            "an unrelated settled turn must not spend a round on the operator-owned reviewed-tree hold");
+          assert.equal(h.store.getRun(runId)?.currentPhase, "inspector_reviewed_tree_changed");
+          const withheld = h.store.listEvents(runId).filter((event) => event.kind === "resumption_withheld").at(-1);
+          assert.deepEqual(withheld?.payload, {
+            submissionId: child.id, round: child.round, reason: "repository_unchanged",
+          });
+          assert.equal(h.store.listEvents(runId).some((event) => event.kind === "resumption_started"), false);
+        }
+        if (findingsPolicy) {
+          upsertInspectorComment({
+            id: `unposted-${number}`, prKey: key, fingerprint: `unposted-${number}`,
+            path: "src/edge.ts", line: 15, title: "Unposted finding on the published head",
+            body: "This draft has not reached GitHub.", severity: "major",
+            round: 7, status: "drafted", replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now,
+            githubUrl: null, postedAt: null,
+          });
+          const deliveriesBeforeDraft = h.injected.length;
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          await h.settle();
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 0,
+            "an unposted current-head finding must not prepare a feedback packet across the reviewed-tree hold");
+          assert.equal(h.injected.length, deliveriesBeforeDraft, "unposted feedback must not reach the owning session");
+          assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
+            "reviewed_tree_changed");
+          upsertInspectorComment({
+            id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
+            path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
+            body: "Verify the Go toolchain behavior and reply to this thread.", severity: "major",
+            round: 7, status: "open", replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now,
+            githubUrl: `${url}#discussion_r1576`, postedAt: now,
+          });
+          updateInspectorPr(key, { headSha: h.full("older-review") }, now);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 4);
+          await waitFor(() => WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState)
+            .lastObservedAt === now + 4, "the stale-review observation did not settle");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 0,
+            "a previous head's review must not deliver findings as current");
+          updateInspectorPr(key, { headSha: head }, now);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
+          await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback"),
+            "the published-tree hold swallowed the current-head finding");
+          await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback" && d.state === "delivered"),
+            "the current-head finding never reached the session");
+          const packet = h.store.listDeliveries(runId).find((d) => d.kind === "inspector_feedback")!;
+          assert.match(packet.payload, /Posted finding on the published head/);
+          assert.doesNotMatch(packet.payload, /Unposted finding on the published head/);
+          assert.ok(packet.payload.includes(`${url}#discussion_r1576`));
+          assert.match(packet.payload, /fresh full workflow review/);
+          assert.doesNotMatch(packet.payload, /permits bypassing Personas/);
+          assert.ok(h.injected.includes(packet.payload));
+          const findingGate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+          assert.deepEqual(findingGate.findingFingerprints, [`posted-${number}`]);
+          assert.deepEqual(findingGate.reviewedContent, gate.reviewedContent);
+          assert.equal(h.store.getRun(runId)?.status, "waiting_for_session", "publication mismatch forbids Inspector-only bypass");
+          assert.ok(packet.deliveredAt !== null);
+          assert.ok((h.registry.getSession(h.sessionId)?.lastActivity ?? 0) <= packet.deliveredAt);
+          await h.manager.sweepResumptions(SETTLED());
+          assert.equal(h.store.latestSubmission(runId)?.id, child.id,
+            "idle from before feedback delivery must not start the fresh review before the session acts");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
+          // Resolving by reply on the same head must not complete the old review or send twice.
+          upsertInspectorComment({
+            id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
+            path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
+            body: "Verified and withdrawn", severity: "major", round: 7, status: "resolved",
+            replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 5,
+          });
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 6);
+          // Parked findings do not advance lastObservedAt. Wait for the observation even
+          // if it has already finished by the time the harness reaches this barrier.
+          await h.settle();
+          assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
+        }
         // Make reuse eligibility explicit rather than relying on the machine default.
         const previousPolicy = getWorkflowPolicy();
         t.after(() => setWorkflowPolicy(previousPolicy));
@@ -2171,7 +2258,19 @@ for (const { parentProof, childProof, changed, number, disableInspector = false 
               captureAndActivate: (...args: unknown[]) => Promise<{ ok: boolean }>;
             }).captureAndActivate(binding, claimed.run, claimed.submission, claimed.previousFingerprint);
           })()
-          : await h.manager.resubmit(runId, {
+          : findingsPolicy ? await (async () => {
+            // The agent answered and resolved the thread without another edit or push.
+            h.runActionTurn();
+            await h.manager.sweepResumptions(SETTLED());
+            const freshSubmission = h.store.latestSubmission(runId)!;
+            assert.equal(freshSubmission.round, child.round + 1,
+              "an unchanged published tree still needs its outstanding full review");
+            assert.equal(freshSubmission.triggerSource, "session");
+            assert.equal(h.store.submissionRequiresFreshPublishedReview(freshSubmission.id), true);
+            assert.equal(h.store.priorPassedJudge(runId, "upstream", freshSubmission.round), null);
+            assert.equal(h.head.sha, "packaged", "automatic review must not require another push");
+            return { ok: true };
+          })() : await h.manager.resubmit(runId, {
             requestId: `fresh-published-${number}`, resubmitUnchanged: false,
           });
         assert.equal(result.ok, true, JSON.stringify(result));

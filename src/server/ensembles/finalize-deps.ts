@@ -171,6 +171,10 @@ export function createFinalizeDeps(deps: {
             backlog: true,
           },
           { id: request.taskId },
+          undefined,
+          undefined,
+          // The selected result continues the run's work, so it keeps the run's work unit.
+          { inherit: request.workUnitFrom },
         );
       } catch (err) {
         if (err instanceof TaskIdCollisionError) {

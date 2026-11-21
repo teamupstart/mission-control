@@ -23,8 +23,9 @@ export interface RedactOptions {
  * engine parses as JSON, or an already-decoded value), and the engine owns validation, caps,
  * de-duplication, the outcome and the record. A transport never throws.
  *
- * Either kind may carry `redacted: true`: the transport removed a resolved `{env:NAME}` value
- * from the data or from the reason. Phase 5 sets it; the engine records it for the shaper.
+ * Either kind may carry `redacted: true`: the transport removed a value it resolved for a
+ * reference, or a credential it passed to a local process, from the data or from the reason.
+ * The engine records it for the shaper.
  */
 export type TransportReply =
   | {
@@ -56,6 +57,8 @@ export interface ShapingRunScope {
   readonly shared: Map<string, unknown>;
   /** Run `cleanup` once the run has ended, whatever happened. Failures are logged, never thrown. */
   defer(cleanup: () => void | Promise<void>): void;
+  /** True once the run has ended. A transport starts nothing new after that. */
+  readonly closed?: boolean;
 }
 
 export interface TransportContext {
@@ -77,6 +80,11 @@ export interface TransportContext {
   readonly settled?: () => void;
   /** The launch's trace context, or null when it has none. Every call of a run gets the same one. */
   readonly trace: ShapingTraceContext | null;
+  /**
+   * The shaping run's work unit id, or null when the run has none. Opaque, not a credential and
+   * not a reference, so it is never redacted. Every call of a run gets the same one.
+   */
+  readonly workUnitId: string | null;
 }
 
 export type ShaperOf<Id extends ShapingTransportId> = Shaper & { transport: Extract<Shaper["transport"], { type: Id }> };

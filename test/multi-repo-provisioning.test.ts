@@ -202,6 +202,7 @@ test("one tree failing to come back does not strand the others", async () => {
 
 const BASE_TASK = {
   id: "t1",
+  workUnitId: null,
   title: "Ship it",
   intent: "Rename the field everywhere.",
   kind: "ship" as const,

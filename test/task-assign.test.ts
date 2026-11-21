@@ -17,7 +17,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getTask: getStoredTask } = await import("../src/server/db.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
@@ -861,6 +861,35 @@ test("the drop's own arguments hand the task to the agent", async () => {
   // And it owns no checkout of its own - the agent kept the one it had, which is the
   // difference between a handover and a dispatch.
   assert.equal(handed?.worktreePath, null);
+});
+
+test("an assign hands over an older task with the work unit it stored first", async () => {
+  // Its own id: an earlier case assigned `t1`, which gave that row an id that, rightly, stays.
+  // A backlog row filed before work units existed: no id in memory or on disk. The assign gives
+  // it one before anything else, so by the time the prompt is typed the row already holds it,
+  // and the task the agent now runs carries that same stored value.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-work-unit-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ id: "older-work-unit", repoRoot: clone, workUnitId: null }));
+  assert.equal(getStoredTask("older-work-unit")?.workUnitId, null);
+
+  let storedAtPrompt: string | null | undefined;
+  const res = await tasks.assign("older-work-unit", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => {
+      storedAtPrompt = getStoredTask("older-work-unit")?.workUnitId;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  assert.equal(res.ok, true, res.error);
+  const stored = getStoredTask("older-work-unit")?.workUnitId;
+  assert.match(String(stored), /^wu_[0-9A-HJKMNP-TV-Z]{26}$/);
+  assert.equal(storedAtPrompt, stored, "saved before the assign typed the task");
+  const handed = r.getTask("older-work-unit");
+  assert.equal(handed?.status, "running");
+  assert.equal(handed?.sessionId, sessionId);
+  assert.equal(handed?.workUnitId, stored, "the assigned task carries the stored id");
 });
 
 test("a handover names the agent's terminal after the task it just took", async () => {

@@ -1,0 +1,122 @@
+// A bare stdio MCP server for the handshake cases the SDK's own server cannot produce. Run as
+// `node raw-stdio-mcp.mjs <mode> [args...]`. No network, no tokens.
+//
+// Modes:
+//   overflow-init <bytes> <pidfile>  Writes its pid, ignores SIGTERM, and answers `initialize` with one
+//                                    message this many bytes long, then stays running.
+//   error-init <NAME>                Answers `initialize` with an error that repeats the environment
+//                                    variable `NAME`, then stays running until stdin ends.
+//   stderr-exit <NAME> <lines>       Writes the variable `NAME` and then that many newlines to stderr,
+//                                    and exits before answering anything.
+//   json-stderr-exit <NAME>          Writes a JSON diagnostic that holds `NAME`'s value, every
+//                                    character a \u escape, to stderr, and exits.
+//   escaped-stderr-exit <NAME> <n> [levels]
+//                                    Writes `NAME`'s value, every character a \u escape and then
+//                                    escaped once more per further level, on n lines of stderr, and
+//                                    exits before answering anything.
+//   helper-exit <pidfile>            Starts a helper that inherits its stdout and stderr and runs until
+//                                    killed, writes the helper's pid to `pidfile`, writes a line to
+//                                    stderr, and exits before answering anything.
+//   split-pair <bytes>               Answers `initialize`, then answers `tools/call` with two messages
+//                                    of about `bytes` each: a logging notification written without
+//                                    its line ending, then, a moment later, that line ending and a
+//                                    valid reply in one write, so one chunk ends the first and
+//                                    starts the second. Stays running.
+//   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
+//                                    multibyte character, and exits before answering anything.
+//   spaced-stderr-exit <NAME> <pad>  Writes `NAME`'s value to stderr with each run of whitespace in it
+//                                    widened to `pad` spaces, and exits before answering anything.
+//   garbage-reply                    Answers `initialize`, then answers the next request with a line
+//                                    that is not JSON, and stays running.
+import { spawn } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+
+const [mode = "error-init", ...args] = process.argv.slice(2);
+const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+
+if (mode === "overflow-init" && args[1]) {
+  writeFileSync(`${args[1]}.partial`, String(process.pid));
+  renameSync(`${args[1]}.partial`, args[1]);
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1_000);
+}
+
+if (mode === "json-stderr-exit") {
+  const escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  process.stderr.write(`{"level":"error","msg":"auth failed for ${escaped}"}\n`, () => process.exit(1));
+}
+
+if (mode === "escaped-stderr-exit") {
+  let escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  for (let level = 1; level < Number(args[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
+  process.stderr.write(`${escaped}\n`.repeat(Number(args[1] ?? 1)), () => process.exit(1));
+}
+
+if (mode === "helper-exit") {
+  const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+  writeFileSync(`${args[0]}.partial`, String(helper.pid));
+  renameSync(`${args[0]}.partial`, args[0]);
+  helper.unref();
+  process.stderr.write("the server crashed on startup\n", () => process.exit(3));
+}
+
+if (mode === "split-utf8-exit") {
+  const bytes = Buffer.from(`auth failed for ${process.env[args[0] ?? ""] ?? ""}\n`, "utf8");
+  // Inside the first multibyte character: after its lead byte, before its continuation.
+  const at = bytes.findIndex((byte) => byte >= 0xc0) + 1;
+  process.stderr.write(bytes.subarray(0, at), () => {
+    setTimeout(() => process.stderr.write(bytes.subarray(at), () => process.exit(1)), 100);
+  });
+}
+
+if (mode === "spaced-stderr-exit") {
+  const spaced = (process.env[args[0] ?? ""] ?? "").replace(/\s+/g, " ".repeat(Number(args[1] ?? 1)));
+  process.stderr.write(`${spaced}\n`, () => process.exit(1));
+}
+
+if (mode === "stderr-exit") {
+  process.stderr.write(`${process.env[args[0] ?? ""] ?? ""}${"\n".repeat(Number(args[1] ?? 0))}`, () => process.exit(1));
+}
+
+if (mode === "split-pair") {
+  const bytes = Number(args[0] ?? 250 * 1024);
+  for await (const line of createInterface({ input: process.stdin })) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "split-pair", version: "1.0.0" } } });
+    } else if (message.method === "tools/call") {
+      const note = JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "n".repeat(bytes) } });
+      const reply = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { structuredContent: { guidance: [{ id: "pair", body: "b".repeat(bytes) }] }, content: [] } });
+      process.stdout.write(note);
+      await new Promise((done) => setTimeout(done, 150));
+      process.stdout.write(`\n${reply}\n`);
+    }
+  }
+}
+
+for await (const line of createInterface({ input: process.stdin })) {
+  if (!line.trim()) continue;
+  const message = JSON.parse(line);
+  if (message.method !== "initialize" && mode !== "garbage-reply") continue;
+  if (mode === "garbage-reply") {
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "garbage", version: "1.0.0" } } });
+    } else if (message.id !== undefined) {
+      // With a variable named, the line opens with its value, where a parser's excerpt quotes a
+      // cut-down piece of it.
+      const echoed = args[0] ? process.env[args[0]] ?? "" : "";
+      process.stdout.write(`${echoed}this is not json for request ${message.id}\n`);
+    }
+    continue;
+  }
+  if (mode === "overflow-init") {
+    send({ jsonrpc: "2.0", id: message.id, result: {
+      protocolVersion: message.params.protocolVersion, capabilities: {},
+      serverInfo: { name: "x".repeat(Number(args[0] ?? 300 * 1024)), version: "1.0.0" },
+    } });
+  } else if (mode === "error-init") {
+    send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: `denied for ${process.env[args[0] ?? ""] ?? "<unset>"}` } });
+  }
+}

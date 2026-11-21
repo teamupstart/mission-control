@@ -83,14 +83,17 @@ export function visibleResidents(
   return out;
 }
 
-/** The first pending review of a session, oldest first: what the item asks. */
-function firstPending(deps: Pick<HomeDispatchDeps, "registry">, sessionId: string | null, task: Task): ReviewItem | undefined {
-  if (!sessionId) return undefined;
-  // Only a review the task could have asked: one created before it started belongs to a task that
-  // held the session earlier (`reviewBelongsTo`), and is not attributed to this one.
+/**
+ * Every pending review of a session that this task could have asked, oldest first. The first is the
+ * item's `pending`; each further one is listed as its own item, so none is left out of `needsYou`.
+ * One created before the task started belongs to a task that held the session earlier
+ * (`reviewBelongsTo`), and is not attributed to this one.
+ */
+function pendingOf(deps: Pick<HomeDispatchDeps, "registry">, sessionId: string | null, task: Task): ReviewItem[] {
+  if (!sessionId) return [];
   return deps.registry.pendingReviews(sessionId)
     .filter((r) => reviewBelongsTo(task, r.createdAt))
-    .sort((a, b) => a.createdAt - b.createdAt)[0];
+    .sort((a, b) => a.createdAt - b.createdAt);
 }
 
 /**
@@ -102,22 +105,35 @@ function runPriority(run: WorkflowRunSummary): number {
   return run.status === "completed" || run.status === "cancelled" || run.status === "failed" ? 0 : 1;
 }
 
-/**
- * The task's most relevant workflow run for each session: a run needing the person beats a running
- * one, which beats an ended one, and among equals the most recently updated wins. A completed run in
- * one repository therefore never hides a blocked run in another.
- */
-function runsBySession(deps: Pick<HomeDispatchDeps, "workflows">): Map<string, WorkflowRunSummary> {
-  const out = new Map<string, WorkflowRunSummary>();
+/** Every workflow run of each session, for a task to pick its own from. */
+function runsBySession(deps: Pick<HomeDispatchDeps, "workflows">): Map<string, WorkflowRunSummary[]> {
+  const out = new Map<string, WorkflowRunSummary[]>();
   for (const summary of deps.workflows?.runs() ?? []) {
     if (!summary.sessionId) continue;
-    const have = out.get(summary.sessionId);
-    const better = !have
-      || runPriority(summary) > runPriority(have)
-      || (runPriority(summary) === runPriority(have) && summary.updatedAt > have.updatedAt);
-    if (better) out.set(summary.sessionId, summary);
+    out.set(summary.sessionId, [...(out.get(summary.sessionId) ?? []), summary]);
   }
   return out;
+}
+
+/**
+ * The run that belongs to this task. A run records its session, not its task, so one that started
+ * before the task did belongs to whichever task held the session earlier and is not shown here. Of
+ * the rest, a run needing the person beats a running one, which beats an ended one, and among equals
+ * the most recently updated wins, so a completed run in one repository never hides a blocked run in
+ * another.
+ */
+function runForTask(task: Task, summaries: readonly WorkflowRunSummary[] | undefined): WorkflowRunSummary | undefined {
+  const taskStart = task.dispatchedAt ?? task.createdAt;
+  let best: WorkflowRunSummary | undefined;
+  for (const summary of summaries ?? []) {
+    // A summary without a start (an older daemon's) cannot be placed, so it is kept, as before.
+    if (summary.startedAt !== undefined && summary.startedAt < taskStart) continue;
+    const better = !best
+      || runPriority(summary) > runPriority(best)
+      || (runPriority(summary) === runPriority(best) && summary.updatedAt > best.updatedAt);
+    if (better) best = summary;
+  }
+  return best;
 }
 
 function blockedReasonOf(run: WorkflowRunSummary): string | null {
@@ -166,7 +182,40 @@ export const UNATTRIBUTED_ITEM_PREFIX = "review:";
  * session after it was asked). It is a waiting item in `needsYou`, marked dashboard-only so the
  * answers route's refusal and the pane say the same thing, and it names no task but the review.
  */
+/**
+ * The pending questions no single task can be named for, as dashboard-only items. Two cases: another
+ * task took over the session after it was asked (`unestablished`), and more than one active task
+ * claims the session (`ambiguous`, which the exclusive session pointer should make impossible, so a
+ * request stranded by it is still reported rather than dropped). Each is shown only where it was
+ * asked, the session's own repository, never the holder's, and only when a home-dispatched task is
+ * involved, so a dashboard task's question is not exposed to a home session. Found in a pass of its
+ * own because the holder may belong to a repository the caller cannot see.
+ */
+export function unattributedItems(
+  deps: Pick<HomeDispatchDeps, "registry">,
+  resolved: ResolvedCaller,
+  /** The request's own origins map when the caller has one already, so it is read once per request. */
+  origins: Map<string, TaskOrigin> = taskOrigins(),
+): HomeDispatchInboxItem[] {
+  const out: HomeDispatchInboxItem[] = [];
+  for (const review of deps.registry.pendingReviews()) {
+    const owner = taskOwningSession(deps, review.sessionId, review.createdAt);
+    if (!owner) continue;
+    const holders = "unestablished" in owner ? [owner.task] : "ambiguous" in owner ? owner.tasks : [];
+    if (holders.length === 0) continue;
+    // The holder that makes it a home-dispatch matter is the one the item is built from, not just the
+    // first of an ambiguous pair, so a dashboard task's details are never what the item shows.
+    const homeHolder = holders.find((t) => origins.get(t.id)?.originSurface != null);
+    if (!homeHolder) continue;
+    const asked = deps.registry.getSession(review.sessionId);
+    if (!resolved.allRepos && !sameRepo(asked?.repoRoot ?? null, resolved.caller.repoRoot)) continue;
+    out.push(unattributedItem(review, homeHolder, asked));
+  }
+  return out;
+}
+
 function unattributedItem(review: ReviewItem, holder: Task, session: Session | undefined): HomeDispatchInboxItem {
+  // Only the review's own words and ids are used: nothing of the task that now holds the session.
   return {
     taskId: `${UNATTRIBUTED_ITEM_PREFIX}${review.id}`,
     title: review.title,
@@ -178,6 +227,27 @@ function unattributedItem(review: ReviewItem, holder: Task, session: Session | u
     agent: session?.agent ?? holder.agent,
     runtime: session?.runtime ?? null,
     pending: { ...pendingFor(review, false), dashboardOnly: true, allowsText: false },
+  };
+}
+
+/**
+ * A further pending request on a task that already has one. It is its own waiting item, named by the
+ * review (`review:{id}`), carrying the task's title, kind and harness, and answerable like the first:
+ * the answers route accepts this id for the task that owns the review.
+ */
+function furtherPendingItem(review: ReviewItem, main: HomeDispatchInboxItem, resident: boolean): HomeDispatchInboxItem {
+  return {
+    taskId: `${UNATTRIBUTED_ITEM_PREFIX}${review.id}`,
+    title: main.title,
+    kind: main.kind,
+    state: "waiting",
+    origin: main.origin,
+    changedAt: review.createdAt,
+    canMessage: main.canMessage,
+    agent: main.agent,
+    runtime: main.runtime,
+    pending: pendingFor(review, resident),
+    ...(main.resident ? { resident: main.resident } : {}),
   };
 }
 
@@ -206,7 +276,6 @@ export function buildInbox(
   const runs = runsBySession(deps);
   const positions = queuePositions(tasks);
   const items: HomeDispatchInboxItem[] = [];
-  const orphaned = new Set<string>();
 
   for (const task of tasks) {
     const origin = origins.get(task.id) ?? NO_ORIGIN;
@@ -220,20 +289,11 @@ export function buildInbox(
     // A review belongs to the one task that owns its session; a task that merely shares the session
     // (an earlier one) never shows the question, and an ambiguous session shows it on neither.
     const owner = task.sessionId ? taskOwningSession(deps, task.sessionId) : undefined;
-    const pending = owner && "task" in owner && owner.task.id === task.id ? firstPending(deps, task.sessionId, task) : undefined;
-    // A question that predates this task's start was asked by whichever task held the session before
-    // it, which the registry no longer records. It is still pending, so it is listed on its own as
-    // something only the dashboard can answer, and attributed to neither task.
-    if (task.sessionId && owner && "task" in owner && owner.task.id === task.id) {
-      for (const review of deps.registry.pendingReviews(task.sessionId)) {
-        if (reviewBelongsTo(task, review.createdAt) || orphaned.has(review.id)) continue;
-        orphaned.add(review.id);
-        items.push(unattributedItem(review, task, session));
-      }
-    }
+    const owned = owner && "task" in owner && owner.task.id === task.id ? pendingOf(deps, task.sessionId, task) : [];
+    const [pending, ...furtherPending] = owned;
     // A resident run is in the inbox only while it has a request; the Residents tab lists the rest.
     if (resident && !pending) continue;
-    const run = task.sessionId ? runs.get(task.sessionId) : undefined;
+    const run = task.sessionId ? runForTask(task, runs.get(task.sessionId)) : undefined;
     const state = inboxStateFor({
       taskStatus: task.status,
       enabled: task.enabled,
@@ -252,7 +312,7 @@ export function buildInbox(
     const subagents = subagentCountsFor(session);
     const pr = prBlock(task, session);
     const shaping = shapingOf(task);
-    items.push({
+    const item: HomeDispatchInboxItem = {
       taskId: task.id,
       title: task.title,
       kind: task.kind,
@@ -271,8 +331,12 @@ export function buildInbox(
       ...(pending ? { pending: pendingFor(pending, resident !== undefined) } : {}),
       ...(resident ? { resident: { runId: resident.run.id, name: resident.name } } : {}),
       ...(shaping ? { shaping } : {}),
-    });
+    };
+    items.push(item);
+    for (const review of furtherPending) items.push(furtherPendingItem(review, item, resident !== undefined));
   }
+
+  items.push(...unattributedItems(deps, resolved, origins));
 
   const needsYou = needsYouOrder(items);
   const counts = Object.fromEntries(INBOX_STATES.map((s) => [s, 0])) as Record<InboxState, number>;

@@ -5134,6 +5134,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 

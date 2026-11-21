@@ -147,6 +147,8 @@ import {
   HOME_DISPATCH_ACTOR_NAMES,
   HOME_DISPATCH_ACTOR_PREFIXES,
   HUMAN_REVIEW_STATUSES,
+  CONVERSATION_QUESTION_RECORDS,
+  isConversationQuestionRecord,
   isConversationResolvedReview,
   isHomeDispatchResolvedReview,
 } from "@shared/review-item.ts";
@@ -170,6 +172,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { isWorkUnitId } from "@shared/work-unit.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
@@ -278,10 +281,13 @@ let db: DatabaseSync | undefined;
 // 39: the asynchronous input inbox (`reviews.wait_mode`, `meanwhile`, `closed_reason`), nullable
 //     with no backfill: every existing row is a question its agent waited for inside the call,
 //     filed no meanwhile line, and was never closed by a merge.
-// 40: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
+// 40: a task's work unit id (`tasks.work_unit_id`, @shared/work-unit.ts) and its index, nullable
+//     with no backfill: an older task gets its id at its next dispatch or assign, and nothing is
+//     inferred for it. Written once, enforced by `upsertTask`.
+// 41: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
 //     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
 //     table, with no backfill: no launch was shaped before they existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 40;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 41;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -491,6 +497,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS tasks (
       id            TEXT PRIMARY KEY,
+      -- The work unit, wu_ and a ULID (@shared/work-unit.ts). Written once. NULL for a resident
+      -- run, and for a task filed before the column until its next dispatch or assign.
+      work_unit_id  TEXT,
       title         TEXT NOT NULL,
       intent        TEXT NOT NULL,
       kind          TEXT NOT NULL,
@@ -3643,6 +3652,7 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   migrateHomeDispatch(d);
+  migrateTaskWorkUnit(d);
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -5335,6 +5345,15 @@ function migrateHomeDispatch(d: DatabaseSync): void {
   `);
 }
 
+/**
+ * Schema 40: a task's work unit id. The column before the index that names it, so an upgraded
+ * database never indexes a column it does not have yet. No backfill (decision D3).
+ */
+function migrateTaskWorkUnit(d: DatabaseSync): void {
+  addColumn(d, "tasks", "work_unit_id", "TEXT");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_work_unit ON tasks(work_unit_id)");
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -5416,6 +5435,11 @@ function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
     mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
     optionId: r.snooze_option_id ?? null,
     remindedAt: r.snooze_reminded_at ?? null,
+    // A recorded mode is what the agent was told. Only a silent message-mode "Keep doing what it
+    // said" snooze leaves it unrecorded (`snoozeReviewRow`); a judgment snooze stored before that
+    // rule did tell its agent, and keeps reading as told. Spread only when false, so every other
+    // row decodes exactly as it always did.
+    ...(r.snooze_mode == null ? { instructed: false } : {}),
   };
 }
 
@@ -5481,6 +5505,17 @@ export function insertReview(r: ReviewItem): void {
  * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
  * time the agent is told what to do meanwhile; a second snooze of a question that came back
  * moves `until` and nothing the agent was told.
+ *
+ * A message-mode question (`wait_mode = 'message'`, the `async-input` flag) is always unheard and
+ * detached, yet snoozing it in `judgment` mode owes the agent nothing: that choice reads "Keep
+ * doing what it said", and the agent was already told to carry on when the question was filed.
+ * Telling it again would interrupt a turn to repeat its own receipt. `option` and `hold` change
+ * what it does, so they are owed exactly as for any other detached question.
+ *
+ * Because that silent snooze tells the agent nothing, it does not use up the first-snooze slot:
+ * `snooze_mode` and `snooze_option_id` stay NULL (and read back as `judgment`), so when the
+ * question comes back and is snoozed again on Hold or a provisional option, that choice is
+ * stored and sent exactly as a first snooze's would be.
  */
 export function snoozeReviewRow(
   id: string,
@@ -5503,10 +5538,15 @@ export function snoozeReviewRow(
               snoozed_at = ?,
               snoozed_until = ?,
               snooze_instruction_owed_at = CASE
-                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL THEN ?
+                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL
+                  AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
                 ELSE snooze_instruction_owed_at END,
-              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
-              snooze_mode = COALESCE(snooze_mode, ?),
+              snooze_option_id = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_option_id END,
+              snooze_mode = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_mode END,
               mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
         WHERE id = ? AND status = 'pending'
         RETURNING *`,
@@ -5515,8 +5555,11 @@ export function snoozeReviewRow(
       snooze.at,
       snooze.until,
       snooze.listening ? 1 : 0,
+      snooze.mode,
       snooze.at,
+      snooze.mode,
       snooze.optionId,
+      snooze.mode,
       snooze.mode,
       snooze.at,
       id,
@@ -5640,6 +5683,16 @@ export function reviewWaitAttached(id: string): boolean {
 /** Quote fixed identifiers from a shared policy as SQL string literals. Never pass input here. */
 function sqlLiterals(values: Iterable<string>): string {
   return [...values].map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+/**
+ * `isConversationQuestionRecord` over a review row, built from `CONVERSATION_QUESTION_RECORDS`, so
+ * the history route admits exactly the questions the dashboard admits live. Exported so a test can
+ * show the two agree over every defined case.
+ */
+export function conversationQuestionRecordSql(): string {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return `(wait_mode IN (${sqlLiterals(waitModes)}) OR closed_reason IN (${sqlLiterals(closedReasons)}))`;
 }
 
 /**
@@ -5884,22 +5937,33 @@ export function loadHumanResolvedReviews(sessionId: string, limit = 500): Review
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
+/**
+ * The conversation replay: every review `loadHumanResolvedReviews` would return for a delegated
+ * session too, plus every question the conversation records for itself whatever became of it
+ * (`isConversationQuestionRecord`): a message-mode question, so its Asked entry and how it ended
+ * (answered, closed by a merge, withdrawn) survive a reload, and a call-mode question a merge
+ * closed. Those extra rows are never evidence of intent, so the evidence read never sees them.
+ */
 export function loadConversationResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
   return loadConversationReviewHistory(sessionId, limit, true);
 }
 
 function loadConversationReviewHistory(sessionId: string, limit: number, includeDelegated: boolean): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
+  // `isConversationQuestionRecord` in SQL, from its one definition. An open or unanswered row has
+  // no `resolved_at`, so both orders read its creation time instead; every answered row orders
+  // exactly as before.
+  const questionRecord = includeDelegated ? ` OR ${conversationQuestionRecordSql()}` : "";
   const rows = openDb()
     .prepare(
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
-            AND status IN (${statuses.map(() => "?").join(", ")})
-          ORDER BY resolved_at DESC, created_at DESC
+            AND (((resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
+            AND status IN (${statuses.map(() => "?").join(", ")}))${questionRecord})
+          ORDER BY COALESCE(resolved_at, created_at) DESC, created_at DESC
           LIMIT ?
-       ) ORDER BY resolved_at ASC, created_at ASC`,
+       ) ORDER BY COALESCE(resolved_at, created_at) ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
   // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
@@ -5907,7 +5971,8 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
   // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
   // conversation replay (`includeDelegated`) never sees them.
   return rows.map(rowToReview).filter((review) =>
-    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
+    isConversationResolvedReview(review)
+    || (includeDelegated ? isConversationQuestionRecord(review) : isHomeDispatchResolvedReview(review)));
 }
 
 /**
@@ -6549,6 +6614,8 @@ export function sessionsBoundToAgents(agentSessionIds: Iterable<string>): Set<st
 interface TaskRow {
   workspace_kind: string | null;
   id: string;
+  /** Optional: a row read before `migrate` added the column has none. */
+  work_unit_id?: string | null;
   title: string;
   intent: string;
   kind: string;
@@ -7003,6 +7070,9 @@ function rowToTask(
 ): Task {
   return {
     id: r.id,
+    // Validated, not cast, like `kind` below: a hand-edited or malformed value reads as no work
+    // unit rather than reaching a consumer that would send it to another service.
+    workUnitId: isWorkUnitId(r.work_unit_id) ? r.work_unit_id : null,
     title: r.title,
     intent: r.intent,
     // Validated, not cast. The column is unconstrained TEXT, so the value is whatever
@@ -7142,7 +7212,7 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
+         id, work_unit_id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
          model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
@@ -7152,8 +7222,11 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         -- Written once. A stored id is never replaced, whatever this copy of the task carries:
+         -- a writer holding a copy read before the id was given must not erase or change it.
+         work_unit_id=COALESCE(tasks.work_unit_id, excluded.work_unit_id),
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
@@ -7189,7 +7262,7 @@ export function upsertTask(t: Task): string[] {
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
-      t.id, t.title, t.intent, t.kind, t.agent, t.priority,
+      t.id, t.workUnitId ?? null, t.title, t.intent, t.kind, t.agent, t.priority,
       // Stored as NULL rather than "[]" when empty, so the column reads the same for a
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
@@ -7262,6 +7335,27 @@ export function upsertTask(t: Task): string[] {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * Give task `taskId` the work unit `candidate` unless it already has one, and return the id it
+ * has afterwards: `candidate` when this write was first, the stored one when another write got
+ * there first, or null when no such task exists. A caller uses the returned value and never its
+ * own candidate, so two operations initializing the same task at once end up with one id.
+ */
+export function claimTaskWorkUnitId(taskId: string, candidate: string): string | null {
+  if (!isWorkUnitId(candidate)) throw new TypeError(`not a work unit id: ${candidate}`);
+  const d = openDb();
+  d.prepare(`UPDATE tasks SET work_unit_id = ? WHERE id = ? AND work_unit_id IS NULL`).run(candidate, taskId);
+  return storedTaskWorkUnitId(taskId);
+}
+
+/** The work unit id stored for `taskId`, or null when it has none or no such task exists. */
+export function storedTaskWorkUnitId(taskId: string): string | null {
+  const row = openDb().prepare(`SELECT work_unit_id FROM tasks WHERE id = ?`).get(taskId) as
+    | { work_unit_id: string | null }
+    | undefined;
+  return isWorkUnitId(row?.work_unit_id) ? row.work_unit_id : null;
 }
 
 /**

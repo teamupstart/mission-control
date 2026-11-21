@@ -8337,6 +8337,102 @@ a.btn {
   color: var(--fg);
   font-weight: 600;
 }
+/* A message-mode question's status line (`async-input`): whether its agent is still working past
+   it, in the working blue, or has stopped on it, in the attention gold. Wraps rather than clips,
+   so a long meanwhile line on a narrow inbox card stays readable in full. */
+.review-wait {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: -4px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-wait-state {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.review-wait-working .review-wait-state {
+  color: var(--working);
+}
+.review-wait-stopped .review-wait-state {
+  color: var(--attention);
+}
+.review-wait-meanwhile {
+  min-width: 0;
+  color: var(--fg);
+}
+.review-wait-tag {
+  color: var(--muted);
+}
+.review-wait-asked {
+  font: 500 11px/1.5 var(--mono);
+  white-space: nowrap;
+}
+/* A filed question in the conversation (`async-input`): the answer card's shape, in the working
+   blue while it is open, quieter once it has ended. Scoped like `.review-snoozed`, because
+   `.review-answer-who` paints the byline gold further down this file. */
+.review-asked {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 94%, var(--working) 6%);
+}
+.review-asked:not(.is-open) {
+  border-left-color: var(--border);
+  background: var(--panel-2);
+}
+.review-asked .review-asked-who {
+  color: var(--working);
+}
+.review-asked:not(.is-open) .review-asked-who {
+  color: var(--muted);
+}
+.review-asked-question {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-asked-meanwhile {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.review-asked-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.review-asked-outcome {
+  font-weight: 600;
+}
+.review-asked.is-open .review-asked-outcome {
+  color: var(--working);
+}
+.review-asked-status::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--muted);
+}
+.review-asked-detail {
+  overflow-wrap: anywhere;
+}
 /* A snoozed question in the conversation: the answer card's shape, in the blue of "not now". */
 .review-snoozed {
   display: flex;
@@ -12643,6 +12739,9 @@ button.dispatch-guided-rung .dispatch-guided-num {
   border-radius: 0 0 8px 8px;
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
+}
+.dispatch-more-body[hidden] {
+  display: none;
 }
 
 /* The task-level scheduling choice belongs with the backlog metadata, but it is not another
@@ -34787,7 +34886,8 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--attention) 13%, transparent);
   color: var(--attention);
 }
-.tile-flag.tf-pending {
+.tile-flag.tf-pending,
+.tile-flag.tf-question {
   border-color: color-mix(in oklab, var(--working) 48%, var(--border));
   background: color-mix(in oklab, var(--working) 12%, transparent);
   color: var(--working);
@@ -42200,3 +42300,17 @@ body.foreman-sidecar-open .modal-backdrop {
 .pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
 .pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
 .pr-check-results li { margin-block: 8px; }
+
+/* Exact pin changes sit inside the backlog field, using the editor's existing controls. */
+.pinned-plan-change {
+  min-inline-size: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pinned-plan-change legend { padding: 0 6px; font-weight: 600; color: var(--muted); }
+.pinned-plan-change .field { margin: 10px 0; }
+.pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.pinned-plan-change p { margin: 10px 0; }

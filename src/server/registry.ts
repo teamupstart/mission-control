@@ -326,6 +326,7 @@ import {
   clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
+  storedTaskWorkUnitId,
   inTransaction,
   upsertUsageCell,
   loadInspectorInspections,
@@ -7964,7 +7965,13 @@ export class Registry extends EventEmitter {
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
     const previous = this.tasks.get(published.id);
-    const task = this.withShaping(this.withProvisioning(published), previous);
+    const workUnitId = this.publishedWorkUnitId(published, previous);
+    // Copied only when it differs, so a caller that wrote a task still holds the object the
+    // board shows. The shaping overlay then carries the in-memory record (see `withShaping`).
+    const task = this.withShaping(
+      this.withProvisioning(workUnitId === published.workUnitId ? published : { ...published, workUnitId }),
+      previous,
+    );
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
     );
@@ -7990,6 +7997,17 @@ export class Registry extends EventEmitter {
     if (isTerminalTask(task.status)) this.clearBlockersForTask(task, previous);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
     if (dependenciesChanged && !deferDependencyCleanup) this.cleanupDependencyProvenance();
+  }
+
+  /**
+   * The work unit id to show for a task just written. The column is written once
+   * (`upsertTask` keeps a stored value), so a writer holding a copy read before the id was given
+   * must not erase it here either: the board would then disagree with the database. A value
+   * already shown wins, and a null is checked against the row.
+   */
+  private publishedWorkUnitId(written: Task, previous: Task | undefined): string | null {
+    if (previous?.workUnitId) return previous.workUnitId;
+    return written.workUnitId ?? storedTaskWorkUnitId(written.id);
   }
 
   /**

@@ -124,7 +124,8 @@ export function registerShapingRoutes(
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
     const { shapers: discovered, folder } = await scanShaperFolder({ config });
-    return c.json({ config: daemonShapingView(config), discovered, folder, references: referenceStatus(config) });
+    // `references` says whether each environment name a shaper uses is set, never a value.
+    return c.json({ config: daemonShapingView(config), discovered, folder, references: referenceStatus(config, discovered) });
   });
 
   app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {

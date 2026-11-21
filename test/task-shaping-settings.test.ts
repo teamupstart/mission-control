@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
+import { z } from "zod";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TaskShapingView } from "../src/web/components/TaskShapingView.tsx";
 import { ShaperReview } from "../src/web/components/TaskShapingDialogs.tsx";
@@ -15,6 +16,7 @@ import {
   SHAPING_LIMITS,
   ShaperSchema,
   ShapingConfigSchema,
+  ShapingIntentSchema,
   shapingViewRevision,
   type ShapingConfigView,
   type ShapingIntent,
@@ -146,9 +148,9 @@ test("a move is an intent naming where the shaper goes, and the panel draws it a
   const config = view({ shapers: [gatherer("a"), gatherer("b"), gatherer("c"), remote], order: ["found-on-disk", "acme-guidance"] });
   // Each is bound to the revision of the definition shown, as a switch is.
   const { revisions } = config;
-  assert.deepEqual(moveIntent(config, "b", -1), { kind: "move", id: "b", after: null, expect: revisions.b }, "up to first");
-  assert.deepEqual(moveIntent(config, "a", 1), { kind: "move", id: "a", after: "b", expect: revisions.a }, "down past its neighbour");
-  assert.deepEqual(moveIntent(config, "c", -1), { kind: "move", id: "c", after: "a", expect: revisions.c });
+  assert.deepEqual(moveIntent(config, "b", -1), { kind: "place", id: "b", after: null, expect: revisions.b }, "up to first");
+  assert.deepEqual(moveIntent(config, "a", 1), { kind: "place", id: "a", after: "b", expect: revisions.a }, "down past its neighbour");
+  assert.deepEqual(moveIntent(config, "c", -1), { kind: "place", id: "c", after: "a", expect: revisions.c });
   assert.equal(moveIntent(config, "a", -1), null, "already first in its stage");
   assert.equal(moveIntent(config, "c", 1), null, "already last");
   assert.equal(moveIntent(config, "acme-guidance", 1), null, "alone in its stage");
@@ -662,4 +664,19 @@ test("a row with no revision offers no move, as a daemon older than the dashboar
   }
   // With revisions, the same moves are offered.
   assert.notEqual(moveIntent(view({ shapers: [gatherer("a"), gatherer("b")] }), "b", -1), null);
+});
+
+test("the dashboard places shapers with a kind of its own, so a daemon without it refuses rather than strips the revision", () => {
+  const shown = view({ shapers: [gatherer("a"), gatherer("b")] });
+  const placement = moveIntent(shown, "b", -1)!;
+  assert.equal(placement.kind, "place");
+  // A placement is never sent without the revision it is bound to.
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "place", id: "b", after: null }).success, false);
+  // The kind older daemons know drops a revision it is handed, which is why one is never sent on it:
+  // that daemon would apply the move by id alone.
+  const stripped = ShapingIntentSchema.safeParse({ kind: "move", id: "b", after: null, expect: placement.expect });
+  assert.equal(stripped.success && "expect" in stripped.data, false);
+  // An intent schema without a kind refuses it outright, before anything is applied.
+  const older = ShapingIntentSchema.options.filter((option) => option.shape.kind.value !== "place");
+  assert.equal(z.discriminatedUnion("kind", older as never).safeParse(placement).success, false);
 });

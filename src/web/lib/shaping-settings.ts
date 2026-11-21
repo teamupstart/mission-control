@@ -130,7 +130,7 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
  * intent changes nothing, a shaper the list does not draw keeps its slot, and the daemon, which
  * knows the folder's shapers, decides what may make room when the order is full.
  */
-export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "move" }> | null {
+export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "place" }> | null {
   const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === id));
   if (!group) return null;
   const rows = group.rows.map((row) => row.id);
@@ -142,7 +142,7 @@ export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1):
   // A row with no revision, as from a daemon older than this dashboard, offers no move at all.
   const expect = shapingViewRevision(view, id);
   if (expect === null) return null;
-  return { kind: "move", id, after: to === 0 ? null : others[to - 1]!, expect };
+  return { kind: "place", id, after: to === 0 ? null : others[to - 1]!, expect };
 }
 
 /**
@@ -183,7 +183,8 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       return { ...view, overrides };
     case "reorder":
       return { ...view, order: [...new Set(intent.order)] };
-    case "move": {
+    case "move":
+    case "place": {
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
       if (!group) return view;
       // No pruning here: only the daemon knows which stored ids still name a shaper. A move it
@@ -214,7 +215,7 @@ function withoutRevision(view: ShapingConfigView, id: string): Partial<Pick<Shap
  * edit; its answer is still awaited, and shown when it comes.
  */
 export function shapingIntentSuperseded(view: ShapingConfigView, intent: ShapingIntent): boolean {
-  return (intent.kind === "enable" || intent.kind === "remove" || intent.kind === "move") && intent.expect !== undefined
+  return (intent.kind === "enable" || intent.kind === "remove" || intent.kind === "place") && intent.expect !== undefined
     && shapingViewRevision(view, intent.id) !== intent.expect;
 }
 
@@ -234,7 +235,7 @@ export function shapingStageLockKey(stage: string): string {
 export function shapingLockKeys(intent: ShapingIntent, key: string, view: ShapingConfigView | null = null): string[] {
   const keys = new Set([key]);
   if (intent.kind === "upsert") keys.add(`row:${(intent.shaper as { id?: unknown }).id}`);
-  if (intent.kind === "move") {
+  if (intent.kind === "move" || intent.kind === "place") {
     const entry = view?.shapers.find((candidate) => candidate.id === intent.id && !isUnsupportedShaper(candidate));
     if (entry && !isUnsupportedShaper(entry)) keys.add(shapingStageLockKey(entry.stage));
   }
@@ -263,10 +264,11 @@ export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingI
       // definition it was sent for; an enable never changes a revision, so a stored one keeps it.
       return view.overrides[intent.id] === intent.enabled
         && (intent.expect === undefined || shapingViewRevision(view, intent.id) === intent.expect);
-    case "move": {
-      // The shaper sits right after the named neighbour, or first, among its stage's rows, and it
-      // is still the definition the move was sent for: a replacement placed there is not its outcome.
-      if (intent.expect !== undefined && shapingViewRevision(view, intent.id) !== intent.expect) return false;
+    case "move":
+    case "place": {
+      // The shaper sits right after the named neighbour, or first, among its stage's rows, and for
+      // a placement it is still the definition sent for: a replacement placed there is not its outcome.
+      if (intent.kind === "place" && shapingViewRevision(view, intent.id) !== intent.expect) return false;
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
       if (!group) return false;
       const rows = group.rows.map((row) => row.id);
@@ -306,7 +308,8 @@ export function describeShapingIntent(intent: ShapingIntent): string {
     case "upsert": return `importing ${intent.shaper.id}`;
     case "remove": return `removing ${intent.id}`;
     case "enable": return `switching ${intent.id} ${intent.enabled ? "on" : "off"}`;
-    case "move": return `moving ${intent.id}`;
+    case "move":
+    case "place": return `moving ${intent.id}`;
     case "reorder": return "reordering the shapers";
     case "settings": return "saving the caller identity and budgets";
   }

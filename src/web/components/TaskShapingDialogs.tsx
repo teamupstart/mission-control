@@ -122,11 +122,16 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
   const generation = useRef(0);
   /** Numbers each Save in this dialog. */
   const submissions = useRef(0);
+  /** The draft generation this dialog last saved, or null before its first save. */
+  const lastSaved = useRef<number | null>(null);
   const reading = text.trim() === "" ? null : readShaperManifest(text);
   // A write on this shaper's row still awaits its answer: importing it now could land first and be
   // undone by that write, or the other way round, so it waits.
   const rowLocked = reading?.ok === true && (locked?.has(`row:${reading.shaper.id}`) ?? false);
   const draftId = reading?.ok ? reading.shaper.id : null;
+  // The outcome shown is this draft's only while the draft is the one this dialog last saved,
+  // unchanged since: an edit that keeps the id, or a reopened dialog, shows another draft.
+  const outcomeIsDraft = saved && lastSaved.current === generation.current && subject === draftId;
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
   const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
   const edit = (value: string): void => {
@@ -211,7 +216,7 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
             )}
           </>
         )}
-        {(saved || fresh) && error && subject !== null && subject !== draftId && (
+        {(saved || fresh) && error && subject !== null && !outcomeIsDraft && (
           // Not this draft's outcome: the draft was changed, or the dialog reopened, after that save.
           <p className="shaping-note">
             The save of <code>{subject}</code> answered:
@@ -235,6 +240,7 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
               // Each submission is numbered, so only the latest one's success may close it: the
               // same manifest saved twice shares a draft generation.
               const submitted = generation.current;
+              lastSaved.current = submitted;
               const submission = ++submissions.current;
               void onSave(reading.shaper).then((close) => {
                 if (close && generation.current === submitted && submissions.current === submission) onClose();

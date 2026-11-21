@@ -1204,13 +1204,20 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
    * the order as it is stored when the intent arrives, so moves from two windows compose.
-   * `expect`, as for a removal or a switch, binds it to the definition the sender showed: once
-   * that is replaced, even into another stage, the move is refused rather than placing the
-   * replacement.
+   * Unbound: kept for a client that sends no revision.
+   */
+  z.object({ kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable() }),
+  /**
+   * A move bound to the definition the sender showed, which the dashboard sends: once that is
+   * replaced, even into another stage, it is refused rather than placing the replacement. A kind
+   * of its own, never an `expect` added to `move`: a daemon older than this kind strips a field
+   * it does not know and would apply the move by id alone, but refuses a kind it does not know,
+   * so a placement in flight across a rollback is refused there instead of reordering a
+   * replacement the operator never saw.
    */
   z.object({
-    kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
-    expect: ShapingRevisionSchema.optional(),
+    kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
+    expect: ShapingRevisionSchema,
   }),
   z.object({
     kind: z.literal("settings"),
@@ -1313,7 +1320,8 @@ export function applyShapingIntent(
       }
       break;
     }
-    case "move": {
+    case "move":
+    case "place": {
       const known = classifyShapers(config, definitions).flatMap((entry, position) => entry.kind === "known"
         ? [{ id: entry.shaper.id, stage: entry.shaper.stage, position }] : []);
       const moved = known.find((entry) => entry.id === intent.id);
@@ -1321,7 +1329,7 @@ export function applyShapingIntent(
         return refuse(index(intent.id) === -1 ? "unknown_shaper" : "unsupported_shaper",
           `No registered shaper this build can run has the id "${intent.id}".`);
       }
-      if (stale(intent.id, intent.expect)) return changed(intent.id);
+      if (intent.kind === "place" && stale(intent.id, intent.expect)) return changed(intent.id);
       const rows = known.filter((entry) => entry.stage === moved.stage).sort(compareShapingOrder(config.order, definitions.stages))
         .map((entry) => entry.id);
       if (intent.after !== null && (intent.after === intent.id || !rows.includes(intent.after))) {

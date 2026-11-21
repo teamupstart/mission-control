@@ -1843,3 +1843,32 @@ test("a held move never places the shaper again once it is reimported into anoth
   await expect(row(page, "Moved Y").getByRole("alert")).toContainText("changed in another window");
   await page.unroute("**/api/shaping");
 });
+
+test("a late import outcome beside an edited draft of the same shaper names the save it answers", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const reached = gate();
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await answer.opened;
+    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: "Refused after an edit." }) });
+  });
+  const shaper = commandShaper("edited-notes", "Edited notes");
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  await manifest.fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // A peer's identical import frees the dialog; the operator edits the manifest, keeping its id.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(manifest).toBeEnabled();
+  await manifest.fill(JSON.stringify({ ...shaper, label: "Edited notes, changed" }));
+  answer.open();
+  await expect(dialog.getByRole("alert")).toHaveText("Refused after an edit.");
+  // Not the edited draft's outcome: it says which save it answers.
+  await expect(dialog.getByText("The save of edited-notes answered:")).toBeVisible();
+  await page.unroute("**/api/shaping");
+});

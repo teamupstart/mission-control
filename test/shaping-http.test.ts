@@ -1109,3 +1109,28 @@ test("each published config carries the revisions of its own commit, though a li
     stopSecond();
   }
 });
+
+test("a placement is bound to the revision shown, and a kind this daemon does not know is refused whole", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("place-a", "gather", "ok") })).status, 200);
+  assert.equal((await put({ kind: "upsert", shaper: fixture("place-b", "gather", "ok") })).status, 200);
+  const read = async () => ((await (await get()).json()) as { config: { revisions: Record<string, string>; order: string[] } }).config;
+  const shown = (await read()).revisions["place-b"]!;
+  // Without its revision a placement is not even read.
+  assert.equal((await put({ kind: "place", id: "place-b", after: null })).status, 400);
+  // Once the definition is replaced, the placement is refused and nothing moves.
+  assert.equal((await put({ kind: "upsert", shaper: fixture("place-b", "gather", "degraded") })).status, 200);
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const stale = await put({ kind: "place", id: "place-b", after: null, expect: shown });
+  assert.equal(stale.status, 409);
+  assert.equal(((await stale.json()) as { error: string }).error, "shaper_changed");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before);
+  // Bound to the current definition, it places it.
+  const current = (await read()).revisions["place-b"]!;
+  assert.equal((await put({ kind: "place", id: "place-b", after: null, expect: current })).status, 200);
+  assert.deepEqual((await read()).order.filter((id) => id.startsWith("place-")).slice(0, 1), ["place-b"]);
+  // What an older daemon does with this kind, this one does with any it does not know: it is
+  // refused before anything is applied.
+  const unknown = await put({ kind: "a-kind-from-a-later-build", id: "place-a" });
+  assert.equal(unknown.status, 400);
+  assert.deepEqual((await read()).order.filter((id) => id.startsWith("place-")).slice(0, 1), ["place-b"]);
+});

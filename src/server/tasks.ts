@@ -51,7 +51,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage, canRename, innermostPane } from "@shared/pane.ts";
+import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
@@ -5311,6 +5311,8 @@ export class TaskManager {
       task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
     const shapedFrom = inputs(ready);
     const writePane = innermostPane(live);
+    // The pane the paste budget was checked for; a section is only sent into that same pane.
+    const shapedPane = paneToken(live);
     // The baseline is read before the step's own clock starts, so it gets a short bound of its
     // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
     // A turn the operator starts and finishes while shapers run leaves the session idle again, so
@@ -5378,6 +5380,8 @@ export class TaskManager {
         const changed = !receiving ? "went away"
           // The context, its baseline and the checkout checks were all taken for this directory.
           : receiving.cwd !== live.cwd ? "moved to another checkout"
+          // A section sized for one pane is not pasted into another (an AppleScript pane has its own limit).
+          : shaping.section && paneToken(receiving) !== shapedPane ? "moved to another pane"
           : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
           : leftIdle ? "took a turn"
           : receiving.pendingReviews > 0 ? "got a review waiting on you"

@@ -2150,3 +2150,34 @@ test("a session that reports another checkout while the handover is shaped is no
     setShaping(false);
   }
 });
+
+test("a session whose pane changes while the handover is shaped is not pasted a section sized for the first", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-pane-", {
+      terminals: [mkMuxHandle({ session: "before", windowName: "agent" })],
+    });
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    // From the moment shapers run, the same session reports a different pane.
+    let moved = false;
+    const read = r.getSession.bind(r);
+    r.getSession = (id: string) => {
+      const session = read(id);
+      return session && moved && id === sessionId
+        ? { ...session, terminals: [mkMuxHandle({ session: "after", windowName: "agent", paneId: "%77" })] }
+        : session;
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      shapeTask: async (input) => { moved = true; return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input); },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /moved to another pane while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

@@ -336,7 +336,10 @@ export class ReviewManager {
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
       ...(options.waitMode === "message" && options.snoozable === true && kind === "input" ? { waitMode: "message" as const } : {}),
-      ...(options.meanwhile && kind === "input" ? { meanwhile: options.meanwhile } : {}),
+      // Only a filed question keeps it: a question its agent waits on inside the call must not
+      // tell the operator the agent is carrying on.
+      ...(options.meanwhile && options.waitMode === "message" && options.snoozable === true && kind === "input"
+        ? { meanwhile: options.meanwhile } : {}),
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
@@ -364,7 +367,7 @@ export class ReviewManager {
    */
   private attachCall(review: ReviewItem): ReviewItem {
     if (!markReviewWaitAttached(review.id)) return review;
-    const { waitMode: _filed, ...call } = review;
+    const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
     this.registry.upsertReview(call);
     return call;
   }

@@ -2058,7 +2058,38 @@ test("a checkout that cannot be read again before delivery sends the original pr
       const record = currentShaping(r.getTask("t1")!);
       assert.equal(record?.state, "degraded");
       assert.equal(record?.entries, 0);
-      assert.match(record?.limit?.reason ?? "", /checkout could not be read again before delivery/);
+      assert.match(record?.limit?.reason ?? "", /checkout could not be read before or after shaping/);
+    } finally {
+      if (existsSync(hidden)) renameSync(hidden, join(clone, ".git"));
+    }
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout unreadable before shaping but readable after it sends the original prompt, not a refusal", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unreadable-first-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = "";
+    const hidden = `${clone}-git-hidden-first`;
+    try {
+      const res = await tasks.assign("t1", sessionId, {
+        // The checkout is unreadable when the baseline is read, after the reset, and readable again
+        // once shapers run.
+        reset: async () => { renameSync(join(clone, ".git"), hidden); return cleanReset(); },
+        shapeTask: async (input) => {
+          renameSync(hidden, join(clone, ".git"));
+          return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+        },
+        paneReady,
+        inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      assert.doesNotMatch(typed, /## Task context/);
+      assert.equal(r.getTask("t1")?.status, "running");
+      assert.match(currentShaping(r.getTask("t1")!)?.limit?.reason ?? "", /checkout could not be read before or after shaping/);
     } finally {
       if (existsSync(hidden)) renameSync(hidden, join(clone, ".git"));
     }

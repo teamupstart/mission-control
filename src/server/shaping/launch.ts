@@ -281,7 +281,7 @@ export function launchFellBack(shaping: LaunchShaping): LaunchShaping {
 
 /** Why a handover sent its original prompt: its checkout could not be read again before delivery. */
 export const CHECKOUT_UNVERIFIED_REASON =
-  "the checkout could not be read again before delivery, so the original prompt was sent without the context";
+  "the checkout could not be read before or after shaping, so the original prompt was sent without the context";
 
 /**
  * The record for a handover that dropped its section because the checkout the context was chosen

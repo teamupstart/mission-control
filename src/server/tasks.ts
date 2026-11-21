@@ -5395,9 +5395,10 @@ export class TaskManager {
       // write itself, which cannot run Git.
       if (carriesContext && live.cwd) {
         const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
-        if (now.baseSha === null) {
-          // Unreadable is not changed: the agent is already reset, so the original prompt goes ahead
-          // without context that could not be confirmed to fit this checkout.
+        if (now.baseSha === null || checkout.baseSha === null) {
+          // Unreadable is not changed: with either read unknown nothing can be compared, and the agent
+          // is already reset, so the original prompt goes ahead without context that could not be
+          // confirmed to fit this checkout. Only two known states that differ refuse.
           shaping = deliveredWithoutContext(shaping, CHECKOUT_UNVERIFIED_REASON);
         } else if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
           return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };

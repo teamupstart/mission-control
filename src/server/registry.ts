@@ -315,6 +315,7 @@ import {
   upsertSessionAwaiting,
   deleteSessionAwaiting,
   moveSessionAwaiting,
+  nudgeContested,
   type PendingNudge,
   type SessionAwaitingRecord,
   type StandingInstructionsSnapshot,
@@ -1085,8 +1086,8 @@ export class Registry extends EventEmitter {
   /**
    * The person deliveries (`notePersonDelivery`) written into each waiting session recently,
    * by wait key, so an automated delivery of the same words claimed just after one is stored as
-   * contested too. In memory only: the window is a couple of minutes, and what outlives it (a
-   * nudge already contested) is stored on the wait itself.
+   * contested by it too. In memory only: the window is a couple of minutes, and what outlives it
+   * (which sends contest which delivery) is stored on the wait itself.
    */
   private awaitingPersonSends = new Map<string, Array<{ id: string; at: number; key: string }>>();
   /**
@@ -9517,7 +9518,8 @@ export class Registry extends EventEmitter {
         // session's own: the wake. Without hooks no turn reports one, and the oldest delivery
         // still outstanding is the best reading of whose turn it was.
         // A contested oldest delivery is not a nudge either (see `useUpAwaitingNudge`).
-        if (s.hooksSeen || record.pendingNudges[0]?.contested) {
+        const oldest = record.pendingNudges[0];
+        if (s.hooksSeen || (oldest && nudgeContested(oldest))) {
           this.endAwaitingFromTurn(s, key, "wake", now);
           return;
         }
@@ -9595,7 +9597,7 @@ export class Registry extends EventEmitter {
     patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn">>,
   ): boolean {
     const i = record.pendingNudges.findIndex((nudge) => prompt.includes(nudge.key));
-    if (i < 0 || record.pendingNudges[i]!.contested) return false;
+    if (i < 0 || nudgeContested(record.pendingNudges[i]!)) return false;
     const next = {
       ...record,
       ...patch,
@@ -9660,10 +9662,10 @@ export class Registry extends EventEmitter {
       pendingNudges = [...record.pendingNudges.slice(0, i), ...record.pendingNudges.slice(i + 1)];
     } else {
       // A person sent these exact words moments ago and their turn may not have started yet:
-      // this delivery is contested from the start (see `notePersonDelivery`).
-      const contested = this.recentPersonSends(key, at).some((send) => send.key === textKey);
+      // this delivery is contested by those sends from the start (see `notePersonDelivery`).
+      const by = this.recentPersonSends(key, at).filter((send) => send.key === textKey).map((send) => send.id);
       // Bounded like the claims behind it: far more than ever overlap, never unbounded.
-      pendingNudges = [...record.pendingNudges, { at, key: textKey, ...(contested ? { contested: true as const } : {}) }]
+      pendingNudges = [...record.pendingNudges, { at, key: textKey, ...(by.length > 0 ? { contestedBy: by } : {}) }]
         .slice(-32);
     }
     const next = { ...record, pendingNudges };
@@ -9679,13 +9681,15 @@ export class Registry extends EventEmitter {
    * A person's turn is always the wake, and it needs no help being one when its prompt is its
    * own. It does when the words are byte-for-byte those of an automated delivery still pending
    * on the wait: the prompt then matches that nudge, and the person's turn would be used up as
-   * Mission Control's. So every pending delivery of the same words is marked contested, and
-   * stored that way, which `useUpAwaitingNudge` reads as the wake. The send is also remembered
-   * for a couple of minutes, for an automated delivery of the same words claimed after it.
+   * Mission Control's. So every pending delivery of the same words records this send as
+   * contesting it (`contestedBy`), stored on the wait, which `useUpAwaitingNudge` reads as the
+   * wake. The send is also remembered for a couple of minutes, for an automated delivery of the
+   * same words claimed after it.
    *
-   * A send taken back leaves no person's turn to come, so its contest is lifted, unless another
-   * person's send of the same words still stands: otherwise the automated delivery's own turn
-   * would read as the wake and end a wait whose process may still be running.
+   * A send taken back leaves no person's turn to come, so it withdraws its own claim and only
+   * its own: another send of the same words, even one made before a daemon restart, still
+   * contests the delivery. Otherwise the automated delivery's own turn would read as the wake
+   * and end a wait whose process may still be running, or a person's turn as the nudge.
    */
   notePersonDelivery(delivery: { sessionId: string; id: string; at: number; key: string; released: boolean }): void {
     const s = this.sessions.get(delivery.sessionId);
@@ -9694,29 +9698,28 @@ export class Registry extends EventEmitter {
     const record = this.awaitings.get(key);
     if (!record) return;
     const textKey = delivery.key;
+    let pendingNudges: PendingNudge[];
     if (delivery.released) {
       const sends = (this.awaitingPersonSends.get(key) ?? []).filter((send) => send.id !== delivery.id);
       if (sends.length > 0) this.awaitingPersonSends.set(key, sends);
       else this.awaitingPersonSends.delete(key);
-      if (sends.some((send) => send.key === textKey)) return;
-      if (!record.pendingNudges.some((nudge) => nudge.key === textKey && nudge.contested)) return;
-      const next = {
-        ...record,
-        pendingNudges: record.pendingNudges.map((nudge) => nudge.key === textKey ? { at: nudge.at, key: nudge.key } : nudge),
-      };
-      upsertSessionAwaiting(next);
-      this.awaitings.set(key, next);
-      return;
+      if (!record.pendingNudges.some((nudge) => nudge.contestedBy?.includes(delivery.id))) return;
+      pendingNudges = record.pendingNudges.map((nudge) => {
+        if (!nudge.contestedBy?.includes(delivery.id)) return nudge;
+        const by = nudge.contestedBy.filter((id) => id !== delivery.id);
+        return { at: nudge.at, key: nudge.key, ...(by.length > 0 ? { contestedBy: by } : {}) };
+      });
+    } else {
+      this.awaitingPersonSends.set(
+        key,
+        [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: textKey }].slice(-32),
+      );
+      if (!record.pendingNudges.some((nudge) => nudge.key === textKey)) return;
+      pendingNudges = record.pendingNudges.map((nudge) => nudge.key === textKey
+        ? { ...nudge, contestedBy: [...(nudge.contestedBy ?? []), delivery.id].slice(-8) }
+        : nudge);
     }
-    this.awaitingPersonSends.set(
-      key,
-      [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: textKey }].slice(-32),
-    );
-    if (!record.pendingNudges.some((nudge) => nudge.key === textKey && !nudge.contested)) return;
-    const next = {
-      ...record,
-      pendingNudges: record.pendingNudges.map((nudge) => nudge.key === textKey ? { ...nudge, contested: true as const } : nudge),
-    };
+    const next = { ...record, pendingNudges };
     upsertSessionAwaiting(next);
     this.awaitings.set(key, next);
   }

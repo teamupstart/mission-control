@@ -710,9 +710,9 @@ test("a person's message in the same words as a pending automated delivery is th
     assert.equal(first.reportAwaiting(d.syntheticId, body()).ok, true);
     hook(first, d, "Stop");
     reserveInjection(d.syntheticId, WRAP, "foreman");
-    assert.equal(stored(first, d).pendingNudges[0]?.contested, undefined);
+    assert.equal(stored(first, d).pendingNudges[0]?.contestedBy, undefined);
     notePersonDelivery(d.syntheticId, WRAP);
-    assert.equal(stored(first, d).pendingNudges[0]?.contested, true, "the person's identical words did not contest the nudge");
+    assert.equal(stored(first, d).pendingNudges[0]?.contestedBy?.length, 1, "the person's identical words did not contest the nudge");
   } finally {
     stopFirst();
   }
@@ -734,7 +734,7 @@ test("a person's message in the same words as a pending automated delivery is th
     hook(registry, e, "Stop");
     notePersonDelivery(e.syntheticId, WRAP);
     reserveInjection(e.syntheticId, WRAP, "foreman");
-    assert.equal(stored(registry, e).pendingNudges[0]?.contested, true);
+    assert.equal(stored(registry, e).pendingNudges[0]?.contestedBy?.length, 1);
     hook(registry, e, "UserPromptSubmit", WRAP);
     assert.equal(registry.getAwaiting(e.syntheticId), null);
     assert.equal(clearedEvents(e.syntheticId).at(-1)?.actor, "wake");
@@ -745,7 +745,7 @@ test("a person's message in the same words as a pending automated delivery is th
     hook(registry, f, "Stop");
     reserveInjection(f.syntheticId, WRAP, "foreman");
     notePersonDelivery(f.syntheticId, "Also bump the version, please.");
-    assert.equal(stored(registry, f).pendingNudges[0]?.contested, undefined);
+    assert.equal(stored(registry, f).pendingNudges[0]?.contestedBy, undefined);
     hook(registry, f, "UserPromptSubmit", WRAP);
     assert.ok(registry.getAwaiting(f.syntheticId), "an uncontested nudge's turn read as the wake");
   } finally {
@@ -794,9 +794,9 @@ test("a person's send that never landed lifts its contest, unless another send o
   hook(registry, d, "Stop");
   reserveInjection(d.syntheticId, WRAP, "foreman");
   const failed = notePersonDelivery(d.syntheticId, WRAP);
-  assert.equal(nudgeOf(d)?.contested, true);
+  assert.equal(nudgeOf(d)?.contestedBy?.length, 1);
   withdrawPersonDelivery(failed);
-  assert.equal(nudgeOf(d)?.contested, undefined, "a failed send left its contest standing");
+  assert.equal(nudgeOf(d)?.contestedBy, undefined, "a failed send left its contest standing");
   hook(registry, d, "UserPromptSubmit", WRAP);
   assert.ok(registry.getAwaiting(d.syntheticId), "the automated delivery's own turn read as the wake after the person's send failed");
 
@@ -807,10 +807,48 @@ test("a person's send that never landed lifts its contest, unless another send o
   reserveInjection(e.syntheticId, WRAP, "foreman");
   notePersonDelivery(e.syntheticId, WRAP);
   withdrawPersonDelivery(notePersonDelivery(e.syntheticId, WRAP));
-  assert.equal(nudgeOf(e)?.contested, true, "one failed send lifted the contest another still holds");
+  assert.equal(nudgeOf(e)?.contestedBy?.length, 1, "one failed send lifted the contest another still holds");
   hook(registry, e, "UserPromptSubmit", WRAP);
   assert.equal(registry.getAwaiting(e.syntheticId), null);
   assert.equal(clearedEvents(e.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("a duplicate person's send that fails after a restart withdraws only its own claim on the contest", () => {
+  // The first send's claim is stored on the wait; the daemon restarts while that message is
+  // still on its way. A second send of the same words then fails, and taking it back must not
+  // erase the first one's claim, or the first person's turn would be used up as the nudge.
+  const WRAP = "Please wrap up and open the pull request.";
+  const stored = (registry: RegistryT, d: DiscoveredSession) =>
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!;
+  const first = new Registry();
+  const stopFirst = wireNudges(first);
+  let d: DiscoveredSession;
+  let firstSend: string;
+  try {
+    d = working(first);
+    assert.equal(first.reportAwaiting(d.syntheticId, body()).ok, true);
+    hook(first, d, "Stop");
+    reserveInjection(d.syntheticId, WRAP, "foreman");
+    firstSend = notePersonDelivery(d.syntheticId, WRAP).id;
+    assert.deepEqual(stored(first, d).pendingNudges[0]?.contestedBy, [firstSend]);
+  } finally {
+    stopFirst();
+  }
+  forgetInjections();
+  const second = new Registry();
+  const stopSecond = wireNudges(second);
+  try {
+    second.applyDiscovery([d]);
+    hook(second, d, "Stop");
+    const failed = notePersonDelivery(d.syntheticId, WRAP);
+    withdrawPersonDelivery(failed);
+    assert.deepEqual(stored(second, d).pendingNudges[0]?.contestedBy, [firstSend], "the failed send erased the first send's stored claim");
+    hook(second, d, "UserPromptSubmit", WRAP);
+    assert.equal(second.getAwaiting(d.syntheticId), null, "the first person's turn was used up as Mission Control's nudge");
+    assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+  } finally {
+    stopSecond();
+  }
 });
 
 test("a note-key rotation carries the wait to the new key, as it carries a blocker", () => {

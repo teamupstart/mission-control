@@ -12724,10 +12724,17 @@ export interface PendingNudge {
   /** `injectionFingerprint` of the delivered text, matched against the turn's prompt. */
   key: string;
   /**
-   * A person also sent these exact words while this delivery was pending, so the turn whose
-   * prompt matches cannot be told apart from theirs and is read as the wake. Absent otherwise.
+   * The ids of the person sends (`notePersonDelivery`) in exactly these words made while this
+   * delivery was pending. While any stands, the turn whose prompt matches cannot be told apart
+   * from that person's and is read as the wake. Stored per send, so a send taken back after a
+   * restart removes only its own claim. Absent when uncontested.
    */
-  contested?: true;
+  contestedBy?: string[];
+}
+
+/** Whether a person's send of the same words still contests this delivery. */
+export function nudgeContested(nudge: PendingNudge): boolean {
+  return (nudge.contestedBy?.length ?? 0) > 0;
 }
 
 /** A stored `pending_nudges` array, or empty for NULL or anything that is not one. */
@@ -12740,7 +12747,10 @@ function parsePendingNudges(raw: string | null): PendingNudge[] {
       typeof n === "object" && n !== null
       && typeof (n as PendingNudge).at === "number" && Number.isFinite((n as PendingNudge).at)
       && typeof (n as PendingNudge).key === "string")
-      .map((n) => ({ at: n.at, key: n.key, ...(n.contested === true ? { contested: true as const } : {}) }));
+      .map((n) => {
+        const by = Array.isArray(n.contestedBy) ? n.contestedBy.filter((id): id is string => typeof id === "string") : [];
+        return { at: n.at, key: n.key, ...(by.length > 0 ? { contestedBy: by } : {}) };
+      });
   } catch {
     return [];
   }

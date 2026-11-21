@@ -2355,6 +2355,28 @@ The desktop app must own its daemon: if it reused a standalone daemon, stop that
 reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
 forged browser headers.
 
+#### When a session asks for control
+
+With the **Session control requests** preview on (Settings > Feature flags, off by default), a
+session that needs this grant can ask for it with the `request_session_control` tool, giving a
+reason. The ask appears as a **Permission** card at the top of that session's Conversation tab,
+showing the session's name and its reason verbatim, with **Decline** and **Accept**.
+
+- **Accept** gives the session exactly the grant the menu above gives, through the same real
+  desktop click. A scripted click, a browser dashboard, an agent, Foreman or another session
+  cannot accept it, and the browser shows Accept disabled. The ask is not a review, so it never
+  appears among the session's reviews and no review answer can approve it.
+- **Decline** works anywhere and grants nothing. The agent is told not to ask again unless you
+  tell it to.
+- Turning control on from the menu also answers a pending ask.
+
+The tool blocks until you decide and then returns `granted`, `declined`, or why the ask ended
+without a decision. An ask lasts as long as the conversation that raised it: a reset,
+replacement conversation, different task, the session ending or a daemon restart withdraws the
+card, and so does turning the preview off. A session that already holds the grant is answered
+at once, and a repeated call rejoins its one pending ask without changing the reason you are
+reading.
+
 The session uses two Mission Control tools:
 
 - `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`

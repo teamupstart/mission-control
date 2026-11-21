@@ -67,9 +67,10 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagsConfigSchema.safeParse({ overrides: { ["a".repeat(64)]: true } }).success, true);
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
-test("shipped registry is empty, data-only, and disjoint from append-only tombstones", () => {
+test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "RETIRED_FEATURE_FLAG_IDS"]);
-  assert.deepEqual(registry.FEATURE_FLAGS, []);
+  // A new user-facing feature lands here as `preview` and stays off until the operator opts in.
+  assert.deepEqual(registry.FEATURE_FLAGS.map((flag) => [flag.id, flag.stage]), [["session-control-requests", "preview"]]);
   assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);

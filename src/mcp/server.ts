@@ -6,7 +6,10 @@ import {
   type ResidentInstructionOutcome,
 } from "@shared/resident-instructions.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import {
+  DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SESSION_CONTROL_REQUEST_REASON_MAX, SessionControlReadSchema,
+  SessionControlRequestSchema, type SessionControlRequestResult,
+} from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -359,6 +362,80 @@ server.registerTool(
   async (args) => {
     const res = await http("/mcp/session-control/act", "POST", args, true);
     return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
+
+/** What the agent reads once its ask settles. Only `granted` means it holds the grant. */
+function sessionControlRequestText(result: SessionControlRequestResult): { text: string; isError: boolean } {
+  switch (result.status) {
+    case "granted":
+      return { isError: false, text: "Granted: the operator allowed this session to control other sessions. Use read_sessions " +
+        "to inspect other live sessions and control_session to act on them. The grant ends when the operator revokes it, " +
+        "when this conversation is reset or replaced, or when Mission Control restarts." };
+    case "declined":
+      return { isError: false, text: "Declined: the operator chose not to let this session control other sessions. Do not " +
+        "ask again unless the operator tells you to. Carry on without it, and say what you could not do." };
+    case "expired":
+      return { isError: true, text: `Not granted: the request ended without a decision because ${result.detail ?? "it expired"}. ` +
+        "Nothing was granted." };
+    case "pending":
+      return { isError: true, text: "The request is still waiting on the operator." };
+  }
+}
+
+server.registerTool(
+  "request_session_control",
+  {
+    title: "Ask the operator to let this session control other sessions",
+    description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
+      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
+      "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
+      "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +
+      "already holds the grant, it returns at once. If declined, do not ask again unless the operator tells you to.",
+    inputSchema: {
+      reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX)
+        .describe("Why this session needs to control other sessions: which sessions, and what you will do. Shown to the operator verbatim."),
+    },
+  },
+  async ({ reason }, extra) => {
+    const beat = heartbeat(extra);
+    try {
+      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true);
+      if (raised.status === 404) {
+        return textResult("Not asked: session control requests are turned off in Mission Control (Settings > Feature " +
+          "flags). Nothing was shown to the operator. If you need this, ask them with request_input to turn on " +
+          "Control other sessions from this session's toolbar.", true);
+      }
+      if (!raised.ok) return textResult(`Not asked: ${await raised.text()}`, true);
+      let result = (await raised.json()) as SessionControlRequestResult;
+      // Best-effort: the session's status line says what it is waiting on.
+      if (result.status === "pending") {
+        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" })
+          .catch(() => {});
+      }
+      while (result.status === "pending") {
+        if (extra.signal.aborted) throw new Error("the client cancelled this request");
+        const res = await http(`/mcp/session-control/requests/${encodeURIComponent(result.id)}/wait`, "GET", undefined, true, extra.signal);
+        // The daemon no longer recognises this conversation as the one that asked.
+        if (res.status === 403) {
+          result = { id: result.id, status: "expired", detail: "this conversation changed before the operator answered" };
+          break;
+        }
+        // The preview was switched off between rounds; that withdrew the card as well.
+        if (res.status === 404 && ((await res.clone().json().catch(() => null)) as { feature?: string } | null)?.feature) {
+          result = { id: result.id, status: "expired", detail: "session control requests were turned off in Settings > Feature flags" };
+          break;
+        }
+        if (!res.ok) return textResult(`Could not wait on the request: ${await res.text()}`, true);
+        result = (await res.json()) as SessionControlRequestResult;
+        beat();
+      }
+      const answer = sessionControlRequestText(result);
+      return textResult(answer.text, answer.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
   },
 );
 

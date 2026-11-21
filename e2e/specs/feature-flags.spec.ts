@@ -2,11 +2,13 @@ import { mkdirSync } from "node:fs";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-test("empty panel, live master, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
+test("shipped flag row, live master and flag, reload, search and alpha link", async ({ dashboard: page, context, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const tabs = await page.getByRole("tab").allTextContents();
   expect(tabs.findIndex(text => text.includes("Feature flags"))).toBe(tabs.findIndex(text => text.includes("Setup")) + 1);
-  await expect(page.getByText("No preview features right now. New ones appear here.")).toBeVisible();
+  // The shipped registry's first preview flag, off until the operator opts in.
+  const requests = page.getByRole("button", { name: /^Session control requests:/ });
+  await expect(requests).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
@@ -21,13 +23,22 @@ test("empty panel, live master, reload, search and alpha link", async ({ dashboa
   await expect(master).toBeChecked();
   await master.uncheck();
   await expect(peerMaster).not.toBeChecked();
+  // One flag's own click reaches the other window live, without a reload.
+  let peerNavigations = 0;
+  peer.on("framenavigated", frame => { if (frame === peer.mainFrame()) peerNavigations++; });
+  const peerRequests = peer.getByRole("button", { name: /^Session control requests:/ });
+  await requests.click();
+  await expect(peerRequests).toHaveAttribute("aria-pressed", "true");
+  await requests.click();
+  await expect(peerRequests).toHaveAttribute("aria-pressed", "false");
+  expect(peerNavigations).toBe(0);
   await page.getByRole("button", { name: "Search everything" }).click();
   await page.getByRole("combobox", { name: "Search everything" }).fill("Enable all feature flags");
   await page.getByRole("option", { name: /Enable all feature flags, setting/ }).click();
   await expect(page.locator('[data-anchor="feature-flags/enable-all"]')).toHaveClass(/settings-flash/);
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(artifactsDir("feature-flags"), { recursive: true });
-    await page.screenshot({ path: `${artifactsDir("feature-flags")}empty.png` });
+    await page.screenshot({ path: `${artifactsDir("feature-flags")}shipped.png` });
   }
   // The alpha control belongs to the desktop bridge, not to the daemon.
   await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {

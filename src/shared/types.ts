@@ -609,6 +609,15 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/** A session's pending ask for Control other sessions, as the dashboard card draws it. */
+export interface SessionControlRequestView {
+  id: string;
+  /** The agent's own words for why it needs the grant. Untrusted text, shown verbatim. */
+  reason: string;
+  /** Epoch ms. */
+  requestedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -653,6 +662,14 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
+   * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
+   * registry from `SessionControlRequests`, like `sessionControlEnabled`. It grants nothing:
+   * only the operator's trusted desktop click on the card it draws does, through the same
+   * private authorization as the session control menu. Optional so an older snapshot parses.
+   */
+  sessionControlRequest?: SessionControlRequestView | null;
   /**
    * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
    *

@@ -1,4 +1,6 @@
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
+import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
+import { useFeatureFlag } from "../../useFeatureFlag.ts";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
@@ -220,6 +222,7 @@ export function ConsoleDetail({
   onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
+  const controlRequests = useFeatureFlag("session-control-requests");
   useEffect(() => {
     return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab === "scouts" ? "archives" : tab);
   }, [session.id, tab]);
@@ -922,6 +925,10 @@ export function ConsoleDetail({
                 cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
+            {/* The session's own ask for Control other sessions: answered before reading on,
+                like the menu above. Capped and scrolled like the blocker band below its
+                reason (`.detail-conv > .session-control-request`). */}
+            {controlRequests && <SessionControlRequestCard session={session} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}

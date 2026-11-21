@@ -1,6 +1,7 @@
 # Feature flags
 
-The flag core stores one set of operator choices for this machine. The registry ships empty.
+The flag core stores one set of operator choices for this machine. The registry ships one
+preview flag, `session-control-requests` (see [Sessions](sessions.md)).
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -8,7 +9,7 @@ Settings > Feature flags controls these choices. The ai-conductor integration sw
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
 searchable list; filter by name, description, keyword or id. Every click applies immediately
 in every open window, with no Save button or restart. A refused write rolls back and shows an
-inline error. The shipped registry is empty, so the panel initially shows its empty state.
+inline error. With no flags declared, the panel shows its empty state.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them

@@ -3,57 +3,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "playwright";
 import { buildSync } from "esbuild";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Session } from "../../src/shared/types.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { argvValue, recordsIn } from "../fixtures/records.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
-
-async function api(daemon: DaemonHandle, path: string, body?: unknown, method = "POST") {
-  const response = await fetch(`${daemon.baseURL}${path}`, {
-    method: body === undefined ? "GET" : method,
-    headers: { "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  expect(response.ok, `${path}: ${response.status}`).toBe(true);
-  return response.json();
-}
-
-async function dispatch(daemon: DaemonHandle, name: string): Promise<Session> {
-  const before: Session[] = await api(daemon, "/api/sessions");
-  await api(daemon, "/api/tasks", { repoRoot: daemon.repo, intent: `write a haiku about ${name}`, title: name, kind: "ship", agent: "claude", workflowId: null });
-  let session: Session | undefined;
-  await expect.poll(async () => {
-    const all: Session[] = await api(daemon, "/api/sessions");
-    session = all.find((s) => !before.some((previous) => previous.id === s.id) && s.agentSessionId && s.state === "idle");
-    return !!session;
-  }).toBe(true);
-  await api(daemon, `/api/sessions/${encodeURIComponent(session!.id)}/rename`, { name });
-  return session!;
-}
-
-/** Use the actual MCP descriptor the fake agent received, including its private locator. */
-async function connect(daemon: DaemonHandle, session: Session): Promise<Client> {
-  let descriptor: { command: string; args: string[]; env: Record<string, string> } | undefined;
-  await expect.poll(() => {
-    const records = recordsIn<{ cwd: string; argv: string[] }>(join(daemon.recordDir, "claude"));
-    for (const record of records.filter((r) => r.cwd === session.cwd)) {
-      const raw = argvValue(record.argv, "--mcp-config");
-      if (raw) descriptor = JSON.parse(raw).mcpServers?.["mission-control"];
-      if (descriptor) break;
-    }
-    return !!descriptor;
-  }).toBe(true);
-  const client = new Client({ name: "session-control-e2e", version: "1" });
-  await client.connect(new StdioClientTransport({
-    command: descriptor!.command, args: descriptor!.args,
-    cwd: session.cwd!, env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...descriptor!.env },
-    stderr: "pipe",
-  }));
-  return client;
-}
+import { api, connect, dispatch } from "../fixtures/session-control.ts";
 
 test("standalone browser and headerless local HTTP cannot grant session control", async ({ dashboard, daemon }) => {
   const controller = await dispatch(daemon, "Browser controller");

@@ -153,12 +153,13 @@ as task creation, dispatch and deletion, without a **Control other sessions** gr
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the
 current daemon run. Its identity includes the process, native conversation id, working
-directory, work episode and task. Exactly two things create a grant, and both are a trusted
-click in the desktop dashboard: the session's own control menu, and the **Launch** click for a
-resident profile whose pinned revision turns **Control other sessions** on (see
+directory, work episode and task. Exactly three things create a grant, and each is a trusted
+click in the desktop dashboard: the session's own control menu, **Accept** on the session's own
+ask for control (see [Session control requests](#session-control-requests)), and the **Launch**
+click for a resident profile whose pinned revision turns **Control other sessions** on (see
 [Resident launch grants](#resident-launch-grants)). Dispatch defaults, a launch from any other
-surface and session-control tools cannot create one. Resetting or replacing that identity
-revokes it.
+surface and session-control tools cannot create one; a tool can only ask. Resetting or
+replacing that identity revokes it.
 
 The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
@@ -182,6 +183,33 @@ the shared machine token and signed agent credentials cannot create a grant.
 The standalone browser dashboard cannot change this setting. A desktop app that adopted
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
+
+### Session control requests
+
+Behind the `session-control-requests` preview flag, `request_session_control` lets a session ask
+for its own grant. Asking and accepting are separate authorities:
+
+- **The ask.** `POST /mcp/session-control/requests` requires the machine token and the signed
+  Registry session credential, so the asker is always the verified caller and never a body id.
+  It records one pending ask per session, bound to the same identity the grant binds, and draws
+  it on that session. It grants nothing, and a long-poll route answers only the session that
+  asked.
+- **Why it is not a review.** A review settles through `POST /api/reviews/:id/resolve`, which any
+  loopback caller can reach with a body-asserted `by: "human"`, and which Foreman and a session
+  holding the grant (`control_session` `resolve_review`) also use. An ask settled there would let
+  one agent grant itself or another agent authority, so an ask has no review, no review id and
+  no action in `control_session`.
+- **The accept.** The card's **Accept** arms the private trusted click exactly as the menu does,
+  for that session and `enabled: true`, and sends the existing grant with the ask's id as
+  `controlRequestId`. The grant route refuses an ask the session no longer holds before it
+  consumes the click, and checks it again after, so a stale card cannot grant a conversation
+  that never asked. Every refusal above applies unchanged. The ask settles `granted` only by
+  observing the grant, whichever surface applied it.
+- **The decline.** Declining only removes an ask, so like a revoke it needs no click, but it
+  still refuses tool, agent-credential and agent-actor callers.
+
+An ask expires when its conversation changes, its session ends, the daemon restarts or the
+flag turns off. The limit stated below applies to it unchanged.
 
 ### Resident launch grants
 

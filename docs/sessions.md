@@ -1075,15 +1075,31 @@ Expected output:
 ```
 Wired Mission Control hooks into /Users/you/.claude/settings.json
   events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd, SubagentStart
-  script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
+  shim:   /Users/you/.mission-control/bin/harness-hook
+  script: /Users/you/workspace/mission-control/hooks/harness-hook.mjs
 ```
 
-This adds one `command` hook per event to `~/.claude/settings.json`, each running
-`hooks/harness-hook.mjs` with the event name. The bridge is fast, writes nothing
-to stdout, swallows every error, and always exits 0, so a hook never blocks or
-fails the agent even when the daemon is down.
+This writes a small shim, `~/.mission-control/bin/harness-hook`, that runs
+`hooks/harness-hook.mjs` with this machine's `node`, and adds one `command` hook per
+event to `~/.claude/settings.json` that runs the shim with the event name:
 
-The paths it bakes are absolute, and chosen to outlive the machine changing under
+```
+[ ! -x "$HOME/.mission-control/bin/harness-hook" ] || "$HOME/.mission-control/bin/harness-hook" Stop
+```
+
+The bridge is fast, writes nothing to stdout, swallows every error, and always exits 0,
+so a hook never blocks or fails the agent even when the daemon is down.
+
+The settings file names no machine-specific path, so it can be shared between machines
+(a dotfiles repo, a symlink into one). Each machine runs the installer for its own shim,
+and the second install finds nothing to change in the shared file. A machine that shares
+the file without running Mission Control has no shim, and the guard makes each hook exit
+0 there. The shim lives under your home directory even when `MISSION_HOME` points
+elsewhere, because the command has to name it by the same path on every machine.
+The desktop app's **Install Claude integrations…** still writes absolute paths, so do not
+use it on a machine whose settings file is shared.
+
+The paths the shim bakes are absolute, and chosen to outlive the machine changing under
 them. The `node` it writes is a stable alias (e.g. `/opt/homebrew/bin/node`) rather
 than the versioned directory `process.execPath` resolves to, which the next
 `brew upgrade node` deletes. And it refuses to run from a checkout inside a
@@ -1118,7 +1134,8 @@ curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
 # "instrumented":true  while the session has fresh hook evidence
 ```
 
-**Uninstall** (removes only our entries, leaves your other hooks intact):
+**Uninstall** (removes only our entries and this machine's shim, leaves your other hooks
+intact):
 
 ```sh
 npm run install-hooks -- --uninstall

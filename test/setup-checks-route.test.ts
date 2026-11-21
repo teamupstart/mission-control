@@ -43,7 +43,7 @@ function deps(
   ready?: boolean,
 ): SetupDeps {
   return {
-    environment: { homeDir: home, readText: async () => ({ ok: false, missing: true, reason: "missing" }), subdirectories: async () => [] },
+    environment: { homeDir: home, readText: async () => ({ ok: false, missing: true, reason: "missing" }), subdirectories: async () => [], isExecutable: async () => true },
     agentBin: (agent) => `/fake/${agent}`,
     installedBackend: async (id) => `/fake/${id}`,
     herdrServer: async () => ({ state: "ready", socket: "/fake/herdr.sock", version: "0.9.0" }),

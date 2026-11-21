@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -165,6 +165,86 @@ test("a hook path that no longer resolves is named at dispatch time, and clears 
   rmSync(livePath(daemon));
   dialog = await openDispatch(dashboard);
   await expect(environmentNote(dialog)).toBeVisible();
+});
+
+/** The shim the repo installer writes, under the daemon's isolated home. */
+function shimPath(daemon: DaemonHandle): string {
+  return join(daemon.home, ".mission-control", "bin", "harness-hook");
+}
+
+/**
+ * Wire every event through the shim, exactly as `npm run install-hooks` does
+ * (`missionHookShimCommand`): the settings file names only `$HOME`, never this machine.
+ */
+function installShimHooks(daemon: DaemonHandle): void {
+  const shim = `"$HOME/.mission-control/bin/harness-hook"`;
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of EVENTS) {
+    const group: Record<string, unknown> = {
+      hooks: [{ type: "command", command: `[ ! -x ${shim} ] || ${shim} ${event}` }],
+    };
+    if (event === "PreToolUse" || event === "PostToolUse") group.matcher = "*";
+    hooks[event] = [group];
+  }
+  mkdirSync(join(daemon.home, ".claude"), { recursive: true });
+  writeFileSync(settingsPath(daemon), JSON.stringify({ hooks }, null, 2));
+}
+
+/** Write the shim pointed at `script`, as `missionHookShimText` does. */
+function writeShim(daemon: DaemonHandle, script: string, mode: number): void {
+  mkdirSync(join(shimPath(daemon), ".."), { recursive: true });
+  writeFileSync(
+    shimPath(daemon),
+    `#!/bin/sh\nexec "/opt/homebrew/bin/node" "${script}" "$@"\n`,
+    { mode },
+  );
+  chmodSync(shimPath(daemon), mode);
+}
+
+/**
+ * A settings file shared between machines runs the shim, and the shim is this machine's.
+ *
+ * Without the shim the command's guard exits 0 before it runs anything, so nothing errors
+ * and nothing reports: the note is the only place the operator learns why. Through the
+ * shim the check still finds a renamed checkout, by reading the path the shim execs.
+ */
+test("a settings file that runs the hook shim is checked through this machine's shim", async ({
+  dashboard,
+  daemon,
+}) => {
+  installShimHooks(daemon);
+
+  // No shim on this machine: every hook exits silently.
+  let dialog = await openDispatch(dashboard);
+  let note = environmentNote(dialog);
+  await expect(note).toBeVisible();
+  await expect(note).toContainText(`hook shim ${shimPath(daemon)}`);
+  await expect(note).toContainText(`${EVENTS.length} hook events`);
+  await expect(note).toContainText("that file is not there");
+  await expect(note).toContainText("npm run install-hooks");
+  await shoot(dashboard, "hook-shim-missing");
+  await closeDispatch(dashboard);
+
+  // A shim that lost its mode is skipped by the same guard.
+  createScript(livePath(daemon));
+  writeShim(daemon, livePath(daemon), 0o644);
+  dialog = await openDispatch(dashboard);
+  await expect(environmentNote(dialog)).toContainText("that file is not executable");
+  await closeDispatch(dashboard);
+
+  // An executable shim aimed at a checkout that was renamed away is the old outage again,
+  // named by the script path inside the shim.
+  writeShim(daemon, stalePath(daemon), 0o755);
+  dialog = await openDispatch(dashboard);
+  note = environmentNote(dialog);
+  await expect(note).toContainText(stalePath(daemon));
+  await expect(note).toContainText("MODULE_NOT_FOUND");
+  await closeDispatch(dashboard);
+
+  // The repaired shim: nothing to say.
+  writeShim(daemon, livePath(daemon), 0o755);
+  dialog = await openDispatch(dashboard);
+  await expect(environmentNote(dialog)).toBeHidden();
 });
 
 /**

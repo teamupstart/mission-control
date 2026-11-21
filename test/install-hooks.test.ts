@@ -4,16 +4,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
-import { claudeHooks } from "../src/server/harness/claude/hooks.ts";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
-const MARKER = "harness-hook.mjs";
+const { claudeHooks, missionHookScriptPath, missionHookShimCommand } = await import(
+  "../src/server/harness/claude/hooks.ts"
+);
+/** What every hook command of ours names now: the shim, never a script. */
+const MARKER = ".mission-control/bin/harness-hook";
 const STATUSLINE_MARKER = "harness-statusline.mjs";
 // Under tsx, because that is the installer's real entry point (`npm run install-hooks`)
 // and it imports the TypeScript reconciler to unwind the skill links. Running it under
@@ -51,6 +56,8 @@ function runInstallerHome(settingsPath: string, homeDir: string, args: string[] 
       CLAUDE_SETTINGS_PATH: settingsPath,
       CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
       MISSION_HOME: homeDir,
+      // The shim lives under the home directory, so the real one must never be reached.
+      HOME: homeDir,
     },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -452,8 +459,12 @@ function fakePoolInstaller(dir: string, marker = "treehouse-state.json"): string
 }
 
 /** Run the fake-pool installer, capturing stderr; throws with status on refusal. */
-function runFromFakePool(settingsPath: string, installer: string, args: string[] = []): string {
-  const home = homeDirFor(settingsPath);
+function runFromFakePool(
+  settingsPath: string,
+  installer: string,
+  args: string[] = [],
+  home: string = homeDirFor(settingsPath),
+): string {
   mkdirSync(home, { recursive: true });
   return execFileSync(process.execPath, ["--preserve-symlinks-main", "--import", "tsx", installer, ...args], {
     env: {
@@ -461,6 +472,7 @@ function runFromFakePool(settingsPath: string, installer: string, args: string[]
       CLAUDE_SETTINGS_PATH: settingsPath,
       CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
       MISSION_HOME: home,
+      HOME: home,
     },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -516,15 +528,121 @@ test("--force overrides the guard, and --uninstall never needs it", () => {
   withTempSettings(USER_SETTINGS, (path) => {
     const installer = fakePoolInstaller(join(path, ".."));
     runFromFakePool(path, installer, ["--force"]);
-    const s = parse(readFileSync(path, "utf8")) as any;
-    const cmds = s.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command));
     assert.ok(
-      cmds.some((c: string) => c.includes(join("pool", "7", "repo"))),
+      readFileSync(join(homeDirFor(path), MARKER), "utf8").includes(join("pool", "7", "repo")),
       "a forced install bakes exactly the pool path it was warned about",
     );
     // Uninstalling FROM the doomed checkout is what someone abandoning it runs; a
     // guard in the way there would strand the hooks it exists to protect.
     runFromFakePool(path, installer, ["--uninstall"]);
     assert.ok(!readFileSync(path, "utf8").includes(MARKER), "uninstall runs unguarded");
+  });
+});
+
+// ---- a settings.json shared between machines ----
+//
+// Operators sync settings.json between machines (a dotfiles repo, a symlink into one). Every
+// machine-specific path therefore lives in the shim under each machine's home, and the file
+// carries only `$HOME`-relative commands, so a second machine's install has nothing to write.
+
+const OLD_ABSOLUTE_COMMAND = '"/usr/local/bin/node" "/old/clone/hooks/harness-hook.mjs" Stop';
+const SETTINGS_WITH_OLD_ABSOLUTE_HOOK = `{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": ${JSON.stringify(OLD_ABSOLUTE_COMMAND)} }] },
+      { "hooks": [{ "type": "command", "command": "my-own-hook" }] }
+    ]
+  }
+}
+`;
+
+test("two machines with different checkouts leave a shared settings.json identical", () => {
+  withTempSettings(SETTINGS_WITH_OLD_ABSOLUTE_HOOK, (path) => {
+    const dir = join(path, "..");
+    const checkout = join(import.meta.dirname, "..");
+    const homeA = join(dir, "machine-a");
+    const homeB = join(dir, "machine-b");
+    mkdirSync(homeA);
+
+    runInstallerHome(path, homeA);
+    const afterA = readFileSync(path, "utf8");
+    assert.ok(!afterA.includes("/old/clone"), "an older absolute entry of ours is replaced, not kept");
+    assert.ok(!afterA.includes(checkout), "no checkout path reaches the shared file");
+    assert.ok(!afterA.includes(process.execPath), "nor a node path");
+    const s = parse(afterA) as any;
+    for (const event of claudeHooks.events) {
+      const cmds = s.hooks[event].flatMap((g: any) => g.hooks.map((h: any) => h.command));
+      assert.ok(cmds.includes(missionHookShimCommand(event)), event);
+    }
+    assert.ok(s.hooks.Stop.some((g: any) => g.hooks[0].command === "my-own-hook"), "the user's hook stays");
+
+    // Machine B: another home, and a checkout at a different path.
+    runFromFakePool(path, fakePoolInstaller(dir), ["--force"], homeB);
+    assert.equal(readFileSync(path, "utf8"), afterA, "the second machine changes nothing in the shared file");
+
+    // Read back the way the hook-script environment check reads them.
+    assert.equal(missionHookScriptPath(readFileSync(join(homeA, MARKER), "utf8")), join(checkout, "hooks", "harness-hook.mjs"));
+    assert.equal(
+      missionHookScriptPath(readFileSync(join(homeB, MARKER), "utf8")),
+      join(dir, "pool", "7", "repo", "hooks", "harness-hook.mjs"),
+    );
+  });
+});
+
+test("the hook command exits 0, silently, on a machine with no shim", () => {
+  const home = mkdtempSync(join(tmpdir(), "mission-no-shim-"));
+  try {
+    for (const event of claudeHooks.events) {
+      const run = spawnSync("sh", ["-c", missionHookShimCommand(event)], {
+        env: { ...process.env, HOME: home },
+        input: "{}",
+        encoding: "utf8",
+      });
+      assert.equal(run.status, 0, event);
+      assert.equal(run.stdout + run.stderr, "", event);
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the installed shim runs the bridge, which posts the event to the daemon", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-shim-run-"));
+  const settingsPath = join(dir, "settings.json");
+  const home = join(dir, "home");
+  mkdirSync(home);
+  writeFileSync(settingsPath, "{}\n");
+  const received: string[] = [];
+  const server = createServer((req, res) => {
+    received.push(req.url ?? "");
+    req.resume();
+    req.on("end", () => res.writeHead(204).end());
+  });
+  try {
+    runInstallerHome(settingsPath, home);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const command = (parse(readFileSync(settingsPath, "utf8")) as any).hooks.Stop[0].hooks[0].command;
+    const child = spawn("sh", ["-c", command], {
+      env: { ...process.env, HOME: home, MISSION_HOME: home, MISSION_PORT: String(port) },
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    child.stdin.end(JSON.stringify({ session_id: "shim-test", hook_event_name: "Stop" }));
+    const status = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    assert.equal(status, 0);
+    assert.deepEqual(received, ["/hooks/Stop"]);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--uninstall removes the shim along with the hooks", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    runInstaller(path);
+    const shim = join(homeDirFor(path), MARKER);
+    assert.ok(existsSync(shim), "install writes the shim");
+    runInstaller(path, ["--uninstall"]);
+    assert.ok(!existsSync(shim), "uninstall removes it");
   });
 });

@@ -267,6 +267,53 @@ export const claudeHooks: HookSpec = {
 // refuses the one cause it can see beforehand (a transient pooled checkout);
 // `src/server/environment/claude-hooks.ts` reports the rest afterwards.
 
+// --- the shim: one hook command for every machine that shares a settings.json ---------
+//
+// Some operators sync `~/.claude/settings.json` between machines (a dotfiles repo, a
+// symlink into one). An absolute `"<node>" "<checkout>/hooks/harness-hook.mjs"` written on
+// one machine then reaches the others, where neither path exists, and every Claude session
+// there fails every event with MODULE_NOT_FOUND. So the repo installer writes the
+// machine-specific paths into a small shim at a fixed spot under the home directory, and
+// settings.json names only that spot, through `$HOME`, which Claude Code's shell expands.
+// The command is byte-identical on every machine, and an install on a second machine finds
+// nothing to change.
+//
+// The `[ ! -x … ] ||` guard is for the machine that shares the file and does not run
+// Mission Control: no shim there, so the command exits 0 and Claude never sees a hook
+// error. Where the shim exists its exit status passes through unchanged.
+
+/** The shim's path relative to the home directory, on every machine. */
+export const MISSION_HOOK_SHIM = ".mission-control/bin/harness-hook";
+
+/** The settings.json command for one event, identical on every machine. */
+export function missionHookShimCommand(event: string): string {
+  const shim = `"$HOME/${MISSION_HOOK_SHIM}"`;
+  return `[ ! -x ${shim} ] || ${shim} ${event}`;
+}
+
+/** Whether a settings.json hook command runs the shim rather than naming a script itself. */
+export function isMissionHookShimCommand(command: string): boolean {
+  return command.replace(/\\/g, "/").includes(MISSION_HOOK_SHIM);
+}
+
+/**
+ * The shim's text: this machine's node and checkout, which settings.json never names.
+ *
+ * Written here, beside `missionHookScriptPath`, because that is what reads it back: the
+ * hook-script environment check finds a moved checkout by parsing the quoted absolute
+ * script path out of the `exec` line. An exec line that parser cannot read would silence
+ * that check, so the two change together.
+ */
+export function missionHookShimText(nodeBin: string, scriptPath: string): string {
+  return [
+    "#!/bin/sh",
+    "# Mission Control's Claude Code hook bridge for this machine, written by",
+    "# `npm run install-hooks`. Re-run that to update it; never edit it by hand.",
+    `exec "${nodeBin}" "${scriptPath}" "$@"`,
+    "",
+  ].join("\n");
+}
+
 /**
  * Every script an installer of ours can write, by the tail of its path.
  *
@@ -278,7 +325,7 @@ export const claudeHooks: HookSpec = {
  * regex accepted either separator, so a backslash-separated command was reportable and not
  * strippable.
  */
-export const MISSION_HOOK_SCRIPTS = ["harness-hook.mjs", "satellites/hook.mjs"] as const;
+export const MISSION_HOOK_SCRIPTS = ["harness-hook.mjs", "satellites/hook.mjs", MISSION_HOOK_SHIM] as const;
 
 /** Either path separator, so a hand-copied Windows-style path is still recognised. */
 const SEP = "[\\\\/]";
@@ -315,6 +362,9 @@ export function isMissionHookCommand(command: string): boolean {
 
 /**
  * The script path inside one of our hook commands, or null when it cannot be read exactly.
+ *
+ * The shim command names no script and answers null; `isMissionHookShimCommand` covers it,
+ * and the shim's own text, `missionHookShimText`, answers here.
  *
  * The commands we write are `"<node>" "<script>" <Event>`, optionally preceded by
  * `ELECTRON_RUN_AS_NODE=1`, so the script is a quoted argument - quoted precisely because

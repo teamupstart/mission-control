@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Idempotently wire the Mission Control hook into Claude Code's settings.json.
 //
-// Adds one command hook per event that runs harness-hook.mjs. Re-running updates
-// the path in place (matched by `isMissionHookCommand`, which recognises the packaged
-// app's satellite as well as this script) without touching any of the user's other
-// hooks. `--uninstall` removes only our entries.
+// Adds one command hook per event that runs ~/.mission-control/bin/harness-hook, a shim
+// this script writes, which runs harness-hook.mjs. settings.json names the shim through
+// `$HOME` and nothing else, so the file stays valid when it is shared between machines;
+// see `missionHookShimCommand`. Re-running replaces any older entry of ours (matched by
+// `isMissionHookCommand`, which recognises the packaged app's satellite and the absolute
+// commands this script used to write) without touching any of the user's other hooks.
+// `--uninstall` removes only our entries, and the shim.
 //
-// The paths it bakes are absolute and must outlive the install: the node binary is
+// The paths the shim bakes are absolute and must outlive the install: the node binary is
 // a stable PATH alias rather than the versioned dir `process.execPath` resolves to,
 // and an install from any transient pooled checkout is refused outright
 // (`--force` overrides). Both preflights live in install-checks.mjs, with the
@@ -31,7 +34,7 @@
 // nothing needs to change, the file isn't rewritten at all. This is opt-in: the
 // user runs `npm run install-hooks`. It never runs itself.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +56,13 @@ import { BASE_URL, ensureToken } from "../src/shared/harness-runtime.mjs";
 // added to one and not the other was a session state that worked from a checkout and
 // not from the .app. Imported from the spec directly rather than through
 // `harness/index.ts` to keep the daemon out of the Electron bundle; see that file.
-import { claudeHooks, isMissionHookCommand } from "../src/server/harness/claude/hooks.ts";
+import {
+  claudeHooks,
+  isMissionHookCommand,
+  MISSION_HOOK_SHIM,
+  missionHookShimCommand,
+  missionHookShimText,
+} from "../src/server/harness/claude/hooks.ts";
 /** Marker identifying our statusLine wrapper command in settings.json. */
 const STATUSLINE_MARKER = "harness-statusline.mjs";
 const EVENTS = claudeHooks.events;
@@ -91,9 +100,9 @@ const doTelemetry = process.argv.includes("--telemetry");
  */
 const TELEMETRY_INTERVAL_MS = 15000;
 
-function command(event) {
-  return `"${nodeBin}" "${scriptPath}" ${event}`;
-}
+// Under the home directory, not `stateDir()`: settings.json has to name it by one path on
+// every machine, and `MISSION_HOME` may differ between them.
+const shimPath = join(homedir(), MISSION_HOOK_SHIM);
 
 /** Our statusLine wrapper command (delegates to the user's real status line). */
 function statuslineCommand() {
@@ -118,8 +127,8 @@ if (!uninstall && !force) {
         `  pool:     ${transient.root}`,
         `  detected: ${transient.reason}`,
         ``,
-        `Pool slots are reclaimed; when this one goes, every hook baked into`,
-        `~/.claude/settings.json points at a script that no longer exists, and every`,
+        `Pool slots are reclaimed; when this one goes, the hook shim at`,
+        `~/${MISSION_HOOK_SHIM} points at a script that no longer exists, and every`,
         `Claude session on the machine fails each event with MODULE_NOT_FOUND.`,
         ``,
         `Run the installer from a durable clone instead:`,
@@ -137,7 +146,7 @@ const statuslineInnerPath = join(stateDir(), "statusline-inner");
 
 /** Our hook group for an event, matcher-first so re-runs are byte-stable. */
 function ourGroup(event) {
-  const group = { hooks: [{ type: "command", command: command(event) }] };
+  const group = { hooks: [{ type: "command", command: missionHookShimCommand(event) }] };
   return MATCHER_EVENTS.has(event) ? { matcher: "*", ...group } : group;
 }
 
@@ -300,6 +309,30 @@ function reportSkills() {
 // --- write only if something changed ----------------------------------------
 const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp", "server.mjs");
 
+// The shim first, so the hooks never name one this machine lacks. Uninstall removes it:
+// another machine sharing settings.json may still carry the commands, and with no shim
+// they exit 0 here rather than run a checkout that is being abandoned.
+let shimChanged = false;
+if (uninstall) {
+  shimChanged = existsSync(shimPath);
+  rmSync(shimPath, { force: true });
+} else {
+  const shim = missionHookShimText(nodeBin, scriptPath);
+  let current = null;
+  try {
+    current = readFileSync(shimPath, "utf8");
+  } catch {
+    current = null;
+  }
+  if (current !== shim) {
+    mkdirSync(dirname(shimPath), { recursive: true });
+    writeFileSync(shimPath, shim);
+    shimChanged = true;
+  }
+  // Every run, not only on a write: a shim that lost its mode is skipped by the guard.
+  chmodSync(shimPath, 0o755);
+}
+
 const hooksChanged = text !== original;
 if (hooksChanged) {
   mkdirSync(dirname(settingsPath), { recursive: true });
@@ -350,7 +383,7 @@ function reportTelemetry() {
   }
 }
 
-if (!hooksChanged && telemetryAction === "unchanged") {
+if (!hooksChanged && !shimChanged && telemetryAction === "unchanged") {
   console.log(
     uninstall
       ? `No Mission Control hooks found in ${settingsPath} - nothing to remove.`
@@ -377,6 +410,7 @@ if (uninstall) {
 } else {
   console.log(`Wired Mission Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
   console.log(`  events: ${EVENTS.join(", ")}`);
+  console.log(`  shim:   ${shimPath}`);
   console.log(`  script: ${scriptPath}`);
   if (statuslineAction === "wrapped" || statuslineAction === "updated") {
     console.log(`  status line wrapped to report model / thinking level / context %`);

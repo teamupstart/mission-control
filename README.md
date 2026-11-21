@@ -65,8 +65,8 @@ Codex SDK sessions show background child agents from their native thread-tree fr
 children still running after the parent finishes. See [harness behavior](docs/harnesses-and-terminals.md#codex-sdk-background-sub-agents).
 
 The [asynchronous input preview](docs/sessions.md#asking-without-stopping) lets agents keep
-working while questions wait in your inbox. Answers carry their original context and arrive
-together; agents can list and withdraw questions within a ten-question limit.
+working while questions wait in your inbox. Answers carry their original context, and consecutive
+queued answers can arrive together. Agents can list and withdraw questions within a ten-question limit.
 
 Prefer one page? The
 [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)

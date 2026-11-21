@@ -38,6 +38,17 @@ for (const shape of ["open-ended", "answered", "dismissed", "chat"] as const) {
   });
 }
 
+test("self-contained answer explains when no meanwhile plan was supplied", () => {
+  const review = question("no-meanwhile");
+  delete review.meanwhile;
+
+  const text = asyncInputAnswer(review, 61000);
+  assert.ok(text.includes("You said you would do meanwhile: No meanwhile plan was supplied."));
+  assert.ok(text.includes("What should we call the new setting?"));
+  assert.ok(text.includes("The current label is provisional."));
+  assert.ok(text.includes("Use Archive"));
+});
+
 for (const count of [2, 5]) test(`${count} answers coalesce durably, without duplicate replay or a reset escalation clock`, () => {
   const key = `batch-${count}`;
   const reviews = Array.from({ length: count }, (_, n) => question(`${key}-${n}`));

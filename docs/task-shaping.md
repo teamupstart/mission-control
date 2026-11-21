@@ -317,8 +317,10 @@ before the body limit, so such a request is refused as forbidden whatever its si
   the restarted daemon no longer knows what came after it. The window's id and its last sequence
   are kept in the tab's session storage, and each sequence is grounded in the clock and never
   lower than the last, so reloading the tab keeps its order: a write sent before the reload and
-  delayed past it is refused once one sent after it has applied. A write without the header, from
-  any other client, is not ordered.
+  delayed past it is refused once one sent after it has applied. A duplicated tab copies that
+  storage, so a tab that loads asks the other open tabs whether its identity is in use and takes a
+  new one when it is; a reloaded tab hears no answer and keeps its own. A write without the header,
+  from any other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
@@ -400,7 +402,9 @@ the switch was sent for, so a peer replacing the shaper and switching the replac
 is never taken for it, nor drawn on it: while a switch or removal waits for its answer, a
 replacement written meanwhile is shown as stored. Such a frame also releases the panel at once for the next
 edit, since the old request can no longer reach what is stored; its answer is still shown when it
-arrives. An outcome shown above the list, for a shaper no longer listed or for the
+arrives. An import answered before the frame that carries its new revision, as an identical
+reimport can be, leaves its row's switch, removal, moves and dry run unavailable until the view
+shows that revision, since any of them would name the old one and be refused. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears

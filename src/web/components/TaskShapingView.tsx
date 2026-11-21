@@ -39,6 +39,7 @@ export function TaskShapingView({
   outcomeArrivals = {},
   outcomeSubjects = {},
   locked = NO_LOCKS,
+  awaitingRevision = NO_LOCKS,
   onDismiss,
   ready = true,
   onSet,
@@ -59,6 +60,8 @@ export function TaskShapingView({
   outcomeSubjects?: Record<string, string>;
   /** Controls whose request still awaits its answer: each takes no new write until it arrives. */
   locked?: ReadonlySet<string>;
+  /** Rows whose import was accepted but whose new revision the view does not show yet. */
+  awaitingRevision?: ReadonlySet<string>;
   /** Clears the outcomes shown under one control, for those drawn above the list. */
   onDismiss?: (key: string) => void;
   ready?: boolean;
@@ -132,7 +135,10 @@ export function TaskShapingView({
     const canSwitch = entry.on || entry.problem === null;
     // Without the daemon's revision nothing here can say which definition it acts on: a view from
     // a daemon older than this dashboard carries none, and an import still being drawn has none yet.
-    const unbound = entry.revision === null;
+    // An import of it was accepted, but the revision it now has has not reached the view: any
+    // action here would name the old one and be refused, so none is offered until it arrives.
+    const awaitingUpdate = awaitingRevision.has(`row:${entry.id}`);
+    const unbound = entry.revision === null || awaitingUpdate;
     // This row's own write still awaits its answer: none of its writes is offered until it arrives.
     const rowBusy = busy || locked.has(key);
     // A move in this stage still awaits its answer: no other row here moves until it arrives.
@@ -194,7 +200,7 @@ export function TaskShapingView({
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
                 {/* Only with the daemon's revision: an optimistic import has none yet, and a dry run
                     sent without one could run a replacement written before its frame arrives. */}
-                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready || entry.revision === null}
+                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready || unbound}
                   onClick={() => setTesting({ id: entry.id, label: entry.label, revision: entry.revision })}>Dry run</button>
               </Tooltip>
             </>
@@ -215,7 +221,9 @@ export function TaskShapingView({
                 onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
-          <Tooltip label={unbound
+          <Tooltip label={awaitingUpdate
+            ? "Waiting for the update that carries this shaper's import."
+            : unbound
             ? "Unavailable until the daemon says which definition this is. Reload the page."
             : !canSwitch
             ? "This build cannot run it, so it cannot be switched on."

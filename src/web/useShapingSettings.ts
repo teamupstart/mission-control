@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
+import { ShapingIntentSchema, shapingViewRevision, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
+import { nextShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
@@ -41,6 +42,20 @@ export function useShapingSettings(
   // answers. The newest is the control's error; any older ones are shown apart from it, so a
   // refusal that arrives late never replaces the reason the latest action failed.
   const [refusals, setRefusals] = useState<Record<string, Refusal[]>>({});
+  // Shapers an accepted import stored again whose new revision the stream has not yet shown, each
+  // with the revision the view showed before. Until it changes, a switch, removal, move or dry run
+  // of the row would name the old revision and be refused, so the row offers none.
+  const [awaiting, setAwaiting] = useState<Record<string, string | null>>({});
+  const confirmedNow = useRef(confirmed);
+  confirmedNow.current = confirmed;
+  useEffect(() => {
+    setAwaiting((current) => {
+      const ids = Object.keys(current).filter((id) => confirmed !== null && shapingViewRevision(confirmed, id) === current[id]);
+      return ids.length === Object.keys(current).length ? current : Object.fromEntries(ids.map((id) => [id, current[id]!]));
+    });
+  }, [confirmed]);
+  // Claim this tab's write identity as it mounts, before any write needs it.
+  useEffect(() => { shapingWriteIdentity(); }, []);
   // The controls with a request still awaiting its HTTP answer. A frame can free the panel before
   // that answer, but the same control stays locked until it arrives: a second write on it could
   // otherwise be answered first and then undone by the first, as a switch on that the daemon
@@ -59,8 +74,6 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
-  /** This window's id for the daemon's write ordering: a newer write from it is never overwritten. */
-  const windowId = useRef(tabWriteIdentity());
   /** Numbers each outcome in the order it arrived, whichever request it answers. */
   const arrivals = useRef(0);
   /**
@@ -115,6 +128,8 @@ export function useShapingSettings(
       return "refused";
     }
     const request = parsed.data;
+    const importing = request.kind === "upsert" ? (request.shaper as { id: string }).id : null;
+    const before = importing !== null && confirmed !== null ? shapingViewRevision(confirmed, importing) : null;
     lock(keys, true);
     const number = ++sent.current;
     writing.current = request;
@@ -127,7 +142,7 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, nextWriteSequence(), keys, viewInstance(confirmed)) });
+      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(shapingWriteIdentity(), nextShapingWriteSequence(), keys, viewInstance(confirmed)) });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
@@ -157,6 +172,11 @@ export function useShapingSettings(
         } else {
           setPending((current) => current && { ...current, accepted: true });
         }
+      }
+      // An import that stored the same config again can be answered before the frame that carries
+      // its new revision: until the view shows a revision other than the one before, the row waits.
+      if (importing !== null && confirmedNow.current !== null && shapingViewRevision(confirmedNow.current, importing) === before) {
+        setAwaiting((current) => ({ ...current, [importing]: before }));
       }
       // A later write on this control succeeded, so an earlier one's refusal no longer describes
       // it. A refusal of a request sent after this one is still news and stays.
@@ -205,6 +225,8 @@ export function useShapingSettings(
     outcomeSubjects: Object.fromEntries(Object.entries(refusals).flatMap(([key, list]) => list[0]!.subject === null ? [] : [[key, list[0]!.subject]])),
     /** Controls whose request still awaits its HTTP answer: each takes no new write until it arrives. */
     locked,
+    /** Rows an accepted import stored again whose new revision the view does not show yet. */
+    awaitingRevision: new Set(Object.keys(awaiting).map((id) => `row:${id}`)) as ReadonlySet<string>,
     ready: live,
     set,
     /** Clear every outcome shown under one control, as the operator's own dismissal. */
@@ -217,53 +239,6 @@ export type ShapingSettings = ReturnType<typeof useShapingSettings>;
 function viewInstance(view: ShapingConfigView | null): string | undefined {
   const instance: unknown = view?.instance;
   return typeof instance === "string" && /^[A-Za-z0-9-]{1,64}$/.test(instance) ? instance : undefined;
-}
-
-/** A random id, as the write-order header accepts it. */
-function newWindowId(): string {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `w-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
-const TAB_ID_KEY = "mission.shaping.write-identity";
-const TAB_SEQUENCE_KEY = "mission.shaping.write-sequence";
-
-/**
- * This tab's identity for the daemon's write ordering, kept in session storage so a reload keeps
- * it: a write sent before the reload and delayed past it is then ordered against the writes sent
- * after, rather than against a fresh history of its own. Without session storage it lasts one load.
- */
-function tabWriteIdentity(): string {
-  try {
-    const stored = sessionStorage.getItem(TAB_ID_KEY);
-    if (stored && /^[A-Za-z0-9-]{1,64}$/.test(stored)) return stored;
-    const created = newWindowId();
-    sessionStorage.setItem(TAB_ID_KEY, created);
-    return created;
-  } catch {
-    return newWindowId();
-  }
-}
-
-/** The last write sequence this load handed out, for when session storage is unavailable. */
-let lastSequence = 0;
-
-/**
- * The next write sequence for this tab: never lower than one handed out before, across reloads
- * too, and grounded in the clock, so a write sent later always outranks one sent earlier, even
- * from a duplicated tab that shares this identity. Kept in session storage beside the identity.
- */
-function nextWriteSequence(): number {
-  let previous = lastSequence;
-  try {
-    const stored = Number(sessionStorage.getItem(TAB_SEQUENCE_KEY));
-    if (Number.isSafeInteger(stored) && stored > previous) previous = stored;
-  } catch { /* Session storage unavailable: this load's own counter stands. */ }
-  const next = Math.max(Date.now() * 1000, previous + 1);
-  lastSequence = next;
-  try { sessionStorage.setItem(TAB_SEQUENCE_KEY, String(next)); } catch { /* As above. */ }
-  return next;
 }
 
 interface Refusal {

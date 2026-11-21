@@ -1978,3 +1978,84 @@ test("a save delayed past a reload of its tab never overwrites a newer save made
   expect((await shapingConfig(daemon)).caller.user).toBe("after-reload");
   await page.unroute("**/api/shaping");
 });
+
+/**
+ * Holds every shaping_config frame the page's event stream delivers until the spec releases them,
+ * so an HTTP answer can be made to arrive before the frame that carries the same write.
+ */
+async function holdShapingFrames(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: () => void };
+    const queued: Array<() => void> = [];
+    hooks.holdShapingFrames = false;
+    hooks.releaseShapingFrames = () => {
+      hooks.holdShapingFrames = false;
+      for (const deliver of queued.splice(0)) deliver();
+    };
+    class HeldEvents extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = handler && ((event: MessageEvent) => {
+          let shaping = false;
+          try { shaping = (JSON.parse(event.data as string) as { type?: string }).type === "shaping_config"; } catch { /* Not JSON. */ }
+          if (shaping && hooks.holdShapingFrames) queued.push(() => handler(event));
+          else handler(event);
+        });
+      }
+      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
+    }
+    window.EventSource = HeldEvents;
+  });
+  await page.reload();
+}
+
+test("after an identical reimport answers before its frame, the row waits for the revision it now has", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("answered-first", "Answered first");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await holdShapingFrames(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Answered first")).toHaveAccessibleName("Answered first: off");
+  // The import's frame is held, so its answer lands first, while the view still shows the old revision.
+  await page.evaluate(() => { (window as unknown as { holdShapingFrames: boolean }).holdShapingFrames = true; });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  // Anything sent now would name the old revision and be refused, so nothing is offered.
+  await expect(pill(page, "Answered first")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Dry-run Answered first" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Remove Answered first" })).toBeDisabled();
+  // The frame arrives with the new revision, and the switch then goes through.
+  await page.evaluate(() => { (window as unknown as { releaseShapingFrames: () => void }).releaseShapingFrames(); });
+  await expect(pill(page, "Answered first")).toBeEnabled();
+  const switched = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Answered first").click();
+  expect((await switched).status()).toBe(200);
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["answered-first"]).toBe(true);
+});
+
+test("a duplicated tab takes a write identity of its own, and a reloaded tab keeps its identity", async ({ dashboard: page, context, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(panel(page)).toBeVisible();
+  const identity = (target: Page) => target.evaluate(() => sessionStorage.getItem("mission.shaping.write-identity"));
+  await expect.poll(() => identity(page)).toMatch(/^[0-9a-f-]{36}$/);
+  const original = (await identity(page))!;
+  // A duplicate starts with a copy of the tab's session storage, its identity included.
+  const duplicate = await context.newPage();
+  await duplicate.addInitScript((copied) => {
+    if (!sessionStorage.getItem("mission.shaping.write-identity")) sessionStorage.setItem("mission.shaping.write-identity", copied);
+  }, original);
+  await duplicate.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(panel(duplicate)).toBeVisible();
+  // The original tab still holds it, so the duplicate takes one of its own.
+  await expect.poll(() => identity(duplicate)).not.toBe(original);
+  expect(await identity(page)).toBe(original);
+  // A reload is not a duplicate: nothing else holds the identity, so the tab keeps it.
+  await page.reload();
+  await expect(panel(page)).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await identity(page)).toBe(original);
+});

@@ -15,7 +15,7 @@ import { z } from "zod";
 const home = mkdtempSync(join(tmpdir(), "mission-shaping-mcp-"));
 process.env.MISSION_HOME = home;
 const { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingContextSchema } = await import("../src/shared/shaping.ts");
-const { callMcp, foldedContextBlock, mcpToolArguments } = await import("../src/server/shaping/transports/mcp.ts");
+const { callMcp, foldedContextBlock, mcpToolArguments, sseResumeTracker } = await import("../src/server/shaping/transports/mcp.ts");
 const { runScope, shapeTask } = await import("../src/server/shaping/engine.ts");
 const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
 import type { Shaper, ShapingContext, ShapingRequest } from "../src/shared/shaping.ts";
@@ -681,6 +681,57 @@ test("a stdio server that exits while a helper holds its pipes fails at once, an
   } finally {
     if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
   }
+});
+
+test("two stdio messages that each fit the cap pass, wherever the pipe splits them", async () => {
+  // Each about 97% of the 256 KiB cap; one chunk ends the first and starts the second.
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "split-pair" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "split-pair", String(250 * 1024)], env: [] } },
+  }), ctx());
+  assert.equal(reply.kind, "data", JSON.stringify(reply).slice(0, 300));
+  assert.equal(data(reply).guidance[0].id, "pair");
+});
+
+test("a call that times out releases its own HTTP stream, and the connection serves the next call", async () => {
+  let streamClosedAt = 0;
+  const raw = await startRawMcpServer((res, id, index) => {
+    if (index === 0) {
+      // A stream that is opened and never answers or ends.
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(": open\n\n");
+      res.on("close", () => { streamClosedAt = Date.now(); });
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT }));
+  });
+  const scope = runScope();
+  scopes.push(scope);
+  try {
+    const first = await callMcp(request(false), shaper({ type: "http", url: raw.url }), ctx({ scope }, 1_000));
+    assert.equal(first.kind, "timed_out", JSON.stringify(first));
+    const timedOutAt = Date.now();
+    for (let attempt = 0; attempt < 40 && streamClosedAt === 0; attempt++) await new Promise((done) => setTimeout(done, 25));
+    assert.ok(streamClosedAt > 0 && streamClosedAt - timedOutAt < 1_000, "the timed-out call's stream closed with it, before the run ended");
+    const second = await callMcp(request(false), shaper({ type: "http", url: raw.url }), ctx({ scope }));
+    assert.deepEqual(data(second), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(raw.initializes(), 1, "the shared connection stayed up");
+  } finally { scope.close(); await raw.close(); }
+});
+
+test("an SSE line that arrives a character at a time is scanned once, not once per chunk", () => {
+  const tracker = sseResumeTracker();
+  const started = performance.now();
+  tracker.feed("data: ");
+  for (let at = 0; at < 60_000; at++) tracker.feed("x");
+  tracker.feed("\n");
+  assert.ok(performance.now() - started < 300, `took ${Math.round(performance.now() - started)} ms`);
+  assert.equal(tracker.resumable, false, "no event has ended yet");
+  // A CRLF split across chunks still ends one line, not two.
+  tracker.feed("id: e1\r");
+  tracker.feed("\n");
+  assert.equal(tracker.resumable, false, "the LF completes the CRLF that ended the id line; it is not a blank line");
+  tracker.feed("\r\n");
+  assert.equal(tracker.resumable, true, "an event with data and an id, ended by a blank line");
 });
 
 test("a stdio server that closes its stdin and keeps running fails the connection at once", async () => {

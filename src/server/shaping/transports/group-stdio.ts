@@ -1,12 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import type { ReadBuffer } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { EXIT_DRAIN_MS, killGroup, releaseStdio } from "./command.ts";
 
-/** The SDK's own stdio framing: one JSON-RPC message per line, read through a bounded buffer. */
+/** The SDK's own stdio framing: one JSON-RPC message per line. */
 export type StdioFraming = typeof import("@modelcontextprotocol/sdk/shared/stdio.js");
+
+/**
+ * One message on stdout over the cap. The wording is the SDK read buffer's, which the transport's
+ * caller already recognises.
+ */
+export class StdioMessageCapError extends Error {
+  constructor(maxBytes: number) {
+    super(`ReadBuffer exceeded maximum size of ${maxBytes} bytes`);
+    this.name = "StdioMessageCapError";
+  }
+}
 
 /**
  * The server stopped reading its stdin: a write failed because the pipe is closed. No request can
@@ -28,14 +38,18 @@ export interface GroupStdioParams {
   /** The child's whole environment: nothing is added beneath it. */
   env: NodeJS.ProcessEnv;
   cwd: string;
-  /** The largest message the read buffer holds, beyond which it fails with the SDK's overflow error. */
+  /** The largest one message may be, in bytes, its line ending aside. */
   maxBufferSize: number;
 }
 
 /**
- * A client transport for a local MCP server over stdio. It frames messages exactly as the SDK's
- * `StdioClientTransport` does, with the SDK's `ReadBuffer` and `serializeMessage`, and differs in
- * how the server is started and stopped: as a `command` shaper is, in a process group of its own.
+ * A client transport for a local MCP server over stdio. It frames messages as the SDK's
+ * `StdioClientTransport` does, one JSON-RPC message per line, parsed and written with the SDK's
+ * `deserializeMessage` and `serializeMessage`, and differs in how the server is started and
+ * stopped: as a `command` shaper is, in a process group of its own. Its cap applies to each
+ * message, as the cap does over streamable HTTP. The SDK's read buffer caps everything it holds
+ * at once, so a chunk that ends one near-limit message and starts the next failed two valid
+ * messages, or not, depending on where the pipe happened to split them.
  *
  * The SDK's transport spawns the server in the daemon's own group and, on close, signals only that
  * one process, so a helper the server started outlived every dry run that timed out or was
@@ -63,11 +77,11 @@ export class GroupStdioTransport implements Transport {
   /** Settled once the server is gone and its group stopped, by its pipes closing or its drain ending. */
   private finished = false;
   private onFinished: Array<() => void> = [];
-  private readonly readBuffer: ReadBuffer;
+  /** The unfinished line, in the chunks it arrived in, and its length in bytes. */
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
 
-  constructor(private readonly params: GroupStdioParams, private readonly framing: StdioFraming) {
-    this.readBuffer = new framing.ReadBuffer({ maxBufferSize: params.maxBufferSize });
-  }
+  constructor(private readonly params: GroupStdioParams, private readonly framing: StdioFraming) {}
 
   /** The server's pid, which is also its process group's id, once started. */
   get pid(): number | null {
@@ -106,8 +120,7 @@ export class GroupStdioTransport implements Transport {
       child.stdin?.on("error", (error) => this.onerror?.(new StdinClosedError(error)));
       child.stdout?.on("data", (chunk: Buffer) => {
         try {
-          this.readBuffer.append(chunk);
-          this.readMessages();
+          this.readLines(chunk);
         } catch (error) {
           // An overflowing line: the SDK's own error, which the caller recognises.
           this.onerror?.(error as Error);
@@ -125,24 +138,47 @@ export class GroupStdioTransport implements Transport {
     this.finished = true;
     killGroup(child);
     releaseStdio(child);
-    this.readBuffer.clear();
+    this.pending = [];
+    this.pendingBytes = 0;
     for (const done of this.onFinished.splice(0)) done();
     this.onclose?.();
   }
 
-  /** Every complete message in the buffer, in order; a line that is not one is reported and skipped. */
-  private readMessages(): void {
-    for (;;) {
-      let message: JSONRPCMessage | null;
-      try {
-        message = this.readBuffer.readMessage();
-      } catch (error) {
-        this.onerror?.(error as Error);
-        continue;
-      }
-      if (message === null) return;
-      this.onmessage?.(message);
+  /**
+   * Every line `chunk` completes, delivered in order, and the rest kept for the next chunk. Each
+   * message is held to the cap on its own: a complete line over it, or an unfinished one already
+   * past it, fails with `StdioMessageCapError`; two messages that each fit always pass.
+   */
+  private readLines(chunk: Buffer): void {
+    const max = this.params.maxBufferSize;
+    let start = 0;
+    for (let newline = chunk.indexOf(0x0a, start); newline !== -1; newline = chunk.indexOf(0x0a, start)) {
+      const piece = chunk.subarray(start, newline);
+      if (this.pendingBytes + piece.length > max) throw new StdioMessageCapError(max);
+      const line = this.pending.length > 0 ? Buffer.concat([...this.pending, piece]) : piece;
+      this.pending = [];
+      this.pendingBytes = 0;
+      start = newline + 1;
+      this.deliver(line);
+      if (this.finished) return;
     }
+    const rest = chunk.subarray(start);
+    if (rest.length === 0) return;
+    if (this.pendingBytes + rest.length > max) throw new StdioMessageCapError(max);
+    this.pending.push(rest);
+    this.pendingBytes += rest.length;
+  }
+
+  /** One complete line: a message, or, when it is not one, an error reported and the line skipped. */
+  private deliver(line: Buffer): void {
+    let message: JSONRPCMessage;
+    try {
+      message = this.framing.deserializeMessage(line.toString("utf8").replace(/\r$/, ""));
+    } catch (error) {
+      this.onerror?.(error as Error);
+      return;
+    }
+    this.onmessage?.(message);
   }
 
   /**

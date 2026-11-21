@@ -555,6 +555,9 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   and within the call's own budget. A resumed stream is watched for that call too: one that ends
   with neither the reply nor a new event id to resume from, a resume the server answers 405, and
   the client giving up its attempts each fail the call at once rather than at its deadline. A
+  call's own requests, its `tools/call` and any resumed stream for it, are aborted when the call
+  settles, so one that timed out releases its stream at once and the others on the connection
+  go on. A
   shared connection's handshake is bounded by the longest
   step, not by whichever call opened it, and each call waits on it only for its own budget.
 - **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and

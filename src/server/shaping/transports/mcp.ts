@@ -10,7 +10,7 @@ import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
 import { holdsResolvedValue, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
-import { GroupStdioTransport, StdinClosedError } from "./group-stdio.ts";
+import { GroupStdioTransport, StdinClosedError, StdioMessageCapError } from "./group-stdio.ts";
 import {
   credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, stderrMargin, withTimeout,
   type ReceivedValues,
@@ -27,7 +27,7 @@ import type { ShaperOf, ShapingTransport, TransportContext } from "./types.ts";
  * by every call of the run that names the same server, and closed when the run ends.
  *
  * Every message from the server is capped at 256 KiB while it is received, the cap an `http` body
- * has: over stdio through the SDK's read buffer, over streamable HTTP through a `fetch` that stops
+ * has: over stdio one line at a time (`GroupStdioTransport`), over streamable HTTP through a `fetch` that stops
  * reading a body, or one event of an event stream, at the cap. Either way the call answers
  * `failed` at once, naming the cap, the server is closed and nothing over the cap is parsed.
  */
@@ -128,9 +128,9 @@ function capReason(): string {
   return `A message from the MCP server was larger than ${REMOTE_REPLY_BYTES / 1024} KiB, so it was not read and the server was closed.`;
 }
 
-/** Whether an error is the SDK's stdio read buffer passing the cap it was given. */
+/** Whether an error is one stdio message passing the cap the transport was given. */
 function stdioOverflow(error: unknown): boolean {
-  return error instanceof Error && /ReadBuffer exceeded maximum size/.test(error.message);
+  return error instanceof StdioMessageCapError;
 }
 
 /** A lost-connection latch: `fail` settles `lost` once, and every later call sees the first reason. */
@@ -184,7 +184,63 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
  * client sends the request from within it, so the `fetch` that carries it knows which call to
  * tell when its response stream ends early, with nothing added to what the server receives.
  */
-const pendingCall = new AsyncLocalStorage<{ fail(reason: string): void; requestId?: string | number }>();
+const pendingCall = new AsyncLocalStorage<{
+  fail(reason: string): void;
+  requestId?: string | number;
+  /** Aborted once the call has settled, however it settled: its own HTTP streams end with it. */
+  signal?: AbortSignal;
+}>();
+
+/**
+ * Which events of one SSE stream make it resumable, read as the text arrives. The SDK resumes from
+ * the id of an event its parser dispatched: one ended by a blank line, with a data line, whose own
+ * `id` is not empty. Only newly arrived text is scanned for line endings, and an unfinished line is
+ * kept in pieces until its ending arrives, so a long line delivered in small chunks is examined
+ * once per character rather than once per chunk.
+ */
+export function sseResumeTracker(): { readonly resumable: boolean; feed(text: string): void } {
+  let pieces: string[] = [];
+  // The previous text ended on a CR: an LF that opens the next completes that CRLF.
+  let skipLf = false;
+  let resumable = false;
+  let eventId: string | undefined;
+  let eventHasData = false;
+  const line = (text: string) => {
+    if (text === "") {
+      if (eventHasData && eventId) resumable = true;
+      eventId = undefined;
+      eventHasData = false;
+      return;
+    }
+    const colon = text.indexOf(":");
+    const field = colon === -1 ? text : text.slice(0, colon);
+    const value = colon === -1 ? "" : text.slice(text[colon + 1] === " " ? colon + 2 : colon + 1);
+    if (field === "data") eventHasData = true;
+    else if (field === "id") eventId = value.includes("\u0000") ? undefined : value;
+  };
+  return {
+    get resumable() { return resumable; },
+    feed(chunk: string): void {
+      let text = chunk;
+      if (skipLf && text.length > 0) {
+        if (text.startsWith("\n")) text = text.slice(1);
+        skipLf = false;
+      }
+      if (text.length === 0) return;
+      skipLf = text.endsWith("\r");
+      const ending = /\r\n|\r|\n/g;
+      let start = 0;
+      for (let match = ending.exec(text); match; match = ending.exec(text)) {
+        const rest = text.slice(start, match.index);
+        line(pieces.length > 0 ? pieces.join("") + rest : rest);
+        pieces = [];
+        start = match.index + match[0].length;
+        if (resumable) return;
+      }
+      if (start < text.length) pieces.push(text.slice(start));
+    },
+  };
+}
 
 /**
  * A request, `initialize` or `tools/call`, answered `202 Accepted`. That status carries no body and
@@ -249,8 +305,17 @@ type ReplyTracker = ReturnType<typeof replyTracker>;
 function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInterrupted: () => void): FetchLike {
   return async (input, init) => {
     const call = pendingCall.getStore();
-    const response = await base(input, init);
     const request = requestOf(init?.body);
+    // A resumed stream: the GET the SDK sends with the last event id it saw, to resume a call's
+    // POST stream. It has no body naming its request, so the request is the call's, from its context.
+    const resuming = request === null && call?.requestId !== undefined && (init?.method ?? "GET").toUpperCase() === "GET"
+      && new Headers(init?.headers).has("last-event-id");
+    // The call's own requests, its `tools/call` and a resumed stream for it, end when the call
+    // does: a call that timed out releases its stream at once, while the connection and every
+    // other call on it go on. Notifications, such as the SDK's cancellation, are not tied to it.
+    const owned = call?.signal && (request?.method === "tools/call" || resuming) ? call.signal : null;
+    const signal = owned ? (init?.signal ? AbortSignal.any([init.signal, owned]) : owned) : init?.signal;
+    const response = await base(input, signal === init?.signal ? init : { ...init, signal });
     // A message with an id is a request and is owed a reply: a `202` for one is refused at once.
     // Notifications, which carry no id, are still accepted with it.
     if (request !== null && response.status === 202) {
@@ -259,11 +324,8 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
     }
     // The call's own request, so that a stream the SDK resumes for it later is watched for it too.
     if (call && request?.method === "tools/call") call.requestId = request.id;
-    // A resumed stream: the GET the SDK sends with the last event id it saw, to resume a call's
-    // POST stream. It has no body naming its request, so the request is the call's, from its context.
     let watched = request;
-    if (request === null && call?.requestId !== undefined && (init?.method ?? "GET").toUpperCase() === "GET"
-      && new Headers(init?.headers).has("last-event-id")) {
+    if (resuming && call?.requestId !== undefined) {
       // A server that offers no stream to resume answers 405, which the SDK takes as nothing to
       // wait for: the call's reply can no longer arrive, so the call fails now, not at its deadline.
       if (response.status === 405) { call.fail(INTERRUPTED_REASON); return response; }
@@ -276,19 +338,11 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
     // A stream that carried an event id is resumable: the server may close it before replying
     // and the client resumes it from that id (MCP 2025-11-25), so its end is left to the client
     // and the call's own budget. Only a stream with no id fails its call when it ends early.
-    // The SDK resumes from the id of an event its parser dispatched: one ended by a blank line,
-    // with a data line, whose own `id` is not empty. An id on an event the stream never finished
-    // gives it nothing. Lines are read whole across chunks, and each event's fields are tracked.
     const decoder = new TextDecoder();
-    let partial = "";
-    // The previous chunk ended on a CR: an LF that opens this one completes that CRLF.
-    let skipLf = false;
-    let resumable = false;
-    let eventId: string | undefined;
-    let eventHasData = false;
+    const tracker = sseResumeTracker();
     replies.watch(id);
     const ended = () => setTimeout(() => {
-      if (replies.settle(id) || resumable) return;
+      if (replies.settle(id) || tracker.resumable) return;
       if (method === "initialize") handshakeInterrupted();
       else call?.fail(INTERRUPTED_REASON);
     }, REPLY_SETTLE_MS);
@@ -297,26 +351,7 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
         let read: ReadableStreamReadResult<Uint8Array>;
         try { read = await source.read(); } catch (error) { ended(); controller.error(error); return; }
         if (read.done) { ended(); controller.close(); return; }
-        if (!resumable) {
-          let text = partial + decoder.decode(read.value, { stream: true });
-          if (skipLf && text.startsWith("\n")) text = text.slice(1);
-          skipLf = text.endsWith("\r");
-          const lines = text.split(/\r\n|\r|\n/);
-          partial = lines.pop() ?? "";
-          for (const line of lines) {
-            if (line === "") {
-              if (eventHasData && eventId) resumable = true;
-              eventId = undefined;
-              eventHasData = false;
-              continue;
-            }
-            const colon = line.indexOf(":");
-            const field = colon === -1 ? line : line.slice(0, colon);
-            const value = colon === -1 ? "" : line.slice(line[colon + 1] === " " ? colon + 2 : colon + 1);
-            if (field === "data") eventHasData = true;
-            else if (field === "id") eventId = value.includes("\u0000") ? undefined : value;
-          }
-        }
+        if (!tracker.resumable) tracker.feed(decoder.decode(read.value, { stream: true }));
         controller.enqueue(read.value);
       },
       cancel(reason) { return source.cancel(reason); },
@@ -675,9 +710,12 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     interrupt(error);
     stop.abort(error);
   };
+  // Aborted when the call settles, however it does: the call's own HTTP streams end with it.
+  const settled = new AbortController();
+  const callStreams = AbortSignal.any([signal, stop.signal, settled.signal]);
   try {
     result = await Promise.race([
-      pendingCall.run({ fail }, () => connection.client.callTool(
+      pendingCall.run({ fail, signal: callStreams }, () => connection.client.callTool(
         { name: tool, arguments: mcpToolArguments(request, contextDelivery), ...(meta ? { _meta: meta } : {}) },
         undefined,
         { signal: AbortSignal.any([signal, stop.signal]), timeout: Math.max(1, ctx.timeoutMs) },
@@ -693,6 +731,8 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     if (malformed) return { kind: "failed", reason: malformed };
     const detail = quoted(requestFailure(error), resolved);
     return failure("failed", `The MCP call failed: ${detail.text}`, resolved, detail.redacted);
+  } finally {
+    settled.abort();
   }
   if (connection.failure) return failure("failed", connection.failure, resolved, connection.failureRedacted);
   if (result.isError === true) {

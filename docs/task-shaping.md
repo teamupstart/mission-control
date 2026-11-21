@@ -458,7 +458,7 @@ the same rules for its command and environment as a [`command` shaper](#writing-
   from its first text content parsed as JSON, and must match [the contract](#the-contract). A
   tool error is `failed`, with its text.
 - **256 KiB per message.** Every message from the server is capped while it is received: over
-  stdio by the client's read buffer, over streamable HTTP by stopping a body, or one event of
+  stdio one line at a time, over streamable HTTP by stopping a body, or one event of
   an event stream, at the cap. Such a reply is `failed` at once, naming the cap, the server is
   closed and nothing over the cap is parsed. A later call of the run connects again.
 - **A reply is owed to every request.** Over streamable HTTP, `202 Accepted` with no body is

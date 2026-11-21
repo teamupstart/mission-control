@@ -17,6 +17,11 @@
 //   helper-exit <pidfile>            Starts a helper that inherits its stdout and stderr and runs until
 //                                    killed, writes the helper's pid to `pidfile`, writes a line to
 //                                    stderr, and exits before answering anything.
+//   split-pair <bytes>               Answers `initialize`, then answers `tools/call` with two messages
+//                                    of about `bytes` each: a logging notification written without
+//                                    its line ending, then, a moment later, that line ending and a
+//                                    valid reply in one write, so one chunk ends the first and
+//                                    starts the second. Stays running.
 //   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
 //                                    multibyte character, and exits before answering anything.
 //   spaced-stderr-exit <NAME> <pad>  Writes `NAME`'s value to stderr with each run of whitespace in it
@@ -72,6 +77,23 @@ if (mode === "spaced-stderr-exit") {
 
 if (mode === "stderr-exit") {
   process.stderr.write(`${process.env[args[0] ?? ""] ?? ""}${"\n".repeat(Number(args[1] ?? 0))}`, () => process.exit(1));
+}
+
+if (mode === "split-pair") {
+  const bytes = Number(args[0] ?? 250 * 1024);
+  for await (const line of createInterface({ input: process.stdin })) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "split-pair", version: "1.0.0" } } });
+    } else if (message.method === "tools/call") {
+      const note = JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "n".repeat(bytes) } });
+      const reply = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { structuredContent: { guidance: [{ id: "pair", body: "b".repeat(bytes) }] }, content: [] } });
+      process.stdout.write(note);
+      await new Promise((done) => setTimeout(done, 150));
+      process.stdout.write(`\n${reply}\n`);
+    }
+  }
 }
 
 for await (const line of createInterface({ input: process.stdin })) {

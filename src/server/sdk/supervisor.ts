@@ -1,4 +1,5 @@
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
+import { launchWorkUnitId } from "../work-unit.ts";
 import type { PauseRelease } from "../pause/release.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -534,6 +535,12 @@ export class SdkSupervisor {
       fallbackPrompt: string;
     };
     taskId: string | null;
+    /**
+     * The launch's one work unit decision (`launchWorkUnitId`, made by the caller where its
+     * launch began). The agent gets it as `WORK_UNIT_ID`, and it becomes the session's launch
+     * record once the driver has started. Omitted or null launches with none.
+     */
+    workUnitId?: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
     repoRoot?: string | null;
@@ -584,6 +591,7 @@ export class SdkSupervisor {
         // `mission.session.started` is captured under the same derived ids when this id is
         // first published, so the agent's spans join that span's trace.
         traceContext: sessionTraceContext(id),
+        workUnitId: input.workUnitId ?? null,
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -611,6 +619,8 @@ export class SdkSupervisor {
           gitBranch: input.gitBranch ?? null,
           gitRoot: input.gitRoot ?? null,
           repoRoot: input.repoRoot ?? null,
+          // The driver has started, so this is what the agent carries.
+          launchWorkUnitId: input.workUnitId ?? null,
         },
         handle,
         stateHome,
@@ -1603,6 +1613,17 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    // A restore is a start, so it decides again, here and once. The process this replaces
+    // ended with the daemon, so what it carried no longer describes anything. Decided from the
+    // task that OWNS the session now, not from `row.taskId`, which is launch provenance: an
+    // agent started with no work unit may since have been assigned another unit's task, and the
+    // restored agent runs that task, so it must carry that task's id. With no current owner,
+    // the launch task is what the session last worked for.
+    const ownerId = taskIdForSession(row.id) ?? row.taskId;
+    const owner = ownerId && ownerId !== row.taskId
+      ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null)
+      : task;
+    const workUnitId = launchWorkUnitId(owner);
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
@@ -1757,6 +1778,7 @@ export class SdkSupervisor {
         // The same session id derives the same parent, so the restored process continues the
         // trace its first launch started rather than opening a second one.
         traceContext: sessionTraceContext(row.id),
+        workUnitId,
       });
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
@@ -1783,6 +1805,7 @@ export class SdkSupervisor {
           gitBranch: task?.branch ?? null,
           gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
           repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+          launchWorkUnitId: workUnitId,
         },
         handle,
         stateHome,

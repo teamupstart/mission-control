@@ -120,6 +120,51 @@ export function isMissionLaunchProcess(
 }
 
 /**
+ * The private state home of the ONE launch this process is, or null when it is not a Mission
+ * Control launch wrapper or resume guard. Every launch gets its own home (a `session-*`
+ * directory, or a resume lease's `homes/<id>`), so this names a launch exactly - unlike the
+ * checkout it runs in, which another pane can share. The same command shapes
+ * `isMissionLaunchProcess` recognizes.
+ */
+export function missionLaunchHomeOf(
+  proc: Pick<Proc, "command">,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): string | null {
+  if (!isMissionLaunchProcess(proc, markers)) return null;
+  const command = proc.command.replace(/^-/, "");
+  const suffix = `/${LAUNCH_SCRIPT_FILE}`;
+  const wrapperPrefix = `${FIXED_OS_EXECUTABLES.sh} `;
+  if (command.startsWith(wrapperPrefix) && command.endsWith(suffix)) {
+    return command.slice(wrapperPrefix.length, command.length - suffix.length);
+  }
+  // The resume guard's own form: `<runtime> <guard> <leaseRoot> <leaseId>`.
+  if (!markers.resumeLeaseRoot) return null;
+  return join(markers.resumeLeaseRoot, "homes", proc.command.slice(proc.command.lastIndexOf(" ") + 1));
+}
+
+/**
+ * The state home of the nearest Mission Control launch this process runs beneath (itself or an
+ * ancestor in the same snapshot), or null. `hasMissionLaunchAncestor`'s walk, answering WHICH
+ * launch rather than whether there is one.
+ */
+export function missionLaunchAncestorHome(
+  pid: number,
+  procs: readonly Proc[] | ReadonlyMap<number, Proc>,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): string | null {
+  const byPid = procs instanceof Map ? procs : new Map((procs as readonly Proc[]).map((p) => [p.pid, p]));
+  let current = byPid.get(pid);
+  const seen = new Set<number>();
+  while (current && !seen.has(current.pid)) {
+    const home = missionLaunchHomeOf(current, markers);
+    if (home) return home;
+    seen.add(current.pid);
+    current = byPid.get(current.ppid);
+  }
+  return null;
+}
+
+/**
  * Whether a Mission Control launch wrapper is this process or one of its ancestors in the
  * same snapshot. Walks `ppid` with cycle protection, as `belongsToLaunch` does. Read from the
  * live process table, so a Mission terminal session that outlived a daemon restart is still

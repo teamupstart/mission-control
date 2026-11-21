@@ -83,7 +83,7 @@ import {
   taskKindHasWorkUnit,
   MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
-import { isWorkUnitId } from "@shared/work-unit.ts";
+import { isWorkUnitId, launchWorkUnitConflicts, WORK_UNIT_REUSE_REFUSAL } from "@shared/work-unit.ts";
 import { mintWorkUnitId } from "./work-unit.ts";
 import {
   isPersonaLaunchRefusal,
@@ -5187,6 +5187,18 @@ export class TaskManager {
 
     const s = this.registry.getSession(sessionId);
     if (!s) return { ok: false, error: "no such session", scope: "session" };
+    // Decision D7. The agent's environment was fixed when it started, and an assign starts no
+    // process, so an agent started with one work unit would tag this task's MCP calls with
+    // that one. Asked of the launch record, never of the flag: the environment is already
+    // set, so this holds after the preview is switched off too. An agent started with none
+    // takes any task, which then emits nothing until the agent's next start.
+    //
+    // First among the session refusals, because it is the only PERMANENT one: an agent that is
+    // busy or mid-handover frees up, and saying so would send the operator to wait for an agent
+    // that will refuse this task all the same.
+    if (launchWorkUnitConflicts(s.launchWorkUnitId, t.workUnitId)) {
+      return { ok: false, error: WORK_UNIT_REUSE_REFUSAL, scope: "session" };
+    }
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is already being assigned", scope: "task" };
     }

@@ -303,6 +303,12 @@ import {
   insertStandingInstructions,
   moveStandingInstructions,
   pruneStandingInstructions as pruneStandingInstructionsDb,
+  loadLaunchWorkUnits,
+  upsertLaunchWorkUnit,
+  deleteLaunchWorkUnit,
+  moveLaunchWorkUnit,
+  pruneLaunchWorkUnits as pruneLaunchWorkUnitsDb,
+  type LaunchWorkUnitRecord,
   loadSessionBlockers,
   upsertSessionBlocker,
   deleteSessionBlocker,
@@ -347,6 +353,8 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
+import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -433,6 +441,13 @@ export const SDK_SESSION_ID_PREFIX = "sdk:";
  */
 export interface SdkSessionRegistration {
   configuredModel?: string | null;
+  /**
+   * The work unit this launch's agent was started with (`launchWorkUnitId`), or null for none.
+   * Set by every registration that follows a driver launch that succeeded - a fresh start or
+   * a restore - and installed as the session's launch record before its first event. Omitted
+   * by a registration that launched nothing, which leaves the record as it was.
+   */
+  launchWorkUnitId?: string | null;
   /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
   id: string;
   agent: AgentType;
@@ -1059,6 +1074,13 @@ export class Registry extends EventEmitter {
    * something.
    */
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
+  /**
+   * The work unit each session's agent was started with, keyed by the same note key - the
+   * launch record (`docs/work-units.md`). In memory beside the standing instructions because
+   * it is the same kind of fact: something a launch installed on the process. Only a session
+   * whose agent carries a work unit has a row.
+   */
+  private launchWorkUnits = new Map<string, LaunchWorkUnitRecord>();
   /** Durable session blockers, keyed by the SAME note key. See `reportBlocker`. */
   private blockers = new Map<string, SessionBlockerRecord>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1281,6 +1303,7 @@ export class Registry extends EventEmitter {
     for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
     for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
     for (const r of loadStandingInstructions()) this.standingInstructions.set(r.noteKey, r);
+    for (const r of loadLaunchWorkUnits()) this.launchWorkUnits.set(r.noteKey, r);
     for (const b of loadSessionBlockers()) this.blockers.set(b.noteKey, b);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
@@ -3055,12 +3078,23 @@ export class Registry extends EventEmitter {
     // And the launch marker, but only across a FIRST bind - see the method for why a
     // /clear's native-to-native rotation must strand it instead.
     if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
+    // First sight of an agent a Mission Control terminal launch started: that launch handed its
+    // work unit decision over before it spawned (`terminal-launch-work-units.ts`), keyed by the
+    // launch's own state home, which discovery read off this agent's wrapper ancestry - so a
+    // pane that merely shares the checkout cannot take it. This is the step that puts the
+    // session in the map, before anything publishes it, so the record is installed here, under
+    // the key the session holds now, and the rotation moves carry it from there. The launcher
+    // still settles it: a launch that then fails undoes it.
+    if (!prev) {
+      takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => this.installHandedLaunchWorkUnit(base, launched, now));
+    }
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
     base.blocker = this.blockerFor(base);
     base.foremanInvite = this.foremanInviteFor(base);
+    base.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(base));
     // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
     // of the time. First sight is the case that matters: the ledger outlives the daemon,
     // so a session rebuilt after a restart has usage recorded by a previous process and
@@ -3107,7 +3141,7 @@ export class Registry extends EventEmitter {
         : { kind: "none" },
     );
     base.pipeline = this.pipelineLinkFor(base.cwd);
-    base.task = this.taskSummaryFor(base.id, base.cwd, base.pipeline);
+    base.task = this.taskSummaryFor(base.id, base.cwd, base.pipeline, base);
     base.name = this.emulatorDisplayName(base);
     return base;
   }
@@ -3143,6 +3177,17 @@ export class Registry extends EventEmitter {
       const launched = this.tasks.get(input.taskId) ?? getDurableTask(input.taskId);
       this.sdkLaunchTasks.set(input.id, { taskId: input.taskId, kind: launched?.kind ?? null });
     } else this.sdkLaunchTasks.delete(input.id);
+    // The launch record, installed in the step that registers a launched process and before
+    // this session's first event below. Only a registration that IS a launch says what the
+    // agent carries; one that only surfaces a row (an unresumable session shown and evicted)
+    // leaves the record alone.
+    if (input.launchWorkUnitId !== undefined) {
+      this.installLaunchWorkUnit(
+        noteKeyFor({ id: input.id, agentSessionId: input.agentSessionId ?? null }),
+        input.launchWorkUnitId,
+        now,
+      );
+    }
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -3213,7 +3258,7 @@ export class Registry extends EventEmitter {
       pipeline: null,
       paneDialog: null,
     };
-    s.task = this.taskSummaryFor(s.id, s.cwd);
+    s.task = this.taskSummaryFor(s.id, s.cwd, s.pipeline, s);
     const workspace = this.workspaceFor(s.id, s.cwd, s.runtime);
     s.workspaceRoot = workspace.root;
     s.workspace = workspace.view;
@@ -3221,6 +3266,7 @@ export class Registry extends EventEmitter {
     s.goal = this.goalSummaryFor(s);
     s.blocker = this.blockerFor(s);
     s.foremanInvite = this.foremanInviteFor(s);
+    s.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(s));
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
@@ -3509,7 +3555,6 @@ export class Registry extends EventEmitter {
         ? { kind: "driver_clear", agentSessionId, transcriptPath }
         : { kind: "driver_identity" },
     );
-    next.task = this.taskSummaryFor(next.id, next.cwd);
     // The invite MOVES with the rotation rather than merely re-resolving, unlike the
     // note and goal: stranding those costs stale prose, stranding this un-invites
     // Foreman from a session Mission Control launched. Move first, resolve after.
@@ -3520,10 +3565,14 @@ export class Registry extends EventEmitter {
     // conversation, and the guard inside refuses it because the source key is already
     // native by then - so the projection cannot follow a /clear onto a real human turn.
     this.moveLaunchTurnOnInitialBind(s, next);
+    // After the moves: the task summary carries the work unit this session emits, read from
+    // the launch record under the key the session holds now, which the moves just put there.
+    next.task = this.taskSummaryFor(next.id, next.cwd, next.pipeline, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.blocker = this.blockerFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
+    next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
@@ -3847,7 +3896,6 @@ export class Registry extends EventEmitter {
               : { kind: "hook_work" }
           : { kind: "none" },
       );
-      next.task = this.taskSummaryFor(next.id, next.cwd);
       // Binding the agent session id can change the note key, so re-resolve
       // everything keyed by it NOW rather than waiting for the next discovery
       // sweep. A `/clear` mints a new agent session id mid-pane, and until this
@@ -3860,10 +3908,14 @@ export class Registry extends EventEmitter {
       this.moveStandingInstructionsKey(noteKeyFor(target), noteKeyFor(next));
       this.moveBlockerKey(noteKeyFor(target), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(target, next);
+      // After the moves, so the emitted work unit is read from the launch record under the
+      // key this session now holds.
+      next.task = this.taskSummaryFor(next.id, next.cwd, next.pipeline, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
       next.blocker = this.blockerFor(next);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       // On a key ROTATION only, exactly as `applyRuntimeMeta` and `mergeDiscovered`
       // decide it. The ledger is not the only writer of this field - `applyPassiveUsage`
       // puts an unpriced token count straight onto the session for a harness that reports
@@ -4043,6 +4095,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     next.blocker = this.blockerFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
+    next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
@@ -6457,6 +6510,7 @@ export class Registry extends EventEmitter {
       this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
@@ -6560,6 +6614,7 @@ export class Registry extends EventEmitter {
       this.moveBlockerKey(noteKeyFor(s), key);
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
@@ -7974,6 +8029,12 @@ export class Registry extends EventEmitter {
     session: Session | undefined = this.sessions.get(sessionId),
   ): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
+    // The id this session emits for its task: what its agent was started with, while the task
+    // has the same one. Read by the session's CURRENT key, which is why callers that are
+    // rebuilding a session pass the new object rather than letting the map's old one answer.
+    const workUnitId = t && session
+      ? emittedWorkUnitId(this.launchWorkUnitForKey(noteKeyFor(session)), t.workUnitId)
+      : null;
     const primaryPr = t && t.extraRepos.length > 0 ? primaryRepoPrForTask(t.id) : null;
     // Bindings retain merge outcomes; the matching live observation also knows closure.
     if (
@@ -8015,6 +8076,9 @@ export class Registry extends EventEmitter {
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
           ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
+          // Present only when the session emits one, so every other card's payload is what it
+          // was before work units existed.
+          ...(workUnitId ? { workUnitId } : {}),
         }
       : null;
   }
@@ -8987,6 +9051,10 @@ export class Registry extends EventEmitter {
    */
   moveStandingInstructionsKey(fromKey: string, toKey: string): void {
     if (fromKey === toKey) return;
+    // The launch record describes the same process, so it rides every rotation this one does -
+    // moved here rather than beside each caller so that no site can carry one and strand the
+    // other. See `moveLaunchWorkUnitKey`.
+    this.moveLaunchWorkUnitKey(fromKey, toKey);
     const row = this.standingInstructions.get(fromKey);
     if (!row) return;
     moveStandingInstructions(fromKey, toKey);
@@ -9012,6 +9080,138 @@ export class Registry extends EventEmitter {
     for (const [key, row] of this.standingInstructions) {
       if (liveKeys.has(key) || row.createdAt >= olderThan) continue;
       this.standingInstructions.delete(key);
+    }
+    return removed;
+  }
+
+  // ---- launch work units (what each agent was started with) ----
+
+  /** The work unit the agent holding `noteKey` was started with, or null. */
+  private launchWorkUnitForKey(noteKey: string): string | null {
+    return this.launchWorkUnits.get(noteKey)?.workUnitId ?? null;
+  }
+
+  /**
+   * Install what a launch that succeeded carries, under the key its session holds now.
+   *
+   * Replaces whatever an earlier launch into this session recorded, and removes the row when
+   * this launch carries none: the record describes the agent that is running, and that agent
+   * is the one this launch started. Called only from the steps that put a launched process in
+   * the map - `registerSdkSession` for an embedded launch or restore, `mergeDiscovered` on first
+   * sight of a terminal launch - and before either publishes the session, so no reader of its
+   * first event finds it without its record. A launch that fails never reaches either step, so
+   * it changes nothing.
+   */
+  private installLaunchWorkUnit(noteKey: string, workUnitId: string | null, now = Date.now()): void {
+    if (workUnitId && isWorkUnitId(workUnitId)) {
+      const record: LaunchWorkUnitRecord = { noteKey, workUnitId, createdAt: now };
+      upsertLaunchWorkUnit(record);
+      this.launchWorkUnits.set(noteKey, record);
+      return;
+    }
+    if (!this.launchWorkUnits.has(noteKey)) return;
+    deleteLaunchWorkUnit(noteKey);
+    this.launchWorkUnits.delete(noteKey);
+  }
+
+  /**
+   * Install a terminal launch's handed-over decision for the session first seen as `session`,
+   * and return how to undo it if the launch then fails.
+   *
+   * A reopened conversation will bind to its known key, where the stopped process's record
+   * still sits; this agent replaces that process, so the decision goes there too. The undo
+   * restores every key this touched to what it held, and clears the key the session holds by
+   * then if a rotation carried the record somewhere new - so a failed launch whose agent is gone
+   * leaves the records exactly as they were before it.
+   *
+   * It does nothing while that agent is still live. The agent was seen beneath this launch's own
+   * wrapper, so it is running with this environment whatever else the launch failed at; taking
+   * its record away would let the reuse guard hand it another work unit's task, and would let
+   * its spans disagree with its MCP calls. Its record then lasts as long as it does.
+   */
+  private installHandedLaunchWorkUnit(
+    session: Session,
+    launched: TerminalLaunchWorkUnit,
+    now: number,
+  ): () => void {
+    const keys = [...new Set([noteKeyFor(session), launched.conversationKey].filter((key): key is string => Boolean(key)))];
+    const before = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
+    for (const key of keys) this.installLaunchWorkUnit(key, launched.workUnitId, now);
+    // What this launch put under each key, so the undo can tell its own record from a newer one.
+    const installed = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
+    const firstKey = noteKeyFor(session);
+    return () => {
+      const live = this.sessions.get(session.id);
+      if (live && live.state !== "exited") return;
+      const current = live ? noteKeyFor(live) : null;
+      // A key is put back only while it still holds what this launch installed and no other live
+      // session holds it: a later launch of the same conversation (a replacement resume) may have
+      // taken it since, and its record describes the agent running now.
+      const stillOurs = (key: string, ours: LaunchWorkUnitRecord | null): boolean =>
+        sameLaunchRecord(this.launchWorkUnits.get(key) ?? null, ours)
+        && ![...this.sessions.values()].some((s) => s.id !== session.id && s.state !== "exited" && noteKeyFor(s) === key);
+      for (const [key, record] of before) {
+        if (stillOurs(key, installed.get(key) ?? null)) this.restoreLaunchWorkUnit(key, record);
+      }
+      if (current && !before.has(current) && stillOurs(current, installed.get(firstKey) ?? null)) {
+        this.restoreLaunchWorkUnit(current, null);
+      }
+      if (live) this.refreshLaunchWorkUnit(live.id);
+    };
+  }
+
+  /** Put back exactly what a key held: a record, or none. */
+  private restoreLaunchWorkUnit(noteKey: string, record: LaunchWorkUnitRecord | null): void {
+    if (record) {
+      upsertLaunchWorkUnit(record);
+      this.launchWorkUnits.set(noteKey, record);
+    } else if (this.launchWorkUnits.has(noteKey)) {
+      deleteLaunchWorkUnit(noteKey);
+      this.launchWorkUnits.delete(noteKey);
+    }
+  }
+
+  /** Re-project a live session's launch record and emitted id after the record changed. */
+  private refreshLaunchWorkUnit(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const next: Session = {
+      ...s,
+      launchWorkUnitId: this.launchWorkUnitForKey(noteKeyFor(s)),
+      task: this.taskSummaryFor(s.id, s.cwd, s.pipeline, s),
+    };
+    if ((next.launchWorkUnitId ?? null) === (s.launchWorkUnitId ?? null) && JSON.stringify(next.task) === JSON.stringify(s.task)) return;
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /**
+   * Carry a launch record across a note-key rotation - every rotation, as the standing
+   * instructions are carried: a `/clear` or an assign starts a new conversation and not a new
+   * process, and `WORK_UNIT_ID` is in the process's environment. Called from
+   * `moveStandingInstructionsKey`, which every rotation site already calls.
+   */
+  private moveLaunchWorkUnitKey(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return;
+    const row = this.launchWorkUnits.get(fromKey);
+    if (!row) return;
+    moveLaunchWorkUnit(fromKey, toKey);
+    this.launchWorkUnits.delete(fromKey);
+    this.launchWorkUnits.set(toKey, { ...row, noteKey: toKey });
+  }
+
+  /**
+   * Drop launch records belonging to no live session and older than `olderThan`. Returns how
+   * many. `pruneStandingInstructions`' twin, gated on the same proof of liveness.
+   */
+  pruneLaunchWorkUnits(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneLaunchWorkUnitsDb(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, row] of this.launchWorkUnits) {
+      if (liveKeys.has(key) || row.createdAt >= olderThan) continue;
+      this.launchWorkUnits.delete(key);
     }
     return removed;
   }
@@ -10997,6 +11197,16 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
+/**
+ * Whether two launch records are the same install: both absent, or the same work unit installed
+ * at the same moment. A rotation moves a record with its `createdAt`, so the record a launch
+ * installed is still recognized under the key the session holds now.
+ */
+function sameLaunchRecord(a: LaunchWorkUnitRecord | null, b: LaunchWorkUnitRecord | null): boolean {
+  if (!a || !b) return a === b;
+  return a.workUnitId === b.workUnitId && a.createdAt === b.createdAt;
+}
+
 export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }
@@ -11176,6 +11386,10 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // resolves to a new value with often nothing else on the session changing - left out,
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
+  // Scalar, and it moves on its own: a restore or a managed resume that succeeds replaces the
+  // record with nothing else on the card changing, and the reuse guard on Foreman's side
+  // reads it from the snapshot.
+  launchWorkUnitId: byValue,
   sessionControlEnabled: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
   sessionControlRequest: byJson,

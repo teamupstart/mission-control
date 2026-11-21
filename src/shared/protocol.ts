@@ -7758,7 +7758,7 @@ export const CodeRabbitComparisonSchema = z.object({
 export const CodeRabbitReviewSummarySchema = z.object({
   comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
   counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
-  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryableConnection: z.literal(true).optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */

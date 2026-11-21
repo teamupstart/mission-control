@@ -261,3 +261,14 @@ test("pending semantic publication keeps its reserved quota across asynchronous 
  assert.equal(retained.bytes,64*1024*1024);
  const restarted=new WorkflowCommandArtifactService(db,join(home,"semantic-quota"));assert.equal(restarted.listForAttempt(input.attemptId).find(a=>a.kind==="findings")!.availability,"retained");
 });
+
+test("an incomplete review cannot skip the gate when a competing node consumes the allowance", async () => {
+ const i=input();i.coderabbit!.incompleteReview=true;i.reserveRun=()=>({granted:false,spent:10});
+ const d=deps();d.execute=async()=>{throw new Error("must not execute");};d.codeRabbitProbe=async()=>{throw new Error("must not probe");};
+ const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
+ if(r.kind==="action_required"){
+  assert.match(r.reason,/review remains incomplete.*allowance is exhausted/);
+  assert.match(r.reason,/raise the run allowance in Library > Commands, then submit a new round/);
+  assert.equal(r.setup,undefined);
+ }
+});

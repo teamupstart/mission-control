@@ -477,7 +477,9 @@ test("a named pipe with no writer is skipped at once, there from the start or sw
       timeout: 30_000, killSignal: "SIGKILL",
     }, (error, stdout, stderr) => done({ stdout, stderr, error }));
   });
-  assert.equal(run.error?.killed, undefined, "an open waited for a writer, so the child was killed at its timeout");
+  // Killed only at the timeout: an open waited for a writer. Any other failure, such as a child that
+  // could not load tsx, is reported by the next assertion, with its stderr.
+  assert.notEqual(run.error?.killed, true, "an open waited for a writer, so the child was killed at its timeout");
   assert.equal(run.error, null, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), {
     present: { ok: false, skip: "not-a-regular-file" },

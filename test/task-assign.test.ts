@@ -1878,3 +1878,31 @@ test("with the flag on and no shaper that applies, a handover skips the shaping-
     setShaping(false);
   }
 });
+
+test("a handover tells shapers the branch and commit the checkout is on, not the registry's cached branch", async () => {
+  setShaping(true);
+  try {
+    for (const detach of [true, false]) {
+      // The registry still holds the branch from before the reset.
+      const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-shaping-branch-${detach}-`, { gitBranch: "feature/before-reset" });
+      r.upsertTask(mkTask({ repoRoot: clone }));
+      const probe = handoverStandIn(HANDOVER_SECTION, r);
+      // The reset leaves the checkout detached, or on a branch the registry has not seen yet.
+      const reset = async () => {
+        if (detach) gitIn(clone, "checkout", "--detach");
+        else gitIn(clone, "checkout", "-b", "feature/after-reset");
+        return cleanReset();
+      };
+      const res = await tasks.assign("t1", sessionId, {
+        paneReady, reset, shapeTask: probe.shapeTask,
+        inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      const repository = probe.calls[0]!.input.context.repositories[0]!;
+      assert.equal(repository.baseSha, gitIn(clone, "rev-parse", "HEAD"));
+      assert.equal(repository.branch, detach ? null : "feature/after-reset", detach ? "a detached HEAD has no branch" : "the branch the checkout is on");
+    }
+  } finally {
+    setShaping(false);
+  }
+});

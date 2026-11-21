@@ -85,6 +85,7 @@ import {
   type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
+  headBranch,
   headCommit,
   releasedTaskResources,
   teardownWorktree,
@@ -5316,11 +5317,14 @@ export class TaskManager {
     const stopWatching = () => { this.registry.off("event", watchTurns); };
     // Released however the handover ends: a refusal, a probe or delivery that throws, or success.
     try {
-      const baseSha = shapingOn && live.cwd ? await boundedHeadCommit(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS) : null;
+      // Branch and commit read from the same post-reset checkout, not the registry's cached branch,
+      // which a reset that detached HEAD leaves on the previous one until discovery catches up.
+      const checkout = shapingOn && live.cwd
+        ? await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS)
+        : { baseSha: null, branch: live.gitBranch ?? null };
       const shaping = await shapeLaunch({
         // The baseline is the commit the reset left the checkout on, read only when shaping runs.
-        task: { ...ready, worktreePath: live.cwd, branch: live.gitBranch ?? null,
-          baseSha },
+        task: { ...ready, worktreePath: live.cwd, branch: checkout.branch, baseSha: checkout.baseSha },
         runtime: live.runtime,
         workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
         trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
@@ -7307,13 +7311,17 @@ export class TaskManager {
 /** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
 const HANDOVER_BASELINE_TIMEOUT_MS = 2000;
 
-/** `headCommit`, or null once `ms` pass first. The timer never outlives the race. */
-async function boundedHeadCommit(dir: string, ms: number): Promise<string | null> {
+/**
+ * The checkout's commit and branch (null when detached), read together; both unknown once `ms`
+ * pass first or either read fails. The timer never outlives the race.
+ */
+async function boundedCheckoutState(dir: string, ms: number): Promise<{ baseSha: string | null; branch: string | null }> {
+  const unknown = { baseSha: null, branch: null };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      headCommit(dir).catch(() => null),
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
+      Promise.all([headCommit(dir), headBranch(dir)]).then(([baseSha, branch]) => ({ baseSha, branch })).catch(() => unknown),
+      new Promise<typeof unknown>((resolve) => { timer = setTimeout(() => resolve(unknown), ms); }),
     ]);
   } finally {
     clearTimeout(timer);

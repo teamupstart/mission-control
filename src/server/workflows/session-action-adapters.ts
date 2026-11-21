@@ -584,8 +584,13 @@ const pullRequest: SessionActionAdapter = {
       };
     }
     if (expectation.mergedContentTreeOid) {
+      const capturedTree = workflowPublicationTree(capture.context.evidence);
+      if (!capturedTree) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: `The continuation's publication tree could not be read to verify merged pull request ${expectation.pullRequestUrl}. Capture fresh evidence and resubmit the workflow.` };
+      }
       if (expectation.mergedContentTreeOid !== expectation.acceptedContentTreeOid
-        || workflowPublicationTree(capture.context.evidence) !== expectation.mergedContentTreeOid
+        || capturedTree !== expectation.mergedContentTreeOid
         || workflowHasUnpublishedChanges(capture.context.evidence)) {
         return { kind: "blocked", code: "published_content_changed",
           detail: `The merged pull request ${expectation.pullRequestUrl} does not cover the continuation's content. Publish the remaining work and resubmit the workflow.` };

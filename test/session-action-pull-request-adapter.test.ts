@@ -676,3 +676,17 @@ test("historical publication blocks changed clean continuation content after sat
   if (result?.kind !== "blocked") return;
   assert.equal(result.code, "published_content_changed");
 });
+
+test("historical publication reports missing continuation proof as capture failure, not changed content", () => {
+  const decision = decide([oldMerge()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  const context = { evidence: { contentTreeOid: null, workingTreeDirty: false } } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture(decision.continuationExpectation, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: null,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /publication tree could not be read/);
+});

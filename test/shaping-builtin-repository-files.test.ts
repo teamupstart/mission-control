@@ -17,7 +17,7 @@ import {
 } from "../src/shared/shaping.ts";
 import {
   boundedReadBytes, CallStopped, callRepositoryFiles, contentWithinCap, fileText, FsGate, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath,
-  readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, REPOSITORY_FILES_GATE, skipNotes,
+  readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, REPOSITORY_FILES_GATE, REPOSITORY_FILES_HANDLE_SLOT, skipNotes,
   type RepositoryFilesFs,
 } from "../src/server/shaping/builtin/repository-files.ts";
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
@@ -675,6 +675,46 @@ test("a stopped run closes its file at once, though another run's lookup is stal
     unhang?.();
   }
   assert.equal(((await hungRun) as { ok: boolean }).ok, true);
+});
+
+test("a stalled close holds the one handle slot, so later runs open nothing and leave at their deadline", async () => {
+  const { root } = fixture({ "a.md": "a\n", "b.md": "b\n", "c.md": "c\n" });
+  let unstall: (() => void) | undefined;
+  // Run A's close never returns until released: a mount that hung while the file was open.
+  const stallingClose: RepositoryFilesFs = {
+    ...NODE_REPOSITORY_FILES_FS,
+    async open(target, flags) {
+      const handle = await NODE_REPOSITORY_FILES_FS.open(target, flags);
+      return {
+        read: handle.read, stat: handle.stat,
+        close: () => new Promise<void>((done) => { unstall = () => { void handle.close().then(done); }; }),
+      };
+    },
+  };
+  let opens = 0;
+  const countingOpens: RepositoryFilesFs = { ...NODE_REPOSITORY_FILES_FS, open: (target, flags) => { opens++; return NODE_REPOSITORY_FILES_FS.open(target, flags); } };
+  const runA = readWorktreeFile(root, "a.md", 1024, stallingClose);
+  try {
+    while (!unstall) await new Promise((done) => setImmediate(done));
+    assert.equal(REPOSITORY_FILES_HANDLE_SLOT.held, true, "A's stalled close still holds the slot");
+    // Every later run, retries included, waits for the slot instead of opening another descriptor.
+    const deadlines = [new AbortController(), new AbortController()];
+    const later = [
+      readWorktreeFile(root, "b.md", 1024, countingOpens, deadlines[0]!.signal),
+      readWorktreeFile(root, "c.md", 1024, countingOpens, deadlines[1]!.signal),
+    ];
+    await new Promise((done) => setTimeout(done, 50));
+    assert.equal(REPOSITORY_FILES_HANDLE_SLOT.queued, 2, "both are waiting for the slot");
+    for (const deadline of deadlines) deadline.abort();
+    assert.deepEqual(await Promise.all(later), [{ ok: false, stopped: true }, { ok: false, stopped: true }]);
+    assert.equal(opens, 0, "neither opened a file: at most one descriptor however long the close hangs");
+    assert.equal(REPOSITORY_FILES_HANDLE_SLOT.queued, 0);
+  } finally {
+    unstall?.();
+  }
+  assert.equal((await runA).ok, true, "A finishes once its close returns");
+  assert.equal(REPOSITORY_FILES_HANDLE_SLOT.held, false, "and gives the slot back");
+  assert.deepEqual(await readWorktreeFile(root, "b.md", 1024), { ok: true, text: "b\n", truncated: false }, "the next run opens normally");
 });
 
 test("a signal that fires during a file's lookup or its identity checks starts no new I/O for it", async () => {

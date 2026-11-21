@@ -489,3 +489,9 @@ opens and reads, and one for closing files, so a stalled lookup never keeps anot
 open. A stalled worktree can hold at most two of the pool's threads, and other daemon file work
 keeps the rest. A call waiting for a gate holds no thread, and a lookup or read waiting for one
 gives up at its deadline. A close is never given up, so an opened file is always closed.
+
+The gatherer also keeps at most one file open at a time, daemon-wide. A run takes that one slot
+before it opens a file and gives it back only once the file's close has finished, so a close
+stalled on a hung mount holds the slot, and later runs wait for it instead of opening more files.
+However long a mount hangs, the gatherer holds at most one file descriptor, and a run waiting
+for the slot holds none and gives up at its deadline.

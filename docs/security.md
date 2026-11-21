@@ -535,4 +535,6 @@ path in a tight race can still get an outside file read, and that process could 
 itself. Every `repository-files` filesystem call in the daemon goes through one of two gates,
 one call at a time each, one for lookups and reads and one for closes, so a hung network mount
 can hold at most two of Node's shared file-I/O threads and never keeps another run's file open.
+The gatherer also holds at most one open file at a time, daemon-wide, released only once its
+close finishes, so a stalled close cannot make descriptors pile up.
 [The guide](task-shaping.md#the-built-in-gatherer) states every rule.

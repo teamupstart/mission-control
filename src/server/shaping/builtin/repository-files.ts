@@ -91,8 +91,12 @@ export class FsGate {
   private busy = false;
   private readonly waiting = new Set<() => void>();
 
-  /** Run `op` alone. A `signal` stopped before `op` starts throws `CallStopped` and starts nothing. */
-  async run<T>(op: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  /**
+   * Hold the gate until the returned release is called, for work that spans several calls. A
+   * `signal` stopped while waiting, or before the gate is taken, throws `CallStopped` and takes
+   * nothing. Release is idempotent.
+   */
+  async acquire(signal?: AbortSignal): Promise<() => void> {
     // A stopped caller may have been the one a release woke. It passes the turn on before it
     // leaves, or the waiters behind it would wait on a gate nobody holds.
     const stop = (): never => {
@@ -113,13 +117,27 @@ export class FsGate {
     }
     if (signal?.aborted) stop();
     this.busy = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.busy = false;
+      this.wakeOne();
+    };
+  }
+
+  /** Run `op` alone. A `signal` stopped before `op` starts throws `CallStopped` and starts nothing. */
+  async run<T>(op: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const release = await this.acquire(signal);
     try {
       return await op();
     } finally {
-      this.busy = false;
-      this.wakeOne();
+      release();
     }
   }
+
+  /** Whether the gate is held, for tests. */
+  get held(): boolean { return this.busy; }
 
   /** Wake one waiter. It looks again, and waits again if another call took the gate first. */
   private wakeOne(): void {
@@ -141,6 +159,15 @@ export const REPOSITORY_FILES_GATE = new FsGate();
  * most two of the worker pool's threads, one lookup or read and one close.
  */
 export const REPOSITORY_FILES_CLOSE_GATE = new FsGate();
+
+/**
+ * One open file at a time across every `repository-files` call in the daemon. A run takes this
+ * slot before it opens a file and gives it back only once that file's close has finished. A close
+ * stalled on a hung mount therefore keeps its slot, and every later open waits for it instead of
+ * opening another descriptor: the gatherer holds at most one descriptor however long a mount
+ * hangs, and a run waiting for the slot holds none and gives up at its deadline.
+ */
+export const REPOSITORY_FILES_HANDLE_SLOT = new FsGate();
 
 /**
  * `fs` with every call through `gate`. Calls for a stopped `signal` throw `CallStopped` instead of
@@ -333,11 +360,16 @@ export async function readWorktreeFile(
     return failed(error, lookupSkip(error));
   }
 
-  // Open.
+  // Open. The daemon's one handle slot is taken first and given back only once the file's close
+  // has finished (`REPOSITORY_FILES_HANDLE_SLOT`), so a stalled close never lets descriptors pile up.
   if (stopped()) return { ok: false, stopped: true };
+  let releaseSlot: () => void;
+  try { releaseSlot = await REPOSITORY_FILES_HANDLE_SLOT.acquire(signal); }
+  catch (error) { return failed(error, "unreadable"); }
   let handle: Awaited<ReturnType<RepositoryFilesFs["open"]>>;
   try { handle = await fs.open(real, OPEN_FLAGS); }
   catch (error) {
+    releaseSlot();
     // ELOOP: the final component was replaced by a link after the lookup.
     return failed(error, errorCode(error) === "ELOOP" ? "not-a-regular-file" : lookupSkip(error));
   }
@@ -384,6 +416,7 @@ export async function readWorktreeFile(
     return { ok: true, text, truncated };
   } finally {
     await handle.close().catch(() => {});
+    releaseSlot();
   }
 }
 

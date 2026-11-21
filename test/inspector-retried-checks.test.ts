@@ -176,3 +176,10 @@ test("only a failing aggregate is ever reconsidered", async () => {
   assert.equal(await checksFor("SUCCESS", [TITLE_FAILED]), "passing");
   assert.equal(await checksFor("PENDING", [TITLE_FAILED, TITLE_PASSED]), "pending");
 });
+
+test("a current FAILURE aggregate with only cancelled and passing jobs keeps the existing gate verdict", async () => {
+  const cancelled = run("Catalog Security review", "CANCELLED", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z");
+  // No failure-retry proof is supplied: reporting must not relax this conservative gate.
+  const passed = run("required", "SUCCESS", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z");
+  assert.equal(await checksFor("FAILURE", [cancelled, passed]), "failing");
+});

@@ -649,6 +649,87 @@ test("the drawer's footer launches a profile, and a profile with no repository l
   await expect(dialog.getByRole("combobox", { name: "Repository" })).toHaveValue("");
 });
 
+test("behind its preview, the Profiles heading's chevron folds the launch list away from the keyboard, and the live residents take the room", async ({ dashboard: page, daemon }) => {
+  const SPARE = "Spare launcher";
+  await launch(daemon);
+  await createProfile(daemon, SPARE);
+  await useDrawer(page, daemon, "board");
+  await expect(page.getByRole("button", { name: "Residents - 1 live", exact: true })).toBeVisible();
+  await page.keyboard.press("Shift+KeyH");
+  const drawer = drawerOf(page);
+  await expect(cardOf(drawer)).toBeVisible();
+
+  const heading = drawer.getByRole("heading", { level: 3, name: "Profiles" });
+  const toggle = heading.getByRole("button", { name: "Profiles", exact: true });
+  const launchSpare = drawer.getByRole("button", { name: `Launch ${SPARE}` });
+  const launchWatcher = drawer.getByRole("button", { name: `Launch ${NAME}` });
+  const body = drawer.locator(".residents-drawer-body");
+  const chevron = toggle.locator("svg.brh-chevron");
+  // Open, the chevron is unturned and points down. Folded, it is turned a quarter anticlockwise
+  // to point right: rotate(-90deg) computes to matrix(cos, sin, -sin, cos) = (~0, -1, 1, ~0).
+  const POINTS_DOWN = "none";
+  const POINTS_RIGHT = /^matrix\([-\d.e]+, -1, 1, [-\d.e]+, 0, 0\)$/;
+
+  // Previews start off in the suite.
+  await expect(heading).toBeVisible();
+  await expect(toggle).toHaveCount(0);
+  await expect(heading.locator("svg.brh-chevron")).toHaveCount(0);
+  await expect(launchSpare).toBeVisible();
+  await capture(page, "10a-profiles-flag-off");
+  await request(daemon, "/api/feature-flags", { kind: "flag", id: "resident-profiles-fold", enabled: true }, "PUT");
+  await expect(toggle).toBeVisible();
+
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(chevron).toBeVisible();
+  await expect(chevron).toHaveCSS("transform", POINTS_DOWN);
+  await expect(launchSpare).toBeVisible();
+  await expect(launchWatcher).toBeVisible();
+  const openBodyHeight = (await body.boundingBox())!.height;
+  await capture(page, "10-profiles-open");
+
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(heading).toBeVisible();
+  await expect(toggle.locator("svg.brh-chevron")).toBeVisible();
+  await expect(launchSpare).toBeHidden();
+  await expect(launchWatcher).toBeHidden();
+  await expect(drawer.locator(".residents-drawer-foot").getByRole("listitem")).toHaveCount(0);
+  await expect(chevron).toHaveCSS("transform", POINTS_RIGHT);
+  await expect(toggle).toBeFocused();
+  await expect.poll(async () => (await body.boundingBox())!.height).toBeGreaterThan(openBodyHeight);
+  await expect(cardOf(drawer)).toBeVisible();
+  await capture(page, "11-profiles-folded");
+
+  await closeDrawer(page);
+  await page.keyboard.press("Shift+KeyH");
+  await expect(drawer.getByRole("button", { name: "Profiles", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(chevron).toHaveCSS("transform", POINTS_RIGHT);
+  await expect(launchSpare).toBeHidden();
+
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(chevron).toHaveCSS("transform", POINTS_DOWN);
+  await expect(launchSpare).toBeVisible();
+  await expect(launchWatcher).toBeVisible();
+  await expect.poll(async () => (await body.boundingBox())!.height).toBeLessThan(openBodyHeight + 1);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(chevron).toHaveCSS("transform", POINTS_RIGHT);
+  await expect(launchSpare).toBeHidden();
+  await toggle.click();
+  await expect(chevron).toHaveCSS("transform", POINTS_DOWN);
+  await expect(launchSpare).toBeVisible();
+
+  await toggle.click();
+  await expect(launchSpare).toBeHidden();
+  await request(daemon, "/api/feature-flags", { kind: "flag", id: "resident-profiles-fold", enabled: false }, "PUT");
+  await expect(toggle).toHaveCount(0);
+  await expect(launchSpare).toBeVisible();
+});
+
 test("Manage residents sits on its own row at the top, above the cards, and opens the Residents page", async ({ dashboard: page, daemon }) => {
   const FIRST = "Alpha keeper";
   const SECOND = "Bravo keeper";

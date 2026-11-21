@@ -1906,7 +1906,12 @@ export interface ArchiveArtifactBody {
 }
 
 export const api = {
-  setSessionControl: (id: string, enabled: boolean, requestId: string) => request("PUT", `/api/sessions/${encodeURIComponent(id)}/session-control`, { enabled, requestId }),
+  /** `controlRequestId` names the session's own ask when the click is its card's Accept. */
+  setSessionControl: (id: string, enabled: boolean, requestId: string, controlRequestId?: string) =>
+    request("PUT", `/api/sessions/${encodeURIComponent(id)}/session-control`,
+      { enabled, requestId, ...(controlRequestId ? { controlRequestId } : {}) }),
+  declineSessionControlRequest: (id: string, requestId: string) =>
+    request("POST", `/api/sessions/${encodeURIComponent(id)}/session-control/requests/${encodeURIComponent(requestId)}/decline`),
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
   readFileIfChanged: fetchSessionFileIfChanged,

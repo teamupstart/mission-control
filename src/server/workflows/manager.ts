@@ -1776,13 +1776,17 @@ export class WorkflowManager {
    * The initial dashboard composer must inspect the same packet `createBinding` will attach
    * to this conversation. Resolving the note key from the live session here keeps that
    * ownership decision in the daemon and avoids making the browser invent a provisional
-   * binding solely to list or remove evidence.
+   * binding solely to list or remove evidence. Foreman's registered view also includes
+   * this conversation's reserved items without returning them to the editable tray.
    */
-  stagedEvidenceForSession(sessionId: string): WorkflowSessionEvidenceList | null {
+  stagedEvidenceForSession(
+    sessionId: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowSessionEvidenceList | null {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
       ? {
-        ...this.store.listWorkflowEvidence(noteKeyFor(session)),
+        ...this.store.listWorkflowEvidence(noteKeyFor(session), view),
         registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
       }
       : null;

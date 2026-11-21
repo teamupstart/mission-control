@@ -45,6 +45,7 @@ import {
   type CloneTree,
 } from "./seed.ts";
 import { resolveWorktreePolicy, type WorktreePolicy } from "./config.ts";
+import { inspectPooledCheckInputs } from "./check-inputs.ts";
 import {
   NativeWorktreeGit,
   type GitResult,
@@ -1113,6 +1114,18 @@ export class WorktreeManager {
         if (!created) {
           const entered = await this.enteredSinceReservation(reservation, "reset");
           if (entered) return { outcome: "outcomeUnknown", reason: entered };
+          if (input.owner.kind === "check") {
+            const inputs = await inspectPooledCheckInputs(reservation.path);
+            if (!inputs.ok) {
+              this.quarantine(reservation, inputs.category, inputs.reason);
+              // A reserved slot is accounted for in quarantine, never silently handed back
+              // or replaced by a cold fallback in this same check attempt.
+              return { outcome: "outcomeUnknown", reason: inputs.reason };
+            }
+            // The scan can take seconds. Do not reset using the earlier occupancy proof.
+            const enteredAfterScan = await this.enteredSinceReservation(reservation, "reset");
+            if (enteredAfterScan) return { outcome: "outcomeUnknown", reason: enteredAfterScan };
+          }
         }
 
         const mutation = created

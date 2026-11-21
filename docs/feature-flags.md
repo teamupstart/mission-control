@@ -3,7 +3,9 @@
 The flag core stores one set of operator choices for this machine. The registry includes
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
-**Headless mode** (`headless-mode`), **Hibernate tasks** (below) and [Task shaping](task-shaping.md) as previews.
+**Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
+[Session control requests](sessions.md#when-a-session-asks-for-control) and
+[Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -27,6 +29,11 @@ route answers 404 and the `home-dispatch-v1` health capability is absent.
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
 Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
+**Session control requests** (`session-control-requests`) lets a session ask for **Control other
+sessions** with `request_session_control`; only a desktop click on the card's Accept grants it.
+Turning it off refuses new asks and withdraws every pending card at once, telling each waiting
+agent its ask ended without a decision. A grant already given is unaffected.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
@@ -150,6 +157,8 @@ gates, not by resolving an unknown id as on.
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+| `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
+| `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and

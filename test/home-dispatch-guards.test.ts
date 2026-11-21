@@ -29,9 +29,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 422 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
-  // of task shaping (the three /api/shaping routes and `GET /api/tasks/:id/shaping`), hashed
-  // key-sorted. Any added, removed
+  // The 425 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
+  // `GET /api/tasks/:id/shaping`) and the three flag-gated session control request routes
+  // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
+  // `POST .../requests/:requestId/decline`), hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
@@ -39,9 +41,9 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
   // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 422);
+  assert.equal(others.length, 425);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "55198fe61b06ce3af489bfea37a00a5c8b0dd4ccb33eb19b56c3a57f917d1248");
+    "3197ef6f561a144507421939019fe1736adc243dcd1d263fb849485b848fe5fa");
 });
 
 function sourceFiles(dir: string): string[] {

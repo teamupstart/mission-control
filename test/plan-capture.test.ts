@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import test, { after, beforeEach } from "node:test";
 import { ARCHIVE_PRIMARY_REPORT_PATH } from "../src/shared/archives.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
@@ -107,14 +108,13 @@ function makeCheckout(
       },
     });
   };
-  git(repoRoot, "init", "-q", "-b", "main");
-  writeFileSync(join(repoRoot, "README.md"), "# demo\n");
-  for (const [relative, contents] of Object.entries(BYSTANDER)) {
-    mkdirp(join(repoRoot, relative.split("/").slice(0, -1).join("/")));
-    writeFileSync(join(repoRoot, relative), contents);
-  }
-  git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-qm", "base");
+  seedGitRepo(repoRoot, {
+    branch: "main",
+    files: { "README.md": "# demo\n", ...BYSTANDER },
+    name: "t",
+    email: "t@e",
+    storeIdentity: false,
+  });
 
   const worktreePath = join(home, `worktree-${n}`);
   git(repoRoot, "worktree", "add", "-q", "-b", `harness/plan-${n}`, worktreePath);

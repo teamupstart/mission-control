@@ -93,3 +93,22 @@ test("a maximum authored prompt still fits with authorization and CI instruction
   assert.ok(result.payload.endsWith(promptMarkdown));
   assert.ok(Buffer.byteLength(result.payload) <= WORKFLOW_LIMITS.sessionActionPacketBytes);
 });
+
+
+test("publication verification reaches frozen PR actions on creation and update", () => {
+  const result = renderSessionAction({ ...packet, pullRequestPolicy: true });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.ok(result.payload.endsWith(legacyPrompt));
+  assert.match(result.payload, /After creating or updating the PR, read back/);
+  assert.match(result.payload, /published title and body/);
+  assert.match(result.payload, /required deviation notes/);
+  assert.match(result.payload, /Verify required notes posted in a comment by reading back that comment/);
+  assert.match(result.payload, /If read-back is unavailable, report the blocker instead of claiming verification/);
+  assert.match(result.payload, /Return the verified PR URL/);
+  assert.match(result.payload, /A local draft or a successful create\/edit command alone is not publication proof/);
+  assert.match(result.payload, /repair mismatches before reporting this action complete/);
+  const ordinary = renderSessionAction(packet);
+  assert.equal(ordinary.ok, true);
+  if (ordinary.ok) assert.doesNotMatch(ordinary.payload, /After creating or updating the PR, read back/);
+});

@@ -718,6 +718,80 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
   }
 });
 
+// Publication is performed by the instructed session, not a daemon GitHub writer. As in
+// the draft-policy integration above, exercise that session with a deterministic script.
+for (const mode of ["create", "update"] as const) {
+  test(`scripted Pull Request action ${mode} reads back published content and comment notes`, { timeout: 90_000 }, async (t) => {
+    const title = "fix: review drafts before publication";
+    const body = "Validate draft content before the Pull Request action.";
+    const note = "Deviation: publication proof is checked by the Pull Request action.";
+    const h = await harness(`publication-readback-${mode}`, {
+      actions: [{ id: "act", prompt: `# Pull Request\n\nTitle: ${title}\nBody: ${body}\nRequired note: ${note}\n`, skillId: "pull-request" }],
+      pullRequest: true,
+      deliveryMode: "live",
+    });
+    let fixture: Awaited<ReturnType<typeof prCreationFixture>> | null = null;
+    try {
+      fixture = await prCreationFixture(h.registry, home);
+      const existingUrl = mode === "update"
+        ? await fixture.gh(["pr", "create", "--title", "Old title", "--body", "Old body", "--draft"])
+        : null;
+      const runId = await runToAction(h);
+      await waitFor(() => h.injected.length === 1, "the publication action packet was not delivered");
+      const packet = h.injected[0]!;
+      assert.match(packet, /After creating or updating the PR, read back its URL, published title and body from GitHub/);
+      assert.match(packet, /Verify required notes posted in a comment by reading back that comment/);
+      assert.match(packet, /repair mismatches before reporting this action complete/);
+      assert.equal(waitingAttempt(h, runId)!.sessionAction?.completion.kind, "pull_request");
+      h.reportWorking();
+      t.diagnostic("Boundary: real workflow delivery, settings/MCP and CLI subprocesses; scripted session and stateful fake GitHub. No model calls or live GitHub writes. Checks below execute the instructed session's read-back procedure, not a daemon-enforced title/notes gate.");
+
+      let url: string;
+      if (existingUrl) {
+        await fixture.gh(["pr", "edit", existingUrl, "--title", title, "--body", body]);
+        url = existingUrl;
+      } else {
+        const policy = await fixture.readPolicy();
+        url = await fixture.gh(["pr", "create", "--title", title, "--body", body,
+          ...(policy.alwaysDraftPr ? ["--draft"] : [])]);
+      }
+      type Published = { number: number; url: string; title: string; body: string;
+        isDraft: boolean; comments: Array<{ url: string; body: string }> };
+      const readBack = async (): Promise<Published> => JSON.parse(await fixture!.gh([
+        "pr", "view", url, "--json", "number,url,title,body,isDraft,comments",
+      ]));
+      const check = (published: Published) => ({
+        url: published.url === url,
+        title: published.title === title,
+        body: published.body === body,
+        requiredNote: published.comments.some(comment => comment.body === note && comment.url.startsWith(`${url}#`)),
+      });
+      // The fake CLI persists only command arguments, independently of the expected content.
+      // A successful create/edit is insufficient: the first read must detect the absent note.
+      const before = await readBack();
+      assert.deepEqual(check(before), { url: true, title: true, body: true, requiredNote: false });
+      t.diagnostic(JSON.stringify({ mode, readBack: before, checks: check(before), outcome: "required comment note missing; repair before completing" }));
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      await fixture.gh(["pr", "comment", url, "--body", note]);
+      const published = await readBack();
+      assert.deepEqual(check(published), { url: true, title: true, body: true, requiredNote: true });
+      if (existingUrl) assert.equal(published.isDraft, true, "editing and commenting must preserve draft status");
+      assert.equal(fixture.commands.filter(args => args[1] === "create").length, 1,
+        "updating an existing PR must not create a duplicate");
+      t.diagnostic(JSON.stringify({ mode, commands: fixture.commands, readBack: published,
+        checks: check(published), verifiedPrUrl: published.url }));
+      h.adoptPr({ number: published.number, key: `fixture/repo#${published.number}`, url: published.url });
+      h.reportIdle();
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "verified publication did not finish the action");
+      assert.equal(h.store.listSubmissions(runId).length, 2, "action completion captures its continuation");
+      t.diagnostic(`${mode}: publication checks passed; Pull Request action and workflow completed`);
+    } finally {
+      try { await fixture?.close(); } finally { await h.stop(); }
+    }
+  });
+}
+
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
   const h = await harness("ci-policy-default", {
     pullRequest: true,

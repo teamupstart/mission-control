@@ -1,9 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 // Provisioning a task that attaches more than one repository.
 //
@@ -53,13 +54,7 @@ function git(dir: string, ...args: string[]): string {
 
 function mkRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  git(repo, "config", "user.email", "t@test");
-  git(repo, "config", "user.name", "t");
-  writeFileSync(join(repo, "file.txt"), `${name}\n`);
-  git(repo, "add", "-A");
-  git(repo, "commit", "-qm", "first");
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": `${name}\n` }, message: "first" });
   return repo;
 }
 

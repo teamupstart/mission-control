@@ -612,6 +612,15 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/** A session's pending ask for Control other sessions, as the dashboard card draws it. */
+export interface SessionControlRequestView {
+  id: string;
+  /** The agent's own words for why it needs the grant. Untrusted text, shown verbatim. */
+  reason: string;
+  /** Epoch ms. */
+  requestedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -656,6 +665,14 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
+   * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
+   * registry from `SessionControlRequests`, like `sessionControlEnabled`. It grants nothing:
+   * only the operator's trusted desktop click on the card it draws does, through the same
+   * private authorization as the session control menu. Optional so an older snapshot parses.
+   */
+  sessionControlRequest?: SessionControlRequestView | null;
   /**
    * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
    *
@@ -910,15 +927,18 @@ export interface Session {
    * live card offering re-attach, never an automatic rebind. Null normally.
    */
   orphanedQueue: OrphanedQueueHint | null;
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   /**
    * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
-   * if any check failed, else `pending` while any is still running, else
+   * if any check has a blocking conclusion (including cancellation), else `pending`
+   * while any is still running, else
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
-  /** Latest branch-update feedback for this session’s owned pull requests. */
-  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /**
    * The Inspector's state for this session's pull request, or null when there is no PR
    * or the Inspector never adopted it.
@@ -2892,6 +2912,8 @@ export interface RepoPrFeedback {
   prNumber: number;
   /** That pull request's CI rollup as of the last poll, or null when it reported none. */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /** The Inspector's state for it, or null when the Inspector never adopted it. */
   inspector: InspectorSummary | null;
 }

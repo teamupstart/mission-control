@@ -82,6 +82,17 @@ export function shapingWriteIdentity(now = Date.now()): ShapingWriteIdentity {
 }
 
 /**
+ * Raise this tab's next sequences above `floor`, the sequence below which the daemon refuses every
+ * write as expired. Sequences follow the wall clock, so one set back far enough would otherwise
+ * have each new write refused until the clock caught up again.
+ */
+export function raiseShapingWriteSequence(floor: number): void {
+  if (!Number.isSafeInteger(floor) || floor <= lastSequence) return;
+  lastSequence = floor;
+  writeStored(SEQUENCE_KEY, String(floor));
+}
+
+/**
  * The next write sequence for this tab: never lower than one handed out before, across reloads
  * too, and grounded in the clock, so a write sent later always outranks one sent earlier.
  */

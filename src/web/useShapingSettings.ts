@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { nextShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
+import { nextShapingWriteSequence, raiseShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
@@ -182,6 +182,9 @@ export function useShapingSettings(
         return "unconfirmed";
       }
       if (!result.ok) {
+        // Refused as waiting too long: the next change from this tab is numbered above the daemon's
+        // floor, so making it again goes through even after the clock was set back.
+        if (result.error === "expired" && typeof result.floor === "number") raiseShapingWriteSequence(result.floor);
         throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");
       }
       if (writing.current === request) {

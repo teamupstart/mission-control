@@ -1159,14 +1159,36 @@ test("a write from a window is refused once a later one of its on the same contr
   const staleImport = await ordered({ kind: "upsert", shaper }, 4, ["import", "row:ordered-row"]);
   assert.equal(((await staleImport.json()) as { error: string }).error, "superseded");
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["ordered-row"], true, "the switch stands");
-  // A write sent longer ago than the daemon keeps the records that order it is refused outright.
+  // Once the daemon drops these records, as it does a window after they last applied, a write at or
+  // below what they held is refused outright, and the refusal names that floor.
+  const { noteShapingWriteApplied, readShapingWriteOrder, SHAPING_WRITE_WINDOW_MS } = await import("../src/server/shaping/write-order.ts");
+  noteShapingWriteApplied(readShapingWriteOrder(shapingWriteOrder("dropping-window", 1, ["settings"]))!, performance.now() + SHAPING_WRITE_WINDOW_MS + 1000);
   const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
-  const expired = await app.request("/api/shaping", {
-    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("long-ago-window", (Date.now() - 11 * 60_000) * 1000, ["settings"], instance) },
-    body: JSON.stringify({ kind: "settings", caller: { user: "sent-long-ago" } }),
-  });
+  const expired = await ordered({ kind: "settings", caller: { user: "sent-long-ago" } }, 4, ["settings"], "long-ago-window");
   assert.equal(expired.status, 409);
-  assert.equal(((await expired.json()) as { error: string }).error, "expired");
+  const refusal = (await expired.json()) as { error: string; floor: number };
+  assert.equal(refusal.error, "expired");
+  assert.ok(refusal.floor >= sentAt + 5, "the floor is the highest sequence a dropped record held");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // A page numbering its next write above the floor is applied again.
+  const raised = await app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("long-ago-window", refusal.floor + 1, ["settings"], instance) },
+    body: JSON.stringify({ kind: "settings", caller: { user: "above-the-floor" } }),
+  });
+  assert.equal(raised.status, 200);
+});
+
+test("an order header that was sent but cannot be read is refused, never taken for an unordered write", async () => {
+  const { SHAPING_WRITE_ORDER_HEADER } = await import("../src/shared/shaping.ts");
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  for (const header of ["", "window not-a-number settings", "window 5 bad/control"]) {
+    const res = await app.request("/api/shaping", {
+      method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: header },
+      body: JSON.stringify({ kind: "settings", caller: { user: "unreadable-order" } }),
+    });
+    assert.equal(res.status, 400, JSON.stringify(header));
+    assert.equal(((await res.json()) as { error: string }).error, "unreadable_order");
+  }
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
 });
 

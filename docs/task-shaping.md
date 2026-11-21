@@ -326,10 +326,14 @@ before the body limit, so such a request is refused as forbidden whatever its si
   duplicate on the same control, is refused too, which keeps the newer edit either way; the
   duplicate is never refused for the original's writes. Each sequence is the time the write was
   sent, in microseconds, never lower than the last the tab sent. The daemon keeps each record of an
-  applied write for ten minutes after applying it, however many other pages write meanwhile, and
-  refuses a write sent more than ten minutes ago with 409 `expired`: a record is forgotten only
-  once every write it could refuse is refused that way instead. A write without the header, from
-  any other client, is not ordered.
+  applied write for ten minutes after it last applied, on its monotonic clock, however many other
+  pages write meanwhile. Dropping a record raises a floor to the sequence it held, and a write at
+  or below that floor answers 409 `expired` with the floor: every write a dropped record would have
+  refused is refused that way instead. The decision compares sequences only, so setting the wall
+  clock forward or back never makes such a write eligible again. A tab refused this way numbers
+  its next writes above the floor, so making the change again goes through even after the clock
+  was set back. A header that is sent but cannot be read answers 400 `unreadable_order` and
+  changes nothing; a write without the header, from any other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping

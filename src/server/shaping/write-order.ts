@@ -35,13 +35,12 @@ export interface ShapingWriteOrder {
 }
 
 /**
- * `SHAPING_WRITE_WINDOW_MS` is how long a write stays able to apply after it was sent, and so how
- * long the daemon keeps each record of a write it applied. A sequence is the time the page sent
- * the write, in microseconds (`nextShapingWriteSequence`), on the same clock as the daemon's, since
- * only a loopback client may write. A write sent longer ago than that is refused outright, and a
- * record is dropped only once it is older than that: by then every write sent before the one it
- * records is past the window too, so a record is never forgotten while a write it must refuse
- * could still apply. Never bounded by count, which enough traffic from other pages could exhaust.
+ * The daemon keeps each record of an applied write for `SHAPING_WRITE_WINDOW_MS` after it last
+ * applied, measured on the process's monotonic clock, and never bounds the records by count, which
+ * enough traffic from other pages could exhaust. A record it drops raises a floor to the sequence it
+ * held, and any write at or below that floor is refused as expired: a write a dropped record would
+ * have refused is always at or below it. The decision compares sequences only, so no change to the
+ * wall clock, forward or back, can make a write eligible again once its record is gone.
  */
 export { SHAPING_WRITE_WINDOW_MS };
 
@@ -49,12 +48,14 @@ const ID = /^[A-Za-z0-9-]{1,64}$/;
 /** The most earlier ids one write may name. */
 const LINEAGE_ACCEPTED = 16;
 
-/** The newest sequence applied per window and control, and when, oldest first. */
+/** The newest sequence applied per window and control, and when on the monotonic clock, oldest first. */
 const applied = new Map<string, { sequence: number; at: number }>();
+/** The highest sequence any dropped record held. */
+let floor = 0;
 
 const slot = (window: string, control: string): string => `${window}\n${control}`;
 
-/** The order a request declares, or null for one that declares none or an unreadable one. */
+/** The order a request declares, or null for one that declares none or an unreadable one: the route refuses the latter. */
 export function readShapingWriteOrder(header: string | undefined): ShapingWriteOrder | null {
   if (!header) return null;
   const [window, sequence, controls, instance, lineage, ...rest] = header.trim().split(" ");
@@ -76,18 +77,23 @@ export function shapingWriteSuperseded(order: ShapingWriteOrder): boolean {
 }
 
 /**
- * Whether the write was sent longer ago than `SHAPING_WRITE_WINDOW_MS`, by its sequence: the record
- * of a newer write that must refuse it may already be gone, so it is refused itself.
+ * Whether the write is at or below the floor of dropped records: a record of a newer write that must
+ * refuse it may be gone, so it is refused itself.
  */
-export function shapingWriteExpired(order: ShapingWriteOrder, now = Date.now()): boolean {
-  return order.sequence / 1000 < now - SHAPING_WRITE_WINDOW_MS;
+export function shapingWriteExpired(order: ShapingWriteOrder): boolean {
+  return order.sequence <= floor;
+}
+
+/** The floor of dropped records, which a refused page raises its next sequences above. */
+export function shapingWriteFloor(): number {
+  return floor;
 }
 
 /**
  * Record that this write was applied, for the writes from the same page, and from the earlier
  * pages of its tab, sent before it.
  */
-export function noteShapingWriteApplied(order: ShapingWriteOrder, now = Date.now()): void {
+export function noteShapingWriteApplied(order: ShapingWriteOrder, now = performance.now()): void {
   for (const window of [order.window, ...order.lineage]) {
     for (const control of order.controls) {
       const key = slot(window, control);
@@ -96,9 +102,10 @@ export function noteShapingWriteApplied(order: ShapingWriteOrder, now = Date.now
       applied.set(key, { sequence, at: now });
     }
   }
-  // Oldest first, so the expired records are the leading ones.
+  // Oldest first, so the records to drop are the leading ones.
   for (const [key, record] of applied) {
     if (now - record.at <= SHAPING_WRITE_WINDOW_MS) break;
+    floor = Math.max(floor, record.sequence);
     applied.delete(key);
   }
 }
@@ -124,10 +131,19 @@ export const EARLIER_INSTANCE_REFUSAL = {
   reason: "This change was made before the daemon restarted or was upgraded, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
 } as const;
 
-/** The refusal for a write sent longer ago than `SHAPING_WRITE_WINDOW_MS`. */
-export const EXPIRED_WRITE_REFUSAL = {
-  error: "expired",
-  reason: "This change was sent more than 10 minutes ago, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
+/** The refusal for a write at or below the floor of dropped records, with that floor. */
+export function expiredWriteRefusal(): { error: "expired"; reason: string; floor: number } {
+  return {
+    error: "expired",
+    reason: "This change waited too long to be applied, so it was not: a newer change may have been made since it was sent. Check what is shown now, and make it again if it is missing.",
+    floor,
+  };
+}
+
+/** The refusal for a write whose order header was sent but cannot be read. */
+export const UNREADABLE_ORDER_REFUSAL = {
+  error: "unreadable_order",
+  reason: "This change's write order could not be read, so it was not applied. Reload the page and make it again.",
 } as const;
 
 /** The refusal for a write a newer one from the same window already overtook. */

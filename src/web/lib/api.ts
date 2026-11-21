@@ -2366,7 +2366,7 @@ export const api = {
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
   setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
-    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, {
+    put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
       signal: options?.signal,
       ...(options?.order ? { headers: { [SHAPING_WRITE_ORDER_HEADER]: options.order } } : {}),
     }),

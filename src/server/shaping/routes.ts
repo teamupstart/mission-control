@@ -16,7 +16,7 @@ import { applyShapingIntent, getShapingConfig } from "./index.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
   EARLIER_INSTANCE_REFUSAL,
-  EXPIRED_WRITE_REFUSAL,
+  expiredWriteRefusal,
   noteShapingWriteApplied,
   readShapingWriteOrder,
   SHAPING_WRITE_ORDER_HEADER,
@@ -24,6 +24,7 @@ import {
   shapingWriteFromEarlierInstance,
   shapingWriteSuperseded,
   SUPERSEDED_WRITE_REFUSAL,
+  UNREADABLE_ORDER_REFUSAL,
 } from "./write-order.ts";
 import { referenceStatus } from "./references.ts";
 
@@ -111,13 +112,17 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
       if (registeredShaperRevision(config, intent.id, shapingReviser) !== intent.expect
         && !issuedByThisDaemon(intent.expect)) return c.json(UNISSUED_REVISION_REFUSAL, 409);
     }
-    const order = readShapingWriteOrder(c.req.header(SHAPING_WRITE_ORDER_HEADER));
+    const header = c.req.header(SHAPING_WRITE_ORDER_HEADER);
+    const order = readShapingWriteOrder(header);
+    // Sent but unreadable is refused, never taken for a write with no order: that one would skip
+    // every ordering check, and could overwrite a newer edit if it arrives late.
+    if (header !== undefined && order === null) return c.json(UNREADABLE_ORDER_REFUSAL, 400);
     try {
       const discovered = await discoverShapers();
       // Checked here, as the write is about to apply and after every wait: a write that waited for
       // discovery while its window gave up on it and sent a newer one never overwrites that one.
       if (order && shapingWriteFromEarlierInstance(order)) return c.json(EARLIER_INSTANCE_REFUSAL, 409);
-      if (order && shapingWriteExpired(order)) return c.json(EXPIRED_WRITE_REFUSAL, 409);
+      if (order && shapingWriteExpired(order)) return c.json(expiredWriteRefusal(), 409);
       if (order && shapingWriteSuperseded(order)) return c.json(SUPERSEDED_WRITE_REFUSAL, 409);
       const result = applyShapingIntent(parsed.data, discovered);
       if (result.ok && order) noteShapingWriteApplied(order);

@@ -2261,3 +2261,31 @@ test("with a daemon that sends no revisions, an unrelated frame never stands in 
   await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
 });
+
+test("after a save is refused as waiting too long, the tab's next save is numbered above the daemon's floor", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The daemon's floor is an hour ahead of this clock, as once the clock was set back after it.
+  const floor = (Date.now() + 3_600_000) * 1000;
+  const reason = "This change waited too long to be applied, so it was not: a newer change may have been made since it was sent. Check what is shown now, and make it again if it is missing.";
+  let refused = false;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || refused) return route.fallback();
+    refused = true;
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "expired", reason, floor }) });
+  });
+  await identity.fill("refused-as-expired");
+  await save.click();
+  await expect(form.getByText(reason)).toBeVisible();
+  // Made again, it is numbered above the floor, so the daemon applies it.
+  await identity.fill("refused-as-expired");
+  const sent = page.waitForRequest((request) => request.url().endsWith("/api/shaping") && request.method() === "PUT");
+  await save.click();
+  const sequence = Number(((await sent).headers()["x-mission-shaping-order"] ?? "").split(" ")[1]);
+  expect(sequence).toBeGreaterThan(floor);
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("refused-as-expired");
+  await page.unroute("**/api/shaping");
+});

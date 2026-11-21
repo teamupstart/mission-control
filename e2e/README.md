@@ -2276,7 +2276,7 @@ symlink discovery, and tears down only that task's tmux session. Screenshots are
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
 
 `feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
-**Resident active hours** and **Task shaping** rows appear, and toggling each of the first two in
+**Resident active hours**, **Task shaping** and **Session control requests** rows appear, and toggling each of the first two in
 one window changes a second window without a reload. `headless-mode-flag.spec.ts` covers the
 `headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
 the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`

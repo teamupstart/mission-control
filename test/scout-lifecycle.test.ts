@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import test, { after, beforeEach } from "node:test";
 import {
   ARCHIVE_PRIMARY_REPORT_PATH,
@@ -84,10 +85,7 @@ function makeWorktree(files: Record<string, string> = {}): { repoRoot: string; w
       env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e" },
     });
   };
-  git("init", "-q", "-b", "main");
-  writeFileSync(join(repoRoot, "README.md"), "# demo\n");
-  git("add", "-A");
-  git("commit", "-qm", "base");
+  seedGitRepo(repoRoot, { branch: "main", files: { "README.md": "# demo\n" }, name: "t", email: "t@e", storeIdentity: false });
   const worktreePath = join(home, `worktree-${n}`);
   git("worktree", "add", "-q", "-b", `harness/scout-${n}`, worktreePath);
   for (const [relative, contents] of Object.entries(files)) {

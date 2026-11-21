@@ -23,6 +23,15 @@ const findings = script.longTitles ? Array.from({ length: 8 }, (_, i) => ({
 for (const finding of findings) emit(finding);
 if (script.largeRaw) for (let i = 0; i < 40; i++) emit({ type: "future_additive_event", diagnostic: "x".repeat(60000) });
 if (script.mode === "incomplete") { emit({ type: "error", errorType: "rate_limit", retryAfterSeconds: script.retryAfterSeconds ?? 60 }); process.exit(1); }
+if (script.connectionFailures) {
+ const calls = readFileSync(`${process.env.MC_E2E_RECORD_DIR}/coderabbit.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line));
+ if (calls.filter(call => call.args[0] === "review").length <= script.connectionFailures) {
+  emit({ type: "heartbeat", status: "reviewing" });
+  emit({ type: "error", errorType: "connection", message: "Connection failed: WebSocket closed", recoverable: true,
+   retryAfterSeconds: script.retryAfterSeconds ?? 0 });
+  process.exit(1);
+ }
+}
 const threshold = args[args.indexOf("--gate") + 1];
 const blocking = findings.filter(f => ["critical","major","minor","trivial","info"].indexOf(f.severity) <= ["critical","major","minor","trivial","info"].indexOf(threshold)).length;
 // CLI 0.9.1 reports an unreviewed-file count. 0.9.2 dropped it for the list of reviewed files,

@@ -78,7 +78,8 @@ export interface CheckActionRequiredFailure {
 export type CheckResult =
   | { kind: "outcome"; outcome: WorkflowCheckOutcome }
   | CheckInfrastructureFailure
-  | CheckActionRequiredFailure;
+  | CheckActionRequiredFailure
+  | { kind: "retryable_connection"; reason: string; review: CodeRabbitReviewSummary; artifacts?: WorkflowCommandArtifactDescriptor[] };
 
 /** What the execution runtime is asked to do, once the ladder has decided it should run. */
 export interface CheckExecutionRequest {
@@ -349,7 +350,7 @@ function runCount(runs: number): string {
  */
 export interface RunCheckInput {
     slot: WorkflowCheckSlot;
-    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; comparison: () => Promise<CodeRabbitComparison> };
+    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; incompleteReview?: boolean; comparison: () => Promise<CodeRabbitComparison> };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *

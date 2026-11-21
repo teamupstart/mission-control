@@ -1,9 +1,9 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported. Static imports hoist
 // above assignments, so every module below has to arrive through a dynamic import or the
@@ -439,14 +439,7 @@ test("acquire refuses a short base sha through the existing pinned-base check", 
   // The real `verifyPinnedBase`, not a second regex - and it must refuse before a slot is
   // taken, so a bad caller costs an error rather than a pool tree that has to be unwound.
   const repo = join(home, "real-repo");
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "f.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
-  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"]).toString().trim();
+  const head = seedGitRepo(repo, { branch: "main", files: { "f.txt": "base\n" } });
 
   const pool = fakePool(1, mkdtempSync(join(home, "real-pool-")));
   const manager = new CheckLeaseManager(db, {

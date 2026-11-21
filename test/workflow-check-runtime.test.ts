@@ -17,6 +17,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
@@ -92,18 +93,14 @@ let seq = 0;
 /** A real git repository with one commit and a nested package, so a subpath has somewhere to go. */
 function gitRepo(): { repoRoot: string; headSha: string } {
   const repoRoot = realpathSync(mkdtempSync(join(home, `repo-${seq++}-`)));
-  const git = (...args: string[]): string =>
-    execFileSync("git", ["-C", repoRoot, ...args], { stdio: "pipe" }).toString();
-  execFileSync("git", ["init", "-q", "-b", "main", repoRoot], { stdio: "pipe" });
-  git("config", "user.email", "checks@example.com");
-  git("config", "user.name", "Check Fixture");
-  git("config", "commit.gpgsign", "false");
-  mkdirSync(join(repoRoot, "packages", "web"), { recursive: true });
-  writeFileSync(join(repoRoot, "packages", "web", "marker.txt"), "web\n");
-  writeFileSync(join(repoRoot, "root.txt"), "root\n");
-  git("add", "-A");
-  git("commit", "-qm", "base");
-  return { repoRoot, headSha: git("rev-parse", "HEAD").trim() };
+  const headSha = seedGitRepo(repoRoot, {
+    branch: "main",
+    files: { "packages/web/marker.txt": "web\n", "root.txt": "root\n" },
+    email: "checks@example.com",
+    name: "Check Fixture",
+    config: { "commit.gpgsign": "false" },
+  });
+  return { repoRoot, headSha };
 }
 
 interface FakeTree {

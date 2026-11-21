@@ -122,8 +122,14 @@ test('detached migration treats an exited but unreaped parent as gone', async t 
   const logPath = join(f.stateDirectory, 'update.log');
   // Hold the event loop until the parent has exited. This process cannot reap its
   // own child until the loop turns, so the helper sees the zombie the CI runner did.
+  // The pause blocks the thread too, so the loop still never turns; it only stops this poll
+  // spawning `ps` back to back for the whole life of the parent.
   const deadline = Date.now() + 10_000;
-  while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (processState(pid) !== 'Z') {
+    assert.ok(Date.now() < deadline, 'the parent never exited');
+    Atomics.wait(pause, 0, 0, 10);
+  }
   const events: string[] = [];
   const ops = {...realApplyOperations(logPath, undefined, () => () => {}), preflightAll: async (bundles: string[]) => {
     // The first check must still see the zombie: the helper proceeded on it, not after a later poll reaped it.

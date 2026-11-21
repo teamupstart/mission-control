@@ -184,12 +184,17 @@ function seedSubmission(
 }
 
 async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const started = Date.now();
+  const started = performance.now();
   while (!check()) {
-    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
+    if (performance.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("workflow polling times out while Date is frozen", { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000 });
+  await assert.rejects(waitFor(() => false, 20), /timed out waiting for workflow engine/);
+});
 
 test("concurrent provider-neutral Personas share one snapshot and Join aggregates fail receipts", async () => {
   seedVersion();
@@ -2932,4 +2937,166 @@ test("a disabled node with an override still launches nothing and stamps no prov
   // A stamped provider here would claim an expensive model ran when nothing did.
   assert.equal(skipped.runner, null);
   assert.equal(skipped.model, null);
+});
+
+// A disconnect must retain the review gate across retries, restart and allowance exhaustion.
+for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
+  const timerLimit = 2_147_483_647;
+  const vendorWaitMs = scenario === "long-vendor-wait" ? timerLimit + 120_000 : 120_000;
+  const id = `cr-connection-${scenario}`;
+  const crGraph: PublishedWorkflowGraph = { ...checkGraph, nodes: checkGraph.nodes.map(node => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
+  const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
+  const store = seedSubmission(id, crGraph, { ...context, evidence: { ...context.evidence, coderabbit: yaml } });
+  const comparison = store.freezeCodeRabbitComparison(`submission-${id}`, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: ["allowance", "resubmit"].includes(scenario) ? 1 : 10,
+    timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  let clock = Date.now();
+  let calls = 0;
+  const makeEngine = () => new WorkflowEngine(store, () => {}, {
+    now: () => clock, runnerFor: passingRunner, resolveExecution: passingExecution, workflowPolicy: () => checkPolicy(),
+    workflowCommand: () => ({ ...emptyWorkflowCommandView("coderabbit"), maxRuns: comparison.maxRuns }),
+    checkDeps: () => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async request => {
+        calls++;
+        assert.equal(request.headSha, comparison.head);
+        assert.deepEqual(request.coderabbit, comparison);
+        assert.ok(!request.command.includes("--use-credits"));
+        const recovered = scenario === "recover" && calls === 2;
+        return { kind: "exited", exitCode: recovered ? 0 : 1, output: "", truncatedBytes: 0,
+          review: { comparison, status: recovered ? "complete" : "incomplete",
+            counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 }, titles: [],
+            diagnostic: recovered ? "Complete CodeRabbit review" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
+            ...(!recovered ? { retryableConnection: true as const } : {}),
+            ...(["vendor-wait", "long-vendor-wait"].includes(scenario) ? { retryAt: clock + vendorWaitMs } : {}),
+          } };
+      },
+    }),
+  });
+  let engine = makeEngine();
+  engine.start(); engine.activateSubmission(`submission-${id}`);
+  try {
+    if (scenario === "allowance" || scenario === "resubmit") {
+      await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /allowance exhausted/);
+      assert.equal(calls, 1);
+      if (scenario === "resubmit") {
+        const repair = store.createRepairSubmission({
+          id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
+          triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
+        });
+        const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
+        store.updateSubmissionCapture(repair.submission.id, {
+          context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+          fingerprint: `${id}-round-2`, status: "running",
+        }, clock);
+        engine.activateSubmission(repair.submission.id);
+        await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
+        assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
+        assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
+        assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        assert.equal(calls, 1, "resubmission cannot grant another execution");
+      }
+    } else {
+      await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.state === "retry_wait");
+      const waiting = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+      assert.ok(waiting.retryAt! >= clock + 30_000);
+      assert.ok(waiting.retryAt! <= clock + (["vendor-wait", "long-vendor-wait"].includes(scenario) ? vendorWaitMs + 15_000 : 45_000));
+      assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+      await engine.stop();
+      if (scenario === "extended-vendor-wait") {
+        // Another node records a longer vendor wait after this retry was scheduled.
+        const extended = waiting.retryAt! + 120_000;
+        store.insertAttempt({ id: `${id}-peer`, submissionId: waiting.submissionId,
+          nodeId: "peer-coderabbit", attempt: 1, state: "running", persona: null,
+          inputFingerprint: "peer", now: clock });
+        const failed = store.listAttempts(waiting.submissionId).find(a => a.nodeId === "gate" && a.attempt === 1)!;
+        const output = failed.output as { review: Record<string, unknown> };
+        store.finishAttempt(`${id}-peer`, { state: "error",
+          output: workflowJson({ review: { ...output.review, retryAt: extended } }) }, clock);
+        t.mock.timers.enable({ apis: ["Date"], now: waiting.retryAt! });
+        clock = waiting.retryAt!;
+        engine = makeEngine(); engine.start();
+        await waitFor(() => store.latestAttemptForNode(waiting.submissionId, "gate")!.retryAt === extended
+          || store.getRun(`run-${id}`)!.status === "blocked");
+        assert.equal(store.getRun(`run-${id}`)!.status, "running", "a later shared vendor wait must defer rather than block");
+        const deferred = store.getAttempt(waiting.id)!;
+        assert.equal(deferred.state, "retry_wait");
+        assert.equal(deferred.retryAt, extended);
+        assert.equal(deferred.startedAt, null);
+        assert.equal(calls, 1);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+        assert.equal(store.listReceipts(waiting.submissionId).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        clock = extended;
+        t.mock.timers.setTime(clock);
+        engine.wake();
+        await waitFor(() => calls === 2);
+        return;
+      }
+      if (scenario === "long-vendor-wait") {
+        // Mock time only after the first real attempt settles. Spy on the actual scheduler
+        // boundary too: MockTimers does not emulate Node's overflow-to-1ms behavior.
+        t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: clock });
+        const timers = t.mock.method(globalThis, "setTimeout");
+        const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+        const advance = async (ms: number) => {
+          clock += ms;
+          t.mock.timers.tick(ms);
+          await turn();
+        };
+        engine = makeEngine(); engine.start();
+        await turn();
+        assert.ok(waiting.retryAt! > clock + timerLimit);
+        assert.equal(timers.mock.calls.at(-1)!.arguments[1], timerLimit,
+          "a wait beyond Node's timer limit must schedule a capped wake, not overflow to 1ms");
+        const pending = () => {
+          assert.equal(calls, 1, "the review must not execute before the vendor deadline");
+          assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.state, "retry_wait");
+          assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt, waiting.retryAt);
+          assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        };
+        const scheduled = timers.mock.callCount();
+        await advance(1);
+        pending();
+        assert.equal(timers.mock.callCount(), scheduled, "no immediate retry/wake loop");
+        await advance(timerLimit - 1);
+        pending();
+        const remaining = waiting.retryAt! - clock;
+        assert.ok(remaining >= 120_000 && remaining <= 135_000);
+        assert.equal(timers.mock.callCount(), scheduled + 1, "the capped wake rearms the remaining wait");
+        assert.equal(timers.mock.calls.at(-1)!.arguments[1], remaining);
+        await advance(remaining - 1);
+        pending();
+        assert.equal(timers.mock.callCount(), scheduled + 1, "no extra wakes before the deadline");
+        return;
+      }
+      engine = makeEngine(); engine.start();
+      assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt, waiting.retryAt);
+      assert.equal(calls, 1, "restart must not launch before the durable deadline");
+      if (scenario === "cancel" || scenario === "vendor-wait") {
+        if (scenario === "vendor-wait") assert.ok(waiting.retryAt! >= clock + 120_000);
+        store.cancelRun(`run-${id}`, "test cancellation", clock);
+        clock = waiting.retryAt!; engine.wake();
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(calls, 1);
+      } else {
+        clock = waiting.retryAt!; engine.wake();
+        if (scenario === "limit") {
+          await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.attempt === 3);
+          const last = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+          assert.equal(last.state, "retry_wait");
+          assert.ok(last.retryAt! >= clock + 60_000 && last.retryAt! <= clock + 90_000);
+          clock = last.retryAt!; engine.wake();
+        }
+        await waitFor(() => store.getRun(`run-${id}`)?.status === (scenario === "recover" ? "completed" : "blocked"));
+        assert.equal(calls, scenario === "recover" ? 2 : 3);
+        if (scenario === "limit") {
+          assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /WebSocket closed.*retry limit reached/);
+          assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+        }
+      }
+    }
+  } finally { await engine.stop(); store.cancelRun(`run-${id}`, "test cleanup", clock); }
 });

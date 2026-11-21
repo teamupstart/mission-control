@@ -3085,7 +3085,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    const staged = manager.stagedEvidenceForSession(
+      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
+    );
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(

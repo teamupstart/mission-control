@@ -151,3 +151,18 @@ episode; a plan task owes one per plan directory it wrote. It refers to
 task and session ids as values and has no foreign key or cascade to either, because a published
 archive has to outlive both. Losing it loses the ability to resume an unfinished capture, never
 the ability to read a finished one.
+
+## Idle online backup completion
+
+`database-backups/online.ts` wraps the native SQLite backup used by captures and restore
+verification. On 2026-11-20, a standalone `node:sqlite` probe on macOS 26.6.2 with Homebrew
+Node 26.7.0 observed a completed native copy at one second while the await continuation
+had not run. The await resumed after a JavaScript callback at about 1002 ms. This observation
+is specific to that verified environment; it does not establish the same timing on other
+platforms or Node versions.
+
+A referenced 10 ms timer exists only while the
+backup is pending and is cleared on success or failure. This preserves the online snapshot
+and its WAL semantics; it neither changes the scheduling clock nor times out a still-active
+SQLite operation. `test/database-backup-idle.test.ts` exercises an otherwise quiet child
+process with a parent watchdog and verifies that the helper leaves no timer behind.

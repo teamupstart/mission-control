@@ -222,6 +222,13 @@ workflow evidence registration is not required, including when an older prompt o
 asked for it. Manually attaching a Persona workflow makes registration applicable, and removing
 it retires that obligation. Implementation and verification remain required in either case.
 
+Registration includes evidence still staged and evidence reserved by this conversation's own
+workflow submissions. Capture does not unregister that proof or require the agent to register
+it again for the same intent episode. The dashboard staging tray still shows only editable,
+staged items. Foreman rechecks the admitted evidence after verification; a change in identity,
+content, or eligibility discards the stale verdict without consuming the work generation or
+sending recovery gaps.
+
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work

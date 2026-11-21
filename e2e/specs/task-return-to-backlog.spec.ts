@@ -73,6 +73,42 @@ function sitrepSection(sitrep: Locator, title: RegExp): Locator {
   });
 }
 
+test("modal focus entry preserves autofocus on the later Cancel control", async ({ dashboard, daemon }) => {
+  const task = await file(daemon, "Preserve the modal autofocus choice");
+  await api(daemon, `/api/tasks/${task.id}/dispatch`, {});
+  const row = dashboard.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: task.title });
+  await expect(row).toHaveCount(1, { timeout: 60_000 });
+  await row.click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.locator("span.badge").first()).toHaveText("idle", { timeout: 60_000 });
+
+  const opener = detail.locator(".actions").getByRole("button", { name: "backlog", exact: true });
+  await opener.focus();
+  await dashboard.keyboard.press("Enter");
+  const dialog = dashboard.getByRole("dialog", { name: "Return to backlog" });
+  await expectContentClearsBorder(dialog);
+  // Wait for registration: focus must survive the shared overlay's topmost entry effect,
+  // not merely arrive on Cancel for a moment before that effect moves it elsewhere.
+  await expect(dialog.locator("..")).toHaveAttribute("data-overlay-top", "true");
+  const first = dialog.getByRole("button").first();
+  await expect(first).toHaveAccessibleName("Close");
+  await expect(first).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await expect(first).not.toBeFocused();
+
+  if (process.env.MC_E2E_AUTOFOCUS_EVIDENCE === "1") {
+    const dir = artifactsDir("overlay-autofocus-repair");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await dialog.screenshot({ path: join(dir, "later-cancel-retains-autofocus.png") });
+  }
+  // No focus/click inside the dialog precedes the assertion or this key press.
+  await dashboard.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  expect((await taskById(daemon, task.id)).status).toBe("running");
+});
+
 test("an idle dispatched task returns to the backlog from its session footer", async ({
   dashboard,
   daemon,

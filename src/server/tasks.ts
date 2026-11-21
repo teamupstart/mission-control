@@ -5430,7 +5430,8 @@ export class TaskManager {
       // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
       // A paste whose submit was not seen may still be sitting in the composer: the assignment
       // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
-      const delivered = r.submitVerified ? shaping : launchUnconfirmed(shaping);
+      // Only a turn that carried a section has anything to confirm; an empty run keeps its outcome.
+      const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
       this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section);
       const cur = this.registry.getTask(t.id) ?? t;
       const now = Date.now();

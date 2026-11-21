@@ -1931,3 +1931,28 @@ test("with nothing shaped, a turn taken while the handover prepared still stops 
     setShaping(false);
   }
 });
+
+test("an unverified handover that carried no section keeps the shapers' own outcome", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unverified-empty-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    // A shaper answered with nothing to add: a record, but no section.
+    const empty = handoverStandIn("", r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      shapeTask: async (input) => {
+        const answer = await empty.shapeTask(input);
+        return { ...answer, summary: { ...answer.summary!, entries: 0, bytes: 0, shapers: answer.summary!.shapers.map((s) => ({ ...s, entries: 0, bytes: 0 })) } };
+      },
+      inject: async () => ({ ok: true, pasted: true, submitVerified: false }),
+    });
+    assert.equal(res.ok, true);
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "ok", "nothing was sent, so there is nothing unconfirmed");
+    assert.equal(record?.truncated, false);
+    assert.equal(record?.limit, undefined);
+  } finally {
+    setShaping(false);
+  }
+});

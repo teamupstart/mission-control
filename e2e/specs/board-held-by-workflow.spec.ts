@@ -463,6 +463,20 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds).toContainText("In progress · GitHub Inspector");
   await shoot(dashboard, "hold-automated-progress");
 
+  // Stored reasons outside the known vocabulary must not masquerade as healthy work.
+  const currentHold = holds.locator(`a[href="#/runs/${runId}"]`);
+  await update({ ...summary, deliveryMode: "live", resumptionPolicy: "auto",
+    resumption: { reason: "future_operator_wait", round: summary.round, resumesItself: true } });
+  await expect(currentHold).toContainText("unrecognized resumption condition");
+  await expect(currentHold).toContainText("Action needed · Operator");
+  await expect(currentHold).not.toContainText("In progress");
+  await update({ ...summary, deliveryMode: "live", resumptionPolicy: "auto",
+    resumption: { reason: "binding_inactive", round: summary.round, resumesItself: true } });
+  await expect(currentHold).toContainText("no longer attached to a live session");
+  await expect(currentHold).toContainText("Action needed · Operator");
+  await expect(currentHold).not.toContainText("Waiting · Session");
+  await shoot(dashboard, "hold-exhaustive-wait-actors");
+
   // The independent blocker's owner is the next actor, not the waiting session.
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const reported = await fetch(`${daemon.baseURL}/mcp/blocker`, {

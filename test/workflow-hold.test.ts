@@ -2,7 +2,8 @@ import { fleetRunsBySession } from "../src/web/lib/held.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { workflowHold } from "../src/web/lib/workflow-hold.ts";
-import type { SessionActionWaitReason, WorkflowRunSummary } from "../src/shared/workflow.ts";
+import type { SessionActionWaitReason, WorkflowGateWaitReason, WorkflowResumptionWithheldReason, WorkflowRunSummary } from "../src/shared/workflow.ts";
+import { WORKFLOW_GATE_WAIT_REASONS, WORKFLOW_RESUMPTION_WITHHELD_REASONS } from "../src/shared/workflow.ts";
 
 const run: WorkflowRunSummary = {
   id: "run", bindingId: "binding", workflowId: "workflow", workflowName: "Review",
@@ -32,6 +33,45 @@ test("Inspector association gaps differ from healthy automatic reviews", () => {
     assert.equal(hold.inProgress, true);
   }
   assert.match(workflowHold({ ...run, status: "running", activePersonaNames: ["Auditor"] })!.reason, /Auditor/);
+});
+
+test("every gate reason has an explicit next actor and progress state", () => {
+  const expected: Record<WorkflowGateWaitReason, [string, boolean, RegExp]> = {
+    missing_pr: ["Operator", false, /No pull request/],
+    unadopted_pr: ["Operator", false, /not adopted/],
+    inspector_disabled: ["Operator", false, /switched off/],
+    awaiting_fresh_observation: ["GitHub Inspector", true, /next sweep/],
+    working_tree_not_pushed: ["Session", true, /commit and push/],
+    head_mismatch: ["Session", true, /not the commit/],
+    review_pending: ["GitHub Inspector", true, /not finished reviewing/],
+    review_backoff: ["GitHub Inspector", true, /retry backoff/],
+    review_error: ["GitHub Inspector", true, /attempt errored/],
+    findings: ["Session", true, /findings.*resolved/],
+    pr_closed: ["Operator", false, /closed or switched/],
+    clean_review_pending: ["GitHub Inspector", true, /confirm its final clean review/],
+    reviewed_tree_changed: ["Operator", false, /Review the pushed head/],
+  };
+  for (const gateWaitReason of WORKFLOW_GATE_WAIT_REASONS) {
+    const hold = workflowHold({ ...run, status: "waiting_for_inspector", gateWaitReason })!;
+    const [actor, inProgress, sentence] = expected[gateWaitReason];
+    assert.deepEqual([hold.actor, hold.inProgress, hold.runId], [actor, inProgress, run.id], gateWaitReason);
+    assert.match(hold.reason, sentence, gateWaitReason);
+  }
+});
+
+test("unknown stored wait reasons remain inspectable without claiming healthy progress", () => {
+  for (const unknown of ["future_operator_wait", "toString", "__proto__"]) {
+    for (const held of [
+      { ...run, status: "waiting_for_inspector" as const, gateWaitReason: unknown as WorkflowGateWaitReason },
+      { ...run, resumption: { reason: unknown, round: 1, resumesItself: true } },
+    ]) {
+      const hold = workflowHold(held)!;
+      assert.equal(hold.actor, "Operator", unknown);
+      assert.equal(hold.inProgress, false, unknown);
+      assert.match(hold.reason, /unrecognized.*Open the run for details/);
+      assert.equal(hold.runId, run.id);
+    }
+  }
 });
 
 test("the queue links its actual owning run, and ending a run removes the projection", () => {
@@ -85,17 +125,26 @@ test("session action holds name the actor, reason and progress for human and aut
 });
 
 test("withheld resumption holds distinguish operator, session and delivery progress", () => {
-  const cases = [
-    { reason: "session_needs_you", actor: "Operator", inProgress: false,
+  const cases: Record<WorkflowResumptionWithheldReason, { actor: string; inProgress: boolean; text: string }> = {
+    policy_manual: { actor: "Operator", inProgress: false,
+      text: "This workflow version was published before automatic resumption existed, so the next round waits for you rather than for the session." },
+    binding_inactive: { actor: "Operator", inProgress: false,
+      text: "The review is no longer attached to a live session, so nothing is watching for the repair." },
+    session_unavailable: { actor: "Operator", inProgress: false,
+      text: "The bound session is gone or has been replaced, so the repair packet has no reader." },
+    session_needs_you: { actor: "Operator", inProgress: false,
       text: "The session is waiting on you - a permission prompt or a dialog - so it has not been handed another round." },
-    { reason: "session_busy", actor: "Session", inProgress: true,
+    session_busy: { actor: "Session", inProgress: true,
       text: "The session is still working. The next round opens once it settles." },
-    { reason: "packet_undelivered", actor: "Workflow", inProgress: true,
+    packet_undelivered: { actor: "Workflow", inProgress: true,
       text: "The repair packet has not reached the session yet, so there is nothing for it to have repaired." },
-    { reason: "session_blocked", actor: "Blocker owner", inProgress: false,
+    repository_unchanged: { actor: "Session", inProgress: false,
+      text: "Waiting on the session: the repository has not changed since round 1. Reviewing it again would return the same verdicts, so no round has been spent." },
+    session_blocked: { actor: "Blocker owner", inProgress: false,
       text: "The session is blocked on someone other than you, so it has not been handed another round. The next round opens once its blocker is cleared." },
-  ];
-  for (const { reason, actor, inProgress, text } of cases) {
+  };
+  for (const reason of WORKFLOW_RESUMPTION_WITHHELD_REASONS) {
+    const { actor, inProgress, text } = cases[reason];
     assert.deepEqual(workflowHold({ ...run, resumptionPolicy: "auto", deliveryMode: "live",
       resumption: { reason, round: 1, resumesItself: true } }),
     { actor, reason: text, inProgress, runId: run.id }, reason);

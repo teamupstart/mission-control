@@ -1835,3 +1835,46 @@ test("a pane probe that throws after shaping still releases the handover's turn 
     setShaping(false);
   }
 });
+
+test("a handover whose submit was not verified still runs, and records its context as unconfirmed", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unverified-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // Typed, but the submit was not seen: the text may still be sitting in the composer.
+      inject: async () => ({ ok: true, pasted: true, submitVerified: false }),
+    });
+    assert.equal(res.ok, true, "the assignment proceeds as it always has");
+    assert.equal(r.getTask("t1")?.status, "running");
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "degraded");
+    assert.equal(record?.entries, 0, "nothing is counted as delivered");
+    assert.match(record?.limit?.reason ?? "", /could not confirm/);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("with the flag on and no shaper that applies, a handover skips the shaping-only checks", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-none-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      // No shaper applied: the engine answers with no record and no section.
+      shapeTask: async () => ({ summary: null, section: "", entries: [] }),
+      // A second probe would fail; with nothing shaped there must not be one.
+      paneReady: async () => (++probes === 1 ? { ok: true } : { ok: false, error: "the pane timed out" }),
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    });
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.equal(probes, 1, "only the probe every handover makes");
+    assert.equal(r.getTask("t1")?.status, "running");
+  } finally {
+    setShaping(false);
+  }
+});

@@ -158,7 +158,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
-import { shapeLaunch, withTaskContext } from "./shaping/launch.ts";
+import { launchUnconfirmed, shapeLaunch, withTaskContext } from "./shaping/launch.ts";
 import type { shapeTask } from "./shaping/engine.ts";
 import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
@@ -5336,6 +5336,9 @@ export class TaskManager {
             : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
           : {}),
       }, { shapeTask: opts.shapeTask, enabled: shapingOn });
+      // Whether a shaper actually ran. With none that applies, the handover goes on exactly as one
+      // with the flag off: no further session checks, and no new reason to refuse.
+      const shaped = shapingOn && shaping.summary !== null;
       const after = this.registry.getTask(t.id);
       if (after?.status !== "backlog") {
         return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
@@ -5352,7 +5355,7 @@ export class TaskManager {
       // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
       // probe below is itself an await a turn could start during.
       const sessionChanged = (): string | null => {
-        if (!shapingOn) return null;
+        if (!shaped) return null;
         // The task too: still in the backlog, with the inputs its context was chosen for.
         const current = this.registry.getTask(t.id);
         if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
@@ -5365,7 +5368,7 @@ export class TaskManager {
           : null;
         return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
       };
-      if (shapingOn) {
+      if (shaped) {
         const changed = sessionChanged();
         if (changed) return { ok: false, error: changed, scope: "session" };
         const stillReady = await paneReady(this.registry.getSession(s.id)!);
@@ -5418,7 +5421,10 @@ export class TaskManager {
       // The turn reached the session: only now does this handover's shaping record replace the
       // task's last one, stamped with the session it was delivered to. Settled whether or not
       // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
-      this.registry.commitTaskShaping(t.id, s.id, shaping.summary, shaping.section);
+      // A paste whose submit was not seen may still be sitting in the composer: the assignment
+      // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
+      const delivered = r.submitVerified ? shaping : launchUnconfirmed(shaping);
+      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section);
       const cur = this.registry.getTask(t.id) ?? t;
       const now = Date.now();
       this.registry.upsertTask({

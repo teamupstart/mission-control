@@ -1066,7 +1066,7 @@ server.registerTool(
   },
   async () => {
     try {
-      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() });
+      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() }, false, AbortSignal.timeout(30_000));
       return textResult(await res.text(), !res.ok);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
@@ -1083,7 +1083,7 @@ server.registerTool(
   },
   async ({ id, reason }) => {
     try {
-      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason });
+      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
       return textResult(await res.text(), !res.ok);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

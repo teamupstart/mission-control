@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ const home = mkdtempSync(join(tmpdir(), "async-input-mcp-"));
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
 let mode: "message" | "call" | "legacy" | "limit" = "message";
+let stalledQuestionPath: string | null = null;
 const RECEIPT = "Filed, not answered: stub receipt.";
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";
@@ -26,6 +27,11 @@ const daemon = createServer((req: IncomingMessage, res) => {
   req.on("end", () => {
     const path = req.url ?? "";
     seen.push({ method: req.method ?? "", path, body: raw ? JSON.parse(raw) : {} });
+    if (path === stalledQuestionPath) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.flushHeaders();
+      return; // The daemon accepted the request but its response body never finishes.
+    }
     const json = (value: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
     if (req.method === "POST" && path === "/mcp/reviews") {
       if (mode === "limit") return res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ error: "Not asked: ten open questions. Work on what you can or end your turn." }));
@@ -46,13 +52,12 @@ const daemon = createServer((req: IncomingMessage, res) => {
 });
 const client = new Client({ name: "async-input-mcp", version: "1" });
 
-before(async () => {
-  await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", resolve));
+function transport(extraArgs: string[] = []) {
   const address = daemon.address();
   assert.ok(address && typeof address !== "string");
-  await client.connect(new StdioClientTransport({
+  return new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
+    args: [...extraArgs, "--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
     env: {
       ...process.env,
       MISSION_HOME: home,
@@ -62,7 +67,12 @@ before(async () => {
       MISSION_SESSION_ID: "sdk:async-input-mcp",
     } as Record<string, string>,
     stderr: "inherit",
-  }));
+  });
+}
+
+before(async () => {
+  await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", resolve));
+  await client.connect(transport());
 });
 after(async () => {
   await client.close();
@@ -127,6 +137,29 @@ test("housekeeping tools carry session context and return the daemon results", a
   const withdrawn = await client.callTool({ name: "withdraw_question", arguments: { id: "q1", reason: "Obsolete" } });
   assert.ok(JSON.stringify(withdrawn.content).includes("withdrawn"));
   assert.equal(seen.at(-1)!.body.reason, "Obsolete");
+});
+
+test("housekeeping tools time out when the daemon never finishes its response", { timeout: 20_000 }, async () => {
+  const preload = join(home, "short-timeouts.mjs");
+  writeFileSync(preload, "const timeout = AbortSignal.timeout; AbortSignal.timeout = ms => timeout(Math.min(ms, 1_000));\n");
+  const timedClient = new Client({ name: "async-input-timeouts", version: "1" });
+  try {
+    await timedClient.connect(transport(["--import", preload]));
+    for (const [name, path, args] of [
+      ["list_open_questions", "/mcp/questions/list", {}],
+      ["withdraw_question", "/mcp/questions/q1/withdraw", { id: "q1", reason: "Obsolete" }],
+    ] as const) {
+      stalledQuestionPath = path;
+      const from = seen.length;
+      const result = await timedClient.callTool({ name, arguments: args }, undefined, { timeout: 5_000 });
+      assert.equal(result.isError, true, name);
+      assert.match(JSON.stringify(result.content), /TimeoutError|timed out|aborted/i, name);
+      assert.deepEqual(seen.slice(from).map((request) => request.path), [path], "a timeout does not replay the request");
+    }
+  } finally {
+    stalledQuestionPath = null;
+    await timedClient.close();
+  }
 });
 
 test("withdraw_question accepts a 2000-character reason and rejects 2001 before contacting the daemon", async () => {

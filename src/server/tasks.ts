@@ -5303,10 +5303,13 @@ export class TaskManager {
       task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
     const shapedFrom = inputs(ready);
     const writePane = innermostPane(live);
+    // The baseline is read before the step's own clock starts, so it gets a short bound of its
+    // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
+    const baseSha = shapingOn && live.cwd ? await boundedHeadCommit(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS) : null;
     const shaping = await shapeLaunch({
       // The baseline is the commit the reset left the checkout on, read only when shaping runs.
       task: { ...ready, worktreePath: live.cwd, branch: live.gitBranch ?? null,
-        baseSha: shapingOn && live.cwd ? await headCommit(live.cwd) : null },
+        baseSha },
       runtime: live.runtime,
       workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
       trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
@@ -7276,5 +7279,22 @@ export class TaskManager {
       sessionId: null,
       updatedAt: Date.now(),
     });
+  }
+}
+
+
+/** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
+const HANDOVER_BASELINE_TIMEOUT_MS = 2000;
+
+/** `headCommit`, or null once `ms` pass first. The timer never outlives the race. */
+async function boundedHeadCommit(dir: string, ms: number): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      headCommit(dir).catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

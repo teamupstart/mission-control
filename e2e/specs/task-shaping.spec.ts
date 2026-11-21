@@ -207,3 +207,42 @@ test("a slow shaper still launches and shows Context degraded, and a redispatch 
   expect(read && "shaping" in read).toBe(false);
   await shoot(dashboard, "redispatch-no-chip", dashboard.locator(".console-detail"));
 });
+
+test("a dashboard that connected with shaping off shows the saved context as soon as the flag is turned back on", async ({ dashboard, daemon }) => {
+  await registerShaper(daemon, "acme-guidance", "Acme guidance", ["ok"]);
+  await useLayout(dashboard, daemon, "console");
+  const title = "Retry the ledger sync";
+  const task = await dispatch(dashboard, daemon, "Make the ledger sync retry safely.", title);
+  await sessionRail(dashboard, title).click();
+  const detail = dashboard.locator(".console-detail");
+  const chip = detail.getByRole("button", { name: "Context: 2 entries", exact: true });
+  await expect(chip).toBeVisible({ timeout: 60_000 });
+
+  // The flag goes off, and this window reconnects while it is off: the card arrives without
+  // its record, so there is no chip.
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "task-shaping", enabled: false }, "PUT");
+  await dashboard.reload();
+  await sessionRail(dashboard, title).click();
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("button", { name: /^Context/ })).toHaveCount(0);
+  // Let the worker finish its turn and go quiet, so no later session update could carry the
+  // record by accident: the flag change itself has to bring it back.
+  const sessionId = (await api<Array<{ id: string; sessionId: string | null }>>(daemon, "/api/tasks"))
+    .find((entry) => entry.id === task.id)?.sessionId;
+  let previous = "";
+  await expect.poll(async () => {
+    const current = JSON.stringify((await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .find((session) => session.id === sessionId) ?? null);
+    const quiet = current === previous && current.includes('"state":"idle"');
+    previous = current;
+    return quiet;
+  }, { timeout: 60_000, intervals: [2_000] }).toBe(true);
+
+  // Back on, with no reload and no change to the session: the saved context is there again.
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "task-shaping", enabled: true }, "PUT");
+  await expect(chip).toBeVisible({ timeout: 15_000 });
+  await chip.click();
+  const viewer = dashboard.getByRole("dialog", { name: "Context this session received" });
+  await expect(viewer.getByRole("region", { name: "Delivered in turn one" })).toContainText("## Task context");
+  await shoot(dashboard, "flag-reenabled-chip", viewer);
+});

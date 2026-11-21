@@ -842,6 +842,71 @@ test("a dispatch replaced while its shapers ran launches nothing, and leaves the
   assert.equal((run.dispatcher as unknown as { dispatchAttempts: Map<string, symbol> }).dispatchAttempts.size, 0);
 });
 
+test("a terminal launch replaced while its prompt was being delivered retires its own home and never binds the task", async () => {
+  const repo = seedRepo("replaced-terminal");
+  const taskId = "replaced-terminal";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "claude" }));
+  const homes: string[] = [];
+  const sessions: string[] = [];
+  const killed: string[] = [];
+  const deliveries: Array<() => void> = [];
+  const waiters: Array<{ count: number; resolve: () => void }> = [];
+  const delivering = (count: number) => new Promise<void>((resolve) => {
+    if (deliveries.length >= count) resolve();
+    else waiters.push({ count, resolve });
+  });
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    resolveRuntime: () => "terminal",
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    shapeTask: standIn(SECTION).shapeTask,
+    spawn: async (_label, _short, cwd) => {
+      const n = homes.length;
+      const nativeId = `native-replaced-terminal-${n}`;
+      const discovered = mkDiscovered({ agent: "claude", cwd, syntheticId: `sid-replaced-terminal-${n}-${++seq}` });
+      registry.applyDiscovery([discovered]);
+      registry.applyHook({ agent: "claude", event: "SessionStart", sessionId: nativeId, cwd, transcriptPath: null,
+        env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
+      homes.push(`home-replaced-terminal-${n}`);
+      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: null };
+    },
+    inject: async (session, text) => {
+      const n = sessions.push(session.id) - 1;
+      // Each delivery is held until the test lets it through.
+      await new Promise<void>((resolve) => {
+        deliveries.push(resolve);
+        for (const waiter of waiters) if (deliveries.length >= waiter.count) waiter.resolve();
+      });
+      registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `native-replaced-terminal-${n}`, cwd: session.cwd,
+        transcriptPath: null, prompt: text, env: { tmuxPane: "%1" } });
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    killHome: async (name) => { killed.push(name); return { ok: true, asked: true }; },
+  });
+  const original = dispatcher.dispatch(taskId);
+  await delivering(1);
+  // Cancelled and dispatched again while the first prompt is still being typed.
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "cancelled" });
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "dispatching", sessionId: null, worktreePath: null, branch: null,
+    homeName: null, terminalResourceId: null });
+  const replacement = dispatcher.dispatch(taskId);
+  await delivering(2);
+  // The first delivery finishes while its replacement is still delivering.
+  deliveries[0]!();
+  await original;
+  assert.deepEqual(killed, [homes[0]], "the replaced attempt closed its own home, and only that");
+  assert.equal(registry.getTask(taskId)?.status, "dispatching", "the replacement still owns the launch");
+  assert.notEqual(registry.getTask(taskId)?.sessionId, sessions[0], "the replaced worker never bound the task");
+  assert.equal(registry.getTask(taskId)?.homeName, homes[1], "nor overwrote the replacement's home");
+  deliveries[1]!();
+  await replacement;
+  assertRunning(registry.getTask(taskId)!);
+  assert.equal(registry.getTask(taskId)?.sessionId, sessions[1]);
+  assert.deepEqual(killed, [homes[0]]);
+  assert.equal(getTaskShapingText(taskId)?.text, SECTION);
+});
+
 test("a section the final check drops counts nothing as delivered, and keeps each shaper's outcome", async () => {
   const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
   const task = mkTask({ id: "final-check", status: "dispatching", repoRoot: seedRepo("final-check"), title: "Shaping", intent: "do it", agent: "claude" });

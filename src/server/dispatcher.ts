@@ -411,6 +411,12 @@ export class Dispatcher {
        * launcher is used and nothing changes.
        */
       spawn?: typeof spawnUniquely;
+      /**
+       * Closes a terminal home that a replaced dispatch attempt spawned. Injected by tests that
+       * spawn through `spawn` above, whose homes no real backend could close. Unset, the real
+       * `killHome` is used.
+       */
+      killHome?: typeof killHome;
       /** The daemon's singleton native allocator. Focused tests may inject an isolated one. */
       worktrees?: WorktreeManager;
       /** Release-only bridge for persisted historical Treehouse resources. */
@@ -449,6 +455,9 @@ export class Dispatcher {
     // while anything after this phase may have crossed into an agent runtime.
     let backlogRecoveryEligible = false;
     let pendingAgentStateHome: string | null = null;
+    // Closes this attempt's own terminal home, once it has one. A replaced attempt calls it to
+    // retire its worker without touching the task row, which belongs to its successor.
+    let retireOwnHome: (() => Promise<void>) | null = null;
     // What this launch RESOLVED, frozen at the resolver's own boundary and carried to
     // whichever exit this attempt takes. Held out here rather than read back at the end,
     // because the interesting row is the one that never reaches a running agent - and by then
@@ -1077,13 +1086,30 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
+      retireOwnHome = async () => {
+        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId ?? null).catch(() => {});
+      };
+      // From here every checkpoint also asks whether a cancel and a redispatch replaced this
+      // attempt while it waited, and if so retires its worker before it can bind the task.
+      const settled = async () => {
+        if (!currentAttempt()) {
+          await retireOwnHome?.();
+          return true;
+        }
+        return this.abortIfSettled(taskId);
+      };
+      if (!currentAttempt()) {
+        await retireOwnHome();
+        return;
+      }
       this.patch(taskId, homeRecord(home));
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
 
       let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
+      if (await settled()) return;
       if (home.terminalResourceId?.startsWith("emulator:")) {
         const adopted = await this.registry.adoptTerminalLaunch(taskId, home, discovered);
         if (!adopted) {
@@ -1107,7 +1133,7 @@ export class Dispatcher {
       if (TASK_KIND_BEHAVIOR[task.kind].foremanInvite) {
         this.registry.setForemanInvite(discovered.id, "dispatch");
       }
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
 
       // Discovery only proves the process exists. Hooked agents prove they can READ before
       // we type; launch-prompt agents such as Pi only need to survive the settle window.
@@ -1134,7 +1160,7 @@ export class Dispatcher {
       if (readyResourceId && !this.registry.getTask(taskId)?.terminalResourceId) {
         this.patch(taskId, { terminalResourceId: readyResourceId });
       }
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
 
       // The permission mode is already set: it rode in on the launch argv (`modeArgs`),
       // so the task runs in it from the first prompt with no post-launch keystrokes to
@@ -1185,7 +1211,7 @@ export class Dispatcher {
       // the launch itself. Only now does this launch's shaping record replace the last one.
       this.commitShaping(taskId, attempt, shaping, deliverySession.id);
 
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
       // and nothing more. Provenance lives in the work-episode bindings used by
       // `bindTaskToWorkEpisode` and `mergedPrFor`.
@@ -1200,6 +1226,12 @@ export class Dispatcher {
     } catch (err) {
       cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
       pendingAgentStateHome = null;
+      // A replaced attempt's failure is its own: the task row, its status and its resources
+      // belong to the successor, so this one only retires the worker it started.
+      if (!currentAttempt()) {
+        await retireOwnHome?.();
+        return;
+      }
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
       // A cancel/complete that settled the task in flight owns its terminal state

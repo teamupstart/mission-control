@@ -348,6 +348,39 @@ test("with the flag off, a session's task card carries no record in the snapshot
   assert.equal(card()?.shaping?.state, "degraded", "turning the flag back on shows it again");
 });
 
+test("turning the flag back on publishes every task and session card that has a record", () => {
+  setFlag(true);
+  const registry = new Registry();
+  registry.registerSdkSession({ id: "sdk:republish", agent: "claude", name: "Republish", cwd: "/repo/republish" });
+  registry.upsertTask(mkTask({ id: "republish", status: "running", sessionId: "sdk:republish", worktreePath: "/repo/republish" }));
+  registry.upsertTask(mkTask({ id: "republish-plain", status: "backlog" }));
+  registry.commitTaskShaping("republish", "sdk:republish", record("sdk:republish"), "text");
+  setFlag(false);
+  registry.emitFeatureFlags(flags.getFeatureFlagsConfig());
+  const tasks: Array<{ id: string; shaping: unknown }> = [];
+  const cards: unknown[] = [];
+  const onEvent = (event: { type: string; task?: { id: string; shaping?: unknown }; session?: { id: string; task?: { shaping?: unknown } | null } }) => {
+    if (event.type === "task_upsert" && event.task) tasks.push({ id: event.task.id, shaping: event.task.shaping });
+    if (event.type === "session_upsert" && event.session?.id === "sdk:republish") cards.push(event.session.task?.shaping);
+  };
+  registry.on("event", onEvent);
+  try {
+    setFlag(true);
+    registry.emitFeatureFlags(flags.getFeatureFlagsConfig());
+    // A config write that leaves the flag on sends nothing more.
+    registry.emitFeatureFlags({ ...flags.getFeatureFlagsConfig(), enableAll: !flags.getFeatureFlagsConfig().enableAll });
+  } finally {
+    registry.off("event", onEvent);
+  }
+  // Tasks earlier tests left in this database carry records too; these two are this test's.
+  const own = tasks.filter((task) => task.id.startsWith("republish"));
+  assert.deepEqual(own.map((task) => task.id), ["republish"], "only the task with a record, once");
+  assert.ok(tasks.every((task) => task.shaping !== undefined), "a task with no record is not sent again");
+  assert.equal((own[0]?.shaping as TaskShaping | undefined)?.sessionId, "sdk:republish");
+  assert.equal(cards.length, 1);
+  assert.equal((cards[0] as TaskShaping | undefined)?.sessionId, "sdk:republish");
+});
+
 test("a failed commit for the same session hides the record it was meant to replace", () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "same-session", status: "running", sessionId: "kept" }));

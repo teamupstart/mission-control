@@ -1,4 +1,4 @@
-import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { canonicalJson, shapingConfigView, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
@@ -1486,8 +1486,24 @@ export class Registry extends EventEmitter {
   /** Publish the full bounded config, suppressing identical writes. */
   emitFeatureFlags(config: FeatureFlagsConfig): void {
     if (this.lastFeatureFlags && sameFeatureFlagsConfig(this.lastFeatureFlags, config)) return;
+    const shapingWasOn = this.lastFeatureFlags ? resolveFeatureFlag("task-shaping", this.lastFeatureFlags) : null;
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
+    if (shapingWasOn === false && resolveFeatureFlag("task-shaping", config)) this.republishShaping();
+  }
+
+  /**
+   * Task shaping was just turned back on: a window that connected while it was off holds tasks
+   * and session cards with their records stripped (`taskShapingForReads`), and nothing else
+   * would send them again until each one changed. Publish every task and card that has one.
+   */
+  private republishShaping(): void {
+    for (const task of this.tasks.values()) {
+      if (currentShaping(task)) this.emitEvent({ type: "task_upsert", task });
+    }
+    for (const session of this.sessions.values()) {
+      if (session.task?.shaping !== undefined) this.emitEvent({ type: "session_upsert", session });
+    }
   }
 
   /**

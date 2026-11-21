@@ -3,7 +3,6 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
   clipUtf8,
-  cutAtLineBoundary,
   SHAPING_LIMITS,
   ShapingFactsSchema,
   utf8Length,
@@ -122,11 +121,20 @@ export function fileText(bytes: Buffer, cap: number, exceeded: boolean): { text:
   let text = exceeded ? decodeUtf8Whole(bytes) : bytes.toString("utf8");
   if (text.startsWith("﻿")) text = text.slice(1);
   if (!exceeded && utf8Length(text) <= cap) return { text, truncated: false };
-  if (!exceeded) return { text: cutAtLineBoundary(text, cap), truncated: true };
+  return { text: cutAtLastLine(text, cap), truncated: true };
+}
+
+/**
+ * `text` is longer than `cap`, or is a prefix of a longer file: the longest prefix within `cap`
+ * that ends at a line boundary. A newline at offset zero is a boundary like any other, so a file
+ * that opens with a blank line never publishes part of the line after it. Only text with no
+ * boundary in range is cut at a character boundary, so one long line still contributes.
+ */
+function cutAtLastLine(text: string, cap: number): string {
   const clipped = clipUtf8(text, cap);
-  if (text[clipped.length] === "\n") return { text: clipped, truncated: true };
+  if (text[clipped.length] === "\n") return clipped;
   const newline = clipped.lastIndexOf("\n");
-  return { text: newline > 0 ? clipped.slice(0, newline) : clipped, truncated: true };
+  return newline >= 0 ? clipped.slice(0, newline) : clipped;
 }
 
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
@@ -275,12 +283,21 @@ export async function gatherRepositoryFiles(
   const guidance: ShapingEntry[] = [];
   const skips: string[] = [];
   let summary: string | undefined;
+  // The summary was cut to fit: selectors get a prefix, so the reply says its context is incomplete.
+  let summaryCut = false;
   let facts: ShapingFacts | undefined;
 
   // The schema already bounds `include` below the reply's entry cap; this keeps the reply valid
   // even for a build whose schema allows more.
   for (const { path: configured, maxBytes } of options.include.slice(0, SHAPING_LIMITS.replyEntries)) {
     if (signal.aborted) return null;
+    // An entry's id and title are its path, and both are held to fewer characters than a
+    // configured path may have. A longer path is skipped unread: as an id it would make the whole
+    // reply invalid, and every other entry with it.
+    if (configured.length > Math.min(SHAPING_LIMITS.entryIdChars, SHAPING_LIMITS.entryTitleChars)) {
+      skips.push(skipNote("file", configured, `path longer than ${SHAPING_LIMITS.entryIdChars} characters, the limit on an entry's id`));
+      continue;
+    }
     const cap = Math.min(maxBytes, SHAPING_LIMITS.entryBytes);
     const read = await readWorktreeFile(root, configured, cap, fs);
     if (!read.ok) { skips.push(skipNote("file", configured, read.skip)); continue; }
@@ -293,7 +310,7 @@ export async function gatherRepositoryFiles(
     const read = await readWorktreeFile(root, options.summary, SHAPING_LIMITS.summaryBytes, fs);
     if (!read.ok) skips.push(skipNote("summary", options.summary, read.skip));
     else if (blankCut(read)) skips.push(skipNote("summary", options.summary, blankCutReason(SHAPING_LIMITS.summaryBytes)));
-    else summary = read.text;
+    else { summary = read.text; summaryCut = read.truncated; }
   }
 
   if (options.facts !== undefined) {
@@ -314,6 +331,7 @@ export async function gatherRepositoryFiles(
 
   return {
     guidance,
+    ...(summaryCut ? { truncated: true } : {}),
     ...(summary !== undefined || facts !== undefined ? { repo: { ...(facts ? { facts } : {}), ...(summary !== undefined ? { summary } : {}) } } : {}),
     ...(skips.length ? { notes: skipNotes(skips) } : {}),
   };

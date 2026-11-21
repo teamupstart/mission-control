@@ -408,12 +408,16 @@ Like every registered shaper it is stored switched off. Dry-run it, then switch 
 
 - **`include`.** Up to 16 paths, each with a `maxBytes` of at most 16 KiB, the default. Each
   file read becomes one context entry whose id and title are its path, marked `truncated` when
-  it was cut. Entries share the shaper's and the run's budget like any other shaper's.
-- **`summary`.** One path, cut to 4 KiB and returned as the repository's `summary`.
-- **`facts`.** One path to a JSON object whose values are strings or lists of strings, with at
-  most 64 names, each value at most 1024 characters, and at most 64 KiB in all, such as
+  it was cut. Entries share the shaper's and the run's budget like any other shaper's. An entry's
+  id is at most 512 characters, so a longer path is skipped unread with a note.
+- **`summary`.** One path, cut to 4 KiB and returned as the repository's `summary`. A cut summary
+  marks the reply `truncated`.
+- **`facts`.** One path to a JSON object whose values are strings or lists of strings, at most
+  64 KiB in all, such as
   `{ "language": "python", "framework": ["django"] }`. It is returned as the repository's
-  `facts`. A file that is not such an object is skipped with a note, and no facts are returned.
+  `facts`. It holds at most 64 names of 1 to 128 characters each. A value is one string, or a
+  list of at most 64 strings, and every string, in a list or not, is at most 1024 characters.
+  A file that is not such an object is skipped with a note, and no facts are returned.
 
 The summary and facts are handed to the selectors in their requests. They are not added to the
 section by themselves. A path is relative to the worktree, and every repository attached to a
@@ -428,8 +432,10 @@ worktree file can be replaced while shaping runs.
    every link resolved, must lie inside the worktree's real path, so a link to another file
    inside the worktree is followed and a link out of it is not. Anything that is not a regular
    file, such as a directory or a named pipe, is skipped without being opened.
-2. **Open.** The real path is opened without following a final link and without blocking, so a
-   named pipe or a device swapped in meanwhile cannot hold the daemon past the deadline.
+2. **Open.** The real path is opened without following a final link, and non-blocking, so a
+   named pipe swapped in meanwhile, or a device whose driver honours non-blocking opens, cannot
+   make the open wait for a writer. Non-blocking does not bound every open: one on a hung
+   network filesystem can still wait, and the checks below run only once it returns.
 3. **Identity.** The opened file must be a regular file of at most 4 MiB, and the real path,
    looked up again, must still be free of links, inside the worktree, and name the same file as
    the one opened. A file moved or hard-linked into the worktree is a worktree file.

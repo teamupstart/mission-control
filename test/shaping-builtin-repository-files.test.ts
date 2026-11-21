@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  appendFileSync, chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
+  appendFileSync, chmodSync, closeSync, constants, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,6 +144,33 @@ test("the summary is cut to 4 KiB at a line boundary and returned as repo.summar
   assert.ok(utf8Length(summary) <= SHAPING_LIMITS.summaryBytes);
   assert.equal(summary, line.repeat(40).slice(0, -1), "the last whole line within 4 KiB");
   assert.deepEqual(result?.guidance, []);
+  assert.equal(result?.truncated, true, "a cut summary says the context is incomplete, entries or not");
+
+  const { root: whole } = fixture({ "SUMMARY.md": "short summary\n" });
+  assert.equal((await gatherRepositoryFiles(whole, options({ summary: "SUMMARY.md" }), never))?.truncated, undefined);
+});
+
+test("a newline at offset zero is a line boundary, so a cut never publishes part of the next line", async () => {
+  const { root } = fixture({ "blank-first.md": `\n${"x".repeat(100)}\n`, "two.md": `\n\n${"y".repeat(100)}` });
+  assert.deepEqual(await readWorktreeFile(root, "blank-first.md", 20), { ok: true, text: "", truncated: true });
+  assert.deepEqual(fileText(Buffer.from(`\n${"z".repeat(50)}`), 20, false), { text: "", truncated: true }, "a complete read cut the same way");
+  assert.deepEqual(fileText(Buffer.from("x".repeat(50)), 20, false), { text: "x".repeat(20), truncated: true }, "no boundary: one long line still contributes");
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: "blank-first.md", maxBytes: 20 }, { path: "two.md", maxBytes: 20 }] }), never);
+  assert.deepEqual(result?.guidance, [], "a cut to nothing is no entry");
+  assert.doesNotMatch(JSON.stringify(result), /x{5}|y{5}/);
+});
+
+test("an include path longer than an entry id is skipped unread, and the other entries stay valid", async () => {
+  const { root } = fixture({ "AGENTS.md": "agents\n" });
+  const long = Array.from({ length: 6 }, () => "d".repeat(100)).join("/");
+  const opened: string[] = [];
+  const fs: RepositoryFilesFs = { ...NODE_REPOSITORY_FILES_FS, open: async (target, flags) => { opened.push(target); return NODE_REPOSITORY_FILES_FS.open(target, flags); } };
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: long }, { path: "AGENTS.md" }] }), never, fs);
+  assert.ok(ShapingResultSchema.safeParse(result).success, "the reply is valid");
+  assert.deepEqual(result?.guidance.map((entry) => entry.id), ["AGENTS.md"]);
+  assert.equal(result?.notes?.length, 1);
+  assert.match(result!.notes![0]!, /\(path longer than 512 characters, the limit on an entry's id\)\.$/);
+  assert.deepEqual(opened, [join(root, "AGENTS.md")], "the long path was never opened");
 });
 
 test("a valid facts file becomes repo.facts; anything else is a note and no facts", async () => {
@@ -341,9 +368,20 @@ test("a file that grows past the limit while it is read is cut off at the limit"
   assert.ok(utf8Length(read.text) <= 100);
 });
 
-test("a named pipe with no writer is skipped at once, there from the start or swapped in after the lookup", async () => {
+test("a named pipe with no writer is skipped at once, there from the start or swapped in after the lookup", async (t) => {
   const { root } = fixture({ "notes.md": "regular\n" });
   mkfifo(join(root, "pipe"));
+  // The watchdog that makes a regression fail rather than hang: an open that waits for a writer
+  // never returns by itself, so after the deadline the test becomes that writer, which releases
+  // the open, and records that it had to. Opening the write end non-blocking succeeds only while
+  // a reader is waiting, so it is harmless when nothing blocked.
+  let rescued = false;
+  const watchdog = setTimeout(() => {
+    for (const fifo of [join(root, "pipe"), join(root, "notes.md")]) {
+      try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); rescued = true; } catch { /* no reader waiting */ }
+    }
+  }, 3_000);
+  t.after(() => clearTimeout(watchdog));
   const startedAt = performance.now();
   const before = seam({});
   assert.deepEqual(await readWorktreeFile(root, "pipe", 1024, before), { ok: false, skip: "not-a-regular-file" });
@@ -359,7 +397,9 @@ test("a named pipe with no writer is skipped at once, there from the start or sw
   });
   assert.deepEqual(await readWorktreeFile(root, "notes.md", 1024, swapped), { ok: false, skip: "not-a-regular-file" });
   assert.equal(swapped.opened.length, 1, "opened without blocking, then refused on the handle");
-  assert.ok(performance.now() - startedAt < 5_000, "neither case waited for a writer");
+  clearTimeout(watchdog);
+  assert.equal(rescued, false, "neither open waited for a writer");
+  assert.ok(performance.now() - startedAt < 3_000, "neither case waited for a writer");
 });
 
 test("a signal stops the run between files", async () => {

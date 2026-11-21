@@ -523,9 +523,12 @@ ownership rules are documented with it.
 
 **The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
 in the daemon and reads the paths its options list, nothing else. Containment and size are
-checked on the file it opened, not on a path looked up beforehand: the open neither follows a
-final link nor blocks, the opened file must be a regular file of at most 4 MiB with the same
-device and inode as the link-free real path inside the worktree, and the read stops at its cap.
+checked on the file it opened, not on a path looked up beforehand: the open does not follow a
+final link, and it is non-blocking, so it does not wait for a writer on a named pipe, or on a
+device whose driver honours non-blocking opens. The opened file must be a regular file of at
+most 4 MiB with the same device and inode as the link-free real path inside the worktree, and
+the read stops at its cap. These checks run once the open has returned, so they do not bound
+how long an open on a hung network filesystem takes.
 This proves no file outside the worktree is read while the worktree's directories are not being
 rearranged during the read. A process running as the operator that swaps a directory on the
 path in a tight race can still get an outside file read, and that process could read the file

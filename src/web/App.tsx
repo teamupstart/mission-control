@@ -121,7 +121,7 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession, fleetRunsBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -2533,38 +2533,8 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  /**
-   * The runs each conversation is carrying, in a stable order, keyed by session.
-   *
-   * A session running a multi-repo task has ONE RUN PER REPOSITORY it changed, and a surface
-   * that showed only the newest would silently hide a review. So the fold keeps them all, and
-   * `workflowRunsFor` below picks the newest per REPOSITORY rather than per session: a
-   * repository whose review finished and was run again should show its current run, not two.
-   *
-   * Ordered by repository so a card's chips do not reshuffle every time one run updates. The
-   * session's own repository sorts first because its `repoRoot` is resolved to the session's
-   * root and the sort is stable within a repository - and for the fleet's single-repo
-   * sessions, which have exactly one run, order is not a question.
-   */
-  const workflowRunsBySession = useMemo(() => {
-    const bySession = new Map<string, Map<string, (typeof workflowRuns)[number]>>();
-    for (const run of workflowRuns) {
-      if (!run.sessionId) continue;
-      const byRepo = bySession.get(run.sessionId) ?? new Map();
-      const key = run.repoRoot ?? "";
-      const current = byRepo.get(key);
-      if (!current || run.updatedAt > current.updatedAt) byRepo.set(key, run);
-      bySession.set(run.sessionId, byRepo);
-    }
-    const out = new Map<string, (typeof workflowRuns)[number][]>();
-    for (const [sessionId, byRepo] of bySession) {
-      out.set(
-        sessionId,
-        [...byRepo.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, run]) => run),
-      );
-    }
-    return out;
-  }, [workflowRuns]);
+  // Keep every open review visible; completed history falls back to the newest per repo.
+  const workflowRunsBySession = useMemo(() => fleetRunsBySession(workflowRuns), [workflowRuns]);
 
   /**
    * The workflow each live conversation is armed with, keyed by session.
@@ -2595,8 +2565,8 @@ export function App(): React.JSX.Element {
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   //
-  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
-  // per repository for display: an older run of the same repository that is still open holds
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps open runs and the newest
+  // completed history per repository for display: an older run of the same repository that is still open holds
   // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
   const heldIds = useMemo(() => {
     const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();

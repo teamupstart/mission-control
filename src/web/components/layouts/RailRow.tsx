@@ -1,3 +1,4 @@
+import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { useCallback, useEffect, useId, useRef } from "react";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
@@ -258,6 +259,7 @@ export function RailRow({
           </span>
         </span>
       </button>
+      <WorkflowHolds runs={workflowRuns} blocker={session.blocker} />
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>
   );

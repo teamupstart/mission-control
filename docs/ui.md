@@ -1195,6 +1195,13 @@ available:
   is a `--print` process and reads nothing typed at it. Its permission posture is still shown,
   because an agent nobody can retune must not look safer than it is. A session with both an
   ensemble membership and a pipeline correlation frames as the ensemble's.
+- **Workflow hold details (preview).** Enable **Settings > Feature flags > Workflow hold details**
+  to see each open run's reason, next actor, and an **Open run** link on Board cards and Console
+  rows. A queued sibling links to **Open owning run**. Manual and preview reviews name the
+  operator; healthy automatic reviews say **In progress**. Multiple repository runs each get
+  their own entry. These are live workflow projections, not session blockers: they disappear
+  when the hold ends and never clear an independent blocker or prevent automatic resumption.
+  Turning the preview off hides the explanations without changing any run.
 - **The idle column separates free agents from ones a workflow is holding.** A session bound
   to a live [Workflow](workflows.md#workflows-and-personas) run sits at `idle` for most of that run's life: it finished
   its turn, and the run is off working checks, judges and reviewers before it sends the next

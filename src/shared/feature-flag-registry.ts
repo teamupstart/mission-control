@@ -3,7 +3,16 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
+export const WORKFLOW_HOLD_DETAILS_FLAG_ID = "workflow-hold-details" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: WORKFLOW_HOLD_DETAILS_FLAG_ID,
+    label: "Workflow hold details",
+    description: "Show why each workflow holds a Fleet session, who acts next, and a link to its run.",
+    stage: "preview",
+    keywords: ["fleet", "workflow", "held", "waiting"],
+  },
   {
     id: "codex-resident-native-mcp",
     label: "Codex resident native MCP",

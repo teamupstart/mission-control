@@ -244,3 +244,22 @@ export const HeldSessionsContext = createContext<ReadonlySet<string>>(new Set())
 export function useHeldSessions(): ReadonlySet<string> {
   return useContext(HeldSessionsContext);
 }
+
+
+/** Every open run must remain inspectable, even beside a newer completed run of the same repo. */
+export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
+  const grouped = new Map<string, Map<string, WorkflowRunSummary[]>>();
+  for (const run of runs) {
+    if (!run.sessionId) continue;
+    const repos = grouped.get(run.sessionId) ?? new Map<string, WorkflowRunSummary[]>();
+    const key = run.repoRoot ?? "";
+    repos.set(key, [...(repos.get(key) ?? []), run]);
+    grouped.set(run.sessionId, repos);
+  }
+  return new Map([...grouped].map(([sessionId, repos]) => [sessionId,
+    [...repos].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, entries]) => {
+      const open = entries.filter(run => workflowRunIsOpen(run.status));
+      return open.length ? open.sort((a, b) => a.id.localeCompare(b.id)) : [newestSessionRun(entries)!];
+    }),
+  ]));
+}

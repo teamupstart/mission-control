@@ -383,3 +383,112 @@ test("a run that reaches a terminal status releases its session back to free", a
   await expect(idle.locator(".tile-held")).toHaveCount(0);
   await expect(idle.locator(".tile.is-held")).toHaveCount(0);
 });
+
+test("workflow hold details identify the next actor without creating a session blocker", async ({ dashboard, daemon }) => {
+  const id = await dispatchIdleAgent(dashboard, daemon, "Explain my workflow hold");
+  const runId = await openRunOn(daemon, id, "explanation");
+  await useBoardLayout(dashboard, daemon);
+  await expect(dashboard.getByLabel("Workflow holds")).toHaveCount(0);
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "workflow-hold-details", enabled: true }, "PUT");
+  const holds = dashboard.getByLabel("Workflow holds");
+  await expect(holds).toContainText("Review feedback is ready in preview");
+  await expect(holds).toContainText("Action needed · Operator");
+  await expect(holds.getByRole("link")).toHaveAttribute("href", `#/runs/${runId}`);
+  const session = (await api<Array<{ id: string; blocker: unknown }>>(daemon, "/api/sessions")).find(s => s.id === id)!;
+  expect(session.blocker ?? null).toBeNull();
+  await shoot(dashboard, "hold-operator");
+  await holds.getByRole("link").click();
+  await expect(dashboard).toHaveURL(new RegExp(`/runs/${runId}`));
+  await dashboard.goBack();
+  await expect(holds).toContainText("Action needed · Operator");
+
+  // An independent blocker survives workflow completion. Use the real MCP route and live SSE.
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const response = await fetch(`${daemon.baseURL}/mcp/blocker`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, sessionId: id, kind: "dependency", reason: "Waiting for platform approval",
+      waitingOn: "Platform team", resumeWhen: "Platform approves" }),
+  });
+  expect(response.status).toBe(200);
+  await expect(dashboard.locator(".tile.is-blocked")).toContainText("Waiting for platform approval");
+  await expect(holds).toContainText("Action needed · Operator");
+  await api(daemon, `/api/workflow-runs/${runId}/cancel`, { requestId: "cancel-explanation" });
+  await expect(holds).toHaveCount(0);
+  await expect(dashboard.locator(".tile.is-blocked")).toContainText("Waiting for platform approval");
+  expect((await api<Array<{ id: string; blocker: unknown }>>(daemon, "/api/sessions")).find(s => s.id === id)?.blocker).toBeTruthy();
+});
+
+test("Fleet renders distinct Inspector, sibling and automated waits from live summary updates", async ({ dashboard, daemon }) => {
+  const id = await dispatchIdleAgent(dashboard, daemon, "Different workflow waits");
+  const runId = await openRunOn(daemon, id, "states");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "workflow-hold-details", enabled: true }, "PUT");
+  // Real initial snapshot, scripted subsequent summary frames: no real GitHub review or model call.
+  await dashboard.addInitScript(() => {
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) === "/events") (window as Window & { holdStream?: EventSource }).holdStream = this;
+      }
+    };
+  });
+  await useBoardLayout(dashboard, daemon);
+  const { summary } = await api<{ summary: import("../../src/shared/workflow.ts").WorkflowRunSummary }>(daemon, `/api/workflow-runs/${runId}`);
+  const update = async (run: typeof summary) => dashboard.evaluate(message => {
+    const stream = (window as Window & { holdStream: EventSource }).holdStream;
+    stream.close();
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "workflow_run_upsert", run: message }) }));
+  }, run);
+  await update({ ...summary, status: "waiting_for_pr", phase: "inspector_unadopted_pr", gateWaitReason: "unadopted_pr" });
+  const holds = dashboard.getByLabel("Workflow holds");
+  await expect(holds).toContainText("has not adopted");
+  await expect(holds).toContainText("Action needed · Operator");
+  await update({ ...summary, id: "sibling-wait", repoRoot: "/repos/backend", deliveryHold: {
+    runId, deliveryId: "owner-packet", repoRoot: "/repos/frontend", kind: "persona_feedback", state: "delivered",
+  } });
+  await expect(holds).toContainText("Queued behind frontend");
+  await expect(holds.getByRole("link", { name: /Open owning run/ })).toHaveAttribute("href", `#/runs/${runId}`);
+  await update({ ...summary, id: "healthy-review", repoRoot: "/repos/tools", status: "running", phase: "persona_review", activePersonaNames: ["Test Auditor"] });
+  await expect(holds).toContainText("Review in progress: Test Auditor");
+  await expect(holds).toContainText("In progress · Workflow");
+  await shoot(dashboard, "hold-distinct-reasons");
+  await update({ ...summary, id: "sibling-wait", repoRoot: "/repos/backend", status: "completed" });
+  await expect(holds).not.toContainText("Queued behind");
+  await update({ ...summary, status: "waiting_for_inspector", phase: "inspector_review", gateWaitReason: "review_pending" });
+  await expect(holds).toContainText("In progress · GitHub Inspector");
+  await shoot(dashboard, "hold-automated-progress");
+
+  // The independent blocker's owner is the next actor, not the waiting session.
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const reported = await fetch(`${daemon.baseURL}/mcp/blocker`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, sessionId: id, kind: "dependency", reason: "Waiting for platform approval",
+      waitingOn: "Platform team", resumeWhen: "Platform approves" }),
+  });
+  expect(reported.status).toBe(200);
+  const blocked = (await api<import("../../src/shared/types.ts").Session[]>(daemon, "/api/sessions")).find(s => s.id === id)!;
+  await dashboard.evaluate(session => {
+    (window as Window & { holdStream: EventSource }).holdStream.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ type: "session_upsert", session }) }));
+  }, blocked);
+  await update({ ...summary, deliveryMode: "live", resumptionPolicy: "auto",
+    resumption: { reason: "session_blocked", round: summary.round, resumesItself: true } });
+  await expect(holds).toContainText("Waiting · Platform team");
+  await expect(holds).not.toContainText("Waiting · Session");
+  await shoot(dashboard, "hold-blocker-owner");
+  await dashboard.evaluate(session => {
+    (window as Window & { holdStream: EventSource }).holdStream.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ type: "session_upsert", session: { ...session, blocker: null } }) }));
+  }, blocked);
+  await expect(holds).toContainText("Waiting · Blocker owner");
+  expect((await api<import("../../src/shared/types.ts").Session[]>(daemon, "/api/sessions")).find(s => s.id === id)?.blocker)
+    .toEqual(blocked.blocker);
+
+  // A reconnect snapshot restores daemon truth; the same explanation appears in the Console rail.
+  await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+  await dashboard.reload();
+  await expect(holds).toContainText("Action needed · Operator");
+  await shoot(dashboard, "hold-console");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "workflow-hold-details", enabled: false }, "PUT");
+  await expect(holds).toHaveCount(0);
+});

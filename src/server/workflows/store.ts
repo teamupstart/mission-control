@@ -5462,6 +5462,15 @@ export class WorkflowStore {
         ...(typeof row.run_repo_root === "string" && row.run_repo_root
           ? { repoRoot: row.run_repo_root }
           : {}),
+        deliveryHold: this.runDeliveryHold(run, {
+          state: z.enum(WORKFLOW_BINDING_STATES).parse(row.binding_state),
+          deliveryMode: readDeliveryMode(row.binding_delivery_mode),
+        }),
+        gateWaitReason: gateState?.waitReason ?? null,
+        resumption: run.status === "waiting_for_session" ? this.runResumptionState(run, {
+          deliveryMode: readDeliveryMode(row.binding_delivery_mode),
+        }, { resumptionPolicy: shipped?.resumptionPolicy
+          ?? readResumptionPolicy(typeof row.version_resumption_policy === "string" ? row.version_resumption_policy : null) }) : null,
         status: run.status,
         phase: run.currentPhase,
         recovery: projectWorkflowRecovery({
@@ -11055,13 +11064,18 @@ export class WorkflowStore {
    */
   private runResumptionState(
     run: WorkflowRun,
-    binding: WorkflowBinding,
-    version: WorkflowVersion | null,
+    binding: Pick<WorkflowBinding, "deliveryMode">,
+    version: Pick<WorkflowVersion, "resumptionPolicy"> | null,
   ): WorkflowRunDetail["resumption"] {
     if (run.status !== "waiting_for_session") return null;
-    const withheld = this.listEvents(run.id)
-      .filter((event) => event.kind === "resumption_withheld")
-      .at(-1);
+    // A later repair can already be waiting before the observer records its next reason.
+    // Read only that submission's wait, never the last withheld event from an earlier round.
+    const currentSubmissionId = this.latestSubmission(run.id)?.id ?? null;
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_events WHERE run_id = ? AND event_kind = 'resumption_withheld'
+         AND json_extract(payload_json, '$.submissionId') IS ? ORDER BY id DESC LIMIT 1`,
+    ).get(run.id, currentSubmissionId);
+    const withheld = row ? parseWorkflowEventRow(row) : null;
     const payload = withheld?.payload;
     if (!withheld || !payload || typeof payload !== "object" || Array.isArray(payload)) return null;
     const reason = payload.reason;
@@ -11071,7 +11085,7 @@ export class WorkflowStore {
     // something new; carrying the old sentence forward would explain the current silence with
     // a reason that has already been answered - and the more rounds a run survives, the more
     // confidently it would be wrong.
-    if ((payload.submissionId ?? null) !== (this.latestSubmission(run.id)?.id ?? null)) return null;
+    if ((payload.submissionId ?? null) !== currentSubmissionId) return null;
     const round = payload.round;
     return {
       reason,
@@ -11136,7 +11150,7 @@ export class WorkflowStore {
   }
 
   /** Current queue ownership, derived from the same predicate that guards delivery. */
-  private runDeliveryHold(run: WorkflowRun, binding: WorkflowBinding): WorkflowRunDetail["deliveryHold"] {
+  private runDeliveryHold(run: WorkflowRun, binding: Pick<WorkflowBinding, "state" | "deliveryMode">): WorkflowRunDetail["deliveryHold"] {
     if (binding.state !== "active" || binding.deliveryMode !== "live"
         || ["completed", "cancelled", "failed"].includes(run.status)) return null;
     const latest = this.latestSubmission(run.id);
@@ -11198,8 +11212,8 @@ export class WorkflowStore {
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
       repairGrant: this.runRepairGrant(id),
       refusedCompletion: this.runRefusedCompletion(id),
-      resumption: this.runResumptionState(run, binding, version),
-      deliveryHold: this.runDeliveryHold(run, binding),
+      resumption: summary.resumption ?? null,
+      deliveryHold: summary.deliveryHold ?? null,
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.

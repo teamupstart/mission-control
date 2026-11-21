@@ -1,3 +1,4 @@
+import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
 import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
 import {
@@ -474,6 +475,8 @@ export function SessionTile({
           )}
         </span>
       )}
+
+      <WorkflowHolds runs={workflowRuns} blocker={session.blocker} />
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`

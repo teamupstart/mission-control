@@ -5002,6 +5002,10 @@ export interface WorkflowRunSummary {
   phase: string;
   /** Computed alongside every summary, including pages and SSE updates. Never persisted. */
   recovery?: WorkflowRunRecovery;
+  /** Live queue owner and Inspector reason, shared with run detail. Display only, never a session blocker. */
+  deliveryHold?: WorkflowRunDetail["deliveryHold"];
+  gateWaitReason?: WorkflowGateWaitReason | null;
+  resumption?: WorkflowRunDetail["resumption"];
   round: number;
   /**
    * The latest evidence segment inside `round`. Optional so a summary written by an older

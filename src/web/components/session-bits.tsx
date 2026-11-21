@@ -1,3 +1,4 @@
+import { WORKFLOW_HOLD_DETAILS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { canMessage } from "@shared/pane.ts";
 import { branchUpdateLabel, branchConflictPrompt } from "@shared/pr-branch-update.ts";
@@ -1151,6 +1152,7 @@ export function FleetSectionHead({
   kind: "free" | "held";
   count: number;
 }): React.JSX.Element {
+  const holdDetails = useFeatureFlag(WORKFLOW_HOLD_DETAILS_FLAG_ID);
   return (
     <div className={`fleet-section fleet-section-${kind}`} role="presentation">
       <span className="fleet-section-line">
@@ -1163,7 +1165,8 @@ export function FleetSectionHead({
         // case. It is also the shorter of the two, and this wraps to three lines at the 250px a
         // board column gets by default.
         <span className="fleet-section-why">
-          Waiting on a run that is still open - it sends the next round on its own.
+          {holdDetails ? "Open workflow runs own the next turn. See each session for who acts next."
+            : "Waiting on a run that is still open - it sends the next round on its own."}
         </span>
       )}
     </div>

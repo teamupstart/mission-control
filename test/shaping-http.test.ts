@@ -1078,3 +1078,34 @@ test("revision state is kept only for stored ids, and a removed id stored again 
   const held = await put({ kind: "enable", id: "comes-back", enabled: true, expect: first });
   assert.equal(((await held.json()) as { error: string }).error, "shaper_changed");
 });
+
+test("each published config carries the revisions of its own commit, though a listener writes again", async () => {
+  const { daemonShapingView } = await import("../src/server/shaping/revisions.ts");
+  const shaper = fixture("queued", "gather", "ok");
+  assert.equal((await put({ kind: "upsert", shaper })).status, 200);
+  let reimported = false;
+  const seen: string[] = [];
+  // The first listener imports the same definition again while the first commit is delivered,
+  // which advances the id's generation before the second listener runs.
+  const stopFirst = shaping.onShapingConfigChanged(() => {
+    if (reimported) return;
+    reimported = true;
+    assert.equal(shaping.applyShapingIntent({ kind: "upsert", shaper: shaper as never }).ok, true);
+  });
+  const stopSecond = shaping.onShapingConfigChanged((config) => { seen.push(daemonShapingView(config).revisions.queued!); });
+  try {
+    // An enable keeps the revision, so the first commit's revision is the one it was sent with.
+    const committed = ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions.queued!;
+    const reply = await put({ kind: "enable", id: "queued", enabled: true, expect: committed });
+    assert.equal(reply.status, 200);
+    const now = ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions.queued!;
+    // The second listener sees the first commit with that commit's revision, then the reimport's.
+    assert.equal(seen.length, 2, JSON.stringify(seen));
+    assert.equal(seen[0], committed, "the first config keeps its own revision");
+    assert.notEqual(now, committed, "the reimport started a new generation");
+    assert.equal(seen[1], now, "and its config carries the new revision");
+  } finally {
+    stopFirst();
+    stopSecond();
+  }
+});

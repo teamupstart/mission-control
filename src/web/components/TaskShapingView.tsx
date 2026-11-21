@@ -18,6 +18,8 @@ const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported",
   unsupported: { title: "Not supported by this build", hint: "Kept exactly as stored and never called. Switch one off or remove it." },
 };
 
+const NO_LOCKS: ReadonlySet<string> = new Set();
+
 const TRANSPORT_LABEL = { command: "Command", mcp: "MCP", http: "HTTP", builtin: "Built in" } as const;
 
 /**
@@ -34,6 +36,7 @@ export function TaskShapingView({
   errors = {},
   earlier = {},
   outcomeArrivals = {},
+  locked = NO_LOCKS,
   onDismiss,
   ready = true,
   onSet,
@@ -50,6 +53,8 @@ export function TaskShapingView({
   earlier?: Record<string, string[]>;
   /** When each control's latest outcome arrived, in arrival order. */
   outcomeArrivals?: Record<string, number>;
+  /** Controls whose request still awaits its answer: each takes no new write until it arrives. */
+  locked?: ReadonlySet<string>;
   /** Clears the outcomes shown under one control, for those drawn above the list. */
   onDismiss?: (key: string) => void;
   ready?: boolean;
@@ -124,6 +129,8 @@ export function TaskShapingView({
     // Without the daemon's revision nothing here can say which definition it acts on: a view from
     // a daemon older than this dashboard carries none, and an import still being drawn has none yet.
     const unbound = entry.revision === null;
+    // This row's own write still awaits its answer: none of its writes is offered until it arrives.
+    const rowBusy = busy || locked.has(key);
     // A confirmation opened for an earlier definition of this id does not apply to its replacement.
     const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
     return (
@@ -170,12 +177,12 @@ export function TaskShapingView({
             <>
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
-                  disabled={busy || at === 0}
+                  disabled={rowBusy || at === 0}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
-                  disabled={busy || at === group.rows.length - 1}
+                  disabled={rowBusy || at === group.rows.length - 1}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
@@ -192,13 +199,13 @@ export function TaskShapingView({
                 <button type="button" className="btn btn-ghost" onClick={() => setRemoving(null)}>Keep</button>
               </Tooltip>
               <Tooltip label="Delete this shaper's stored definition and its on or off choice">
-                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy || unbound}
+                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={rowBusy || unbound}
                   onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision ?? undefined }, key); }}>Remove</button>
               </Tooltip>
             </>
           ) : (
             <Tooltip label="Remove this shaper. Asks once more first.">
-              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy || unbound}
+              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={rowBusy || unbound}
                 onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
@@ -210,7 +217,7 @@ export function TaskShapingView({
               ? "Stored on, but this build never runs it. Switch it off."
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
-              disabled={busy || !canSwitch || unbound} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
+              disabled={rowBusy || !canSwitch || unbound} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
               onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
@@ -227,7 +234,7 @@ export function TaskShapingView({
         guidance for it. A shaper you register is stored switched off: dry-run it, then switch it on. Every
         change applies at once in every open window.
       </p>
-      {config && <ShapingSettingsForm config={config} busy={busy} error={errors.settings ?? null} earlier={earlier.settings} onSet={onSet} />}
+      {config && <ShapingSettingsForm config={config} busy={busy} locked={locked.has("settings")} error={errors.settings ?? null} earlier={earlier.settings} onSet={onSet} />}
       <div className="feature-flag-list shaping-list" data-anchor="task-shaping/shapers">
         <div className="settings-pane-head shaping-list-head">
           <div className="settings-pane-title-row">
@@ -304,7 +311,7 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
+        <ShapingImportDialog config={config} busy={busy || locked.has("import")} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
           fresh={(outcomeArrivals.import ?? 0) > importOpenedAt.current}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
@@ -358,9 +365,11 @@ interface SettingsFields {
  * makes appears here at once. A save sends only the fields typed in here, so it never writes this
  * window's stale copy of a value another window has changed since.
  */
-function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
+function ShapingSettingsForm({ config, busy, locked, error, earlier, onSet }: {
   config: ShapingConfigView;
   busy: boolean;
+  /** Its own save still awaits its answer: the fields stay editable, but nothing is sent again. */
+  locked: boolean;
   error: string | null;
   earlier?: readonly string[];
   onSet: (intent: ShapingIntent, key: string) => Promise<ShapingWriteOutcome>;
@@ -444,7 +453,7 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
   };
   return (
     <form className="shaping-settings" aria-label="Caller identity and budgets"
-      onSubmit={(event) => { event.preventDefault(); if (dirty && valid && !busy) void save(); }}>
+      onSubmit={(event) => { event.preventDefault(); if (dirty && valid && !busy && !locked) void save(); }}>
       <div className="shaping-field" data-anchor="task-shaping/identity">
         <label htmlFor="shaping-caller-user">Caller identity</label>
         <input id="shaping-caller-user" className="field-input" type="text" value={shown.user} placeholder="you@example.com" maxLength={300}
@@ -483,7 +492,7 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
           <button type="button" className="btn btn-ghost" disabled={!edited || busy} onClick={() => setDraft({})}>Reset</button>
         </Tooltip>
         <Tooltip label="Save the caller identity and budgets for every window">
-          <button type="submit" className="btn" disabled={!dirty || !valid || busy}>Save</button>
+          <button type="submit" className="btn" disabled={!dirty || !valid || busy || locked}>Save</button>
         </Tooltip>
       </div>
     </form>

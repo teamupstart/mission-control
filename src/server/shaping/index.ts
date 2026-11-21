@@ -10,7 +10,7 @@ import {
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
 import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
-import { advanceShapingGeneration, noteShapingEntriesChanged, shapingReviser } from "./revisions.ts";
+import { advanceShapingGeneration, captureShapingView, noteShapingEntriesChanged, shapingReviser } from "./revisions.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -96,6 +96,8 @@ function publish(state: Store, config: ShapingConfig, revised = false): ShapingC
   // Before any listener derives a view: every revision it carries is of the new generation.
   noteShapingEntriesChanged(state.config, config);
   state.config = freeze(config);
+  // Its revisions, as they are at this commit: a listener's own write must not change them.
+  captureShapingView(state.config);
   // Capture the committed value and the membership, and finish delivering one config to every
   // listener before the next, even when a listener writes again.
   if (changed) state.pending.push({ config: state.config, listeners: [...state.listeners] });

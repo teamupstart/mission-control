@@ -351,20 +351,22 @@ every open window, in the rail, settings search and the palette alike, with no r
 window already open on its link shows the panel the moment the flag turns on. Every change
 below applies at once in every open window, one write at a time. A refused write rolls back and
 shows the daemon's reason beside the control that sent it. The daemon's answer decides whether a
-write succeeded: a frame from another window can free the controls first, but a refusal that
-arrives after it is still shown. When a newer write went out before that refusal arrived, the
-refusal names the earlier action, so it never reads as the outcome of the change just made. A
-later write that succeeds under the same control clears an earlier write's refusal there. When
-both are refused, the newer write's reason stays the control's refusal and a late one is listed
-apart from it, under **Earlier outcomes**. A refusal belongs to its control: a write under another
-control leaves it in place, and acting on the same control again dismisses it. A write whose
+write succeeded: a frame from another window can free the panel first, but a refusal that
+arrives after it is still shown. The control that sent a write stays locked until that write's
+answer arrives, even once the panel is free: a row's switch, removal and moves, the identity and
+budgets' Save (its fields stay editable), and the import dialog's Save. So no second write on the
+same control can go out first and then be undone by the first, as a delayed switch on could undo
+a newer switch off, since a switch keeps the revision it is checked against. When a write on
+another control went out before a refusal arrived, the refusal names the earlier action, so it
+never reads as the outcome of the change just made. A refusal belongs to its control: a write
+under another control leaves it in place, and acting on the same control again dismisses it. A write whose
 answer never arrives, because it timed out or the connection failed, is reported as unconfirmed,
 never as refused, and never as saved: only the daemon's answer ties an outcome to a request,
 since the same state can come from another write or predate this one. When a stream update
 showed the change stored, the message says so, and an import's dialog stays open for the
 operator to close. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
-arrives while the dialog is open again. Only the latest save sent from a dialog closes it on success.
+arrives while the dialog is open again.
 An outcome for a shaper the list no longer shows, such as a removal refused because another
 window removed it first, is shown above the list under **Shapers no longer listed**, each with
 the id of the shaper it was for. An

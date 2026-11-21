@@ -40,6 +40,17 @@ export function useShapingSettings(
   // answers. The newest is the control's error; any older ones are shown apart from it, so a
   // refusal that arrives late never replaces the reason the latest action failed.
   const [refusals, setRefusals] = useState<Record<string, Refusal[]>>({});
+  // The controls with a request still awaiting its HTTP answer. A frame can free the panel before
+  // that answer, but the same control stays locked until it arrives: a second write on it could
+  // otherwise be answered first and then undone by the first, as a switch on that the daemon
+  // applies after a newer switch off, since a switch keeps the revision it was checked against.
+  const [locked, setLocked] = useState<ReadonlySet<string>>(new Set());
+  const lockedNow = useRef(new Set<string>());
+  const lock = (key: string, held: boolean): void => {
+    if (held) lockedNow.current.add(key);
+    else lockedNow.current.delete(key);
+    setLocked(new Set(lockedNow.current));
+  };
   const writing = useRef<ShapingIntent | null>(null);
   /** The last request sent, so a refusal can tell whether a newer write followed it. */
   const latest = useRef<ShapingIntent | null>(null);
@@ -88,7 +99,7 @@ export function useShapingSettings(
    * same state can come from another write, or have been stored before this one went out.
    */
   const set = async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
-    if (!live || writing.current) return "not_sent";
+    if (!live || writing.current || lockedNow.current.has(key)) return "not_sent";
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
@@ -98,6 +109,7 @@ export function useShapingSettings(
       return "refused";
     }
     const request = parsed.data;
+    lock(key, true);
     const number = ++sent.current;
     writing.current = request;
     latest.current = request;
@@ -160,6 +172,8 @@ export function useShapingSettings(
         setPending(null);
       }
       return "refused";
+    } finally {
+      lock(key, false);
     }
   };
 
@@ -181,6 +195,8 @@ export function useShapingSettings(
      */
     outcomeArrivals: Object.fromEntries(Object.entries(refusals)
       .map(([key, list]) => [key, Math.max(...list.map((refusal) => refusal.arrived))])),
+    /** Controls whose request still awaits its HTTP answer: each takes no new write until it arrives. */
+    locked,
     ready: live,
     set,
     /** Clear every outcome shown under one control, as the operator's own dismissal. */

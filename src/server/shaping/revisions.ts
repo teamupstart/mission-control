@@ -79,9 +79,24 @@ export const shapingReviser: ShapingReviser = (entries) => {
   return revision;
 };
 
-/** The config view as the daemon publishes it: with revisions derived by `shapingReviser`. */
+/**
+ * Each committed config's view, taken as it was committed. Listeners run after the commit, and one
+ * of them can write again before the next runs, advancing a generation: a view derived at delivery
+ * would then give the first config the second write's revision.
+ */
+const committedViews = new WeakMap<ShapingConfig, ShapingConfigView>();
+
+/** Take `config`'s view now, as it is committed, for every reader of that config to see. */
+export function captureShapingView(config: ShapingConfig): void {
+  committedViews.set(config, shapingConfigView(config, shapingReviser));
+}
+
+/**
+ * The config view as the daemon publishes it: with revisions derived by `shapingReviser`, as they
+ * were when `config` was committed when it was, otherwise as they are now.
+ */
 export function daemonShapingView(config: ShapingConfig): ShapingConfigView {
-  return shapingConfigView(config, shapingReviser);
+  return committedViews.get(config) ?? shapingConfigView(config, shapingReviser);
 }
 
 /**

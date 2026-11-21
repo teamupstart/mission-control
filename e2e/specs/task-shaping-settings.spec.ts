@@ -518,10 +518,11 @@ test("a peer's newer write wins while this window's own write answer is still he
   await reachedDaemon;
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["race-notes"]).toBe(true);
   await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: on");
-  // The stream's frame already confirmed the write, so this window takes its next edit at once
-  // instead of waiting on the held answer.
+  // The stream's frame already showed the write, so the panel takes other edits at once; the same
+  // switch waits for its own answer, so no second write on it can be undone by the first.
   await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: on");
-  await expect(pill(page, "Race notes")).toBeEnabled();
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+  await expect(pill(page, "Race notes")).toBeDisabled();
 
   // The peer writes the newer state while the first answer is still held.
   await pill(peer, "Race notes").click();
@@ -570,11 +571,12 @@ test("a refused write is shown even after a peer's frame already showed what it 
   // A peer switches the same definition on: that frame is this click's outcome and frees the
   // row. Only then does it replace the definition, so the held click names one that is gone.
   await putShaping(daemon, { kind: "enable", id: "swap-notes", enabled: true });
-  await expect(pill(page, "Swap notes")).toBeEnabled();
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("swap-notes", "Swap notes", { timeoutMs: 20_000 }) });
   await putShaping(daemon, { kind: "enable", id: "swap-notes", enabled: true });
   await expect(pill(page, "Swap notes")).toHaveAccessibleName("Swap notes: on");
-  await expect(pill(page, "Swap notes")).toBeEnabled();
+  // The switch that sent the held request waits for its answer.
+  await expect(pill(page, "Swap notes")).toBeDisabled();
 
   release();
   expect((await answer).status()).toBe(409);
@@ -650,54 +652,44 @@ test("the import dialog offers Save only for a file it has read and reviewed", a
   expect((await shapingConfig(daemon)).shapers).toEqual([]);
 });
 
-// The peer's frame frees the row while this window's first enable is held; the operator switches
-// the shaper off again, which lands, and then the held enable is refused. That refusal is the
-// first click's, so it says so instead of reading as the outcome of the switch just made.
-test("a refusal that lands after a newer write on the same row names the earlier action", async ({ dashboard: page, daemon }) => {
+// The peer's frame frees the panel while this window's first switch is held; the operator switches
+// another shaper, which lands, and then the held switch is refused. That refusal is the first
+// click's, so it says so instead of reading as the outcome of the switch just made.
+test("a refusal that lands after a newer write names the earlier action", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("late-notes", "Late notes") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("next-notes", "Next notes") });
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
-
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  let sent!: () => void;
-  const requested = new Promise<void>((resolve) => { sent = resolve; });
-  let puts = 0;
+  const reached = gate();
+  const goes = gate();
+  let first: import("@playwright/test").Request | undefined;
   await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    // Only the first write is held; every later one goes straight through.
-    if (++puts === 1) { sent(); await held; }
+    if (route.request().method() !== "PUT" || first) return route.fallback();
+    first = route.request();
+    reached.open();
+    await goes.opened;
     await route.continue();
   });
-  // Each answer is read from its own request: the second write is answered before the first.
-  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
-  const first = page.waitForRequest(isPut);
   await pill(page, "Late notes").click();
-  await requested;
-  // A peer switches the same definition on: that frame is this click's outcome and frees the
-  // row. Only then does it replace the definition, so the held click names one that is gone.
+  await reached.opened;
+  // A peer switches it on, then replaces it, so the held click names a definition that is gone.
   await putShaping(daemon, { kind: "enable", id: "late-notes", enabled: true });
-  await expect(pill(page, "Late notes")).toBeEnabled();
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("late-notes", "Late notes", { timeoutMs: 20_000 }) });
-  await putShaping(daemon, { kind: "enable", id: "late-notes", enabled: true });
-  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: on");
-  await expect(pill(page, "Late notes")).toBeEnabled();
-
-  // The newer write, on the same row, lands first.
-  const second = page.waitForRequest(isPut);
-  await pill(page, "Late notes").click();
-  expect((await (await second).response())?.status()).toBe(200);
-  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
-  await expect(row(page, "Late notes").getByRole("alert")).toHaveCount(0);
-
-  release();
-  expect((await (await first).response())?.status()).toBe(409);
+  // The newer write, on another row, lands first; the held switch's own row still waits.
+  await expect(pill(page, "Late notes")).toBeDisabled();
+  const second = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Next notes").click();
+  expect((await second).status()).toBe(200);
+  await expect(pill(page, "Next notes")).toHaveAccessibleName("Next notes: on");
+  goes.open();
+  expect((await first!.response())?.status()).toBe(409);
   await expect(row(page, "Late notes").getByRole("alert")).toHaveText(
     "An earlier change, switching late-notes on, was refused: \"late-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.",
   );
-  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
-  expect((await shapingConfig(daemon)).overrides["late-notes"]).toBe(false);
+  await expect(pill(page, "Late notes")).toBeEnabled();
+  await expect(row(page, "Next notes").getByRole("alert")).toHaveCount(0);
   await page.unroute("**/api/shaping");
 });
 
@@ -1008,110 +1000,6 @@ test("a save's late answer keeps an edit made after it, even one that types the 
   await page.unroute("**/api/shaping");
 });
 
-test("a later write that succeeds on a row clears the earlier write's refusal shown there", async ({ dashboard: page, daemon }) => {
-  await setFlag(daemon, true);
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("clear-notes", "Clear notes") });
-  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: off");
-  // The first write is held before it reaches the daemon; the second reaches it and only its
-  // answer is held. So the second lands first and the first is refused, then answered in order.
-  const firstGoes = gate();
-  const secondAnswers = gate();
-  const firstSent = gate();
-  let puts = 0;
-  await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    if (++puts === 1) {
-      firstSent.open();
-      await firstGoes.opened;
-      return route.continue();
-    }
-    const response = await route.fetch();
-    await secondAnswers.opened;
-    await route.fulfill({ response });
-  });
-  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
-  const first = page.waitForRequest(isPut);
-  await pill(page, "Clear notes").click();
-  await firstSent.opened;
-  // A peer switches the same definition on: that frame is this click's outcome and frees the
-  // row. Only then does it replace the definition, so the held click names one that is gone.
-  await putShaping(daemon, { kind: "enable", id: "clear-notes", enabled: true });
-  await expect(pill(page, "Clear notes")).toBeEnabled();
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("clear-notes", "Clear notes", { timeoutMs: 20_000 }) });
-  await putShaping(daemon, { kind: "enable", id: "clear-notes", enabled: true });
-  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: on");
-  await expect(pill(page, "Clear notes")).toBeEnabled();
-  await pill(page, "Clear notes").click();
-  await expect.poll(async () => (await shapingConfig(daemon)).overrides["clear-notes"]).toBe(false);
-
-  firstGoes.open();
-  expect((await (await first).response())?.status()).toBe(409);
-  const alert = row(page, "Clear notes").getByRole("alert");
-  await expect(alert).toContainText("An earlier change, switching clear-notes on, was refused");
-  // The second write's success is the row's latest outcome, so the earlier refusal goes.
-  secondAnswers.open();
-  await expect(alert).toHaveCount(0);
-  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: off");
-  await page.unroute("**/api/shaping");
-});
-
-test("a refusal that arrives late never replaces the newer refusal under the same row", async ({ dashboard: page, daemon }) => {
-  await setFlag(daemon, true);
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes") });
-  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: off");
-  // Both writes are held before they reach the daemon, and each is refused once let through,
-  // because a peer replaced the shaper after each was sent. The newer one is answered first.
-  const gates = [gate(), gate()];
-  const sent = [gate(), gate()];
-  let puts = 0;
-  await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    const at = puts++;
-    sent[at]!.open();
-    await gates[at]!.opened;
-    await route.continue();
-  });
-  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
-  const first = page.waitForRequest(isPut);
-  await pill(page, "Both notes").click();
-  await sent[0]!.opened;
-  // A peer replaces and switches it on: the frame frees the row for the second click.
-  // A peer switches the same definition on: that frame is this click's outcome and frees the
-  // row. Only then does it replace the definition, so the held click names one that is gone.
-  await putShaping(daemon, { kind: "enable", id: "both-notes", enabled: true });
-  await expect(pill(page, "Both notes")).toBeEnabled();
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes", { timeoutMs: 20_000 }) });
-  await putShaping(daemon, { kind: "enable", id: "both-notes", enabled: true });
-  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: on");
-  await expect(pill(page, "Both notes")).toBeEnabled();
-  const second = page.waitForRequest((request) => isPut(request) && request.postDataJSON()?.enabled === false);
-  await pill(page, "Both notes").click();
-  await sent[1]!.opened;
-  // The peer replaces it again, so the second click names a definition that is gone too.
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes", { timeoutMs: 25_000 }) });
-  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: off");
-
-  const changed = "\"both-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.";
-  const alert = row(page, "Both notes").getByRole("alert");
-  const earlier = row(page, "Both notes").getByRole("list", { name: "Earlier outcomes" });
-  // A polite live region is already there, empty, before any late refusal arrives in it.
-  const live = row(page, "Both notes").locator("[aria-live=polite]");
-  await expect(live).toHaveCount(1);
-  await expect(live).toBeEmpty();
-  gates[1]!.open();
-  expect((await (await second).response())?.status()).toBe(409);
-  await expect(alert).toHaveText(changed);
-  gates[0]!.open();
-  expect((await (await first).response())?.status()).toBe(409);
-  // The latest action's reason stays the row's refusal; the late one is listed apart from it.
-  await expect(earlier).toHaveText(`An earlier change, switching both-notes on, was refused: ${changed}`);
-  await expect(live.getByRole("list", { name: "Earlier outcomes" })).toHaveCount(1);
-  await expect(alert).toHaveText(changed);
-  await page.unroute("**/api/shaping");
-});
-
 test("a save that answers late keeps a manifest pasted into the same dialog after it", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await countReadWrites(page);
@@ -1354,25 +1242,17 @@ test("a reopened import dialog shows a refusal that arrives while it is open, an
   await page.unroute("**/api/shaping");
 });
 
-test("saving the same manifest twice closes the dialog only on the latest save's answer", async ({ dashboard: page, daemon }) => {
+test("an import dialog's Save waits for its own save's answer, though a frame frees the panel", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await countReadWrites(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  // The first save reaches the daemon and its answer is held; the second is held and then refused.
-  const firstAnswers = gate();
-  const secondAnswers = gate();
-  const secondSent = gate();
-  let puts = 0;
+  // The save reaches the daemon at once; only its answer is held, so the frame frees the panel.
+  const answer = gate();
   await page.route("**/api/shaping", async (route) => {
     if (route.request().method() !== "PUT") return route.fallback();
-    if (++puts === 1) {
-      const response = await route.fetch();
-      await firstAnswers.opened;
-      return route.fulfill({ response });
-    }
-    secondSent.open();
-    await secondAnswers.opened;
-    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: "The second save was refused." }) });
+    const response = await route.fetch();
+    await answer.opened;
+    await route.fulfill({ response });
   });
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   const dialog = page.getByRole("dialog", { name: "Import a shaper" });
@@ -1381,20 +1261,14 @@ test("saving the same manifest twice closes the dialog only on the latest save's
   const text = JSON.stringify(commandShaper("twice-notes", "Twice notes"));
   await manifest.fill(text);
   await save.click();
-  // The frame frees Save; the same manifest is saved again without an edit.
   await expect(pill(page, "Twice notes")).toHaveAccessibleName("Twice notes: off");
-  await expect(save).toBeEnabled();
-  await save.click();
-  await secondSent.opened;
-  // The first save's success lands while the second is pending: the dialog stays.
-  firstAnswers.open();
+  // Freed by the frame, the dialog can be closed, but the same save is not offered again until
+  // its answer arrives: a second one could be answered first and then overwritten by the first.
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await expect(save).toBeDisabled();
+  answer.open();
   await writesHandled(page, 1);
-  await expect(dialog).toBeVisible();
-  await expect(manifest).toHaveValue(text);
-  // The second save's refusal is then shown in the dialog that still holds the draft.
-  secondAnswers.open();
-  await expect(dialog.getByRole("alert")).toHaveText("The second save was refused.");
-  await expect(manifest).toHaveValue(text);
+  await expect(dialog).toHaveCount(0);
   await page.unroute("**/api/shaping");
 });
 
@@ -1432,52 +1306,6 @@ test("a refused removal of a shaper another window removed first is shown above 
   // The operator clears it: nothing else changes, and the group goes with its last outcome.
   await orphans.getByRole("button", { name: "Dismiss the outcome for gone-notes" }).click();
   await expect(orphans).toHaveCount(0);
-  await page.unroute("**/api/shaping");
-});
-
-test("a reopened import dialog shows an earlier save's refusal that arrives after a newer one", async ({ dashboard: page, daemon }) => {
-  await setFlag(daemon, true);
-  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  // Two saves of the same manifest are held; the test answers each with a refusal, newer first.
-  const answers = [gate(), gate()];
-  const sent = [gate(), gate()];
-  let puts = 0;
-  await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    const at = puts++;
-    sent[at]!.open();
-    await answers[at]!.opened;
-    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: `Save ${at + 1} was refused.` }) });
-  });
-  const shaper = commandShaper("twin-saves", "Twin saves");
-  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
-  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
-  const save = dialog.getByRole("button", { name: "Save switched off" });
-  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
-  await save.click();
-  await sent[0]!.opened;
-  // Another window imports the same definition: the frame frees Save, and it is saved again.
-  await putShaping(daemon, { kind: "upsert", shaper });
-  await expect(save).toBeEnabled();
-  await save.click();
-  await sent[1]!.opened;
-  // A frame after the second save, from an unrelated write elsewhere, shows the shaper as saved:
-  // that frees the dialog. The config it matched before the save went out never does.
-  await putShaping(daemon, { kind: "settings", caller: { user: "frame-after-save" } });
-  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
-  await expect(dialog).toHaveCount(0);
-  // The newer save's refusal arrives while the dialog is closed, beside the import button.
-  answers[1]!.open();
-  const outcome = panel(page).getByRole("group", { name: "Last import" });
-  await expect(outcome.getByRole("alert")).toHaveText("Save 2 was refused.");
-  // Reopened, then the earlier save's refusal arrives: the open dialog shows it.
-  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
-  await expect(dialog.getByRole("alert")).toHaveCount(0);
-  answers[0]!.open();
-  await expect(dialog.getByRole("list", { name: "Earlier outcomes" }))
-    .toHaveText("An earlier change, importing twin-saves, was refused: Save 1 was refused.");
-  await expect(dialog.getByRole("alert")).toHaveText("Save 2 was refused.");
   await page.unroute("**/api/shaping");
 });
 
@@ -1677,44 +1505,6 @@ test("with a daemon older than the replacement flag, the import dialog does not 
   await expect(dialog.getByRole("button", { name: "Save switched off" })).toBeEnabled();
 });
 
-test("a late refusal of an earlier settings save never clears the same draft sent again after it", async ({ dashboard: page, daemon }) => {
-  await setFlag(daemon, true);
-  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
-  const form = page.getByRole("form", { name: "Caller identity and budgets" });
-  const identity = form.getByRole("textbox", { name: "Caller identity" });
-  const save = form.getByRole("button", { name: "Save", exact: true });
-  // The first save is held before the daemon and then refused by the test; the second is lost.
-  const firstSent = gate();
-  const firstAnswers = gate();
-  let puts = 0;
-  await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    if (++puts === 1) {
-      firstSent.open();
-      await firstAnswers.opened;
-      return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_settings", reason: "The first save was refused." }) });
-    }
-    await route.abort("connectionreset");
-  });
-  await identity.fill("resent-draft");
-  await save.click();
-  await firstSent.opened;
-  // A peer stores that same value, so the frame frees the form; then it stores another.
-  await putShaping(daemon, { kind: "settings", caller: { user: "resent-draft" } });
-  await expect(identity).toBeEnabled();
-  await putShaping(daemon, { kind: "settings", caller: { user: "peer-value" } });
-  // The draft is unchanged and differs from what is stored now: it is sent again as it is.
-  await expect(save).toBeEnabled();
-  await expect(identity).toHaveValue("resent-draft");
-  await save.click();
-  await expect(form.getByRole("alert")).toContainText("Whether this change was stored is unknown");
-  // The first save's refusal lands last. It answers a save that is no longer the field's latest.
-  firstAnswers.open();
-  await expect(form.getByRole("list", { name: "Earlier outcomes" })).toContainText("The first save was refused.");
-  await expect(identity).toHaveValue("resent-draft");
-  await page.unroute("**/api/shaping");
-});
-
 test("a pending switch is not drawn on a replacement another window left off", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("drawn-notes", "Drawn notes") });
@@ -1876,3 +1666,36 @@ async function countShapingFrames(page: Page): Promise<void> {
 function shapingFramesSeen(page: Page): Promise<number> {
   return page.evaluate(() => (window as unknown as { shapingFrames: number }).shapingFrames);
 }
+
+test("a switch whose answer is delayed keeps its control locked, so it never undoes a newer switch", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("delayed-notes", "Delayed notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Delayed notes")).toHaveAccessibleName("Delayed notes: off");
+  // The switch on is delayed before it reaches the daemon.
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await pill(page, "Delayed notes").click();
+  await reached.opened;
+  // Another window switches it on: the frame frees the panel, but not this switch.
+  await putShaping(daemon, { kind: "enable", id: "delayed-notes", enabled: true });
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+  await expect(pill(page, "Delayed notes")).toHaveAccessibleName("Delayed notes: on");
+  await expect(pill(page, "Delayed notes")).toBeDisabled();
+  // The delayed switch lands; only then can the operator switch it off, and that stands.
+  goes.open();
+  expect((await held!.response())?.status()).toBe(200);
+  await expect(pill(page, "Delayed notes")).toBeEnabled();
+  await pill(page, "Delayed notes").click();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["delayed-notes"]).toBe(false);
+  await expect(pill(page, "Delayed notes")).toHaveAccessibleName("Delayed notes: off");
+  await page.unroute("**/api/shaping");
+});

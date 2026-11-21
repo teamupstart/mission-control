@@ -1692,3 +1692,27 @@ test("a task changed while its handover was being shaped is not typed, and stays
     setShaping(false);
   }
 });
+
+test("a session that started a turn while its handover was being shaped is not typed into, and the task stays in the backlog", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-busy-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // The operator types into the session while shapers are still answering.
+      r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /became working while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into the now-active conversation");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

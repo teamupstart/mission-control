@@ -5332,6 +5332,23 @@ export class TaskManager {
     if (inputs(after) !== shapedFrom) {
       return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
     }
+    // The session was checked before the reset, and shapers can take seconds: an operator who
+    // started a turn in the meantime, or a review that arrived, makes it no longer a session to
+    // type into. Asked again only when shaping ran, so a handover with the flag off is unchanged.
+    if (shapingOn) {
+      const receiving = this.registry.getSession(s.id);
+      const changed = !receiving ? "went away"
+        : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
+        : receiving.pendingReviews > 0 ? "got a review waiting on you"
+        : null;
+      if (changed) {
+        return { ok: false, error: `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`, scope: "session" };
+      }
+      const stillReady = await paneReady(receiving!);
+      if (!stillReady.ok) {
+        return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
+      }
+    }
     const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
     // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
     // a refusal does - the task stays in the backlog, so a surviving row would claim an

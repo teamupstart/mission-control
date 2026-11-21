@@ -70,7 +70,12 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
     if (outcomeOf) {
       // Still running under a live wrapper, or still owned by this daemon: leave it.
       if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf)) {
-        rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+        try {
+          rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+        } catch (error) {
+          // One entry that cannot be removed never stops the rest of the scan.
+          console.warn(`[launch] could not remove the orphaned turn-one outcome ${entry}:`, error);
+        }
       }
       continue;
     }

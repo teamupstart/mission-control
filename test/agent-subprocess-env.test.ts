@@ -374,11 +374,20 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
   // A launch still running: its state home exists.
   const live = createDisposableAgentStateHome();
   writeFileSync(`${live}.turn-one`, "shaped");
+  // An orphan that cannot be removed - a non-empty directory - sorted ahead of the others.
+  const stuck = join(DISPOSABLE_STATE_ROOT, "session-0-stuck-turn-one");
+  mkdirSync(join(`${stuck}.turn-one`, "held"), { recursive: true });
+  const warn = console.warn;
+  const warnings: unknown[] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
   try {
     reconcileDisposableAgentStateHomes();
-    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed");
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
     assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
+    assert.ok(warnings.some((w) => /could not remove the orphaned turn-one outcome session-0-stuck-turn-one/.test(String(w))), "the stuck one was logged");
   } finally {
+    console.warn = warn;
+    rmSync(`${stuck}.turn-one`, { recursive: true, force: true });
     rmSync(`${orphan}.turn-one`, { force: true });
     rmSync(`${live}.turn-one`, { force: true });
     rmSync(live, { recursive: true, force: true });

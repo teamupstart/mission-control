@@ -29,15 +29,16 @@ Not in scope: answer wording or coalescing (Phase 2); the Asked entry and closed
 
 ## 4. Repository findings and inherited contracts
 
-Read `phased-plan.md`, section "Findings that shaped the phase". In short:
+The full findings are in `phased-plan.md`, section "Findings that shaped the phase". In short:
 
 - Final row text is written in `queueReviewPendingTurn` (`src/server/db.ts`), where Phase 2 also
   coalesces. Compose the marker there, from every review id in the row.
 - `pendingTurns` row ids are turn ids carrying the review id.
 - Reviews can move to a runtime-transfer successor.
-- The marker text proves nothing about authorship. `session_delegated_turns` and
-  `delegatedTurnSources` (`src/server/delegated-turns.ts`) are the existing durable
-  one-row-per-delivery binding to reuse.
+- The marker text proves nothing about authorship. `session_delegated_turns`,
+  `reserveDelegatedTurn`, `noteOtherSend`, `session_other_sends` and `delegatedTurnSources`
+  (`src/server/delegated-turns.ts`) are the existing durable one-row-per-delivery binding, with
+  reserve-before-send and contest on racing sends, to reuse.
 - `attributeTranscript` (`src/server/transcript-attribution.ts`) feeds every transcript reader.
 - `TranscriptPresentation` (`src/shared/types.ts`) and `projectLaunchPresentation`
   (`src/web/lib/launch-presentation.ts`) are the existing presentation path.
@@ -64,12 +65,16 @@ Read `phased-plan.md`, section "Findings that shaped the phase". In short:
    escalation do not change.
 3. **Delivery record and binding.** Add a table beside `session_delegated_turns` in
    `src/server/db.ts` (created idempotently in the migration path, with an age index and the same
-   retention). When the outbox confirms a marked row was handed to the agent, write one row:
-   conversation key, `injectionFingerprint` of the exact delivered text, the review ids, delivery
-   time, the transcript size at that moment, an unbound message id, and an unclaimed echo flag.
-   Extract the binding rule from `delegatedTurnSources` into a shared helper (first matching turn
-   after the offset, bound once, never re-pointed, contested and unknown-offset rows bind
-   nothing) and use it for both tables. Do not fork the rule.
+   retention). When the outbox claims a marked row, and before the text is handed to the agent,
+   reserve one row: conversation key, `injectionFingerprint` of the exact text, the review ids,
+   the time, the transcript size read at that moment, an unbound message id, and an unclaimed
+   echo flag. Confirm it when delivery succeeds; release it when delivery is refused, as
+   `releaseDelegatedTurn` does. Extract the binding rule from `delegatedTurnSources` into a
+   shared helper (first matching turn after the offset, bound once, never re-pointed, contested
+   and unknown-offset rows bind nothing) and use it for both tables. A reservation is contested
+   while another send of the same words is in its race window, using the existing
+   `noteOtherSend` and `session_other_sends` record, and contests nothing it does not race.
+   Do not fork the rule.
 4. **Recognition.** In `attributeTranscript`, change a user turn only when a delivery row is bound
    to it. Take the review ids from the row, confirm they still exist for this session or its
    runtime-transfer lineage, then set `origin: "harness"` and
@@ -114,7 +119,10 @@ Read `phased-plan.md`, section "Findings that shaped the phase". In short:
 - Unit: format and parse round trip; coalesced ids; malformed, partial, non-ASCII and
   non-first-line markers rejected; writer output for message-mode, call-mode-with-flag,
   call-mode-without-flag and snooze rows; a fold rewrites the line with every id; a delivery
-  writes exactly one row and it binds to exactly one turn; a pasted copy of a delivered message,
+  reserves exactly one row before the send, with the offset read before the send, and it binds to
+  exactly one turn, including a turn that lands before delivery is confirmed; a refused delivery
+  releases its row; a composer send of the same words inside the race window contests the
+  delivery and neither turn becomes a card; a pasted copy of a delivered message,
   a marker with a different body, and a marker with valid ids but no delivery all stay plain
   operator turns; a transfer predecessor's delivery still binds; the binding and
   `origin: harness` survive a restart with an empty injection record; the Goal reader skips only
@@ -154,5 +162,9 @@ about a review. Retiring the flag makes the writer unconditional; it must not ch
 - Plan pull request review (#1612, revision 3): recognition was bound to a recorded daemon
   delivery instead of review-id ownership, so a pasted marker can no longer hide an operator
   message, change its authorship or skip Goal capture.
+- Plan pull request review (#1612, revision 4): the delivery row and its offset are reserved
+  before the send, a racing send of the same words contests the delivery, and the pasted-copy
+  guarantee is narrowed to sends Mission Control can observe. The findings cross-reference was
+  rephrased as a reference.
 - Final audit: owns every requirement of the source plan, sections 1 to 5, and all three adopted
   decisions.

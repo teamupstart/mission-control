@@ -25,7 +25,11 @@ at answer time until then; the work is one phase after async-input Phases 2 and 
   `session_delegated_turns` (`src/server/db.ts`) records one row per delivery with the delivered
   text's fingerprint and the target transcript's size, and `delegatedTurnSources`
   (`src/server/delegated-turns.ts`) binds each row to exactly one later turn and never re-points
-  it. Review-message recognition uses the same mechanism through a shared binding helper, so
+  it. It reserves the row and reads the transcript size before the send
+  (`reserveDelegatedTurn`), so a turn that lands before the send returns is still after the
+  offset. It also contests a delivery while another send of the same words is in its race window
+  (`noteOtherSend`, `session_other_sends`), because a fingerprint cannot tell two identical turns
+  apart. Review-message recognition uses the same mechanism through a shared binding helper, so
   there is one binding rule rather than two.
 - `attributeTranscript` (`src/server/transcript-attribution.ts:26`) is the single server-side
   pass over transcript turns. Its callers are the transcript route, the transcript stream,
@@ -91,6 +95,13 @@ Owned here:
 One Inspector finding on #1612 was accepted and applied in revision 3: review-id ownership alone
 let an operator's pasted marker turn their own message into an answer card, change its authorship
 and skip Goal capture. Recognition now requires a durable delivery record bound to the turn.
+
+Revision 4 applies two more findings from the same review. The delivery row and its transcript
+offset are reserved before the send rather than at confirmation, so a fast turn cannot land at or
+before the offset. A racing send of the same words contests the delivery instead of letting the
+first matching turn win. The guarantee for pasted copies is narrowed to what Mission Control can
+observe: a byte-identical copy typed straight into a terminal pane inside the delivery window is
+the one stated residual.
 
 ## Final verification
 

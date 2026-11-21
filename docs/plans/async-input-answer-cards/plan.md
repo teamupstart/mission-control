@@ -1,8 +1,8 @@
 # Asynchronous input: answers render as answer cards
 
 Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
-phased in `phased-plan.md`. Revision 3 binds recognition to a recorded daemon delivery after the
-plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
+phased in `phased-plan.md`. Revisions 3 and 4 bind recognition to a recorded daemon delivery after
+the plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
 ## Adopted decisions
@@ -75,21 +75,30 @@ A marker alone proves nothing: anyone who can type into the session, the operato
 paste one. Recognition therefore rests on a durable record of the daemon's own delivery, and the
 marker is only a cheap filter and a label for the agent.
 
-- **Delivery record.** When the outbox hands a review message to the agent, the daemon writes one
-  row per delivery to a new table beside `session_delegated_turns` (`src/server/db.ts`): the
-  conversation key, the fingerprint of the exact delivered text (`injectionFingerprint`), the
-  review ids it carried, the delivery time and the transcript size at that moment. Delegated
-  turns already use this pattern so that their sender survives a restart.
+- **Delivery record, reserved before sending.** When the outbox claims a review message and
+  before it hands the text to the agent, the daemon reserves one row in a new table beside
+  `session_delegated_turns` (`src/server/db.ts`): the conversation key, the fingerprint of the
+  exact text (`injectionFingerprint`), the review ids it carries, the time, and the transcript
+  size at that moment, which is where the agent's turn can first appear. The row is confirmed
+  when delivery succeeds and released if it is refused. Capturing the offset before the send
+  means a turn that reaches the transcript before delivery is confirmed is still after the
+  offset. This is the order `reserveDelegatedTurn` already uses for delegated turns.
 - **Binding.** A row binds to the first user turn written after its transcript offset whose text
   has the same fingerprint, and the binding (the native message id) is never re-pointed. The
   binding logic in `src/server/delegated-turns.ts` is extracted into a shared helper that both
   tables use, not copied.
+- **Racing sends are contested, not guessed.** A fingerprint cannot tell two identical turns
+  apart, so the rule delegated turns use applies: while another send of the same words is inside
+  the delivery's race window, the delivery is contested and binds nothing. Other sends are those
+  the operator's composer, a queued turn or another sender makes, recorded through
+  `noteOtherSend` and the durable `session_other_sends` table. Both turns then render as plain
+  text, as they do today, rather than one being guessed.
 - **Only a bound turn changes.** `src/server/transcript-attribution.ts`, which already attaches a
   `presentation` to launch prompts and resident wakes, changes a turn only when a delivery row is
   bound to it. The review ids come from the row, not from the text. A turn carrying a marker with
   no bound delivery renders as the plain text it is, with its normal authorship. That includes an
-  operator pasting a marker, or pasting the exact text of a delivered message later. A bound turn
-  gets:
+  operator pasting a marker, sending a copy of a delivered message through Mission Control at any
+  time, or pasting one after the delivery's turn has been bound. A bound turn gets:
 
 - `origin: "harness"`, so its byline, find scope and the rail's Yours tab treat it as Mission
   Control's, including after a restart, when the in-memory record is gone.
@@ -177,8 +186,8 @@ sequenceDiagram
   H->>D: answer
   D->>O: "[mission-control:answer review=id]" + today's text
   W-->>W: card at resolvedAt, "On its way to the agent"
+  D->>D: reserve delivery row (fingerprint, review ids, transcript offset)
   O->>A: user turn (agent reads the full text)
-  D->>D: record delivery (fingerprint, review ids, transcript offset)
   T->>A: reads turn, binds it to the recorded delivery
   T->>W: turn with origin harness + presentation review-message
   W-->>W: one gold card at the delivery turn, "Delivered to the agent"
@@ -211,8 +220,9 @@ two renderings.
 | --- | --- |
 | A harness alters the delivered text (trims, prefixes, or merges a steered message into another turn). | The altered turn no longer matches the delivery's fingerprint, so it binds to nothing and renders as today's raw text. A miss looks like today, never like a wrong card. One fake-agent spec per runtime that delivers answers (SDK and terminal) pins it. |
 | The agent is confused by the marker line. | It is a plain, self-describing header above unchanged text. Verified with the fake agents and one real dispatch per harness before the flag goes default-on, alongside the receipt check the async-input plan already requires. |
-| An operator types or pastes the marker, or the whole text of a delivered answer. | Nothing changes for that turn. Only a turn bound to a recorded daemon delivery is drawn as a card, and each delivery binds to exactly one turn, so a pasted copy keeps its operator authorship, stays visible as typed, and is still eligible for Goal capture. |
-| A delivery cannot bind (transcript size unreadable at send time). | Its turn renders as raw text, as today, never as a card on a guess. |
+| An operator types or pastes the marker, or the whole text of a delivered answer. | Only a turn bound to a recorded daemon delivery is drawn as a card, and each delivery binds to exactly one turn. A copy sent through Mission Control while the delivery is unbound contests it, so neither turn becomes a card; a copy sent after the delivery has bound stays an operator turn. Either way the copy keeps its operator authorship, stays visible as typed, and remains eligible for Goal capture. |
+| A byte-identical copy of the whole delivered text, review id included, typed straight into a terminal pane outside Mission Control, inside the few seconds before the agent's turn lands. | Mission Control cannot see that send, so the first matching turn binds. This is the one case the guarantee does not cover, and it is the residual delegated turns already accept. |
+| A delivery cannot bind (transcript size unreadable before sending, or contested). | Its turn renders as raw text, as today, never as a card on a guess. |
 | The card moves from `resolvedAt` to the delivery turn when the answer is delivered. | Accepted for a single card per answer; the "On its way" line explains the interim state. |
 
 ## Verification
@@ -220,7 +230,9 @@ two renderings.
 - Unit (`test/`): envelope write and parse round trip, coalesced ids, malformed and partial
   lines, non-ASCII rejection; a card is drawn only for a turn bound to a recorded delivery; a
   pasted copy of a delivered message, a marker with a different body, and a marker with valid ids
-  but no delivery all render as plain operator text; the binding and `origin: harness` survive a
+  but no delivery all render as plain operator text; a turn that lands before delivery is
+  confirmed still binds; a composer send of the same words inside the race window contests the
+  delivery so neither turn becomes a card; the binding and `origin: harness` survive a
   restart with an empty injection record; the Goal reader skips only the one unclaimed echo of a
   recorded delivery and captures a retyped copy; projection and `mergeConversation` draw one card per review, at the delivery turn
   when present and at `resolvedAt` with "On its way" when queued; a call-mode answer returned

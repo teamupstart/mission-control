@@ -58,6 +58,8 @@ export type ConversationRow =
       ts: number;
       reviewId: string;
       delivery: ReviewRowDelivery;
+      /** The conversation's review history has not come back yet: the question may yet be found. */
+      loading: boolean;
     };
 
 type ReviewEntry = Extract<ConversationRow, { kind: "review" | "asked" | "closed" }>;
@@ -110,9 +112,12 @@ function drawDeliveries(
   rows: TranscriptRow[],
   reviews: readonly ReviewItem[],
   delivered: { answer: Set<string>; "remind-later": Set<string> },
+  history: ReviewHistory,
 ): TranscriptRow[] | ConversationRow[] {
   if (!rows.some((row) => row.kind === "turn" && row.message.presentation?.kind === "review-message")) return rows;
-  const byId = new Map(reviews.map((review) => [review.id, review]));
+  // A question a runtime-transfer predecessor asked can be answered here; its own entries stay
+  // in its conversation, so it is looked up for the card and nothing else.
+  const byId = new Map([...(history.lineage ?? []), ...reviews].map((review) => [review.id, review]));
   const out: ConversationRow[] = [];
   for (const row of rows) {
     const presentation = row.kind === "turn" ? row.message.presentation : undefined;
@@ -130,7 +135,7 @@ function drawDeliveries(
       };
       const review = byId.get(id);
       if (!review) {
-        out.push({ kind: "delivered", ts: row.ts, reviewId: id, delivery });
+        out.push({ kind: "delivered", ts: row.ts, reviewId: id, delivery, loading: history.loaded === false });
         return;
       }
       delivered[presentation.envelope].add(review.id);
@@ -138,6 +143,17 @@ function drawDeliveries(
     });
   }
   return out;
+}
+
+/**
+ * What is known of the conversation's review history beyond the entries themselves. `loaded`
+ * false means the durable read is still in flight, so a delivered answer whose review is not in
+ * hand is drawn as loading rather than as gone. `lineage` adds reviews a runtime-transfer
+ * predecessor asked, for drawing a delivered answer only.
+ */
+export interface ReviewHistory {
+  loaded?: boolean;
+  lineage?: readonly ReviewItem[];
 }
 
 /**
@@ -182,6 +198,7 @@ export function mergeConversation(
   episodes: ForemanEpisode[],
   reviews: ReviewItem[] = [],
   pendingTurns: readonly PendingTurn[] = [],
+  history: ReviewHistory = {},
 ): ConversationRow[] {
   // A delivered review message is drawn at the turn the agent received it, and only there: an
   // answer's entry at `resolvedAt` and a snooze's at `snooze.at` give way to it. An answer
@@ -189,7 +206,7 @@ export function mergeConversation(
   // call returned has neither, and is placed exactly as before. Drawn before the early return,
   // so a delivered turn is a card even in a conversation with no reviews to show.
   const delivered = { answer: new Set<string>(), "remind-later": new Set<string>() };
-  const rows: ConversationRow[] = drawDeliveries(transcript, reviews, delivered);
+  const rows: ConversationRow[] = drawDeliveries(transcript, reviews, delivered, history);
   if (episodes.length === 0 && reviews.length === 0) return rows;
   const queued = queuedAnswerIds(pendingTurns);
 

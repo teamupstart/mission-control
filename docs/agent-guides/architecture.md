@@ -391,7 +391,8 @@ that id prefix, so an operator message that starts with the marker is noted like
 (`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
 `mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available"),
 never as the raw turn. A delivery's words on a turn no delivery claims drop the live label, as a
-delegated copy does. Bound review rows are never pruned by age; unbound ones past the delivery
+delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
+(they keep a turn's "could be Mission Control" doubt); ordinary unbound rows past the delivery
 window are pruned on the goal tick. A steered delivery's plain echo record (the same words
 right after its mid-turn record, before any agent turn) is found by walking the file from the
 row's offset, so it is answered like its record whichever page holds it. That decision is

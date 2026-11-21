@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PendingTurn, ReviewItem, TranscriptMessage } from "../src/shared/types.ts";
 import { wrapReviewEnvelope } from "../src/shared/review-message-envelope.ts";
-import { mergeConversation, type ConversationRow } from "../src/web/lib/episodes.ts";
+import { mergeConversation, type ConversationRow, type ReviewHistory } from "../src/web/lib/episodes.ts";
 import { projectLaunchPresentation } from "../src/web/lib/launch-presentation.ts";
 import { transcriptRows } from "../src/web/lib/tools.ts";
 import { collectHits } from "../src/web/lib/find.ts";
@@ -38,15 +38,15 @@ function delivered(id: string, ts: number, reviewIds: string[], envelope: "answe
   };
 }
 
-function rows(messages: TranscriptMessage[], reviews: ReviewItem[], pending: PendingTurn[] = []): ConversationRow[] {
-  return mergeConversation(transcriptRows(projectLaunchPresentation(messages)), [], reviews, pending);
+function rows(messages: TranscriptMessage[], reviews: ReviewItem[], pending: PendingTurn[] = [], history: ReviewHistory = {}): ConversationRow[] {
+  return mergeConversation(transcriptRows(projectLaunchPresentation(messages)), [], reviews, pending, history);
 }
 
 // Phase 3's Asked entry is left exactly where it was; only the answer's placement is pinned here.
 const shape = (out: ConversationRow[]) => out.filter((row) => row.kind !== "asked").map((row) =>
   row.kind === "review"
     ? `review:${row.review.id.slice(0, 4)}${row.delivery ? `@${row.delivery.turnId}` : ""}${row.queued ? ":queued" : ""}`
-    : row.kind === "delivered" ? `delivered:${row.reviewId.slice(0, 4)}@${row.delivery.turnId}`
+    : row.kind === "delivered" ? `delivered:${row.reviewId.slice(0, 4)}@${row.delivery.turnId}${row.loading ? ":loading" : ""}`
       : row.kind === "turn" ? row.id : row.kind);
 
 test("a delivered answer is drawn once, at its turn, in place of the raw message, and the reply follows it", () => {
@@ -90,8 +90,8 @@ test("a delivered turn naming a review the dashboard cannot draw is still a card
   assert.deepEqual(shape(out), ["review:1b0c@d", "delivered:7d1e@d"], "no raw turn is left");
   const gone = out.find((row) => row.kind === "delivered") as Extract<ConversationRow, { kind: "delivered" }>;
   assert.equal(gone.delivery.last, true, "the disclosure rides on the last card of the turn");
-  // With no reviews loaded at all - a restored database, or a history fetch still in flight.
-  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [])), ["delivered:1b0c@d"]);
+  // A history that has come back without the review: a restored database.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true })), ["delivered:1b0c@d"]);
   const html = renderToStaticMarkup(createElement(UnavailableReviewCard, {
     envelope: "answer",
     delivery: { state: "delivered", turnId: "d", at: 3_000, received: { text: gone.delivery.text, open: false } },
@@ -104,6 +104,24 @@ test("a delivered turn naming a review the dashboard cannot draw is still a card
     envelope: "remind-later", delivery: { state: "delivered", turnId: "d", at: 3_000 },
   }));
   assert.match(snoozed, /class="review-snoozed"/);
+});
+
+test("while the review history is still loading, a delivered answer reads as loading, never as gone", () => {
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: false })), ["delivered:1b0c@d:loading"]);
+  // Once it settles with the review, the real card takes the turn.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [review(A)], [], { loaded: true })), ["review:1b0c@d"]);
+  const html = renderToStaticMarkup(createElement(UnavailableReviewCard, {
+    envelope: "answer", loading: true, delivery: { state: "delivered", turnId: "d", at: 3_000 },
+  }));
+  assert.match(html, /aria-label="Answer loading" aria-busy="true"/);
+  assert.match(html, /Loading the question…/);
+  assert.doesNotMatch(html, /no longer available/);
+});
+
+test("an answer delivered here to a question a runtime-transfer predecessor asked draws its real card", () => {
+  const inherited = review(A, { sessionId: "predecessor" });
+  const out = rows([delivered("d", 3_000, [A])], [], [], { loaded: true, lineage: [inherited] });
+  assert.deepEqual(shape(out), ["review:1b0c@d"], "looked up for the card only; no entry of its own here");
 });
 
 test("a turn carrying a marker but no presentation is an ordinary turn", () => {

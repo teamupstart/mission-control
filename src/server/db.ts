@@ -937,8 +937,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- (async-input): an answer, or a snoozed question's "carry on". Reserved before the send and
     -- bound by the same rule as session_delegated_turns (delivery-binding.ts). Only a turn a
     -- bound row names is drawn as an answer card; a pasted marker never is. Bound rows are never
-    -- pruned, so an old conversation keeps its cards; only unbound rows past the delivery window,
-    -- which can bind nothing, are pruned. No message text, only its fingerprint.
+    -- pruned, so an old conversation keeps its cards. Contested rows and rows with no offset are
+    -- never pruned either: they can never bind, and they are the record that a turn with their
+    -- words could be Mission Control's. Only an ordinary unbound row past the delivery window,
+    -- which the binding walk has expired, is pruned. No message text, only its fingerprint.
     --
     -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
     -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it
@@ -12680,14 +12682,17 @@ export function updateReviewDeliveryEcho(
 }
 
 /**
- * Delete unbound deliveries older than `olderThan`, live conversation or not: past the delivery
- * window they can no longer bind anything. A bound row is never pruned, so an old conversation
- * keeps its answer cards.
+ * Delete ordinary unbound deliveries older than `olderThan`, live conversation or not: past the
+ * delivery window the binding walk has expired them, and they say nothing about any turn. A
+ * bound row is never pruned, so an old conversation keeps its answer cards; nor is a contested
+ * or offset-less row, which can never bind and is what keeps a turn with its words from being
+ * read as the operator's (`DeliveryLedger.bound`).
  */
 export function pruneUnboundReviewDeliveries(olderThan: number): number {
   return Number(
     openDb()
-      .prepare(`DELETE FROM session_review_deliveries WHERE message_id IS NULL AND delivered_at < ?`)
+      .prepare(`DELETE FROM session_review_deliveries
+         WHERE message_id IS NULL AND contested = 0 AND transcript_offset IS NOT NULL AND delivered_at < ?`)
       .run(olderThan).changes,
   );
 }

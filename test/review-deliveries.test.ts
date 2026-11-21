@@ -386,6 +386,25 @@ test("a bound row survives the prune tick for good; an unbound one past the wind
   assert.equal(old!.presentation?.kind, "review-message", "the old conversation still draws its card");
 });
 
+test("contested and offset-less deliveries outlive the prune tick, so their turns never read as the operator's", () => {
+  for (const kind of ["contested", "no offset"] as const) {
+    restart();
+    const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
+    const text = answerText([storeReview("s1")]);
+    if (kind === "no offset") t.failSize("missing");
+    else noteOtherSend(t.conversation(k), text, now);
+    reserveReviewDelivery(t.conversation(k), text, undefined, now);
+    t.failSize(false);
+    t.append("delivered", text, now + 1);
+    // A day and more later, the goal tick prunes; then the daemon restarts.
+    pruneReviewDeliveries(now + 2 * LAG);
+    restart();
+    const [turn] = attribute("s1", t, k);
+    assert.equal(turn!.originUnresolved, true, `${kind}: still could be Mission Control's, so no "you" label`);
+    assert.equal(turn!.origin, undefined);
+  }
+});
+
 // ---- the writer ----
 
 let pane = 400;

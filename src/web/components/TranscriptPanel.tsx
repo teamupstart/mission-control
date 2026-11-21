@@ -55,7 +55,7 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeConversation, type ConversationRow, type ReviewRowDelivery } from "../lib/episodes.ts";
+import { mergeConversation, type ConversationRow, type ReviewHistory, type ReviewRowDelivery } from "../lib/episodes.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -321,6 +321,7 @@ export function TranscriptPanel({
   dialogOpen = false,
   episodes = [],
   reviews = [],
+  reviewHistory,
   onAnswerQuestion,
   onReplyBox,
   onOpenFile,
@@ -374,6 +375,12 @@ export function TranscriptPanel({
    * one is answered.
    */
   reviews?: ReviewItem[];
+  /**
+   * Whether the review history behind `reviews` has loaded, and the reviews a runtime-transfer
+   * predecessor asked (`useTimelineReviews`). Read only to draw delivered answers: while the
+   * history is loading, an answer whose review is not in hand is drawn as loading, not as gone.
+   */
+  reviewHistory?: ReviewHistory;
   /**
    * Open the card that answers this session's open questions, from an Asked entry
    * (`async-input`). Without it an open Asked entry has no Answer button.
@@ -626,7 +633,7 @@ export function TranscriptPanel({
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(visible), episodes, reviews, session.pendingTurns);
+  const rows = mergeConversation(transcriptRows(visible), episodes, reviews, session.pendingTurns, reviewHistory);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -1383,6 +1390,7 @@ export function TranscriptPanel({
                 <UnavailableReviewCard
                   key={`rv-gone-${row.reviewId}-${row.delivery.turnId}`}
                   envelope={row.delivery.envelope}
+                  loading={row.loading}
                   delivery={deliveredCard(row.delivery, hits, find?.query ?? "", currentKey)}
                 />
               ) : row.kind === "tools" ? (

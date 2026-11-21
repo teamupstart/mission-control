@@ -8877,9 +8877,10 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Drop review-message deliveries that never bound and are past the delivery window. Liveness
-   * does not matter: an unbound row that old can bind nothing. Bound rows are kept for good, so
-   * an old conversation keeps its answer cards.
+   * Drop ordinary review-message deliveries that never bound and are past the delivery window.
+   * Liveness does not matter: such a row can bind nothing and says nothing about any turn. Bound
+   * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
+   * and offset-less rows, which keep a turn with their words from reading as the operator's.
    */
   pruneReviewDeliveries(now: number): number {
     return pruneReviewDeliveries(now);

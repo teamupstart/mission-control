@@ -3100,7 +3100,8 @@ of waiting inside the call:
   visible message and still moves the Goal. If another send of the same words races a delivery,
   neither turn is drawn as an entry. A delivered message naming a question the dashboard can no
   longer find (after a database restore, say) is still drawn as an entry, reading **This question
-  is no longer available**, with the delivery time and **What the agent received**.
+  is no longer available**, with the delivery time and **What the agent received**. While the
+  conversation's history is still loading, the same entry reads **Loading the question…** instead.
 - While the agent works past its question, its session is not amber. Once it stops with the
   question still pending, it is amber and reads **waiting on your answer**, and it holds queue
   sends and backlog assignment like any session that needs you. A resident is the exception: it

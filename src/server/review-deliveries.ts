@@ -372,8 +372,9 @@ const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
 const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
 
 /**
- * Drop unbound deliveries past the delivery window: they can no longer bind anything. Bound rows
- * are kept, so an old conversation reopened later still draws its cards.
+ * Drop ordinary unbound deliveries past the delivery window: they can no longer bind anything.
+ * Bound rows are kept, so an old conversation reopened later still draws its cards, and so are
+ * contested and offset-less rows, which keep a turn with their words from reading as "you".
  */
 export function pruneReviewDeliveries(now = Date.now()): number {
   const removed = pruneUnboundReviewDeliveries(now - DELIVERY_LAG_MS);

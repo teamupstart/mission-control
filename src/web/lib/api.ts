@@ -2521,6 +2521,12 @@ export const api = {
    */
   resolvedReviews: (id: string) =>
     fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+  /**
+   * The same history for the sessions this conversation was runtime-transferred from. Read only
+   * to draw an answer delivered here whose question a predecessor asked.
+   */
+  lineageReviews: (id: string) =>
+    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews?lineage=1`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

@@ -34,19 +34,30 @@ export function useTimelineReviews(
   sessionId: string,
   live: ReviewItem[],
   enabled = true,
-): ReviewItem[] {
+): TimelineReviews {
   const [stored, setStored] = useState<ReviewItem[]>([]);
+  const [lineage, setLineage] = useState<ReviewItem[]>([]);
+  // The session whose durable history has come back (or failed to). Until it is this one, a
+  // delivered answer whose review is not in hand is still loading, not gone.
+  const [settledFor, setSettledFor] = useState<string | null>(null);
   const asyncInput = useFeatureFlag(ASYNC_INPUT_FLAG);
 
   useEffect(() => {
     let alive = true;
     setStored([]);
+    setLineage([]);
+    setSettledFor(null);
     if (!enabled) return;
-    void api.resolvedReviews(sessionId).then((rows) => {
+    // Both reads settle before the history counts as loaded: an answer delivered here can name a
+    // question a runtime-transfer predecessor asked, which only the lineage read returns.
+    void Promise.all([api.resolvedReviews(sessionId), api.lineageReviews(sessionId)]).then(([rows, inherited]) => {
       // Guarded against the session switching mid-flight: without this, a slow response for
       // the session you just left would land in the panel for the one you just opened, and
       // its answers would read as this session's.
-      if (alive && rows) setStored(rows);
+      if (!alive) return;
+      if (rows) setStored(rows);
+      if (inherited) setLineage(inherited);
+      setSettledFor(sessionId);
     });
     return () => {
       alive = false;
@@ -58,7 +69,23 @@ export function useTimelineReviews(
   // differs and a `useMemo` keyed on it would recompute every time anyway - reading as a
   // cache while never being one. The work it would be hiding is a Map build over a handful
   // of reviews, and the merge downstream already walks the rows once per render.
-  return timelineReviewsFor(sessionId, stored, live, asyncInput);
+  return {
+    reviews: timelineReviewsFor(sessionId, stored, live, asyncInput),
+    loaded: settledFor === sessionId,
+    lineage,
+  };
+}
+
+/**
+ * What `useTimelineReviews` hands the conversation. `reviews` are this session's entries.
+ * `loaded` says its durable history has settled, so a delivered answer naming a review that is
+ * still missing really is gone rather than still loading. `lineage` is the same history for the
+ * sessions this conversation was transferred from, used only to draw a delivered answer.
+ */
+export interface TimelineReviews {
+  reviews: ReviewItem[];
+  loaded: boolean;
+  lineage: ReviewItem[];
 }
 
 /**

@@ -7135,6 +7135,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
+      const freshPublishedReview = this.mustRun(input.runId).currentPhase === "inspector_reviewed_tree_changed";
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -7150,6 +7151,7 @@ export class WorkflowStore {
         submissionId: input.id,
         triggerKey: input.triggerKey,
         round: input.round,
+        ...(freshPublishedReview ? { freshPublishedReview: true } : {}),
       }, input.now);
       return {
         run: this.mustRun(input.runId),
@@ -8677,13 +8679,19 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
-  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  /** The newest executed verdict must pass, and pre-publication-review passes cannot cross
+   * the durable fresh-review boundary recorded atomically with its root submission. */
   priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
     const row = this.db.prepare(
       `SELECT * FROM (
          SELECT a.* FROM workflow_node_attempts a
            JOIN workflow_submissions s ON s.id = a.submission_id
           WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND s.round >= COALESCE((
+              SELECT MAX(json_extract(payload_json, '$.round')) FROM workflow_events
+              WHERE run_id = s.run_id AND event_kind = 'submission_created'
+                AND json_extract(payload_json, '$.freshPublishedReview') = 1
+            ), 0)
             AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
             AND a.runner_id IS NOT NULL
           ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1

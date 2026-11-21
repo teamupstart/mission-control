@@ -1273,6 +1273,7 @@ const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   unadopted_pr: "A pull request exists, but GitHub Inspector has not adopted it as one we opened.",
   inspector_disabled: "GitHub Inspector is switched off, so the gate cannot be evaluated.",
   awaiting_fresh_observation: "Waiting for GitHub Inspector's next sweep to observe the pushed head.",
+  reviewed_tree_changed: "The pushed PR contains changes made after workflow review. Pushing again will not resolve this hold. Review the pushed head to continue.",
   working_tree_not_pushed: "Required publication content is missing, differs from the PR, or lacks retained artifact evidence. Check the evidence snapshot, then commit and push the required changes and resubmit.",
   head_mismatch: "The pull request's head is not the commit this submission reviewed.",
   review_pending: "GitHub Inspector has the pull request and has not finished reviewing it.",
@@ -1417,6 +1418,10 @@ export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null
   if (!state) return null;
   const submission = selectedSubmission(detail, null);
   const context = submission?.context as { evidence?: { headSha?: string | null } } | undefined;
+  if (state.waitReason === "reviewed_tree_changed" && state.reviewedContent) {
+    const reviewed = state.reviewedContent;
+    return `reviewed ${shortSha(reviewed.headSha) ?? "unknown"} (tree ${shortSha(reviewed.treeOid)}), published ${shortSha(state.observedHeadSha) ?? "unknown"} (tree ${shortSha(reviewed.publishedTreeOid)})`;
+  }
   const expected = state.targetHeadSha ?? submission?.prHeadSha ?? context?.evidence?.headSha;
   if (state.waitReason === "head_mismatch") {
     return `expected ${shortSha(expected) ?? "unknown"}, PR at ${shortSha(state.observedHeadSha) ?? "unknown"}`;
@@ -1429,6 +1434,9 @@ export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
   const condition = spentInspectorGateCondition(detail);
   if (!condition) {
+    if (detail.inspectorGate?.state.waitReason === "reviewed_tree_changed") {
+      return `${gateWaitSentence("reviewed_tree_changed")} Versions: ${inspectorGateHeadLabel(detail)}.`;
+    }
     if (detail.inspectorGate?.state.waitReason === "head_mismatch") {
       return `Inspector gate is waiting: ${inspectorGateHeadLabel(detail)}. Submit the current work for review to continue.`;
     }

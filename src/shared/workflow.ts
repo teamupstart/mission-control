@@ -2728,10 +2728,18 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
   "findings",
   "pr_closed",
   "clean_review_pending",
+  "reviewed_tree_changed",
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
 export interface WorkflowInspectorGateState {
+  /** Present when a published shipping continuation differs from its semantic review. */
+  reviewedContent?: {
+    submissionId: string;
+    headSha: string | null;
+    treeOid: string;
+    publishedTreeOid: string;
+  };
   prKey: string | null;
   prUrl: string | null;
   targetHeadSha: string | null;

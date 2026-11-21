@@ -7500,6 +7500,12 @@ export const RemoveWorkflowPersonaDirectiveSchema = WorkflowRunActionSchema.exte
 export type RemoveWorkflowPersonaDirective = z.infer<typeof RemoveWorkflowPersonaDirectiveSchema>;
 
 export const WorkflowInspectorGateStateSchema = z.object({
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
   prKey: z.string().min(1).max(1_000).nullable(),
   prUrl: z.string().url().max(4_000).nullable(),
   targetHeadSha: z.string().min(1).max(100).nullable(),

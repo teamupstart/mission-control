@@ -39,9 +39,9 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
-const { WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
+const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -1978,7 +1978,7 @@ for (const { parentProof, childProof, changed, number } of [
   { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
   { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}`, async () => {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}`, async (t) => {
     const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
@@ -2031,8 +2031,53 @@ for (const { parentProof, childProof, changed, number } of [
         mustWait ? "shipping escaped the accepted parent proof" : "matching accepted content prevented completion");
       if (mustWait) assert.equal(
         WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
-        "working_tree_not_pushed",
+        changed ? "reviewed_tree_changed" : "working_tree_not_pushed",
       );
+      if (changed) {
+        const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+        assert.deepEqual(gate.reviewedContent, {
+          submissionId: parent.id,
+          headSha: parentEvidence.headSha,
+          treeOid: parentEvidence.publication?.treeOid ?? parentEvidence.contentTreeOid,
+          publishedTreeOid: h.contentTree.oid,
+        });
+        // A persisted hold from an older build is reclassified on the next observation.
+        h.store.setRunState(runId, "waiting_for_session", "inspector_working_tree_not_pushed",
+          { ...gate, waitReason: "working_tree_not_pushed" }, now);
+        // Another observation of the same pushed head cannot spend or bypass review.
+        h.registry.inspectionUpdated(key, head, "OPEN", now + 1);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(h.store.latestSubmission(runId)?.id, child.id);
+        assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
+        assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
+          "reviewed_tree_changed");
+        // Make reuse eligibility explicit rather than relying on the machine default.
+        const previousPolicy = getWorkflowPolicy();
+        t.after(() => setWorkflowPolicy(previousPolicy));
+        setWorkflowPolicy({ ...previousPolicy, skipPassedJudges: true });
+        assert.equal(getWorkflowPolicy().skipPassedJudges, true);
+        const earned = h.store.listAttempts(parent.id).find((attempt) => attempt.nodeId === "upstream");
+        assert.ok(earned);
+        assert.equal(earned.state, "completed");
+        assert.notEqual(earned.runner, null, "the earlier pass must come from an executed reviewer");
+        assert.equal(PersonaVerdictSchema.parse(earned.verdict).verdict, "pass");
+        assert.equal(h.store.priorPassedJudge(runId, "upstream", child.round + 1)?.id, earned.id,
+          "the earlier pass must be eligible before the fresh published-head review boundary");
+        const result = await h.manager.resubmit(runId, {
+          requestId: `fresh-published-${number}`, resubmitUnchanged: false,
+        });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        await waitFor(() => h.store.listSubmissions(runId).some((submission) =>
+          submission.round === child.round + 1
+          && h.store.listAttemptsForRun(runId).some((attempt) => attempt.submissionId === submission.id
+            && attempt.nodeId === "upstream" && attempt.state === "completed")),
+        "fresh published-head review must finish the Persona without another edit or push");
+        const fresh = h.store.listAttemptsForRun(runId).find((attempt) =>
+          attempt.nodeId === "upstream" && attempt.id !== earned.id && attempt.state === "completed");
+        assert.ok(fresh);
+        assert.notEqual(fresh.runner, null,
+          "reuse is enabled, but the fresh published-head review must execute instead of reusing the earlier pass");
+      }
     } finally {
       await h.stop();
     }

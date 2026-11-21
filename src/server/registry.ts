@@ -6,6 +6,7 @@ import { getShapingConfig } from "./shaping/index.ts";
 import { daemonShapingView } from "./shaping/revisions.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
+import { judgeLatePrompt, judgeTurn, recordAutomatedDelivery, recordPersonDelivery } from "./awaiting-attribution.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
@@ -19,7 +20,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
-import { PERMISSION_MODES } from "@shared/types.ts";
+import { PERMISSION_MODES, SESSION_AWAITING_LIMITS } from "@shared/types.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -48,6 +49,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  SessionAwaiting,
   SessionBlocker,
   PromptedDirectHandoffKind,
   SessionIntentGuard,
@@ -103,13 +105,14 @@ import type {
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
+  ReportAwaitingBody,
   ReportBlockerBody,
   SetNote,
   StatusLineIngest,
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
-import { hasBlocker, reportBucket } from "@shared/session.ts";
+import { agentActive, hasBlocker, isAwaiting, reportBucket } from "@shared/session.ts";
 import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
@@ -165,6 +168,8 @@ import {
   claimHumanEcho,
   claimInjectionEcho,
   expireHumanEchoes,
+  injectionFingerprint,
+  outstandingAutomatedClaims,
   markHumanEchoCaptured,
   markHumanEchoSeen,
   type HumanEchoClaim,
@@ -309,6 +314,11 @@ import {
   moveSessionBlocker,
   touchSessionBlockersHeld,
   type SessionBlockerRecord,
+  loadSessionAwaitings,
+  upsertSessionAwaiting,
+  deleteSessionAwaiting,
+  moveSessionAwaiting,
+  type SessionAwaitingRecord,
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
@@ -1061,6 +1071,47 @@ export class Registry extends EventEmitter {
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
   /** Durable session blockers, keyed by the SAME note key. See `reportBlocker`. */
   private blockers = new Map<string, SessionBlockerRecord>();
+  /** Declared waits on background processes, by note key. Every write goes through this map. */
+  private awaitings = new Map<string, SessionAwaitingRecord>();
+  /**
+   * When each wait's key was last seen held by a live session. In memory only: it measures the
+   * grace a restarted daemon gives a session to be rediscovered before its wait is dropped.
+   */
+  private awaitingSeenAt = new Map<string, number>();
+  /**
+   * The state each waiting session was last emitted in. In memory only: the declaring turn's
+   * end is an observed TRANSITION into idle, or a fresher idle reading after the declaration
+   * (`declaringTurnEnded` in `awaiting-attribution.ts`), so a state that lagged the
+   * declaration (already idle when the tool was called) cannot settle the turn still making it.
+   */
+  private awaitingLastState = new Map<string, Session["state"]>();
+  /**
+   * The lifecycle report (`lifecycleReport`) each wait was declared against, by wait key: the
+   * exact hook overlay or transcript read the registry held at that moment, or null. In memory
+   * only, like `awaitingLastState`, which a restart resets to a reading that settles anyway.
+   */
+  private awaitingDeclaredReport = new Map<string, object | null>();
+  /**
+   * The person deliveries (`notePersonDelivery`) written into each waiting session recently,
+   * by wait key, so an automated delivery of the same words claimed just after one is stored as
+   * contested by it too. In memory only: the window is a couple of minutes, and what outlives it
+   * (which sends contest which delivery) is stored on the wait itself.
+   */
+  private awaitingPersonSends = new Map<string, Array<{ id: string; at: number; key: string }>>();
+  /**
+   * The prompt fingerprints of the hook event being applied right now, for
+   * `observeAwaitingTurn` to read while that event's emit is in flight. Set and cleared around
+   * the one emit in `applyHook`.
+   */
+  private awaitingTurnPrompts = new Map<string, string[]>();
+  /**
+   * Sessions whose own hooks have reported a turn's prompt at least once. A turn that ends with
+   * no prompt reported reads as the session's own wake only on these: a session whose prompts
+   * never reach the registry (a Codex SDK launch has no prompt hook, though its driver marks
+   * it instrumented) would otherwise have every delivery of Mission Control's read as a wake.
+   * In memory: after a restart a session is judged as a prompt-less one until its next prompt.
+   */
+  private promptReporters = new Set<string>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
   private retiredMissionTargets = new Map<string, Session>();
@@ -1282,6 +1333,7 @@ export class Registry extends EventEmitter {
     for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
     for (const r of loadStandingInstructions()) this.standingInstructions.set(r.noteKey, r);
     for (const b of loadSessionBlockers()) this.blockers.set(b.noteKey, b);
+    for (const a of loadSessionAwaitings()) this.awaitings.set(a.noteKey, a);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -2171,6 +2223,7 @@ export class Registry extends EventEmitter {
     if (LINE_INPUT_EVENTS.has(e.type)) this.scheduleLineRecompute();
   }
   private emitSession(s: Session): void {
+    this.observeAwaitingTurn(s);
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
     s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
@@ -2817,6 +2870,9 @@ export class Registry extends EventEmitter {
     // only guard on that write, so it must never be computed from a partial map.
     this.syncAllOrphanHints();
     this.pruneQueues(now);
+    // Waits whose process is gone. After the merge and eviction loops, for `pruneQueues`'
+    // reason: a key the map has not been filled in with yet would read as dead.
+    this.pruneAwaitings(AWAITING_LIVENESS_GRACE_MS, now);
     // Throttled hard: an ingest already recomputes when estimated usage changes, so this is
     // only here to keep a QUIET fleet honest - "today" has to roll over at midnight, and the
     // recent rate has to fall back to zero when the exports stop.
@@ -2996,6 +3052,7 @@ export class Registry extends EventEmitter {
       goal: null,
       queue: null,
       blocker: null,
+      awaiting: null,
       pendingTurns: prev?.pendingTurns ?? [],
       orphanedQueue: null,
     };
@@ -3052,6 +3109,7 @@ export class Registry extends EventEmitter {
     if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
     if (prev) this.moveStandingInstructionsKey(noteKeyFor(prev), noteKeyFor(base));
     if (prev) this.moveBlockerKey(noteKeyFor(prev), noteKeyFor(base));
+    if (prev) this.moveAwaitingKey(noteKeyFor(prev), noteKeyFor(base));
     // And the launch marker, but only across a FIRST bind - see the method for why a
     // /clear's native-to-native rotation must strand it instead.
     if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
@@ -3060,6 +3118,7 @@ export class Registry extends EventEmitter {
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
     base.blocker = this.blockerFor(base);
+    base.awaiting = this.awaitingFor(base);
     base.foremanInvite = this.foremanInviteFor(base);
     // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
     // of the time. First sight is the case that matters: the ledger outlives the daemon,
@@ -3204,6 +3263,7 @@ export class Registry extends EventEmitter {
       goal: null,
       queue: null,
       blocker: null,
+      awaiting: null,
       pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
@@ -3220,6 +3280,7 @@ export class Registry extends EventEmitter {
     s.note = this.noteSummaryFor(s);
     s.goal = this.goalSummaryFor(s);
     s.blocker = this.blockerFor(s);
+    s.awaiting = this.awaitingFor(s);
     s.foremanInvite = this.foremanInviteFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
@@ -3516,6 +3577,7 @@ export class Registry extends EventEmitter {
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
     this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveAwaitingKey(noteKeyFor(s), noteKeyFor(next));
     // The launch marker moves on the FIRST bind only. `evt.cleared` is a replacement
     // conversation, and the guard inside refuses it because the source key is already
     // native by then - so the projection cannot follow a /clear onto a real human turn.
@@ -3523,6 +3585,7 @@ export class Registry extends EventEmitter {
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.blocker = this.blockerFor(next);
+    next.awaiting = this.awaitingFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
@@ -3859,10 +3922,12 @@ export class Registry extends EventEmitter {
       this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
       this.moveStandingInstructionsKey(noteKeyFor(target), noteKeyFor(next));
       this.moveBlockerKey(noteKeyFor(target), noteKeyFor(next));
+      this.moveAwaitingKey(noteKeyFor(target), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(target, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
       next.blocker = this.blockerFor(next);
+      next.awaiting = this.awaitingFor(next);
       next.foremanInvite = this.foremanInviteFor(next);
       // On a key ROTATION only, exactly as `applyRuntimeMeta` and `mergeDiscovered`
       // decide it. The ledger is not the only writer of this field - `applyPassiveUsage`
@@ -3884,7 +3949,19 @@ export class Registry extends EventEmitter {
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, fromSubagent ? { activity, state, agentId: evt.agentId } : { activity, state });
-      if (!sessionEqual(target, next) || next.lastActivity !== target.lastActivity) this.emitSession(next);
+      // A prompt hook names the turn it starts: a waiting session's wait reads it during the emit
+      // (whose turn is starting) and after it (a turn whose prompt arrives late).
+      if (!fromSubagent && (spec.promptText(evt)?.trim() || spec.submittedPromptText(evt)?.trim())) {
+        this.promptReporters.add(next.id);
+      }
+      const promptKeys = this.awaitings.size > 0 ? this.hookPromptKeys(spec, evt) : null;
+      if (promptKeys) this.awaitingTurnPrompts.set(next.id, promptKeys);
+      try {
+        if (!sessionEqual(target, next) || next.lastActivity !== target.lastActivity) this.emitSession(next);
+      } finally {
+        this.awaitingTurnPrompts.delete(next.id);
+      }
+      if (promptKeys) this.observeAwaitingPrompt(this.sessions.get(next.id) ?? next, promptKeys);
       // After the emit above, so the summary is written through `setSubagents` - the field's
       // only writer - onto the projection that is now current, rather than onto `next` and then
       // overwritten by it.
@@ -4036,12 +4113,14 @@ export class Registry extends EventEmitter {
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
     this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveAwaitingKey(noteKeyFor(s), noteKeyFor(next));
     // Pi's turn one travelled in the argv, so its marker was written under the synthetic
     // key moments ago and this rebind is exactly the first bind the guard allows.
     this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.blocker = this.blockerFor(next);
+    next.awaiting = this.awaitingFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
@@ -4742,10 +4821,16 @@ export class Registry extends EventEmitter {
       }
     }
     for (const task of updates.values()) {
+      const previous = this.tasks.get(task.id);
       this.tasks.set(task.id, task);
       this.emitEvent({ type: "task_upsert", task });
       this.syncSessionsForWorktree(task.worktreePath);
       if (task.sessionId) this.resyncSessionTask(task.sessionId);
+      // A task this episode change cancelled ends the wait declared for it, as a terminal
+      // write through `upsertTask` does: a reset that cancels the task leaves nothing to wait for.
+      if (isTerminalTask(task.status) && previous && !isTerminalTask(previous.status)) {
+        this.clearAwaitingsForTask(task, previous, at);
+      }
     }
     this.resyncSessionTask(sessionId);
   }
@@ -6455,9 +6540,11 @@ export class Registry extends EventEmitter {
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
       this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
       this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
+      this.moveAwaitingKey(noteKeyFor(s), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.blocker = this.blockerFor(next);
+      next.awaiting = this.awaitingFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
@@ -6558,9 +6645,11 @@ export class Registry extends EventEmitter {
       this.moveForemanInviteKey(noteKeyFor(s), key);
       this.moveStandingInstructionsKey(noteKeyFor(s), key);
       this.moveBlockerKey(noteKeyFor(s), key);
+      this.moveAwaitingKey(noteKeyFor(s), key);
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.blocker = this.blockerFor(next);
+      next.awaiting = this.awaitingFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
@@ -7194,9 +7283,20 @@ export class Registry extends EventEmitter {
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
     this.sdkLaunchTasks.delete(id);
+    this.promptReporters.delete(id);
+    const leaving = this.sessions.get(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
     this.sessionControlRequests.delete(id);
+    // The session is gone for good, so a wait it declared ends with it: the wake source it
+    // named was its own command, monitor or wakeup, presumed gone with the process. Here and
+    // not on its `exited` reading, which an eviction a later sweep cancels also emits. Kept
+    // when another live session still holds the key, as a rotation or a resumed process does.
+    if (leaving) {
+      const key = noteKeyFor(leaving);
+      const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
+      if (!held) this.clearAwaitingKey(key, id, "exit", undefined, Date.now());
+    }
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -7402,6 +7502,11 @@ export class Registry extends EventEmitter {
     this.reviews.set(review.id, review);
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
+    // A pending question for the operator must never sit behind a declared wait: the session
+    // is asking now, so the wait ends and the question reads as what it is.
+    if (review.kind === "input" && review.status === "pending" && review.sessionId) {
+      this.clearAwaiting(review.sessionId, "input");
+    }
   }
 
   getReview(id: string): ReviewItem | undefined {
@@ -7762,6 +7867,7 @@ export class Registry extends EventEmitter {
     }
     if (task.sessionId) this.resyncSessionTask(task.sessionId);
     if (isTerminalTask(task.status)) this.clearBlockersForTask(task, previous);
+    if (isTerminalTask(task.status)) this.clearAwaitingsForTask(task, previous);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
     if (dependenciesChanged && !deferDependencyCleanup) this.cleanupDependencyProvenance();
   }
@@ -9088,14 +9194,30 @@ export class Registry extends EventEmitter {
     };
     // Reported by a live session, so the key is held right now.
     const record: SessionBlockerRecord = { noteKey: key, taskId: s.task?.id ?? null, blocker, lastHeldAt: now };
-    upsertSessionBlocker(record);
-    this.blockers.set(key, record);
-    logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
-      actor: "session",
-      kind: blocker.kind,
-      reason: blocker.reason,
-      ...(prev ? { sinceMs: now - blocker.startedAt, checked: Boolean(prev.reply) } : {}),
+    // A human answer outranks a process: a blocker replaces any declared wait, so the two
+    // never stand together and the card never shows both a red and a grey hold. The wait's
+    // row goes in the same transaction the blocker's lands in, so a failed blocker write keeps
+    // the wait rather than leaving the session with neither; the caches follow the commit.
+    // The audit rows commit with the writes they describe: a failed insert rolls the whole
+    // replacement back rather than leaving a blocker in SQLite the Registry never installed.
+    const replaced = this.awaitings.get(key) ?? null;
+    inTransaction(() => {
+      if (replaced) {
+        deleteSessionAwaiting(key);
+        this.logAwaitingCleared(s.id, replaced, "blocker", undefined, now);
+      }
+      upsertSessionBlocker(record);
+      logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
+        actor: "session",
+        kind: blocker.kind,
+        reason: blocker.reason,
+        ...(prev ? { sinceMs: now - blocker.startedAt, checked: Boolean(prev.reply) } : {}),
+      });
     });
+    // Both caches follow the commit, and `syncSessionsForBlocker` publishes the wait's end and
+    // the blocker together, once.
+    if (replaced) this.forgetAwaiting(key);
+    this.blockers.set(key, record);
     this.syncSessionsForBlocker(key);
     return { ok: true, blocker, created: !prev };
   }
@@ -9236,9 +9358,483 @@ export class Registry extends EventEmitter {
   private syncSessionsForBlocker(key: string): void {
     for (const [id, s] of this.sessions) {
       if (noteKeyFor(s) !== key) continue;
+      // The wait is projected beside the blocker, so a blocker that replaces a wait is published
+      // as ONE update carrying both: no listener ever sees the session with neither hold.
       const blocker = this.blockerFor(s);
-      if (JSON.stringify(s.blocker ?? null) === JSON.stringify(blocker)) continue;
-      const next = { ...s, blocker };
+      const awaiting = this.awaitingFor(s);
+      if (JSON.stringify([s.blocker ?? null, s.awaiting ?? null]) === JSON.stringify([blocker, awaiting])) continue;
+      const next = { ...s, blocker, awaiting };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  // ---- session awaitings (idle on purpose while a background process finishes) ----
+
+  /** The wait this session declared, projected onto `Session.awaiting`. */
+  private awaitingFor(s: Session): SessionAwaiting | null {
+    return this.awaitings.get(noteKeyFor(s))?.awaiting ?? null;
+  }
+
+  /** A session's current declared wait, or null. */
+  getAwaiting(sessionId: string): SessionAwaiting | null {
+    const s = this.sessions.get(sessionId);
+    return s ? this.awaitingFor(s) : null;
+  }
+
+  /**
+   * Record (or re-declare) that this session is waiting on a background process and will
+   * resume on its own when it reports back.
+   *
+   * Every declaration gets a new id, so a Clear sent from a view of an earlier one is refused. A
+   * re-declaration keeps the wait's start time and its pending deliveries, moves the deadline and
+   * restarts the wake watch: the session is mid-turn again, so only a turn after this one is its
+   * wake. Refused for a session that is not live, whose task is already terminal, that has a
+   * `request_input` pending (a question for the operator never hides behind a wait), or that
+   * stands on a blocker (a human answer outranks a process, so the blocker wins).
+   */
+  reportAwaiting(
+    sessionId: string,
+    body: ReportAwaitingBody,
+    now = Date.now(),
+  ): { ok: true; awaiting: SessionAwaiting; created: boolean } | { ok: false; status: 400 | 404 | 409; error: string } {
+    // The deadline is bounded against the daemon's own clock at the moment it arrives: it must
+    // be in the future, and no further out than the ceiling, because a wait silences the
+    // stuck-session alerts and a dead watcher must not hide a stalled session past it.
+    if (!(body.expectedBy > now)) {
+      return { ok: false, status: 400, error: "expectedBy must be in the future." };
+    }
+    const ceiling = now + SESSION_AWAITING_LIMITS.maxMinutes * 60_000;
+    if (body.expectedBy > ceiling) {
+      return {
+        ok: false,
+        status: 400,
+        error: `expectedBy must be at most ${SESSION_AWAITING_LIMITS.maxMinutes} minutes from now.`,
+      };
+    }
+    const s = this.sessions.get(sessionId);
+    if (!s || s.state === "exited") return { ok: false, status: 404, error: "no matching session" };
+    const task = s.task ? this.tasks.get(s.task.id) : undefined;
+    if (task && isTerminalTask(task.status)) {
+      return {
+        ok: false,
+        status: 409,
+        error: `This session's task is already ${task.status}, so there is nothing left to wait for.`,
+      };
+    }
+    if (this.pendingReviews(s.id).some((r) => r.kind === "input")) {
+      return {
+        ok: false,
+        status: 409,
+        error: "This session has a request_input question pending for the operator. Wait for the answer instead of declaring a wait on a background process.",
+      };
+    }
+    if (hasBlocker(s)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "This session stands on a blocker, which already holds it. Clear the blocker first if it is resolved.",
+      };
+    }
+    const key = noteKeyFor(s);
+    const prev = this.awaitings.get(key)?.awaiting ?? null;
+    const awaiting: SessionAwaiting = {
+      // A new id for every declaration, re-declarations included: a Clear sent from a view of
+      // an earlier declaration (an older reason or deadline) is refused rather than ending a
+      // hold its sender never saw. `startedAt` is what carries the wait's age across them.
+      id: randomUUID(),
+      what: body.what,
+      wakeSource: body.wakeSource,
+      expectedBy: body.expectedBy,
+      referenceUrl: body.referenceUrl ?? null,
+      details: body.details ?? null,
+      startedAt: prev?.startedAt ?? now,
+      updatedAt: now,
+    };
+    const record: SessionAwaitingRecord = {
+      noteKey: key, taskId: s.task?.id ?? null, sessionId: s.id, awaiting, settledAt: null,
+      // A re-declaration keeps the deliveries still on their way: each will still start a turn
+      // of Mission Control's own, whatever the session now says it is waiting for. A first
+      // declaration starts from the deliveries Mission Control claimed into this session just
+      // before it and whose prompt has not come back yet: claimed before the wait existed, but
+      // landing after it, their turns are still Mission Control's.
+      pendingNudges: this.awaitings.get(key)?.pendingNudges
+        ?? outstandingAutomatedClaims(s.id, now - AWAITING_SEED_WINDOW_MS),
+      // A re-declaration inside a turn still undecided (one that started while a delivery was
+      // pending, its prompt not yet reported) keeps that turn undecided, so its prompt or its end
+      // still decides it and a delivery that started it is still used up. Marked, because the
+      // agent has just said it is still waiting: that turn can no longer be the wake.
+      undecidedTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
+      redeclaredInTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
+      // Turns already judged stay judged across a re-declaration.
+      judgedTurnAt: this.awaitings.get(key)?.judgedTurnAt ?? null,
+    };
+    upsertSessionAwaiting(record);
+    this.awaitings.set(key, record);
+    this.awaitingSeenAt.set(key, now);
+    this.awaitingLastState.set(key, s.state);
+    this.awaitingDeclaredReport.set(key, this.lifecycleReport(s)?.ref ?? null);
+    logEvent(s.id, now, prev ? "session_awaiting_updated" : "session_awaiting_set", {
+      actor: "session",
+      what: awaiting.what,
+      wakeSource: awaiting.wakeSource,
+      expectedBy: awaiting.expectedBy,
+      ...(prev ? { sinceMs: now - awaiting.startedAt } : {}),
+    });
+    this.syncSessionsForAwaiting(key);
+    return { ok: true, awaiting, created: !prev };
+  }
+
+  /**
+   * End a session's declared wait. `actor` names who ended it: the session itself, the
+   * operator, a controller (`session:<id>`), or the daemon (`wake`, `exit`, `task`, `input`,
+   * `blocker`, `flag`). A session with none is a no-op that reports `false`.
+   */
+  clearAwaiting(sessionId: string, actor: string, resolution?: string, now = Date.now()): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    return this.clearAwaitingKey(noteKeyFor(s), s.id, actor, resolution, now);
+  }
+
+  private clearAwaitingKey(
+    key: string,
+    sessionId: string,
+    actor: string,
+    resolution: string | undefined,
+    now: number,
+    sync = true,
+  ): boolean {
+    const record = this.awaitings.get(key);
+    if (!record) return false;
+    deleteSessionAwaiting(key);
+    this.forgetAwaiting(key);
+    this.logAwaitingCleared(sessionId, record, actor, resolution, now);
+    if (sync) this.syncSessionsForAwaiting(key);
+    return true;
+  }
+
+  /** Drop a wait's in-memory state: its record and every map kept under its note key. */
+  private forgetAwaiting(key: string): void {
+    this.awaitings.delete(key);
+    this.awaitingSeenAt.delete(key);
+    this.awaitingLastState.delete(key);
+    this.awaitingDeclaredReport.delete(key);
+    this.awaitingPersonSends.delete(key);
+  }
+
+  /** The `session_awaiting_cleared` audit row for a wait that ended. */
+  private logAwaitingCleared(
+    sessionId: string,
+    record: SessionAwaitingRecord,
+    actor: string,
+    resolution: string | undefined,
+    now: number,
+  ): void {
+    logEvent(sessionId, now, "session_awaiting_cleared", {
+      actor,
+      durationMs: now - record.awaiting.startedAt,
+      overdue: now >= record.awaiting.expectedBy,
+      ...(resolution ? { resolution } : {}),
+    });
+  }
+
+  /**
+   * A task that reached a terminal status ends the wait declared for THAT task, matched the way
+   * `clearBlockersForTask` matches, so a late terminal write for an earlier task cannot end the
+   * wait a session declared for the task it holds now.
+   */
+  private clearAwaitingsForTask(task: Task, previous: Task | undefined, now = Date.now()): void {
+    const sessionFor = (key: string) => [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
+    const keys = new Map<string, string>();
+    for (const [key, record] of this.awaitings) {
+      if (record.taskId === task.id) {
+        keys.set(key, sessionFor(key)?.id ?? task.sessionId ?? previous?.sessionId ?? record.sessionId ?? key);
+      }
+    }
+    for (const sid of [task.sessionId, previous?.sessionId]) {
+      const s = sid ? this.sessions.get(sid) : undefined;
+      if (!s || s.task?.id !== task.id) continue;
+      const record = this.awaitings.get(noteKeyFor(s));
+      if (record && record.taskId === null) keys.set(noteKeyFor(s), s.id);
+    }
+    for (const [key, sid] of keys) this.clearAwaitingKey(key, sid, "task", `task ${task.status}`, now);
+  }
+
+  /**
+   * End every declared wait, for the preview flag being switched off: the hold must not outlive
+   * the feature that explains it on the card. Returns how many ended.
+   */
+  clearAllAwaitings(actor: string, now = Date.now()): number {
+    let n = 0;
+    for (const key of this.awaitings.keys()) {
+      const holder = [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
+      const logged = holder?.id ?? this.awaitings.get(key)?.sessionId ?? key;
+      if (this.clearAwaitingKey(key, logged, actor, undefined, now)) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Watch the session that declared a wait, on every emit, for the turn that ends it.
+   *
+   * Which turn that is, and whether a turn is the session's own wake or one of Mission Control's
+   * own nudges, is decided by `judgeTurn` (`awaiting-attribution.ts`), a pure function of the
+   * stored wait and this reading. This gathers the reading, stores what it decides, and
+   * publishes a wake. Only confirmed states are read, so a restart neither invents a turn from
+   * discovery's presumed `working` nor misses one already under way.
+   *
+   * Mutates `s` rather than re-syncing, because this runs inside `emitSession` on the very
+   * object about to be emitted: re-syncing would emit the session twice.
+   */
+  private observeAwaitingTurn(s: Session): void {
+    if (this.awaitings.size === 0) return;
+    const key = noteKeyFor(s);
+    const record = this.awaitings.get(key);
+    if (!record) return;
+    const now = Date.now();
+    // An `exited` reading is provisional: `beginEviction` emits it before its linger, and a
+    // process the next sweep sees again cancels the eviction. The wait ends when the session
+    // is actually removed (`remove`), never here.
+    if (s.state === "exited") return;
+    this.awaitingSeenAt.set(key, now);
+    const holder = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
+    if (record.sessionId !== s.id && (!holder || holder.state === "exited")) {
+      // The last session seen holding the wait (a resumed process can hold the key under a new
+      // id), so a clear with no live holder still logs under a session. Taken over only from a
+      // holder that is gone, so two live sessions sharing the key never trade it on each emit.
+      const held = { ...record, sessionId: s.id };
+      upsertSessionAwaiting(held);
+      this.awaitings.set(key, held);
+      this.observeAwaitingTurn(s);
+      return;
+    }
+    // A presumed state says nothing about turns: discovery presumes `working` until a hook, a
+    // transcript or a driver confirms what the session is doing.
+    if (!s.stateConfirmed) return;
+    const last = this.awaitingLastState.get(key);
+    this.awaitingLastState.set(key, s.state);
+    // A fresh idle report is one from the session's own lifecycle source other than the very
+    // report the wait was declared against, judged by identity rather than by its millisecond.
+    const report = this.lifecycleReport(s);
+    const judged = judgeTurn(record, {
+      now,
+      state: s.state,
+      last,
+      active: agentActive(s),
+      prompt: this.awaitingTurnPrompts.get(s.id) ?? null,
+      reportsPrompts: this.promptReporters.has(s.id),
+      freshIdleAt: report && report.state === "idle" && report.ref !== this.awaitingDeclaredReport.get(key) ? report.at : null,
+      // The transcript's turn marker is read whenever the reading itself came from the
+      // transcript, whose sweeps can miss a turn whole. Decided by the source of this reading,
+      // not by `hooksSeen`, which `report_status` or a reloaded event log can set on a session
+      // whose lifecycle still arrives only through its transcript. A fresh hook overlay reports
+      // each turn as it starts, so its marker is not needed.
+      passiveTurnStartedAt: report?.source === "transcript" ? this.passiveTurnStartedAt(s) : null,
+    });
+    if (judged.wake) {
+      this.endAwaitingFromTurn(s, key, "wake", now);
+      return;
+    }
+    this.storeAwaiting(key, record, judged.next);
+  }
+
+  /** Persist and cache a wait a judgement changed; an unchanged record is left alone. */
+  private storeAwaiting(key: string, record: SessionAwaitingRecord, next: SessionAwaitingRecord): void {
+    if (next === record) return;
+    upsertSessionAwaiting(next);
+    this.awaitings.set(key, next);
+  }
+
+  /**
+   * This session's current report from its own lifecycle source: what it says, when (in that
+   * source's time), and the report itself, which is a new object for every hook and every
+   * transcript read. The same precedence discovery applies (`mergeDiscovered`): a fresh hook
+   * overlay, else a fresh transcript read, else null. Only those two: each changes only when the
+   * agent's own lifecycle moves, unlike the session's activity stamp.
+   */
+  private lifecycleReport(
+    s: Session,
+  ): { state: Session["state"]; at: number; ref: object; source: "hook" | "transcript" } | null {
+    const now = Date.now();
+    const overlay = this.overlayFor(s);
+    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
+      return { state: overlay.state, at: overlay.lastActivity, ref: overlay, source: "hook" };
+    }
+    const passive = this.passiveStateFor(s);
+    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) {
+      return { state: passive.state, at: passive.lastActivity, ref: passive, source: "transcript" };
+    }
+    return null;
+  }
+
+  /**
+   * End a wait from inside `emitSession`, on the very object about to be emitted, for
+   * `observeAwaitingTurn`'s reason: re-syncing there would emit the session twice.
+   */
+  private endAwaitingFromTurn(s: Session, key: string, actor: string, now: number): void {
+    this.clearAwaitingKey(key, s.id, actor, undefined, now, false);
+    s.awaiting = null;
+    for (const [id, other] of this.sessions) {
+      if (noteKeyFor(other) !== key || !other.awaiting) continue;
+      const cleared = { ...other, awaiting: null };
+      this.sessions.set(id, cleared);
+      // A sibling sharing the key has no emit of its own coming, so a client holding its wait
+      // would keep drawing it. The waking session is published by the emit this runs inside.
+      if (id !== s.id) this.emitSession(cleared);
+    }
+  }
+
+  /**
+   * A prompt reported for a waiting session whose turn started before its prompt was known
+   * (an SDK driver's state can arrive before the prompt hook), decided by `judgeLatePrompt`.
+   */
+  private observeAwaitingPrompt(s: Session, prompt: readonly string[]): void {
+    const key = noteKeyFor(s);
+    const record = this.awaitings.get(key);
+    if (!record?.undecidedTurn) return;
+    const judged = judgeLatePrompt(record, prompt);
+    if (judged.wake) {
+      this.clearAwaiting(s.id, "wake");
+      return;
+    }
+    this.storeAwaiting(key, record, judged.next);
+  }
+
+  /** The fingerprints a prompt hook event reports for its turn, or null for any other event. */
+  private hookPromptKeys(spec: HookSpec, evt: HookIngest): string[] | null {
+    const keys = [spec.promptText(evt), spec.submittedPromptText(evt)]
+      .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+      .map((text) => injectionFingerprint(text));
+    return keys.length ? keys : null;
+  }
+
+  /**
+   * Store on a waiting session's wait one delivery Mission Control's own automation claimed into
+   * it (from `onAutomatedDelivery`), with its text's fingerprint, or, `released`, remove the one
+   * claimed at `at`, which provably never landed.
+   *
+   * One entry per delivery, so two deliveries that both land are two turns of Mission Control's
+   * own, each matched to its turn by that turn's prompt. A withdrawn delivery removes only itself.
+   *
+   * Wired by the daemon, and stored rather than kept in memory: the turn a delivery starts may
+   * only be observed after a restart, and the reloaded wait must still know it is Mission
+   * Control's nudge and not the session's wake.
+   */
+  noteAutomatedDelivery(sessionId: string, at: number, textKey: string, released = false): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const key = noteKeyFor(s);
+    const record = this.awaitings.get(key);
+    if (!record) return;
+    // A person sent these exact words moments ago and their turn may not have started yet: this
+    // delivery is contested by those sends from the start (see `notePersonDelivery`).
+    const contestedBy = released ? [] : this.recentPersonSends(key, at).filter((send) => send.key === textKey).map((send) => send.id);
+    this.storeAwaiting(key, record, recordAutomatedDelivery(record, { at, key: textKey, released }, contestedBy));
+  }
+
+  /**
+   * Store on a waiting session's wait that a person's own words (from `onPersonDelivery`) are
+   * about to be written into it: the operator's, or a controlling session's. `released` takes
+   * back the send `id` because it provably never landed.
+   *
+   * A person's turn is always the wake, and it needs no help being one when its prompt is its
+   * own. It does when the words are byte-for-byte those of an automated delivery still pending
+   * on the wait: the prompt then matches that nudge, and the person's turn would be used up as
+   * Mission Control's. So every pending delivery of the same words records this send as
+   * contesting it (`contestedBy`), stored on the wait, which `useUpNudge` reads as the
+   * wake. The send is also remembered for a couple of minutes, for an automated delivery of the
+   * same words claimed after it.
+   *
+   * A send taken back leaves no person's turn to come, so it withdraws its own claim and only
+   * its own: another send of the same words, even one made before a daemon restart, still
+   * contests the delivery. Otherwise the automated delivery's own turn would read as the wake
+   * and end a wait whose process may still be running, or a person's turn as the nudge.
+   */
+  notePersonDelivery(delivery: { sessionId: string; id: string; at: number; key: string; released: boolean }): void {
+    const s = this.sessions.get(delivery.sessionId);
+    if (!s) return;
+    const key = noteKeyFor(s);
+    const record = this.awaitings.get(key);
+    if (!record) return;
+    // The recent-sends window is the Registry's own in-memory bookkeeping; the claims on the
+    // stored wait are `recordPersonDelivery`'s.
+    if (delivery.released) {
+      const sends = (this.awaitingPersonSends.get(key) ?? []).filter((send) => send.id !== delivery.id);
+      if (sends.length > 0) this.awaitingPersonSends.set(key, sends);
+      else this.awaitingPersonSends.delete(key);
+    } else {
+      this.awaitingPersonSends.set(
+        key,
+        [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: delivery.key }].slice(-32),
+      );
+    }
+    this.storeAwaiting(key, record, recordPersonDelivery(record, delivery));
+  }
+
+  /** The person deliveries into this wait's session still inside the contest window at `now`. */
+  private recentPersonSends(key: string, now: number): Array<{ id: string; at: number; key: string }> {
+    return (this.awaitingPersonSends.get(key) ?? []).filter((send) => now - send.at <= AWAITING_CONTEST_WINDOW_MS);
+  }
+
+  /**
+   * Carry a declared wait across a note-key rotation, at every boundary a blocker moves: the
+   * process that declared it is the same one, so it still waits for the same thing, and a card
+   * and automation guards reading the new key must still see it.
+   */
+  moveAwaitingKey(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return;
+    const record = this.awaitings.get(fromKey);
+    if (!record) return;
+    moveSessionAwaiting(fromKey, toKey);
+    this.awaitings.delete(fromKey);
+    this.awaitings.set(toKey, { ...record, noteKey: toKey });
+    for (const map of [
+      this.awaitingSeenAt, this.awaitingLastState, this.awaitingDeclaredReport, this.awaitingPersonSends,
+    ] as Map<string, unknown>[]) {
+      if (!map.has(fromKey)) continue;
+      map.set(toKey, map.get(fromKey));
+      map.delete(fromKey);
+    }
+    // Re-project onto whoever already holds the destination key, as `moveBlockerKey` does.
+    this.syncSessionsForAwaiting(toKey);
+  }
+
+  /**
+   * Drop waits whose session has not been seen live for `graceMs`. A restart that lost the
+   * agent process (an SDK session dies with the daemon) must not leave its card awaiting a
+   * process nobody is running; the grace lets a terminal session be rediscovered first.
+   * Gated on the first completed sweep, like every liveness prune here.
+   */
+  pruneAwaitings(graceMs: number, now = Date.now()): number {
+    if (!this.sweptSessions || this.awaitings.size === 0) return 0;
+    const live = new Set(
+      [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
+    );
+    let removed = 0;
+    for (const key of this.awaitings.keys()) {
+      if (live.has(key)) {
+        this.awaitingSeenAt.set(key, now);
+        continue;
+      }
+      const seen = this.awaitingSeenAt.get(key);
+      if (seen === undefined) {
+        this.awaitingSeenAt.set(key, now);
+        continue;
+      }
+      if (now - seen < graceMs) continue;
+      // Logged under the last session seen holding the wait, so the audit row is found by
+      // session id even though no live session holds the key now.
+      if (this.clearAwaitingKey(key, this.awaitings.get(key)?.sessionId ?? key, "exit", undefined, now)) removed++;
+    }
+    return removed;
+  }
+
+  private syncSessionsForAwaiting(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const awaiting = this.awaitingFor(s);
+      if (JSON.stringify(s.awaiting ?? null) === JSON.stringify(awaiting)) continue;
+      const next = { ...s, awaiting };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -10526,8 +11122,9 @@ export class Registry extends EventEmitter {
   ): boolean {
     const session = this.sessions.get(id);
     if (!session || session.state === "exited" || workQueueBlockedReason(session)) return false;
-    // Refused, not consumed: a blocked session keeps its generation for after the clear.
-    if (hasBlocker(session)) return false;
+    // Refused, not consumed: a blocked session keeps its generation for after the clear, and
+    // a session awaiting a background process keeps it for after the wake.
+    if (hasBlocker(session) || isAwaiting(session, now)) return false;
     if (noteKeyFor(session) !== input.logicalKey) return false;
     if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
       return false;
@@ -10582,7 +11179,7 @@ export class Registry extends EventEmitter {
     if (session.task?.id !== input.taskId) return null;
     // Read off the LIVE session at the write, so a blocker reported while the route awaited
     // the checkout diff still refuses the claim; the route's decision used an earlier object.
-    if (hasBlocker(session)) return null;
+    if (hasBlocker(session) || isAwaiting(session, now)) return null;
     const claimed = dbClaimPromptedRecovery(input, now);
     if (!claimed) return null;
     this.syncSessionsForQueue(input.logicalKey);
@@ -11146,6 +11743,27 @@ const byJson = <T>(a: T, b: T): boolean => JSON.stringify(a) === JSON.stringify(
  */
 const alwaysEqual = (): boolean => true;
 
+/**
+ * How long a declared wait survives with no live session holding its key. Long enough for a
+ * restarted daemon to rediscover a terminal session and bind its conversation again; short
+ * enough that a wait whose agent process died stops holding the card within a few minutes.
+ */
+const AWAITING_LIVENESS_GRACE_MS = 3 * 60_000;
+
+/**
+ * How far back a new declaration looks for Mission Control deliveries still on their way into
+ * the session. A delivery claimed just before the wait and landing after it starts a turn of
+ * Mission Control's own; one claimed long before has long since been read or dropped.
+ */
+const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
+
+/**
+ * How long a person's delivery into a waiting session contests an automated delivery of the
+ * same words claimed after it. A delivery starts its turn within moments of being written, so
+ * this only has to outlast a slow hook; past it, the person's turn has long since been judged.
+ */
+const AWAITING_CONTEST_WINDOW_MS = 2 * 60_000;
+
 /** Receipts kept per conversation: enough for a burst of steers, never an unbounded log. */
 const STEER_RECEIPTS_KEPT = 5;
 
@@ -11179,6 +11797,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   sessionControlEnabled: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
   sessionControlRequest: byJson,
+  // Nested and moves on its own, like `blocker`: a declaration, a wake or a clear changes
+  // nothing else on the session.
+  awaiting: byJson,
   // Nested and moves on its own: a pause, its after-turn freeze and its lift change nothing
   // else on the session, so leaving it out would let a card keep saying "paused" after resume.
   pause: byJson,

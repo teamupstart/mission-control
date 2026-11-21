@@ -29,12 +29,15 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 426 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
-  // /api/shaping routes of task shaping (refreshed when one last changed) and the three
+  // The 429 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
+  // /api/shaping routes of task shaping (refreshed when one last changed), the three
   // flag-gated session control request routes (`POST /mcp/session-control/requests`, its
   // `GET .../:requestId/wait`, and the dashboard's `POST .../requests/:requestId/decline`),
-  // plus the async-input lifecycle routes `POST /mcp/questions/list` and
-  // `POST /mcp/questions/:id/withdraw`,
+  // the async-input lifecycle routes `POST /mcp/questions/list` and
+  // `POST /mcp/questions/:id/withdraw`, and the three routes of a session awaiting a
+  // background process (the flag-gated `POST /mcp/awaiting`, and `POST /mcp/awaiting/clear`
+  // and the dashboard's `POST /api/sessions/:id/awaiting/clear`, which stay open so a wait can
+  // always end),
   // hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
@@ -42,9 +45,9 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 426);
+  assert.equal(others.length, 429);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "09f04de1c3db0082a899f489e78390d6f308aed4f8a24e4e27ed871c4e0e5079");
+    "4c5bd22063acfbfc3a9aa4e7eda7c5d4fec37be395916b96f24988eca58fdd83");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -769,3 +769,9 @@ test("a blocked session gets no pre-PR recovery send until the blocker clears", 
   assert.deepEqual(decideShipShepherd(input({ session: session({ blocker }) })), { kind: "skip", why: "the session is blocked" });
   assert.equal(decideShipShepherd(input()).kind, "recover");
 });
+
+test("a session awaiting its own background process gets no pre-PR recovery send until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(decideShipShepherd(input({ session: session({ awaiting }) })), { kind: "skip", why: "the session is awaiting a background process" });
+  assert.equal(decideShipShepherd(input({ session: session({ awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }) })).kind, "recover");
+});

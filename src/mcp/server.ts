@@ -18,7 +18,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem, Task } from "@shared/types.ts";
-import { SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS } from "@shared/types.ts";
+import {
+  SESSION_AWAITING_LIMITS, SESSION_AWAITING_WAKE_SOURCES, SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS,
+} from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -371,7 +373,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -383,7 +385,7 @@ server.registerTool(
   "control_session",
   {
     title: "Steer another session on the operator's behalf",
-    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort, permission mode, and blockers: flag_blocker_reply marks a likely answer without clearing the blocker or messaging the session, and clear_blocker clears it. Pass the blocker id from read_sessions as blockerId on both blocker actions so a replaced blocker is refused. Never clear a blocker without evidence its resumeWhen condition is met; prefer flag_blocker_reply then message. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort, permission mode, and blockers: flag_blocker_reply marks a likely answer without clearing the blocker or messaging the session, and clear_blocker clears it. Pass the blocker id from read_sessions as blockerId on both blocker actions so a replaced blocker is refused. clear_awaiting ends a session's declared wait on a background process; its awaiting id from read_sessions is required as awaitingId, so a wait declared since is refused, and prefer leaving an in-deadline wait alone, since the session resumes on its own. Never clear a blocker without evidence its resumeWhen condition is met; prefer flag_blocker_reply then message. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
     inputSchema: SessionControlRequestSchema.shape,
   },
   async (args) => {
@@ -1234,6 +1236,99 @@ server.registerTool(
         return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
       }
       return textResult(body.cleared ? "Blocker cleared. Continue the work." : "There was no blocker to clear.");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// A session idle on purpose while a background process finishes. Validated here AND in
+// `McpReportAwaitingSchema`, the project's rule for MCP arguments.
+server.registerTool(
+  "report_awaiting",
+  {
+    title: "Declare that this session is waiting on a background process",
+    description:
+      "Use when you have handed work to a background process and have nothing to do until it finishes: " +
+      "CI checks on a pull request you pushed, a long build or test run you started in the background, a " +
+      "monitor watching a deploy, or a scheduled wakeup you set for yourself. You must expect to be woken " +
+      "by that process (a background command's completion notification, a monitor, or a wakeup) and intend " +
+      "to finish the work then. Mission Control shows the wait on your card and holds idle automation " +
+      "(completion nudges, stuck-session alerts) until expectedBy passes. The wait ends on its own " +
+      "when your next turn starts, so when you wake and the process is still running, call this again. " +
+      "Do NOT use it to wait on a person: for the operator call request_input, for anyone else call " +
+      "report_blocker. Refused while you have a request_input question pending or a blocker standing.",
+    inputSchema: {
+      what: blockerLine(SESSION_AWAITING_LIMITS.what, "One line: what you are waiting for, e.g. 'CI checks on PR #1612'"),
+      wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES).describe(
+        "How you will be woken. command: a background command's completion notification; monitor: a " +
+          "monitor or watcher you started; wakeup: a scheduled wakeup you set; other.",
+      ),
+      expectedBy: z.string().trim().datetime({ offset: true })
+        .describe(
+          "Required. When the process should be done, as an ISO 8601 date-time with a time zone, e.g. " +
+            "2026-11-20T15:40:00Z or 2026-11-20T10:40:00-05:00. It must be in the future and at most " +
+            `${SESSION_AWAITING_LIMITS.maxMinutes} minutes from now (read the time with ` +
+            "`date -u +%Y-%m-%dT%H:%M:%SZ` if you need it). Past it the card turns Overdue and the normal " +
+            "stuck-session handling applies again, so give a realistic bound, not a hopeful one.",
+        ),
+      referenceUrl: z.string().trim().url().max(SESSION_AWAITING_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("http(s) link to the pull request checks, run or deploy"),
+      details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).optional()
+        .describe("Markdown notes for the operator, e.g. the command you started"),
+    },
+  },
+  async (input) => {
+    try {
+      // The session's signed credential names the caller; the daemon refuses a body naming another.
+      const res = await http("/mcp/awaiting", "POST", { env: ENV, sessionId: SESSION_ID, ...input }, true);
+      const body = (await res.json().catch(() => ({}))) as { created?: boolean; error?: string; feature?: string };
+      if (res.status === 404 && body.feature) {
+        return textResult(
+          "Not recorded: declaring a wait is turned off in Mission Control (Settings > Feature flags). " +
+            "End your turn as you would have; you will still be woken by your background process.",
+          true,
+        );
+      }
+      if (!res.ok) {
+        return textResult(`Mission Control refused this wait (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(
+        `${body.created ? "Wait recorded" : "Wait updated"}. End your turn now. Mission Control holds idle ` +
+          `automation until the deadline, and the wait ends by itself when your next turn starts. If you wake ` +
+          "and the process is still running, call report_awaiting again before ending that turn. If the work " +
+          "turns out not to need the process after all, call clear_awaiting.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "clear_awaiting",
+  {
+    title: "End this session's declared wait",
+    description:
+      "Call when the wait you declared with report_awaiting no longer applies, for example you cancelled " +
+      "the background process. You do not need to call it after being woken: your next turn ends the wait " +
+      "by itself. Clearing a session with no wait does nothing.",
+    inputSchema: {
+      resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution, "One line: why the wait ended").optional(),
+    },
+  },
+  async ({ resolution }) => {
+    try {
+      const res = await http("/mcp/awaiting/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution }, true);
+      // A non-JSON reply (an empty body, an HTML error page) still reached Mission Control: report
+      // its real status rather than "could not reach".
+      const body = (await res.json().catch(() => ({}))) as { cleared?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(body.cleared ? "Wait cleared." : "There was no wait to clear.");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

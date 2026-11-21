@@ -174,6 +174,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
   const now = Date.now();
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",

@@ -416,6 +416,20 @@ read. The dashboard's Flag reply and Clear blocker always send it.
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
 
+### Sessions awaiting a background process
+
+While the **Awaiting background work** preview is on, sessions can declare that they are
+[idle on purpose](sessions.md#sessions-awaiting-a-background-process-preview) while a background process
+they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`, `wakeSource`,
+`expectedBy`, `referenceUrl`, `startedAt` and `overdue`) to every row of its list and accepts
+`awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one
+session returns its whole wait, Markdown details included. `control_session` adds
+`{"action":"clear_awaiting","awaitingId":"...","resolution":"..."}`, which ends the wait and
+sends the session nothing. `awaitingId` is required: pass the `id` that `read_sessions`
+returned, so a wait the session declared again since is refused with 409. Leave a wait inside
+its deadline alone: the session resumes on its own, and an overdue one is already back under the
+normal stuck-session rules.
+
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it

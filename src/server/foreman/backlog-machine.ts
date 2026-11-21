@@ -6,7 +6,7 @@ import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } f
 import { stackStartEdge } from "@shared/stacking.ts";
 import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
-import { hasBlocker, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
 import { taskAllowsBacklogAutopilot, taskKindAllowsBacklog } from "@shared/task.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
@@ -219,6 +219,8 @@ export function agentIsFree(
   if (reportBucket(s, sessions) !== "idle") return false;
   // A blocked session is still working its own task; it is not free for another.
   if (hasBlocker(s)) return false;
+  // Nor is one idle on purpose while its own background process finishes.
+  if (isAwaiting(s, now)) return false;
   // A paused session is not free: nothing may be handed to it until the operator resumes it.
   if (isPaused(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;

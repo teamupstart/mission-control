@@ -33,7 +33,9 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
-const { claimHumanEcho, HUMAN_ECHO_TTL_MS, observeInjections, originOf } = await import("../src/server/injections.ts");
+const {
+  claimHumanEcho, HUMAN_ECHO_TTL_MS, injectionFingerprint, observeInjections, onPersonDelivery, originOf,
+} = await import("../src/server/injections.ts");
 const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
 const { SNOOZE_INSTRUCTION_TURN_PREFIX, MESSAGE_ANSWER_TURN_PREFIX, insertReview, updateReviewStatus, markReviewWaitDetached } = await import("../src/server/db.ts");
 const { noteKeyFor } = await import("../src/server/registry.ts");
@@ -444,7 +446,10 @@ test("an SDK failure before the acceptance boundary remains safely retryable", a
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes before acceptance preserve uncertainty", async () => {
+test("SDK ownership changes before acceptance preserve uncertainty", async (t) => {
+  // The person's words never reached the driver, so their announcement is withdrawn too.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-before-acceptance";
   const key = "agent:owner-before-acceptance";
@@ -494,11 +499,16 @@ test("SDK ownership changes before acceptance preserve uncertainty", async () =>
   assert.equal(accepted, 0);
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
+  assert.deepEqual(heard.map((h) => h.released), [false, true], "a send refused before acceptance still contests a delivery of its words");
+  assert.equal(heard[1]!.id, heard[0]!.id);
   manager.stop();
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes during acknowledgement preserve uncertainty", async () => {
+test("SDK ownership changes during acknowledgement preserve uncertainty", async (t) => {
+  // Past the acceptance boundary the words may have reached the agent: the announcement stands.
+  const heard: Array<{ released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-during-ack";
   const key = "agent:owner-during-ack";
@@ -546,6 +556,7 @@ test("SDK ownership changes during acknowledgement preserve uncertainty", async 
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
   assert.equal(registry.getGoal(id), null, "an uncertain owner cannot receive the prompt");
+  assert.deepEqual(heard.map((h) => h.released), [false], "a send that may have landed was taken back");
   manager.stop();
   clearPendingTurns(key);
 });
@@ -641,6 +652,46 @@ test("a dialog raised on a stopping session still refuses the queued row", async
   await tick();
   assert.deepEqual(f.calls, [], "a stopping session drained a row it should have held");
   f.manager.stop();
+});
+
+test("the operator's queued words are announced as a person's delivery on both runtimes", async (t) => {
+  // A declared wait reads a person's turn as the wake even when its words repeat an automated
+  // delivery still pending, and it can only do that if the outbox says the words are a person's.
+  const heard: Array<{ sessionId: string; key: string }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ sessionId: delivery.sessionId, key: delivery.key }); }));
+
+  const sdk = sdkFixture("person-sdk", async () => "started");
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+
+  const terminal = terminalFixture("person-terminal", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  terminal.manager.submit(terminal.id, "Please wrap up and open the pull request.");
+  await tick();
+  assert.deepEqual(terminal.injected, ["Please wrap up and open the pull request."]);
+  terminal.manager.stop();
+
+  const key = injectionFingerprint("Please wrap up and open the pull request.");
+  assert.deepEqual(heard, [{ sessionId: sdk.id, key }, { sessionId: terminal.id, key }]);
+});
+
+test("an operator's queued words the driver refuses are taken back as a person's delivery", async (t) => {
+  // A refusal is positive evidence nothing landed, so the announcement is withdrawn beside the
+  // other-send record, and a waiting session's matching automated delivery stops being contested.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
+  const sdk = sdkFixture("person-refused", async () => null);
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+  assert.deepEqual(heard.map((h) => h.released), [false, true]);
+  assert.equal(heard[1]!.id, heard[0]!.id);
 });
 
 test("terminal rows remain sending until a hook proves prompt pickup", async () => {

@@ -10,6 +10,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "sess",

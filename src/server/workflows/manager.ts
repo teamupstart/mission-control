@@ -18,7 +18,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -5492,7 +5492,8 @@ export class WorkflowManager {
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
       // An outstanding request_input question, snoozed or not, holds evidence preparation too.
       && !this.registry.completionHeldByQuestion(session)
-      && !hasBlocker(session);
+      && !hasBlocker(session)
+      && !isAwaiting(session, now);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -8426,6 +8427,9 @@ export class WorkflowManager {
     // same reason, because to the operator it is the same fact: the session is waiting on them.
     if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
+    // Idle on purpose while its own CI or build finishes: resuming now would hand it a round
+    // before the result it is waiting for exists. Past its deadline it resumes as usual.
+    if (isAwaiting(session, now)) return held("session_awaiting");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
@@ -8739,6 +8743,10 @@ export class WorkflowManager {
     const current = this.registry.getSession(eligible.session.id);
     if (current && hasBlocker(current)) {
       this.recordResumptionWithheld(run, latest, "session_blocked", now);
+      return;
+    }
+    if (current && isAwaiting(current, now)) {
+      this.recordResumptionWithheld(run, latest, "session_awaiting", now);
       return;
     }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);

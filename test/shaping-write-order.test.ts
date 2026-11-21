@@ -38,5 +38,6 @@ test("a write made against an earlier daemon process is told apart from one made
   assert.match(DAEMON_SHAPING_INSTANCE, /^[0-9a-f-]{36}$/);
   assert.equal(shapingWriteFromEarlierInstance(order(DAEMON_SHAPING_INSTANCE)), false, "this process");
   assert.equal(shapingWriteFromEarlierInstance(order("an-earlier-process")), true, "a process this one replaced");
-  assert.equal(shapingWriteFromEarlierInstance(order()), false, "no instance named, as from an older dashboard");
+  // Ordered but naming no instance: made against a daemon older than instances, so earlier too.
+  assert.equal(shapingWriteFromEarlierInstance(order()), true, "no instance named, as against an older daemon");
 });

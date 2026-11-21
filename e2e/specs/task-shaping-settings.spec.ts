@@ -1419,11 +1419,15 @@ test("a frame from an unrelated write never stands in for a lost import answer",
   await reached.opened;
   // Another window changes an unrelated setting: its frame still shows the manifest stored.
   await putShaping(daemon, { kind: "settings", caller: { user: "unrelated-write" } });
-  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  // The page has read that frame: the form behind the dialog shows the new identity. It is no
+  // receipt for the import, whose shaper's revision did not move, so the dialog is still held.
+  await expect(page.getByRole("textbox", { name: "Caller identity" })).toHaveValue("unrelated-write");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
   goes.open();
-  // That frame frees the dialog, but is no answer to this save: it stays open and says so.
+  // That frame frees the dialog, but is no evidence of this save: the shaper's revision never moved
+  // on, so the import is reported as unknown, not as shown stored, and the dialog stays open.
   await expect(dialog.getByRole("alert")).toHaveText(
-    "The daemon's answer did not arrive. An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.",
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
   );
   await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");

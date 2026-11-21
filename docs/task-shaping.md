@@ -314,7 +314,8 @@ before the body limit, so such a request is refused as forbidden whatever its si
   That ordering lives in the daemon's memory, so the header also names the daemon process whose
   view the window last read (the view's `instance`, random per process): a write made against a
   process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
-  the restarted daemon no longer knows what came after it. The window's id and its last sequence
+  the restarted daemon no longer knows what came after it. An ordered write that names no instance
+  was made against a daemon older than instances, so it is refused the same way. The window's id and its last sequence
   are kept in the tab's session storage, and each sequence is grounded in the clock and never
   lower than the last, so reloading the tab keeps its order: a write sent before the reload and
   delayed past it is refused once one sent after it has applied. A duplicated tab copies that
@@ -389,7 +390,9 @@ answer never arrives, because it timed out or the connection failed, is reported
 never as refused, and never as saved: only the daemon's answer ties an outcome to a request,
 since the same state can come from another write or predate this one. When a stream update
 showed the change stored, the message says so, and an import's dialog stays open for the
-operator to close. An import's outcome that arrives after its dialog was closed is shown
+operator to close. For an import of a definition already stored, an update shows it stored only
+once that shaper's revision has moved on: before then any frame, an unrelated write's included,
+would look the same. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
 arrives while the dialog is open again. Both name the shaper whose save it answers, and the
 dialog says so when that is not the manifest it shows.

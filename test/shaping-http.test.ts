@@ -1137,8 +1137,9 @@ test("a placement is bound to the revision shown, and a kind this daemon does no
 
 test("a write from a window is refused once a later one of its on the same control was applied", async () => {
   const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
+  const instance = ((await (await get()).json()) as { config: { instance: string } }).config.instance;
   const ordered = (intent: unknown, sequence: number, controls: string[], window = "http-order-window") => app.request("/api/shaping", {
-    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder(window, sequence, controls) }, body: JSON.stringify(intent),
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder(window, sequence, controls, instance) }, body: JSON.stringify(intent),
   });
   // The newer save lands first: its earlier one waited, say for discovery, after its window gave up on it.
   assert.equal((await ordered({ kind: "settings", caller: { user: "newer" } }, 2, ["settings"])).status, 200);
@@ -1174,4 +1175,18 @@ test("a write made against an earlier daemon process is refused, so a restart ca
   assert.match(body.reason, /before the daemon restarted/);
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
   assert.equal((await write(view.instance!, "against-this-process")).status, 200);
+});
+
+test("an ordered write that names no daemon instance is refused, as one made against a daemon older than instances", async () => {
+  const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const unnamed = await app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("upgrade-window", 1, ["settings"]) },
+    body: JSON.stringify({ kind: "settings", caller: { user: "from-before-the-upgrade" } }),
+  });
+  assert.equal(unnamed.status, 409);
+  assert.equal(((await unnamed.json()) as { error: string }).error, "daemon_restarted");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // A client that sends no order at all is not ordered, as before.
+  assert.equal((await put({ kind: "settings", caller: { user: "no-order-at-all" } })).status, 200);
 });

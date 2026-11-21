@@ -74,6 +74,17 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
+  /**
+   * The revision each import's shaper had when the import was sent. An identical import matches
+   * the stored manifest before it is applied, so any frame, an unrelated write's included, would
+   * show it "stored": only a frame where that revision has moved on is the import's.
+   */
+  const revisionBefore = useRef(new WeakMap<ShapingIntent, string | null>());
+  const revisionMovedOn = (config: ShapingConfigView, request: ShapingIntent): boolean => {
+    if (request.kind !== "upsert" || !revisionBefore.current.has(request)) return true;
+    const before = revisionBefore.current.get(request) ?? null;
+    return before === null || shapingViewRevision(config, (request.shaper as { id: string }).id) !== before;
+  };
   /** Numbers each outcome in the order it arrived, whichever request it answers. */
   const arrivals = useRef(0);
   /**
@@ -85,7 +96,7 @@ export function useShapingSettings(
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
-    if (shapingIntentReflected(config, request)) {
+    if (shapingIntentReflected(config, request) && revisionMovedOn(config, request)) {
       observed.current.add(request);
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     } else if (shapingIntentSuperseded(config, request)) {
@@ -130,6 +141,7 @@ export function useShapingSettings(
     const request = parsed.data;
     const importing = request.kind === "upsert" ? (request.shaper as { id: string }).id : null;
     const before = importing !== null && confirmed !== null ? shapingViewRevision(confirmed, importing) : null;
+    if (importing !== null) revisionBefore.current.set(request, before);
     lock(keys, true);
     const number = ++sent.current;
     writing.current = request;

@@ -61,15 +61,20 @@ export function noteShapingWriteApplied(order: ShapingWriteOrder): void {
   while (applied.size > APPLIED_KEPT) applied.delete(applied.keys().next().value!);
 }
 
-/** Whether the write was made against an earlier daemon process than this one. */
+/**
+ * Whether the write was made against an earlier daemon process than this one. An ordered write
+ * that names no instance was made against a daemon older than instances, whose views carry none:
+ * one delayed across the upgrade to this one would otherwise apply after a newer write, so it
+ * counts as earlier too. A write with no order at all, from another client, is not ordered.
+ */
 export function shapingWriteFromEarlierInstance(order: ShapingWriteOrder): boolean {
-  return order.instance !== null && order.instance !== DAEMON_SHAPING_INSTANCE;
+  return order.instance !== DAEMON_SHAPING_INSTANCE;
 }
 
 /** The refusal for a write made against a daemon process that has since restarted. */
 export const EARLIER_INSTANCE_REFUSAL = {
   error: "daemon_restarted",
-  reason: "This change was made before the daemon restarted, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
+  reason: "This change was made before the daemon restarted or was upgraded, so it was not applied: a newer change may have been made since. Check what is shown now, and make it again if it is missing.",
 } as const;
 
 /** The refusal for a write a newer one from the same window already overtook. */

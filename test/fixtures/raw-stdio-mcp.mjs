@@ -53,7 +53,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (message.method === "initialize") {
       send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "garbage", version: "1.0.0" } } });
     } else if (message.id !== undefined) {
-      process.stdout.write(`this is not json for request ${message.id}\n`);
+      // With a variable named, the line opens with its value, where a parser's excerpt quotes a
+      // cut-down piece of it.
+      const echoed = args[0] ? process.env[args[0]] ?? "" : "";
+      process.stdout.write(`${echoed}this is not json for request ${message.id}\n`);
     }
     continue;
   }

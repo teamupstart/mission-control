@@ -376,12 +376,14 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
       return;
     }
     // A line on stdout that is not an MCP message: the stream is no longer one the client can
-    // trust, and a call waiting on it would only time out. The SDK's message can quote the line.
-    if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError")) {
-      // Scrubbed whole, then cut: cutting first could split a value into a piece no search finds.
-      const said = error.message;
-      const marked = holdsResolvedValue(said, named);
-      state.fail(`The MCP server wrote a line on stdout that is not an MCP message: ${scrubDiagnostic(said).slice(0, 300)}`, marked);
+    // trust, and a call waiting on it would only time out. The parser's message quotes a cut-down
+    // excerpt of the line, which can hold a piece of a value no search for the whole value finds,
+    // so the reason is fixed text and never quotes the line.
+    if (error instanceof SyntaxError) {
+      state.fail("The MCP server wrote a line on stdout that is not JSON, so it is not an MCP message.");
+      void client.close().catch(() => {});
+    } else if (error instanceof Error && error.name === "ZodError") {
+      state.fail("The MCP server wrote a JSON line on stdout that is not a JSON-RPC message.");
       void client.close().catch(() => {});
     }
   };

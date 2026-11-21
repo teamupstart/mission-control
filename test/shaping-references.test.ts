@@ -205,6 +205,18 @@ test("a variable or header named __proto__ is an ordinary name, never lost to th
   assert.equal(map.ok && map.value.__proto__, "declared-user");
 });
 
+test("a reply that repeats one escaped spacing variant thousands of times is scrubbed in linear time", { timeout: 10_000 }, () => {
+  const spaced = [{ name: "caller.user", value: "Jane Doe" }];
+  // About 240 KiB of the same escaped, spaced-out spelling, within a reply's 256 KiB cap.
+  const body = "J\\u0061ne\\t\\tDoe ".repeat(15_000);
+  const started = performance.now();
+  const scrubbed = scrubResolved({ guidance: [{ id: "a", body }] }, spaced);
+  const elapsed = performance.now() - started;
+  assert.equal(scrubbed.redacted, true);
+  assert.equal((scrubbed.data as { guidance: Array<{ body: string }> }).guidance[0]!.body.includes("ne\\t"), false);
+  assert.ok(elapsed < 3_000, `scrubbed in ${Math.round(elapsed)} ms`);
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

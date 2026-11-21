@@ -728,9 +728,19 @@ test("a stdio server that writes a line that is not an MCP message fails the cal
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "garbage-reply" }, "folded", {
     transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "garbage-reply"] } },
   }), ctx());
-  assert.equal(reply.kind, "failed", JSON.stringify(reply));
-  assert.match((reply as { reason: string }).reason, /^The MCP server wrote a line on stdout that is not an MCP message: /);
+  assert.deepEqual(reply, { kind: "failed", reason: "The MCP server wrote a line on stdout that is not JSON, so it is not an MCP message." });
   assert.ok(Date.now() - started < 10_000, "at once, not at the call's 30 s budget");
+});
+
+test("a malformed stdout line that holds a passed value never quotes any piece of it", async () => {
+  // Nothing a fixed reason could spell: every six-character piece of it is checked below.
+  const value = "zq7k9x2vv41mp8rq";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "garbage-reply" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "garbage-reply", KEY_ENV], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed");
+  const reason = (reply as { reason: string }).reason;
+  for (let at = 0; at + 6 <= value.length; at++) assert.equal(reason.includes(value.slice(at, at + 6)), false, reason);
 });
 
 test("a stream whose only event id is empty is not resumable, so its early end fails the call at once", async () => {

@@ -18,7 +18,7 @@ import {
   type ShapingReferenceStatus,
 } from "@shared/shaping.ts";
 import { STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
-import { redactSpans } from "./redaction.ts";
+import { forEachOccurrence, redactSpans } from "./redaction.ts";
 import { carriedEnvName, HTTP_OWNED_HEADERS, MCP_OWNED_HEADERS, withoutCarriedHeaders, withoutOwnedHeaders } from "./transports/carriers.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -265,15 +265,16 @@ function spacingPattern(value: string): RegExp | null {
 
 /** Every spacing variant of a resolved value that `text` holds, as a literal value under its name. */
 function spacingVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
-  const out: ResolvedValue[] = [];
+  // Each distinct spelling once: a reply that repeats one variant yields one target, not one per copy.
+  const out = new Map<string, ResolvedValue>();
   for (const entry of resolved) {
     const pattern = spacingPattern(entry.value);
     if (!pattern) continue;
     for (const match of text.matchAll(pattern)) {
-      if (match[0] !== entry.value) out.push({ name: entry.name, value: match[0] });
+      if (match[0] !== entry.value) out.set(`${entry.name}\u0000${match[0]}`, { name: entry.name, value: match[0] });
     }
   }
-  return out;
+  return [...out.values()];
 }
 
 const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
@@ -315,15 +316,21 @@ function decodeEscapes(text: string): { decoded: string; starts: number[]; ends:
 function escapedVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
   const map = decodeEscapes(text);
   if (!map) return [];
-  const out: ResolvedValue[] = [];
-  for (const entry of [...resolved, ...spacingVariants(map.decoded, resolved)]) {
+  // One linear pass per value over the decoded text, taking each match's raw span straight from
+  // the map: the value by Knuth-Morris-Pratt, its spacing variants by one regular-expression scan.
+  // Nothing is searched again per match, so repeated text costs no more than the text itself.
+  const out = new Map<string, ResolvedValue>();
+  const take = (entry: ResolvedValue, start: number, length: number) => {
+    const raw = text.slice(map.starts[start], map.ends[start + length - 1]);
+    if (raw !== entry.value) out.set(`${entry.name}\u0000${raw}`, { name: entry.name, value: raw });
+  };
+  for (const entry of resolved) {
     if (entry.value.length === 0) continue;
-    for (let at = map.decoded.indexOf(entry.value); at !== -1; at = map.decoded.indexOf(entry.value, at + 1)) {
-      const raw = text.slice(map.starts[at], map.ends[at + entry.value.length - 1]);
-      if (raw !== entry.value) out.push({ name: entry.name, value: raw });
-    }
+    forEachOccurrence(map.decoded, entry.value, false, (start) => take(entry, start, entry.value.length));
+    const pattern = spacingPattern(entry.value);
+    if (pattern) for (const match of map.decoded.matchAll(pattern)) take(entry, match.index, match[0].length);
   }
-  return out;
+  return [...out.values()];
 }
 
 function holdsOne(text: string, resolved: ResolvedValue): boolean {

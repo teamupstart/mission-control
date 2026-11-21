@@ -2992,8 +2992,9 @@ The default allowance is **10 executions per workflow run**, shared by all CodeR
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
-unavailable. A node with an incomplete review anywhere in this run blocks on exhaustion,
-including on a fresh submission; it cannot earn approval by spending its allowance. To recover,
+unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
+exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
+A later complete review clears that condition. To recover from an exhausted incomplete review,
 explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
 Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,

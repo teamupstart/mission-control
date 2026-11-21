@@ -1560,11 +1560,13 @@ export class WorkflowEngine {
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
-          incompleteReview: this.store.listAttemptsForRun(submission.runId).some((attempt) => {
-            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return false;
+          // Carry an unresolved review across submissions. A later complete review clears
+          // it; a skip cannot. The store orders attempts from oldest to newest.
+          incompleteReview: this.store.listAttemptsForRun(submission.runId).reduce((incomplete, attempt) => {
+            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return incomplete;
             const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
-            return parsed.success && parsed.data.status === "incomplete";
-          }),
+            return parsed.success && parsed.data.status !== "skipped" ? parsed.data.status === "incomplete" : incomplete;
+          }, false),
           retryAt: this.codeRabbitRetryAt(submission.id),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({

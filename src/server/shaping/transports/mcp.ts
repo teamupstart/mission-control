@@ -187,7 +187,29 @@ const INTERRUPTED_REASON = "The MCP server's response stream ended before the re
  * that carries a request and is answered with an event stream is watched; a JSON reply that
  * breaks already fails its request where the client reads it.
  */
-function watchReplyStreams(base: FetchLike, answered: (id: string | number) => boolean, handshakeInterrupted: () => void): FetchLike {
+/**
+ * Which watched requests have had their reply. Only a request whose own response stream is open is
+ * tracked, and its entry goes when that stream ends, so a stale or unsolicited reply, or one for a
+ * request id not yet in flight, is never recorded and cannot mark a later request as answered.
+ */
+function replyTracker() {
+  const awaiting = new Set<string | number>();
+  const answered = new Set<string | number>();
+  return {
+    watch(id: string | number): void { awaiting.add(id); answered.delete(id); },
+    record(id: string | number): void { if (awaiting.has(id)) answered.add(id); },
+    /** Stop tracking `id`, and say whether its reply arrived while it was watched. */
+    settle(id: string | number): boolean {
+      const replied = answered.has(id);
+      awaiting.delete(id);
+      answered.delete(id);
+      return replied;
+    },
+  };
+}
+type ReplyTracker = ReturnType<typeof replyTracker>;
+
+function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInterrupted: () => void): FetchLike {
   return async (input, init) => {
     const call = pendingCall.getStore();
     const response = await base(input, init);
@@ -209,8 +231,9 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
     let resumable = false;
     let eventId: string | undefined;
     let eventHasData = false;
+    replies.watch(id);
     const ended = () => setTimeout(() => {
-      if (answered(id) || resumable) return;
+      if (replies.settle(id) || resumable) return;
       if (method === "initialize") handshakeInterrupted();
       else call?.interrupted();
     }, REPLY_SETTLE_MS);
@@ -251,10 +274,10 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
  * Record the id of every reply the transport delivers. Set before the client connects: the client
  * keeps a handler already on the transport and calls it before its own for every message.
  */
-function observeReplies<Message>(transport: { onmessage?: (message: Message) => void }, answered: Set<string | number>): void {
+function observeReplies<Message>(transport: { onmessage?: (message: Message) => void }, replies: ReplyTracker): void {
   transport.onmessage = (message: Message) => {
     const reply = message as { id?: unknown; method?: unknown } | null;
-    if (reply && reply.method === undefined && (typeof reply.id === "string" || typeof reply.id === "number")) answered.add(reply.id);
+    if (reply && reply.method === undefined && (typeof reply.id === "string" || typeof reply.id === "number")) replies.record(reply.id);
   };
 }
 
@@ -439,20 +462,20 @@ async function openHttp(
   // the reply came leaves its call waiting for an answer that will never come, while the
   // transport stays open: that call answers at once (`watchReplyStreams`), and only a broken
   // handshake fails the connection.
-  const answered = new Set<string | number>();
+  const replies = replyTracker();
   const interrupted = () => {
     state.fail(INTERRUPTED_REASON);
     void client.close().catch(() => {});
   };
   const transport = new StreamableHTTPClientTransport(url, {
-    fetch: watchReplyStreams(capped, (id) => answered.has(id), interrupted),
+    fetch: watchReplyStreams(capped, replies, interrupted),
     requestInit: { headers: carriedHeaders(ctx.trace, ctx.workUnitId) },
     // A resumable stream gets two short attempts to resume, within its call's budget; a stream
     // that is not resumable is never retried, and its call answers at once.
     reconnectionOptions: { maxRetries: 2, initialReconnectionDelay: 250, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 2 },
   });
   transport.onclose = () => state.fail(CLOSED_REASON);
-  observeReplies(transport, answered);
+  observeReplies(transport, replies);
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
   ctx.scope.defer(async () => {
     if (state.failure === null) {

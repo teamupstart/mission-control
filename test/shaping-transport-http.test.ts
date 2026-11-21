@@ -49,6 +49,8 @@ before(async () => {
       case "/slow": setTimeout(() => json(200, OK), 5_000); return;
       case "/echo": return json(200, { guidance: [{ id: "echo", title: `key ${req.headers["x-api-key"] ?? "none"}`, body: JSON.stringify({ headers: req.headers }) }] });
       case "/moved": return res.writeHead(302, { location: "/ok" }).end();
+      case "/not-modified": return res.writeHead(304, { location: "/ok" }).end();
+      case "/multiple": return res.writeHead(300, { location: "/ok" }).end();
       case "/escaped-status": {
         // Every character of the echoed value written as a \u escape, valid JSON for the same text.
         const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
@@ -285,6 +287,13 @@ test("a 301 or 302 that would resend the request as a GET is refused, not follow
   assert.equal(reply.kind, "failed");
   assert.match((reply as { reason: string }).reason, /answered 302, a redirect that would resend this POST as a GET without its body/);
   assert.equal(seen.filter((entry) => entry.path === "/ok").length, before, "the GET was never sent");
+});
+
+test("a 3xx that is not a redirect status is the server's answer, never followed", async () => {
+  const before = seen.filter((entry) => entry.path === "/ok").length;
+  assert.deepEqual(await callHttp(request(), shaper("/not-modified"), ctx()), { kind: "failed", reason: "The shaper answered HTTP 304." });
+  assert.deepEqual(await callHttp(request(), shaper("/multiple"), ctx()), { kind: "failed", reason: "The shaper answered HTTP 300." });
+  assert.equal(seen.filter((entry) => entry.path === "/ok").length, before, "the Location was never requested");
 });
 
 test("a value written with JSON escapes inside a successful reply's text is redacted", async () => {

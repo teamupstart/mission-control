@@ -8,6 +8,9 @@
 /** Redirects a request may follow before it gives up. */
 const MAX_REDIRECTS = 5;
 
+/** The statuses that redirect a request. */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
 /**
  * Every request carries the configured headers and query values - and only to the configured
  * origin. Redirects are handled here rather than by `fetch`, which would follow one to another
@@ -43,7 +46,9 @@ export async function fetchOnOrigin(
     for (const [name, value] of secretQuery) target.searchParams.set(name, value);
     const response = await fetch(target, { ...request, headers, redirect: "manual" });
     const location = response.headers.get("location");
-    if (response.status < 300 || response.status >= 400 || !location) return response;
+    // Only the statuses that mean "go there": a 304, or any other 3xx that happens to carry a
+    // Location, is the server's answer and goes back to the caller as it is.
+    if (!REDIRECT_STATUSES.has(response.status) || !location) return response;
     void response.body?.cancel().catch(() => {});
     target = new URL(location, target);
     // As a browser would: 303, and 301 or 302 after a POST, continue as a GET without a body.

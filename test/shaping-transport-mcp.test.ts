@@ -550,14 +550,15 @@ test("a stdio server receives exactly the filtered environment, never an SDK def
 });
 
 test("a value cut at the front of the retained stderr leaves no fragment in the reason", async () => {
-  // The value is the longest the server receives, so the transport keeps 4,000 characters plus
-  // its length. 7,000 newlines after it put the cut 3,000 characters into it: the retained text
+  // The value is the longest the server receives, so the transport keeps 4,000 characters plus a
+  // margin of six times its length, 40,000 in all. 37,000 newlines after it put the cut 3,000
+  // characters into it: the retained text
   // starts with the value's last 3,000 characters, which no search for the whole value finds.
   // Collapsed, those newlines would bring that surviving end into the recorded tail.
   const { randomBytes } = await import("node:crypto");
   const value = randomBytes(3_000).toString("hex");
   const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "stderr-exit" }, "folded", {
-    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "7000"], env: [KEY_ENV] } },
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "37000"], env: [KEY_ENV] } },
   }), ctx()));
   assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
   const reason = (reply as { reason: string }).reason;
@@ -741,6 +742,28 @@ test("a malformed stdout line that holds a passed value never quotes any piece o
   assert.equal(reply.kind, "failed");
   const reason = (reply as { reason: string }).reason;
   for (let at = 0; at + 6 <= value.length; at++) assert.equal(reason.includes(value.slice(at, at + 6)), false, reason);
+});
+
+test("a reply for a request not yet in flight cannot mark that request answered when it is sent", async () => {
+  // The first call's stream carries, ahead of its own reply, a stray reply for the next request
+  // id. The second call's stream then ends with no reply: it must fail at once, not wait out its
+  // budget as though the stray reply had answered it.
+  const raw = await startRawMcpServer((res, id, index) => {
+    if (index === 0) {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+        .end(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: id + 1, result: OK_RESULT })}\n\nevent: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT })}\n\n`);
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" }).end(": no reply\n\n");
+  });
+  try {
+    const run = ctx();
+    assert.deepEqual(data(await callMcp(request(false), shaper({ type: "http", url: raw.url }), run)), { guidance: [{ id: "raw", body: "raw reply" }] });
+    const started = Date.now();
+    const second = await callMcp(request(false), shaper({ type: "http", url: raw.url }), run);
+    assert.deepEqual(second, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." });
+    assert.ok(Date.now() - started < 5_000, "at once, not at the call's 30 s budget");
+  } finally { await raw.close(); }
 });
 
 test("a stream whose only event id is empty is not resumable, so its early end fails the call at once", async () => {

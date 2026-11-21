@@ -45,6 +45,12 @@ const OUTCOME_WORDS: Record<ShapingShaperSummary["outcome"], string> = {
   unavailable: "Unavailable",
 };
 
+/** Where a shaper came from, in the words Settings uses for it. */
+const ORIGIN_WORDS: Record<ShapingShaperSummary["origin"], string> = {
+  registered: "registered",
+  discovered: "found on disk",
+};
+
 function seconds(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 100) / 10} s`;
 }
@@ -160,10 +166,19 @@ export function ShapingViewer({
                   <span className="task-context-outcome">{OUTCOME_WORDS[shaper.outcome]}</span>
                 </span>
                 <span className="task-context-shaper-facts">
-                  {shaper.stage} · {shaper.origin} · {seconds(shaper.durationMs)} · {entriesLabel(shaper.entries)}
+                  {shaper.stage} · {ORIGIN_WORDS[shaper.origin]} · {seconds(shaper.durationMs)} · {entriesLabel(shaper.entries)}
                   {shaper.version ? ` · version ${shaper.version}` : ""}
                   {shaper.truncated ? " · truncated" : ""}
                 </span>
+                {shaper.sha256 && (
+                  // Which definition ran: the manifest's bytes for a folder shaper, the stored entry for a registered one.
+                  <span className="task-context-definition">
+                    Definition{" "}
+                    <Tooltip label={`sha256 ${shaper.sha256}`}>
+                      <code tabIndex={0}>sha256 {shaper.sha256.slice(0, 12)}</code>
+                    </Tooltip>
+                  </span>
+                )}
                 {shaper.reason && <span className="task-context-reason">{shaper.reason}</span>}
                 {shaper.redacted && (
                   <span className="task-context-note" role="note">A credential value was removed from this shaper&apos;s reply.</span>

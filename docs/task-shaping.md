@@ -7,8 +7,9 @@ at stage `select` chooses guidance for the task. How Mission Control reaches a s
 
 **What this build does.** You register a `command` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
-the API, and dry-run it against a repository. A `command` shaper can serve either stage, `gather`
-or `select`. `repository-files` serves `gather` only, and a definition that places it at `select`
+the API, and dry-run it against a repository, or you drop a folder holding its manifest into
+[the shaper folder](#the-shaper-folder), where it is switched on as soon as it is found unless
+its manifest asks to start off. A `command` shaper can serve either stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that places it at `select`
 is refused. Every dispatch then calls the enabled shapers after its worktrees are provisioned and
 before the worker starts, and adds what they return to the worker's first prompt as a "Task
 context" section. A backlog task handed over to an agent that is already running
@@ -17,8 +18,8 @@ resets the agent and before its first turn is typed. The pending tile reads "Sha
 while that runs, and the session shows what it received and whether anything was degraded. A
 failing or slow shaper never stops the launch.
 
-**What comes later.** The shaper folder and the other transports arrive in later phases. The
-sections marked for later below describe them.
+**What comes later.** The other transports arrive in later phases. The sections marked for
+later below describe them.
 
 Task shaping is a preview behind the `task-shaping` flag in **Settings > Feature flags**. With
 the flag off, the shaping API answers 404, Settings has no Task shaping category, no window is
@@ -253,7 +254,7 @@ All three routes are behind the flag and answer 404 while it is off. `PUT /api/s
 routes use, so a page on another site cannot store an intent or run a shaper. The check runs
 before the body limit, so such a request is refused as forbidden whatever its size.
 
-- **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
+- **`GET /api/shaping`** returns `{ config, discovered, folder, references }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
@@ -278,7 +279,12 @@ before the body limit, so such a request is refused as forbidden whatever its si
   is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
   an inherited property.
-  `discovered` and `references` are empty until the folder and the remote transports land.
+  `discovered` is [the shaper folder](#the-shaper-folder) as this request read it: one
+  `{ id, path, state, problem, sha256, shaper }` per folder, where `path` is the folder's real
+  path, `state` is `ok`, `invalid`, `refused` or `shadowed`, `problem` says why it cannot run,
+  `sha256` is the manifest's hash and `shaper` the parsed manifest, null when it did not parse.
+  `folder` is `{ path, ignored }`: where the scan looked, and how many entries past its bound of
+  32 it left unread. `references` is empty until the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -286,7 +292,12 @@ before the body limit, so such a request is refused as forbidden whatever its si
   - `{ "kind": "remove", "id": "...", "expect"?: "..." }`. When a shaper in the folder has the
     same id, the registration was shadowing it, and removing the registration stores that id off
     in its place in the order, so the folder shaper runs only once it is switched on.
-  - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "..." }` stores the operator's choice.
+  - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "...", "manifest"?: "..." }`
+    stores the operator's choice. `manifest` is the SHA-256 of the folder manifest the sender
+    showed, which the dashboard sends for a folder shaper: switching on is refused with
+    `shaper_changed` once the folder holds another manifest for the id or a registered shaper
+    has taken it. Switching off is applied either way. A folder shaper that is not `ok` cannot
+    be switched on.
   - `{ "kind": "move", "id": "...", "after": "..." | null }` places a registered shaper right
     after another registered shaper of its stage, or first for `null`. It is applied to the order
     as stored when it arrives, so moves from two windows both stick, and repeating one changes
@@ -608,7 +619,81 @@ above. Its settings are the `shaping` settings backup domain.
 
 ## The shaper folder
 
-Arrives with discovery of `shapers/` under the state home.
+A shaper can be installed by dropping a folder, with no click and no restart. Each folder under
+`shapers/` in the state home (`~/.mission-control/shapers/` by default, or `$MISSION_HOME/shapers/`)
+that holds a `shaper.json` is one shaper:
+
+```text
+~/.mission-control/shapers/
+  acme-notes/
+    shaper.json
+    run            # a program the manifest names as ./run
+```
+
+`shaper.json` has the same shape as a registered shaper, plus an optional `enabled`. Its `id`
+must be the folder's name. A `command` transport, or a local MCP server, may name a `./` program,
+which is resolved inside that folder and nowhere else:
+
+```json
+{
+  "id": "acme-notes",
+  "label": "Acme notes",
+  "stage": "gather",
+  "transport": { "type": "command", "command": "./run", "env": ["ACME_NOTES_HOME"] }
+}
+```
+
+**Enabled on discovery.** A shaper found in the folder runs from the next dispatch on, unless
+its manifest says `"enabled": false`. A choice you store for its id in **Settings > Task
+shaping**, on or off, always wins over the manifest and survives a restart: switch it off there
+and it stays off whatever the folder holds, until you switch it on again. Taking the folder away
+stops it as well. Mission Control never creates, writes or removes anything in the folder, and
+the stored choice is the only thing it keeps for a folder shaper.
+
+**When the folder is read.** At daemon start, whenever Settings > Task shaping opens or its
+config changes, at the start of every shaping run and at the start of every dry run. There is no
+watcher. Every read opens and hashes every manifest, so a replaced file is always noticed,
+whatever its size or timestamps; only parsing is skipped when the bytes are unchanged. At most
+32 folders are read, in name order. Anything further is left unread and Settings says how many.
+Hidden entries and plain files beside the folders are not shapers.
+
+**What a folder must satisfy.** Each entry is listed with one state, and only `ok` can run:
+
+| State | Why |
+| --- | --- |
+| `ok` | Every rule below holds. |
+| `invalid` | The entry is not a folder or a link to one, it has no `shaper.json`, the manifest is not a regular file (a link or a directory is not), is over 16 KiB, is not UTF-8 JSON, fails the schema (an unknown stage or transport included), has an id other than its folder's name, or names a `./` program that does not exist or resolves outside the folder. A literal credential in a header is invalid too: its problem names the header, never the value. |
+| `refused` | The folder, its manifest, a `./` program, or a directory between the folder and that program belongs to another user, or is writable by its group or by other users. So is a link in `shapers/` that another user made. |
+| `shadowed` | A registered shaper has the same id. The registered one runs, and the folder's never does. |
+
+A `./` program's ownership is checked at every read, because replacing the program does not
+change the manifest's hash. The check uses POSIX owner and mode bits.
+
+**In Settings.** Folder shapers join the one list, marked **Found on disk** with their path,
+in the order they run: after the registered shapers of their stage, by id, unless the stored
+order places them. A folder shaper that can run has a switch that stores the choice for its id.
+There is no edit or remove: the folder is the source. One that cannot run is listed under
+**Found on disk, not run** with its reason. An invalid or refused one shows a switch that cannot
+switch it on, and switches it off when the choice stored for its id is on. A shadowed one has no
+switch of its own: the registered shaper with its id owns that id's stored choice, and its row
+carries the switch. The switch is bound to the manifest it showed: once the folder holds another
+manifest for the id, or a registered shaper takes the id, switching on is refused until the
+list is read again. Switching off is always applied.
+
+**On the session.** Every launch records each shaper's origin, `registered` or `discovered`, and
+the SHA-256 of the definition that ran: the manifest's bytes for a folder shaper. The viewer
+shows it as "found on disk" with the hash, so you can tell exactly which manifest a session got.
+
+**Trust.** Anything that can write the shapers folder can add a shaper, and by design that folder
+carries your authority: a dropped-in shaper runs at the next dispatch unless its manifest asks to
+start off, it fails the rules above, or you have stored it off. Worker agents and every
+other process you run share your OS user, so the folder is not a boundary against them. What
+Mission Control provides is visibility and a switch: every folder shaper is listed with its path,
+every launch records which definition ran, a stored off always wins, the ownership check refuses
+anything another user could have written, and the `task-shaping` flag gates all of it, so with
+the flag off nothing is scanned or run. A repository's own files never register a shaper. A
+folder shaper runs with your privileges and no operating-system sandbox, exactly like a
+registered `command` shaper.
 
 ## Remote shapers
 

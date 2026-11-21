@@ -42074,6 +42074,13 @@ body.foreman-sidecar-open .modal-backdrop {
 .task-context-reason {
   color: var(--fg);
 }
+.task-context-definition {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.task-context-definition code {
+  font: 11.5px/1.5 var(--mono);
+}
 .task-context-delivered-head {
   font-weight: 600;
   overflow-wrap: anywhere;
@@ -42140,6 +42147,13 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 .shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
 .shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+/* A folder shaper's path: the one place it is installed, so it reads whole and wraps anywhere. */
+.shaping-row-path { margin: 0; font-size: 11.5px; color: var(--dim); overflow-wrap: anywhere; }
+.shaping-row-path code { font: 11.5px/1.5 var(--mono); }
+/* A folder shaper that is not run says so in the warning colour, beside its origin. */
+.shaping-chip.is-invalid, .shaping-chip.is-refused, .shaping-chip.is-shadowed { color: var(--attention); border-color: color-mix(in srgb, var(--attention) 45%, transparent); }
+.shaping-folder-note { margin: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
+.shaping-folder-note code { font: 11.5px/1.5 var(--mono); }
 .shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
 /* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
    gap, yet stays in the accessibility tree, which display: none would not. */

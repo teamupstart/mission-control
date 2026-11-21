@@ -159,7 +159,12 @@ export function contentWithinCap(bytes: Buffer, cap: number): { bytes: Buffer; e
 function cutAtLastLine(text: string, cap: number): string {
   const clipped = clipUtf8(text, cap);
   const next = text.slice(clipped.length, clipped.length + 2);
-  if (next.startsWith("\n") || next === "\r\n") return withoutCarriageReturn(clipped);
+  // The whole CRLF is past the cap: the clipped text ends exactly at a line's end and is the
+  // line's own content, a carriage return of its own included.
+  if (next === "\r\n") return clipped;
+  // An LF just past the cap whose CR is the clipped text's last character: that CR is the
+  // separator's, not the line's.
+  if (next.startsWith("\n")) return withoutCarriageReturn(clipped);
   const newline = clipped.lastIndexOf("\n");
   return newline >= 0 ? withoutCarriageReturn(clipped.slice(0, newline)) : clipped;
 }

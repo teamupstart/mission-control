@@ -172,6 +172,11 @@ test("a CRLF separator just past the cap keeps the line it ends, and a cut leave
   assert.deepEqual(await readWorktreeFile(root, "crlf.md", 4), { ok: true, text: "one", truncated: true });
   // Inside the second line: back to the first, again without its carriage return.
   assert.deepEqual(await readWorktreeFile(root, "crlf.md", 7), { ok: true, text: "one", truncated: true });
+  // Both separator bytes past the cap: the line keeps a carriage return of its own.
+  const { root: own } = fixture({ "cr.md": "first\r\r\nsecond" });
+  assert.deepEqual(await readWorktreeFile(own, "cr.md", 6), { ok: true, text: "first\r", truncated: true });
+  // A cap one byte later lands between that CRLF's CR and LF: the separator's CR goes, the line's stays.
+  assert.deepEqual(await readWorktreeFile(own, "cr.md", 7), { ok: true, text: "first\r", truncated: true });
   // A complete read cut by the cap follows the same rule.
   assert.deepEqual(fileText(Buffer.from(`${crlf}�`), 8, false), { text: "one\r\ntwo", truncated: true });
   assert.equal(boundedReadBytes(8), 8 + 3 + 2, "the read asks for the cap, a byte order mark and the two-byte lookahead");

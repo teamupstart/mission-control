@@ -1,6 +1,7 @@
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { findingPublication } from "@shared/inspector-findings.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -5022,10 +5023,11 @@ export class WorkflowManager {
           "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
         if (!changedRun) return;
         // Publication and completed Inspector review identify the same current head.
-        // Deliver its findings even though the earlier Persona review cannot approve it.
+        // Deliver its posted findings even though the earlier Persona review cannot approve it.
         // Retain the review obligation through delivery, recovery and the next submission.
         if (ledger.headSha === submittedHead) {
-          const findings = loadInspectorComments(state.prKey!).filter((row) => row.status !== "resolved");
+          const findings = loadInspectorComments(state.prKey!).filter((row) =>
+            row.status !== "resolved" && findingPublication(row).state === "posted");
           if (findings.length > 0) {
             await this.handleInspectorFindings(
               changedRun, submission, binding, version, changedState, ledger.round, findings, now,

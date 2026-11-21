@@ -2134,6 +2134,21 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
         }
         if (findingsPolicy) {
           upsertInspectorComment({
+            id: `unposted-${number}`, prKey: key, fingerprint: `unposted-${number}`,
+            path: "src/edge.ts", line: 15, title: "Unposted finding on the published head",
+            body: "This draft has not reached GitHub.", severity: "major",
+            round: 7, status: "drafted", replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now,
+            githubUrl: null, postedAt: null,
+          });
+          const deliveriesBeforeDraft = h.injected.length;
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          await h.settle();
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 0,
+            "an unposted current-head finding must not prepare a feedback packet across the reviewed-tree hold");
+          assert.equal(h.injected.length, deliveriesBeforeDraft, "unposted feedback must not reach the owning session");
+          assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
+            "reviewed_tree_changed");
+          upsertInspectorComment({
             id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
             path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
             body: "Verify the Go toolchain behavior and reply to this thread.", severity: "major",
@@ -2141,19 +2156,20 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
             githubUrl: `${url}#discussion_r1576`, postedAt: now,
           });
           updateInspectorPr(key, { headSha: h.full("older-review") }, now);
-          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 4);
           await waitFor(() => WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState)
-            .lastObservedAt === now + 3, "the stale-review observation did not settle");
+            .lastObservedAt === now + 4, "the stale-review observation did not settle");
           assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 0,
             "a previous head's review must not deliver findings as current");
           updateInspectorPr(key, { headSha: head }, now);
-          h.registry.inspectionUpdated(key, head, "OPEN", now + 4);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
           await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback"),
             "the published-tree hold swallowed the current-head finding");
           await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback" && d.state === "delivered"),
             "the current-head finding never reached the session");
           const packet = h.store.listDeliveries(runId).find((d) => d.kind === "inspector_feedback")!;
           assert.match(packet.payload, /Posted finding on the published head/);
+          assert.doesNotMatch(packet.payload, /Unposted finding on the published head/);
           assert.ok(packet.payload.includes(`${url}#discussion_r1576`));
           assert.match(packet.payload, /fresh full workflow review/);
           assert.doesNotMatch(packet.payload, /permits bypassing Personas/);
@@ -2173,9 +2189,9 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
             id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
             path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
             body: "Verified and withdrawn", severity: "major", round: 7, status: "resolved",
-            replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 4,
+            replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 5,
           });
-          h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 6);
           // Parked findings do not advance lastObservedAt. Wait for the observation even
           // if it has already finished by the time the harness reaches this barrier.
           await h.settle();

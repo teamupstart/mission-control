@@ -58,18 +58,30 @@ test("a silent Keep doing what it said snooze leaves the first-snooze slot, so a
     const first = snooze(q.id, "judgment");
     assert.equal(first?.instructionOwed, false);
     assert.equal(first?.review.snooze?.mode, "judgment", "an unset mode reads back as Keep doing what it said");
+    assert.equal(first?.review.snooze?.instructed, false, "and says its agent was told nothing");
     const stored = openDb().prepare("SELECT snooze_mode, snooze_option_id FROM reviews WHERE id = ?");
     assert.deepEqual({ ...stored.get(q.id) }, { snooze_mode: null, snooze_option_id: null });
     assert.ok(wakeReviewRow(q.id, 6_000));
     const second = snooze(q.id, later);
     assert.equal(second?.instructionOwed, true, `${later} after a silent snooze reaches the agent`);
     assert.deepEqual({ ...stored.get(q.id) }, { snooze_mode: later, snooze_option_id: later === "option" ? "o0" : null });
+    assert.equal(second?.review.snooze?.instructed, undefined, "told, so the field is absent as on every other row");
     // Once told, a third snooze keeps what the agent was told and owes nothing new.
     assert.ok(wakeReviewRow(q.id, 7_000));
     openDb().prepare("UPDATE reviews SET snooze_instruction_queued_at = 6500 WHERE id = ?").run(q.id);
     assert.equal(snooze(q.id, "judgment")?.instructionOwed, false);
     assert.equal({ ...stored.get(q.id) }.snooze_mode, later);
   }
+});
+
+test("a judgment snooze stored before the silent rule reads as told, and keeps what its agent was told", () => {
+  const q = question();
+  openDb().prepare(`UPDATE reviews SET status = 'pending', snoozed_at = 1, snoozed_until = 2, snooze_mode = 'judgment',
+    snooze_instruction_owed_at = 1, snooze_instruction_queued_at = 1, snooze_reminded_at = 2 WHERE id = ?`).run(q.id);
+  const again = snooze(q.id, "hold");
+  assert.equal(again?.review.snooze?.instructed, undefined, "its agent was sent the best-judgment instruction");
+  assert.equal(again?.review.snooze?.mode, "judgment", "the instruction it was given stands");
+  assert.equal(again?.instructionOwed, false);
 });
 
 test("a provisional option or hold on a message-mode question is owed as a message, as before", () => {

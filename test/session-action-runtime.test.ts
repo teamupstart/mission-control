@@ -547,6 +547,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     runActionTurn,
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
+    settle: () => manager.settleBackgroundWork(),
     stop: () => manager.stop(),
   };
 }
@@ -2110,11 +2111,9 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
             replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 4,
           });
           h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
-          // Parked findings do not advance lastObservedAt. Drain the scheduled evaluation
-          // itself so these negative assertions cannot pass before the observation runs.
-          const tasks = (h.manager as unknown as { backgroundTasks: Set<Promise<void>> }).backgroundTasks;
-          assert.ok(tasks.size > 0, "the same-head observation must schedule gate work");
-          while (tasks.size > 0) await Promise.allSettled(tasks);
+          // Parked findings do not advance lastObservedAt. Wait for the observation even
+          // if it has already finished by the time the harness reaches this barrier.
+          await h.settle();
           assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
           assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
         }

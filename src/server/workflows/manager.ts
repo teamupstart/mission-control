@@ -879,6 +879,11 @@ export class WorkflowManager {
     await Promise.allSettled(this.backgroundTasks);
   }
 
+  /** Settle scheduled manager work, including work it queues; future timer ticks are excluded. */
+  async settleBackgroundWork(): Promise<void> {
+    while (this.backgroundTasks.size > 0) await Promise.allSettled(this.backgroundTasks);
+  }
+
   list(includeArchived = false): WorkflowSummary[] {
     return this.store.listWorkflows(includeArchived).map((workflow) => this.store.summary(workflow));
   }

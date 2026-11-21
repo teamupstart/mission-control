@@ -27,6 +27,8 @@ export function WorkUnitRow({ workUnitId }: { workUnitId: string }) {
           {copy.copied ? COPY_FEEDBACK_LABEL : "Copy"}
         </button>
       </Tooltip>
+      {/* The button keeps its name, so the confirmation is announced from a polite region. */}
+      <span className="sr-only" role="status">{copy.copied ? COPY_FEEDBACK_LABEL : ""}</span>
       {copy.error && <span className="work-unit-copy-error" role="alert">{copy.error}</span>}
     </div>
   );

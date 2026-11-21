@@ -1614,8 +1614,16 @@ export class SdkSupervisor {
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
     // A restore is a start, so it decides again, here and once. The process this replaces
-    // ended with the daemon, so what it carried no longer describes anything.
-    const workUnitId = launchWorkUnitId(task);
+    // ended with the daemon, so what it carried no longer describes anything. Decided from the
+    // task that OWNS the session now, not from `row.taskId`, which is launch provenance: an
+    // agent started with no work unit may since have been assigned another unit's task, and the
+    // restored agent runs that task, so it must carry that task's id. With no current owner,
+    // the launch task is what the session last worked for.
+    const ownerId = taskIdForSession(row.id) ?? row.taskId;
+    const owner = ownerId && ownerId !== row.taskId
+      ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null)
+      : task;
+    const workUnitId = launchWorkUnitId(owner);
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;

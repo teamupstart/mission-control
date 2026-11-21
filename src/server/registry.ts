@@ -9137,12 +9137,25 @@ export class Registry extends EventEmitter {
     const keys = [...new Set([noteKeyFor(session), launched.conversationKey].filter((key): key is string => Boolean(key)))];
     const before = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
     for (const key of keys) this.installLaunchWorkUnit(key, launched.workUnitId, now);
+    // What this launch put under each key, so the undo can tell its own record from a newer one.
+    const installed = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
+    const firstKey = noteKeyFor(session);
     return () => {
       const live = this.sessions.get(session.id);
       if (live && live.state !== "exited") return;
       const current = live ? noteKeyFor(live) : null;
-      for (const [key, record] of before) this.restoreLaunchWorkUnit(key, record);
-      if (current && !before.has(current)) this.restoreLaunchWorkUnit(current, null);
+      // A key is put back only while it still holds what this launch installed and no other live
+      // session holds it: a later launch of the same conversation (a replacement resume) may have
+      // taken it since, and its record describes the agent running now.
+      const stillOurs = (key: string, ours: LaunchWorkUnitRecord | null): boolean =>
+        sameLaunchRecord(this.launchWorkUnits.get(key) ?? null, ours)
+        && ![...this.sessions.values()].some((s) => s.id !== session.id && s.state !== "exited" && noteKeyFor(s) === key);
+      for (const [key, record] of before) {
+        if (stillOurs(key, installed.get(key) ?? null)) this.restoreLaunchWorkUnit(key, record);
+      }
+      if (current && !before.has(current) && stillOurs(current, installed.get(firstKey) ?? null)) {
+        this.restoreLaunchWorkUnit(current, null);
+      }
       if (live) this.refreshLaunchWorkUnit(live.id);
     };
   }
@@ -11184,6 +11197,16 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
+/**
+ * Whether two launch records are the same install: both absent, or the same work unit installed
+ * at the same moment. A rotation moves a record with its `createdAt`, so the record a launch
+ * installed is still recognized under the key the session holds now.
+ */
+function sameLaunchRecord(a: LaunchWorkUnitRecord | null, b: LaunchWorkUnitRecord | null): boolean {
+  if (!a || !b) return a === b;
+  return a.workUnitId === b.workUnitId && a.createdAt === b.createdAt;
+}
+
 export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }

@@ -143,6 +143,8 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await shoot(detail.locator("dl.detail-sub"), "01-work-unit-row", page);
   await copy.click();
   await expect(copy).toHaveText("Copied");
+  // The button keeps its accessible name, so the confirmation is announced from a status region.
+  await expect(detail.getByRole("status").filter({ hasText: /^Copied$/ })).toHaveCount(1);
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claude.workUnitId);
   await shoot(detail.locator("dl.detail-sub"), "02-work-unit-copied", page);
 

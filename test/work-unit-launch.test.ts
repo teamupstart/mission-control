@@ -359,6 +359,29 @@ test("a managed Pipeline host's agent carries its task's work unit with the prev
   assert.equal(envs.length, 2);
 });
 
+test("a restore carries the work unit of the task that owns the session now, not the one that launched it", async (t) => {
+  const calls: SdkLaunchOptions[] = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = { answersRequests: true, launch: async (opts) => { calls.push(opts); return idleHandle(); } };
+  t.after(() => { HARNESSES.claude.sdk = real; preview(false); });
+  preview(true);
+  // Launched for one task (provenance in the row), since assigned another unit's task.
+  upsertTask(mkTask({ id: "launched-for", workUnitId: WU_A, status: "done", sessionId: null }));
+  upsertTask(mkTask({ id: "owns-it-now", workUnitId: WU_B, status: "running", sessionId: "sdk:wu-owner" }));
+  upsertSdkSession({
+    id: "sdk:wu-owner", agent: "claude", agentSessionId: "owner-conversation", cwd: "/wt/wu-owner",
+    taskId: "launched-for", model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  await supervisor.restore();
+  await supervisor.stop("sdk:wu-owner").catch(() => {});
+  const restored = calls.find((call) => call.resume === "owner-conversation");
+  assert.ok(restored, "the suspended row was relaunched");
+  assert.equal(restored.workUnitId, WU_B, "the task it will run, not the task that launched it");
+  assert.equal(storedRecord("owner-conversation"), WU_B);
+});
+
 // ---- the launch record: terminal launches ----
 
 let paneN = 0;
@@ -487,6 +510,28 @@ test("a failed launch whose agent is gone leaves the records as they were; a con
   handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(confirmed, null, "reopened-conversation"), "succeeded");
   registry.applyDiscovery([discovered("/wt/reopen", { missionLaunched: true, missionLaunchHome: confirmed })]);
   assert.equal(storedRecord("reopened-conversation"), null);
+});
+
+test("undoing a failed launch leaves a newer launch's record for the same conversation alone", () => {
+  const registry = new Registry();
+  // The conversation's first agent carried WU_A.
+  const first = launchHome();
+  handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(first, WU_A), "succeeded");
+  idleAgent(registry, discovered("/wt/replaced", { missionLaunched: true, missionLaunchHome: first }), "replaced-conversation");
+  // Resume A is seen, installs WU_B, then its agent dies before A settles.
+  const a = launchHome();
+  const failing = handOver.expectTerminalLaunchWorkUnit(a, WU_B, "replaced-conversation");
+  registry.applyDiscovery([discovered("/wt/replaced", { missionLaunched: true, missionLaunchHome: a })]);
+  assert.equal(storedRecord("replaced-conversation"), WU_B);
+  // A replacement resume B of the same conversation is admitted and seen, installing none.
+  const b = launchHome();
+  handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(b, null, "replaced-conversation"), "succeeded");
+  const replacement = idleAgent(registry, discovered("/wt/replaced", { missionLaunched: true, missionLaunchHome: b }), "replaced-conversation");
+  assert.equal(storedRecord("replaced-conversation"), null);
+  // A's late failure must not restore WU_A over the agent that is running now.
+  handOver.settleTerminalLaunchWorkUnit(failing, "failed");
+  assert.equal(storedRecord("replaced-conversation"), null, "B's record stands");
+  assert.equal(registry.getSession(replacement.id)?.launchWorkUnitId ?? null, null);
 });
 
 test("an unclaimed decision waits as long as its launch home exists, with no timer, and is taken once", async (t) => {

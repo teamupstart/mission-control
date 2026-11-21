@@ -792,6 +792,52 @@ test("a reply for a request not yet in flight cannot mark that request answered 
   } finally { await raw.close(); }
 });
 
+/**
+ * A loopback MCP endpoint that echoes the request's `x-api-key` header at the start of a body that
+ * is not JSON: for `initialize` when `at` is "handshake", otherwise for `tools/call`.
+ */
+async function startMalformedEcho(at: "handshake" | "call") {
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    const malformed = () => res.writeHead(200, { "content-type": "application/json" }).end(`${String(req.headers["x-api-key"] ?? "")}{not json`);
+    if (message.method === "initialize") {
+      if (at === "handshake") { malformed(); return; }
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "malformed", version: "1.0.0" } },
+      }));
+      return;
+    }
+    malformed();
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+test("a reply or handshake over HTTP that is not JSON fails with fixed text, never an excerpt of the body", async () => {
+  // Nothing a fixed reason could spell: every six-character piece of it is checked below.
+  const value = "zq7k9x2vv41mp8rq";
+  for (const at of ["call", "handshake"] as const) {
+    const server = await startMalformedEcho(at);
+    try {
+      const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(false), shaper({ type: "http", url: server.url, headers: { "x-api-key": `{env:${KEY_ENV}}` } }), ctx()));
+      assert.equal(reply.kind, "failed", JSON.stringify(reply));
+      const reason = (reply as { reason: string }).reason;
+      // The client reports the parse failure on the transport first, so the handshake answers with
+      // the same fixed sentence as a call.
+      assert.equal(reason, "The MCP server sent a reply that is not JSON.", at);
+      for (let i = 0; i + 6 <= value.length; i++) assert.equal(reason.includes(value.slice(i, i + 6)), false, reason);
+    } finally { await server.close(); }
+  }
+});
+
 test("a stream whose only event id is empty is not resumable, so its early end fails the call at once", async () => {
   const raw = await startRawMcpServer((res) => res.writeHead(200, { "content-type": "text/event-stream" }).end("id:\ndata: \n\n"));
   try {

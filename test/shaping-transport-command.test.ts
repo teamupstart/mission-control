@@ -143,6 +143,24 @@ test("a named variable called __proto__ is an own property of the child's enviro
   assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
 });
 
+test("a named value a command reprints with its whitespace normalized is redacted and marked", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane\t\tDoe";
+  try {
+    const failed = await callCommand(request(), shaper([FIXTURE, "leak-normalized", "SHAPER_FIXTURE_SPACED"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.deepEqual(failed, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [SHAPER_FIXTURE_SPACED redacted]", redacted: true });
+    // The reply's redactor, which the engine runs over reasons built from a reply, agrees.
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    assert.equal(reply.kind, "data");
+    const data = reply as { redact?: (text: string) => string; holdsNamed?: (text: string) => boolean };
+    assert.equal(data.holdsNamed?.("note for Jane Doe"), true);
+    assert.equal(data.redact?.("note for Jane Doe"), "note for [SHAPER_FIXTURE_SPACED redacted]");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
 test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SPACED;
   process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";

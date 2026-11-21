@@ -9,7 +9,7 @@ import { dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
 import { redactSpans } from "../redaction.ts";
-import { NEVER_PASSED_ENV_NAMES, scrubResolved, type ResolvedValue } from "../references.ts";
+import { holdsResolvedValue, NEVER_PASSED_ENV_NAMES, redactResolved, scrubResolved, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, withCarriedEnv } from "./carriers.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
@@ -347,8 +347,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       // value. They are dropped in the original text's positions, not after replacement.
       // Then collapsed and scrubbed again: the record collapses whitespace, which can make a
       // spacing variant of a value into the value itself.
-      const scrubbed = redactReceived(stderr, received, stderrDropped ? longestValue : 0);
-      return redactReceived(scrubbed.replace(/\s+/g, " "), received).slice(-STDERR_TAIL_CHARS).trim();
+      // Each named value is also removed in any spelling, spacing variants and JSON escapes
+      // included, before anything is cut: a child that prints `Jane  Doe` as `Jane Doe` is caught.
+      const scrubbed = redactResolved(redactReceived(stderr, received, stderrDropped ? longestValue : 0), namedValues);
+      return redactResolved(redactReceived(scrubbed.replace(/\s+/g, " "), received), namedValues).slice(-STDERR_TAIL_CHARS).trim();
     };
     const end = (why: "timed_out" | "overflow"): void => {
       if (ending || settled) return;
@@ -431,16 +433,16 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           ...(scrubbed.redacted ? { redacted: true } : {}),
           ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
-          redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
-          holdsNamed: (text) => namedValues.some(({ value }) => text.includes(value)),
+          // A named value in any spelling, as its content was scrubbed, so the engine's reasons agree.
+          redact: (text, options) => redactResolved(redactReceived(text, options?.identifier ? identifierValues : received), namedValues),
+          holdsNamed: (text) => holdsResolvedValue(text, namedValues),
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.
       stderr += stderrDecoder.end();
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
-      const flatStderr = stderr.replace(/\s+/g, " ");
-      const named = namedValues.some(({ value }) => stderr.includes(value) || flatStderr.includes(value));
+      const named = holdsResolvedValue(stderr, namedValues) || holdsResolvedValue(stderr.replace(/\s+/g, " "), namedValues);
       finish({
         kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}`,
         ...(named ? { redacted: true } : {}),

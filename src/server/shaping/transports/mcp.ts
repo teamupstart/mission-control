@@ -173,6 +173,17 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
  */
 const pendingCall = new AsyncLocalStorage<{ interrupted(): void }>();
 
+/**
+ * The reason for a reply that is not JSON, or not a JSON-RPC message. Fixed text: a parser's
+ * message quotes a cut-down excerpt of what it read, which can hold a piece of a header value no
+ * search for the whole value finds, so it is never quoted.
+ */
+function malformedReason(error: unknown): string | null {
+  if (error instanceof SyntaxError) return "The MCP server sent a reply that is not JSON.";
+  if (error instanceof Error && error.name === "ZodError") return "The MCP server sent JSON that is not a JSON-RPC message.";
+  return null;
+}
+
 /** Why a streamable-HTTP connection is gone when nothing more specific is known. */
 const CLOSED_REASON = "The MCP server closed the connection.";
 
@@ -480,6 +491,14 @@ async function openHttp(
     reconnectionOptions: { maxRetries: 2, initialReconnectionDelay: 250, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 2 },
   });
   transport.onclose = () => state.fail(CLOSED_REASON);
+  // A malformed event on a response stream reaches only `onerror`: the call it carried would wait
+  // out its budget. The connection fails with the fixed reason, and the next call reconnects.
+  transport.onerror = (error) => {
+    const malformed = malformedReason(error);
+    if (!malformed) return;
+    state.fail(malformed);
+    void client.close().catch(() => {});
+  };
   observeReplies(transport, replies);
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
   ctx.scope.defer(async () => {
@@ -497,6 +516,8 @@ async function openHttp(
     // failure on the latch, an oversized message or a broken stream, says it better.
     if (state.failure && state.failure !== CLOSED_REASON) throw new ConnectError(state.failure, state.redacted);
     const cause = await connecting.then(() => error, (reason: unknown) => reason);
+    const malformed = malformedReason(cause);
+    if (malformed) throw new ConnectError(`The MCP server did not complete its handshake: ${malformed}`, false);
     // The SDK's message can carry the server's own reply body, which can echo a header value
     // in any spelling: scrubbed the way a tool error is, escapes and spacing included.
     const detail = quoted(requestFailure(cause), resolved);
@@ -605,6 +626,8 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     if (connection.failure) return failure("failed", connection.failure, resolved, connection.failureRedacted);
     if (stop.signal.aborted && !signal.aborted) return failure("failed", INTERRUPTED_REASON, resolved);
     if (signal.aborted || (error as { code?: unknown } | null)?.code === -32001) return timedOut();
+    const malformed = malformedReason(error);
+    if (malformed) return { kind: "failed", reason: malformed };
     const detail = quoted(requestFailure(error), resolved);
     return failure("failed", `The MCP call failed: ${detail.text}`, resolved, detail.redacted);
   }

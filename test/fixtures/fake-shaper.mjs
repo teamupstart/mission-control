@@ -59,6 +59,11 @@ switch (mode) {
     // Exactly this many bytes of stdout, so a test can stand on either side of the cap.
     process.stdout.write("x".repeat(Number(rest[0] ?? 300 * 1024)));
     break;
+  case "leak-normalized":
+    // The named value with every run of whitespace in it printed as one space, then a failure.
+    process.stderr.write(`could not authenticate with ${(process.env[rest[0]] ?? "").replace(/\s+/g, " ")}`);
+    process.exit(4);
+    break;
   case "leak-spaced":
     // The named value with each run of whitespace in it widened to that many spaces, then a failure.
     process.stderr.write((process.env[rest[0]] ?? "").replace(/\s+/g, " ".repeat(Number(rest[1] ?? 1))));

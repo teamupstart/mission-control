@@ -2555,8 +2555,9 @@ records a **blocker** with `report_blocker`: what it is waiting for (`reason`), 
 answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
 `dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
 lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
-through `request_input`, and `report_blocker` is refused while the session has a
-`request_input` of its own pending. It is also refused once the session's task has finished,
+through `request_input`, and `report_blocker` is refused while the session is waiting inside a
+`request_input` call of its own. A question filed with
+[Ask without stopping](#asking-without-stopping) does not refuse it, because its agent kept working. It is also refused once the session's task has finished,
 since nothing would clear a blocker stored against a done, failed or cancelled task.
 
 The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
@@ -2747,8 +2748,9 @@ The MCP tools are:
   rules. Running and dispatching tasks must be cancelled with `cancel_task` first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, context?, options?)` - ask a question and **block** for an answer or
-  dismissal. The human can always type an answer. With `options` the card also shows radios
+- `request_input(question, context?, options?, meanwhile?)` - ask a question. By default the call
+  **blocks** for an answer or dismissal; with the `async-input` preview flag on, it files the
+  question and returns at once (see [Asking without stopping](#asking-without-stopping)). The human can always type an answer. With `options` the card also shows radios
   (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
   Use `question` for the decision itself, which becomes the card's heading. The card prints
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
@@ -3043,6 +3045,60 @@ snooze or bring a question back early. Session control has no snooze command. Th
 both from any other actor, such as a controlling session or Foreman, and from any request that
 carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
 operation or a page from another origin. The question stays open.
+
+#### Asking without stopping
+
+**Ask without stopping** is a preview feature behind the `async-input` flag (Settings > Feature
+flags). With it on, `request_input` files the question and returns at once with a receipt instead
+of waiting inside the call:
+
+- The receipt says the question is filed and not answered. The agent keeps doing every part of
+  its task that does not depend on the answer, proceeds only on choices that are easy to reverse
+  where the work does depend on it, holds anything irreversible or outward-facing, and does not
+  ask again or poll. An agent with nothing else to do says what is waiting on the question and
+  ends its turn.
+- The question appears in the attention inbox and the review modal exactly as before, with
+  Answer, Dismiss, Chat about it and Remind me later. The agent may pass `meanwhile`, one line of
+  at most 300 characters saying what it does while the question is open.
+- Your answer reaches the agent as a message in its conversation through the same outbox as a
+  message you type: an idle session gets a new turn, and a busy one is steered after 60 seconds
+  where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
+  standing approval, is delivered the same way.
+- That message is Mission Control's, not yours, whoever answered. It is never captured as a new
+  Goal prompt for the session and is not drawn as a turn you typed; your answer already appears
+  in the conversation as the gold answer entry. An answer to a question that waited inside the
+  call and lost it keeps today's behavior.
+- While the agent works past its question, its session is not amber. Once it stops with the
+  question still pending, it is amber and reads **waiting on your answer**, and it holds queue
+  sends and backlog assignment like any session that needs you. A resident is the exception: it
+  keeps iterating on its cadence while its questions wait in the inbox.
+- Every new question alerts. The title says whether the agent **has a question, still working**
+  or **needs your answer**.
+
+The daemon decides how each ask waits and says so in its response. A question is filed this way
+only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
+a receipt, and the session can receive a message. Everything else waits inside the call as
+before: the other review tools (plan decisions, diff review, the confirmations other tools raise),
+an MCP child from an older build, and a session no message can reach, such as a Pipeline engine
+session or a terminal session with no writable pane. The flag is read for every ask, so it takes
+effect without a restart.
+
+Two completion rules apply to **every outstanding `request_input` question** of a session, meaning
+one that is pending or snoozed, whether it waits in a call or was filed. They always apply to a
+filed question, and to a question waiting in a call while the flag is on:
+
+- **It holds completion.** Foreman's prompted completion, workflow resumption and automatic
+  evidence preparation refuse while the session has one, whatever the session is doing. This
+  includes a snoozed question, which turns nothing amber. A resident is not held.
+- **A merge still completes the task.** A merged pull request is your own conclusion, so
+  merge-driven completion is not held. Every outstanding question is closed at that moment, with
+  the status `orphaned` and the recorded reason `merged`, and leaves the inbox. The agent, if it
+  is still waiting inside a call, is told the pull request merged before anyone answered.
+
+Operator messages, workflow repair rounds and `report_blocker` are not held by a filed question.
+Turning the flag off sends new asks back to waiting inside the call. Questions already filed stay
+answerable, their answers are still delivered, and both completion rules keep applying to them
+until they are settled; questions waiting in a call return to today's completion behavior.
 
 ### The ask channel
 

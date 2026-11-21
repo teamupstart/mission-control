@@ -3,7 +3,8 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
-import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -313,6 +314,15 @@ const tasks = new TaskManager(
   legacyWorktrees,
   pauses,
 );
+// A merge completes the task even with a question open; this closes those questions with the
+// reason `merged` as a condition of that completion (`async-input`). The flag is read per merge.
+tasks.useMergeQuestions({
+  closure: (sessionId) => {
+    const closure = reviews.mergeClosure(sessionId, featureEnabled(ASYNC_INPUT_FLAG));
+    return { persist: closure.persist, publish: () => { closure.publish(); } };
+  },
+  blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
+});
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are

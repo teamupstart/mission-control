@@ -41,7 +41,7 @@ const { ShipRecoveryReviewWireSchema } = await import(
   "../src/server/foreman/ship-recovery-review.ts"
 );
 const { TriageReportSchema } = await import("../src/server/foreman/triage.ts");
-const { CompactionSchema, CriterionReconciliationSchema } = await import(
+const { CompactionSchema, CriterionReconciliationSchema, CriterionFulfillmentSchema } = await import(
   "../src/server/workflows/context.ts"
 );
 const { ConsensusResultSchema } = await import("../src/shared/ensemble-strategies/consensus.ts");
@@ -69,6 +69,7 @@ const SCHEMAS = [
   { identifier: "ShipRecoveryReviewWireSchema", schema: ShipRecoveryReviewWireSchema },
   { identifier: "TriageReportSchema", schema: TriageReportSchema },
   { identifier: "CompactionSchema", schema: CompactionSchema },
+  { identifier: "CriterionFulfillmentSchema", schema: CriterionFulfillmentSchema },
   { identifier: "CriterionReconciliationSchema", schema: CriterionReconciliationSchema },
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },
   { identifier: "BestOfNComparisonResultSchema", schema: BestOfNComparisonResultSchema },
@@ -234,7 +235,6 @@ test("a null optional never widens the answer a strict field is allowed to give"
 // ---------------------------------------------------------------------------
 
 const CONTROLS = [
-  { identifier: "CompactionSchema", schema: CompactionSchema },
   { identifier: "CriterionReconciliationSchema", schema: CriterionReconciliationSchema },
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },
   { identifier: "BestOfNComparisonResultSchema", schema: BestOfNComparisonResultSchema },
@@ -244,7 +244,7 @@ const CONTROLS = [
 for (const { identifier, schema } of CONTROLS) {
   test(`${identifier} is unchanged by strictification`, () => {
     // Rendered the way the helper used to, before it strictified. These four already listed
-    // every key in `required` at every depth - the workflow one demonstrably so, with 72
+    // every key in `required` at every depth - the original workflow schema did too, with 72
     // successful live Codex compactions behind it - so the fix must be a no-op on them. If
     // this drifts, the strictifier started rewriting schemas that were already correct.
     const raw = renderJsonSchema(schema);
@@ -451,3 +451,12 @@ function* walkTs(dir: string): Generator<string> {
     else if (entry.endsWith(".ts") || entry.endsWith(".tsx")) yield full;
   }
 }
+
+
+test("compaction publication classification accepts the strict provider null and legacy omission", () => {
+  const criterion = { text: "Open the PR", material: true, suggestedProofClass: null };
+  for (const extra of [{}, { fulfilledByAction: null }, { fulfilledByAction: "pull_request" }]) {
+    assert.equal(CompactionSchema.safeParse({ constraints: [], acceptanceCriteria: [], canonicalCriteria: [{ ...criterion, ...extra }] }).success, true);
+  }
+  assert.equal(CompactionSchema.safeParse({ constraints: [], acceptanceCriteria: [], canonicalCriteria: [{ ...criterion, fulfilledByAction: "anything" }] }).success, false);
+});

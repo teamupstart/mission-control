@@ -668,6 +668,28 @@ test("awaiting sessions lead idle soonest-due first, under their own rule, with 
   assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
 });
 
+test("with repository grouping on, the Awaiting section keeps its deadline order and frames nothing", () => {
+  // Repository A waits on deadlines 5 and 20 minutes out, repository B on one 10 minutes out.
+  // Grouping A's two together would put its 20-minute wait ahead of B's 10-minute one.
+  const fleet = [
+    awaiting("alpha", 20 * 60_000, { repoRoot: REPO_A }),
+    awaiting("bravo", 10 * 60_000, { repoRoot: REPO_B }),
+    awaiting("charlie", 5 * 60_000, { repoRoot: REPO_A }),
+    inRepo("delta", REPO_A, IDLE),
+    inRepo("echo", REPO_B, IDLE),
+  ];
+  const ordered = orderSessions(
+    fleet, new Set(), true, undefined, undefined, undefined, undefined,
+    awaitingSessionIds(fleet, true, AT),
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(names(idle.sessions), ["charlie", "bravo", "alpha", "delta", "echo"]);
+  assert.deepEqual(idle.awaiting, { startIndex: 0, length: 3 });
+  // The free part below the section is still grouped by repository as usual.
+  assert.deepEqual(idle.repos.map((r) => [r.repoRoot, r.startIndex, r.length]), [[REPO_A, 3, 1], [REPO_B, 4, 1]]);
+  assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
+});
+
 test("an overdue wait leaves the section, and the preview off draws no section at all", () => {
   const fleet = [awaiting("alpha", -60_000), awaiting("bravo", 60_000), plain("charlie", IDLE)];
   const idleOf = (ids: ReadonlySet<string>) => orderSessions(

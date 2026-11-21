@@ -160,6 +160,47 @@ test("a declared wait draws a deadline track under Idle's Awaiting rule, survive
 });
 
 /**
+ * The Awaiting section is a queue of things coming back, so it keeps its soonest-due order with
+ * repository grouping on (the default): repository A waits on deadlines 20 and 5 minutes out and
+ * repository B on one 10 minutes out, and framing A's two together would put its 20-minute wait
+ * ahead of B's 10-minute one. None of the three cards sits inside a repository frame.
+ */
+test("with repositories grouped, the Awaiting section keeps soonest-due order across repositories", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  await setFlag(daemon, true);
+  const waits = [
+    { name: "Alpha later", repo: daemon.repo, minutes: 20 },
+    { name: "Bravo middle", repo: daemon.secondRepo, minutes: 10 },
+    { name: "Alpha soonest", repo: daemon.repo, minutes: 5 },
+  ];
+  for (const wait of waits) {
+    const agent = await dispatch(daemon, wait.name, wait.repo);
+    const client = await connect(daemon, agent);
+    try {
+      const expectedBy = new Date(Date.now() + wait.minutes * 60_000).toISOString();
+      const declared = await client.callTool({ name: "report_awaiting", arguments: { ...WAIT, expectedBy } });
+      expect(declared.isError, toolText(declared)).toBeFalsy();
+    } finally {
+      await client.close();
+    }
+  }
+  await useBoard(page, daemon);
+
+  const idle = page.locator("main.board section.board-col.tone-idle");
+  await expect(idle.locator(".board-col-head").getByText("3 awaiting", { exact: true })).toBeVisible();
+  const waiting = idle.locator(".tile").filter({ has: page.getByRole("progressbar", { name: "Time until its deadline" }) });
+  await expect(waiting.locator(".tile-name")).toHaveText([/Alpha soonest/, /Bravo middle/, /Alpha later/]);
+  await expect(idle.locator(".board-repo .tile").filter({
+    has: page.getByRole("progressbar", { name: "Time until its deadline" }),
+  })).toHaveCount(0);
+  await settled(idle);
+  await shoot(page, "06-board-awaiting-across-repos");
+});
+
+/**
  * With the preview off the tool refuses and says why, and nothing is drawn. Switching the preview
  * off while a wait stands ends it, so no card is left holding automation nobody can see.
  */

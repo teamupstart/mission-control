@@ -450,6 +450,7 @@ function clusterGroup(
   // Sessions awaiting a background process are split off after the pinned ones, the same way
   // and for the same reason, and sorted soonest-due first: the Awaiting rule reads as a queue
   // of things coming back. Only Idle splits them; a wait anywhere else is drawn on its card.
+  // That queue is kept as it is, never grouped by repository or clustered by run (see below).
   const pinnedPart = pinned.size > 0 ? group.sessions.filter((s) => pinned.has(s.id)) : [];
   const unpinnedAll = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinned.has(s.id)) : group.sessions;
   const awaitingPart = group.tone === "idle" && awaiting.size > 0
@@ -481,7 +482,15 @@ function clusterGroup(
   let awaitingSpan: FleetToneGroup["awaiting"] = null;
   for (const [index, partition] of partitions.entries()) {
     if (index === heldPartition) heldFrom = sessions.length;
-    if (index === awaitingPartition) awaitingSpan = { startIndex: sessions.length, length: partition.length };
+    if (index === awaitingPartition) {
+      awaitingSpan = { startIndex: sessions.length, length: partition.length };
+      // The Awaiting section is a deadline queue, so it keeps its soonest-due order even with
+      // repository grouping on: a repository span, or a run cluster, would pull one
+      // repository's later deadline ahead of another's sooner one. Each card names its own
+      // repository and run, so nothing is lost by not framing them here.
+      sessions.push(...partition);
+      continue;
+    }
     // Repositories partition INSIDE the free/held split and OUTSIDE the run clustering, which
     // is the only order the three can compose in. Outside the held split, a repository span
     // would straddle the boundary and swallow the section rule, exactly as a run cluster

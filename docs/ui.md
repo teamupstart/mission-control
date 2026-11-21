@@ -1217,7 +1217,8 @@ available:
   background work** preview is on, a session that
   [declared a wait](sessions.md#sessions-awaiting-a-background-process) on its own CI, build,
   monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
-  due first, after pinned residents and before free and held agents. The head counts it
+  due first, after pinned residents and before free and held agents. The section keeps that
+  order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
   (**1 awaiting**) and the rest are labelled free. A pinned resident that is waiting keeps its
   pinned place above the rule but is still counted as awaiting, never as free. Its card draws a deadline track: what it waits
   for, the due time, and a bar from when it declared the wait to when it is due. Once the

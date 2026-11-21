@@ -828,7 +828,12 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, planInputs, " +
+      "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
+      "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +
+      "superseded originating prerequisites, preserving unrelated dependencies. Do not combine it with " +
+      "planInputs or dependencies. previewOnly validates without saving; inspect before and after, then " +
+      "repeat with previewOnly false to save. Never choose a newer revision automatically. Supports " +
       "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
       "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
       "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
@@ -848,8 +853,8 @@ server.registerTool(
       if (!res.ok) {
         return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
       }
-      const result = (await res.json()) as { task: Task };
-      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+      const result = (await res.json()) as { task: Task; before?: Task };
+      return textResult(JSON.stringify(result.before ? { before: taskConfiguration(result.before), after: taskConfiguration(result.task) } : taskConfiguration(result.task), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -1059,6 +1064,40 @@ server.registerTool(
       const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "list_open_questions",
+  {
+    title: "List your open questions",
+    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "withdraw_question",
+  {
+    title: "Withdraw your question",
+    description: "Withdraw one of your own open message-mode questions that you no longer need, with a reason. Requires async-input. Cannot withdraw another session's question or a question whose tool call waits for an answer. No answer message is sent.",
+    inputSchema: { id: z.string().min(1), reason: z.string().trim().min(1).max(2000) },
+  },
+  async ({ id, reason }) => {
+    try {
+      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

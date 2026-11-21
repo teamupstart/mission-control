@@ -146,6 +146,8 @@ import {
   HOME_DISPATCH_ACTOR_NAMES,
   HOME_DISPATCH_ACTOR_PREFIXES,
   HUMAN_REVIEW_STATUSES,
+  CONVERSATION_QUESTION_RECORDS,
+  isConversationQuestionRecord,
   isConversationResolvedReview,
   isHomeDispatchResolvedReview,
 } from "@shared/review-item.ts";
@@ -5439,6 +5441,11 @@ function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
     mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
     optionId: r.snooze_option_id ?? null,
     remindedAt: r.snooze_reminded_at ?? null,
+    // A recorded mode is what the agent was told. Only a silent message-mode "Keep doing what it
+    // said" snooze leaves it unrecorded (`snoozeReviewRow`); a judgment snooze stored before that
+    // rule did tell its agent, and keeps reading as told. Spread only when false, so every other
+    // row decodes exactly as it always did.
+    ...(r.snooze_mode == null ? { instructed: false } : {}),
   };
 }
 
@@ -5504,6 +5511,17 @@ export function insertReview(r: ReviewItem): void {
  * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
  * time the agent is told what to do meanwhile; a second snooze of a question that came back
  * moves `until` and nothing the agent was told.
+ *
+ * A message-mode question (`wait_mode = 'message'`, the `async-input` flag) is always unheard and
+ * detached, yet snoozing it in `judgment` mode owes the agent nothing: that choice reads "Keep
+ * doing what it said", and the agent was already told to carry on when the question was filed.
+ * Telling it again would interrupt a turn to repeat its own receipt. `option` and `hold` change
+ * what it does, so they are owed exactly as for any other detached question.
+ *
+ * Because that silent snooze tells the agent nothing, it does not use up the first-snooze slot:
+ * `snooze_mode` and `snooze_option_id` stay NULL (and read back as `judgment`), so when the
+ * question comes back and is snoozed again on Hold or a provisional option, that choice is
+ * stored and sent exactly as a first snooze's would be.
  */
 export function snoozeReviewRow(
   id: string,
@@ -5526,10 +5544,15 @@ export function snoozeReviewRow(
               snoozed_at = ?,
               snoozed_until = ?,
               snooze_instruction_owed_at = CASE
-                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL THEN ?
+                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL
+                  AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
                 ELSE snooze_instruction_owed_at END,
-              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
-              snooze_mode = COALESCE(snooze_mode, ?),
+              snooze_option_id = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_option_id END,
+              snooze_mode = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_mode END,
               mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
         WHERE id = ? AND status = 'pending'
         RETURNING *`,
@@ -5538,8 +5561,11 @@ export function snoozeReviewRow(
       snooze.at,
       snooze.until,
       snooze.listening ? 1 : 0,
+      snooze.mode,
       snooze.at,
+      snooze.mode,
       snooze.optionId,
+      snooze.mode,
       snooze.mode,
       snooze.at,
       id,
@@ -5666,6 +5692,16 @@ function sqlLiterals(values: Iterable<string>): string {
 }
 
 /**
+ * `isConversationQuestionRecord` over a review row, built from `CONVERSATION_QUESTION_RECORDS`, so
+ * the history route admits exactly the questions the dashboard admits live. Exported so a test can
+ * show the two agree over every defined case.
+ */
+export function conversationQuestionRecordSql(): string {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return `(wait_mode IN (${sqlLiterals(waitModes)}) OR closed_reason IN (${sqlLiterals(closedReasons)}))`;
+}
+
+/**
  * The outbox's eligibility over a review row, built from the shared `CONTINUATION_ACTOR_POLICY`
  * and `HUMAN_REVIEW_STATUSES` that `deliversContinuation` reads, so the in-memory publish
  * decision and the atomic queue check cannot drift. Kept in SQL so `queueReviewPendingTurn`
@@ -5731,6 +5767,7 @@ export function createReviewContinuationPendingTurn(input: {
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
+    coalesce: mode?.wait_mode === "message",
   });
 }
 
@@ -5753,6 +5790,14 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  */
 export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
 
+/** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
+export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE id = ? AND state = 'queued' AND claimed_at IS NULL
+    RETURNING note_key`).get(`${SNOOZE_INSTRUCTION_TURN_PREFIX}${reviewId}`) as { note_key: string } | undefined;
+  return row?.note_key ?? null;
+}
+
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
   noteKey: string;
@@ -5773,6 +5818,7 @@ function queueReviewPendingTurn(
   input: { reviewId: string; noteKey: string; text: string; now: number },
   kind: {
     turnId: string;
+    coalesce?: boolean;
     /** SQL over the review row: whether this turn is still owed. */
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
@@ -5788,6 +5834,20 @@ function queueReviewPendingTurn(
     if (!eligible) {
       d.exec("COMMIT");
       return null;
+    }
+    // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
+    // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
+    // the conversation's tail: appending to an earlier answer would pass intervening turns.
+    if (kind.coalesce) {
+      const existing = d.prepare(`SELECT * FROM pending_turns
+        WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+        const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
+          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+        d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
+        d.exec("COMMIT");
+        return rowToPendingTurn(row);
+      }
     }
     const sequence = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
@@ -5883,22 +5943,33 @@ export function loadHumanResolvedReviews(sessionId: string, limit = 500): Review
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
+/**
+ * The conversation replay: every review `loadHumanResolvedReviews` would return for a delegated
+ * session too, plus every question the conversation records for itself whatever became of it
+ * (`isConversationQuestionRecord`): a message-mode question, so its Asked entry and how it ended
+ * (answered, closed by a merge, withdrawn) survive a reload, and a call-mode question a merge
+ * closed. Those extra rows are never evidence of intent, so the evidence read never sees them.
+ */
 export function loadConversationResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
   return loadConversationReviewHistory(sessionId, limit, true);
 }
 
 function loadConversationReviewHistory(sessionId: string, limit: number, includeDelegated: boolean): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
+  // `isConversationQuestionRecord` in SQL, from its one definition. An open or unanswered row has
+  // no `resolved_at`, so both orders read its creation time instead; every answered row orders
+  // exactly as before.
+  const questionRecord = includeDelegated ? ` OR ${conversationQuestionRecordSql()}` : "";
   const rows = openDb()
     .prepare(
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
-            AND status IN (${statuses.map(() => "?").join(", ")})
-          ORDER BY resolved_at DESC, created_at DESC
+            AND (((resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
+            AND status IN (${statuses.map(() => "?").join(", ")}))${questionRecord})
+          ORDER BY COALESCE(resolved_at, created_at) DESC, created_at DESC
           LIMIT ?
-       ) ORDER BY resolved_at ASC, created_at ASC`,
+       ) ORDER BY COALESCE(resolved_at, created_at) ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
   // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
@@ -5906,7 +5977,8 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
   // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
   // conversation replay (`includeDelegated`) never sees them.
   return rows.map(rowToReview).filter((review) =>
-    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
+    isConversationResolvedReview(review)
+    || (includeDelegated ? isConversationQuestionRecord(review) : isHomeDispatchResolvedReview(review)));
 }
 
 /**
@@ -16043,7 +16115,7 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
 }
 
 /**
- * Every open adoption, plus the ones RETIRED since a given instant.
+ * A page of open adoptions, recent retirements, and historical merges on the action branch.
  *
  * The open set alone cannot answer a `pull_request` session action, and the reason is a
  * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
@@ -16059,18 +16131,26 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
  * which matters - the caller resolves a repository identity per distinct root, and that is a
  * git subprocess.
  *
- * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
- * a contradiction this turn produced, and the branch's next pull request is a new row.
+ * Older merged rows are included only for the requested branch. The caller still verifies
+ * repository identity and published content; an old merge alone never proves current work.
+ * Older closed-unmerged rows stay out. Walk pages using the last row as the cursor; the key
+ * breaks adoption-time ties without skipping candidates or loading the entire ledger at once.
  */
-export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+export function loadAdoptedInspectorPrsSince(
+  observedSince: number,
+  mergedBranch: string | null,
+  after: { adoptedAt: number; key: string } | null,
+): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'open'
+        WHERE (state = 'open'
            OR (observed_at IS NOT NULL AND observed_at >= ?)
-        ORDER BY adopted_at ASC`,
+           OR (observed_state = 'MERGED' AND head_ref_name = ?))
+          AND (? IS NULL OR (adopted_at, key) > (?, ?))
+        ORDER BY adopted_at ASC, key ASC LIMIT 50`,
     )
-    .all(observedSince) as unknown as InspectorPrRow[];
+    .all(observedSince, mergedBranch, after?.key ?? null, after?.adoptedAt ?? null, after?.key ?? null) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 

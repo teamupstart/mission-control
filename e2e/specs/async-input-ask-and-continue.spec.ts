@@ -124,8 +124,10 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = page.locator(".console-detail");
   const badge = detail.locator(".badge", { has: page.locator(".badge-dot") }).first();
-  // Still working past its question: not amber, but the question is already in the inbox.
-  await expect(badge).toHaveText(/working/);
+  // Still working past its question: not amber, but the question is already in the inbox. The
+  // badge names the open question in the working tone (Phase 3's working-tone branch).
+  await expect(badge).toHaveText(/1 question open/);
+  await expect(badge).toHaveClass(/badge-working/);
   await expect(badge).not.toHaveClass(/badge-attention/);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n")).toHaveText("1");
   await capture(page, "working-with-question", page);
@@ -147,7 +149,7 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await expect(inbox).toBeHidden();
 
   // The answer reaches the agent as a message, which starts its next turn.
-  await expect(detail.getByText(`Mock reply to: Mission Control review ${filed.id}`, { exact: false }).first())
+  await expect(detail.getByText(`Mock reply to: Mission Control answer to question ${filed.id}`, { exact: false }).first())
     .toBeVisible({ timeout: 30_000 });
   await expect(badge).not.toHaveClass(/badge-attention/);
   // The conversation shows the operator's answer once, as the gold answer entry. The message
@@ -155,7 +157,7 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await expect(detail.locator(".review-answer")).toContainText("you answered");
   await expect(detail.locator(".review-answer")).toContainText(QUESTION);
   await expect(detail.locator(".turn-user").first()).toContainText("add a linter to CI");
-  await expect(detail.locator(".turn-user", { hasText: `Mission Control review ${filed.id}` })).toHaveCount(0);
+  await expect(detail.locator(".turn-user", { hasText: `Mission Control answer to question ${filed.id}` })).toHaveCount(0);
   expect((await api<ReviewItem[]>(daemon, "/api/reviews")).find((r) => r.id === filed.id)).toMatchObject({
     status: "answered", waitMode: "message", meanwhile: "proceeding with eslint; the config is one file",
   });

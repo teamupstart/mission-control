@@ -1,6 +1,6 @@
 // Guards 2 and 3 of the headless-mode plan (4.2): headless mode never touches the existing
 // Focus feature. Guard 1 (a home-dispatched task keeps the dashboard's runtime) needs a started
-// task and is added by the phase that first starts one.
+// task, so it lives in `home-dispatch-drafts.test.ts`, where a confirmed draft starts one.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -29,10 +29,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 424 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
+  // The 426 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
   // /api/shaping routes of task shaping (refreshed when one last changed) and the three
   // flag-gated session control request routes (`POST /mcp/session-control/requests`, its
   // `GET .../:requestId/wait`, and the dashboard's `POST .../requests/:requestId/decline`),
+  // plus the async-input lifecycle routes `POST /mcp/questions/list` and
+  // `POST /mcp/questions/:id/withdraw`,
   // hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
@@ -40,9 +42,9 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 424);
+  assert.equal(others.length, 426);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "a96beb918b4e4dfae03f231662e0eba68bbd271483bc6268afcb3dc2ca5f8945");
+    "09f04de1c3db0082a899f489e78390d6f308aed4f8a24e4e27ed871c4e0e5079");
 });
 
 function sourceFiles(dir: string): string[] {

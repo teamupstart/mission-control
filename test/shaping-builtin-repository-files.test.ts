@@ -815,7 +815,7 @@ function gatherRequest(path: string | undefined, stage: "gather" | "select" = "g
 }
 const ctx = (): TransportContext => ({
   deadline: Date.now() + 5000, timeoutMs: 5000, signal: new AbortController().signal,
-  scope: { shared: new Map(), defer() {} }, root: null, trace: null,
+  scope: { shared: new Map(), defer() {} }, root: null, trace: null, workUnitId: null,
 });
 
 test("the builtin transport dispatches by id, and answers unavailable off its stage or without a worktree", async () => {

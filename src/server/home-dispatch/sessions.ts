@@ -12,6 +12,7 @@ import {
   type HomeSessionRegistration,
   type HomeSessionRegistrationAnswer,
 } from "@shared/home-dispatch.ts";
+import { dispatchBannerPlain } from "@shared/home-dispatch-banner.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import { registrationCounts } from "./inbox.ts";
 import { launcherPromptSetting, shouldOfferLauncher } from "./launcher.ts";
@@ -316,15 +317,27 @@ export const registerSessionHandler: HomeDispatchHandler = (deps): Handler => as
   const written = upsertHomeSession(deps, body, repoRoot, Date.now());
   if ("refusal" in written) return c.json({ error: written.refusal.reason }, written.refusal.status);
   const { created, offered } = written;
+  const counts = sessionCounts(deps, repoRoot, body.sessionId);
   const answer: HomeSessionRegistrationAnswer = {
     sessionId: body.sessionId,
     repoRoot,
     created,
     offerLauncher: offered,
-    counts: sessionCounts(deps, repoRoot, body.sessionId),
+    counts,
     daemonVersion: SERVICE_VERSION,
     minModApi: HOME_DISPATCH_MIN_MOD_API,
     dashboardUrl: `http://${HOST}:${PORT}/`,
+    // The one banner builder (7.21), run here so the daemon is the source of the text.
+    ...(body.source === "startup"
+      ? {
+          banner: dispatchBannerPlain({
+            harness: body.harness,
+            counts,
+            menuOffered: offered,
+            versionMismatch: body.clientVersion !== SERVICE_VERSION,
+          }),
+        }
+      : {}),
   };
   return c.json(answer);
 };

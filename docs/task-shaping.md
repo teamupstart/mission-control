@@ -5,13 +5,13 @@ Task shaping asks operator-configured programs for context about a task. Each pr
 at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
-**What this build does.** You register a `command` shaper, or the built-in
+**What this build does.** You register a `command`, `mcp` or `http` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
 the API, and dry-run it against a repository. Mission Control calls it at the stage it is
 registered for, validates and caps what it returns, and reports the section it would add to a
-worker's first prompt and an outcome for each shaper. A `command` shaper can serve either
-stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that
-places it at `select` is refused. Nothing is called at dispatch: no worker
+worker's first prompt and an outcome for each shaper. A `command`, `mcp` or `http` shaper can
+serve either stage, `gather` or `select`. `repository-files` serves `gather` only, and a
+definition that places it at `select` is refused. Nothing is called at dispatch: no worker
 receives shaped context yet.
 
 **What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
@@ -135,7 +135,7 @@ Each shaper's part of a run ends in one outcome, recorded with its reason and du
 | `failed` | A non-zero exit, a reply that states an error, or a transport that broke |
 | `timed_out` | The call outran its timeout, or the step's deadline |
 | `invalid` | Output that is not JSON, or does not match the result shape |
-| `unavailable` | The shaper could not be reached: a missing command, no worktree, or a transport this build does not offer yet |
+| `unavailable` | The shaper could not be reached: a missing command, no worktree, a reference that did not resolve, a URL the egress rule refuses, or a transport this build does not offer yet |
 
 The run is `degraded` when any shaper's outcome is not `ok`. When a shaper is called for
 several repositories, its outcome is the worst of its calls. Truncation is not degradation.
@@ -216,6 +216,9 @@ A `command` shaper is any program. Mission Control runs it once per call:
   or named in `env`, in any case, is always removed first, so only the launch's own values are
   ever sent. A trace value is not a credential, so it is never redacted. A dry run has no launch
   and carries none.
+- **Work unit id.** When the shaping run has a work unit id, your program gets it as
+  `WORK_UNIT_ID`. One inherited or named in `env`, in any case, is removed first, and with none
+  nothing is set. It is an opaque id, not a credential, so it is never redacted.
   [Security](security.md#task-shaping) states the exact rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
@@ -242,14 +245,44 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 
 ## The shaping API
 
-All three routes are behind the flag and answer 404 while it is off.
+All three routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
+`POST /api/shaping/test` also answer 403 `forbidden` unless the body is declared
+`application/json` and any `Origin` is a loopback `http:` origin, the check other browser-write
+routes use, so a page on another site cannot store an intent or run a shaper. The check runs
+before the body limit, so such a request is refused as forbidden whatever its size.
 
 - **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
-  `{ id, label, unsupported }`. Its raw definition stays in the daemon's storage and settings
-  backup, and `PUT` replies with the same view.
-  `discovered` and `references` are empty until the folder and the remote transports land.
+  `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
+  it, which the daemon allows only for the entry that owns the id, and only when it emptied a
+  literal credential in it; a repeat behind the owner never carries it. A daemon older than the flag
+  sends neither it nor `revisions`; the import dialog then says the daemon decides, rather than
+  predicting a refusal. Its raw definition stays in the daemon's storage and settings
+  backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
+  revision per stored shaper id, which the daemon derives from the stored entry itself, so two
+  unsupported entries that show the same id, label and reason still have different revisions.
+  A revision is an HMAC-SHA256 under a random key the daemon process holds and never writes
+  (`src/server/shaping/revisions.ts`), cut to 16 hex digits, over the id's stored entries and its
+  generation. The generation advances whenever what is stored under the id changes, by any writer,
+  and on every import or removal of it, so the same definition stored again after a replacement
+  never gets its earlier revision back and a write held since then cannot pass. An import that stores
+  the same config again still sends every window the new revision. Generations come from one counter
+  that only grows, and the daemon keeps them only for the ids stored now. It can be compared but not
+  recomputed, so it cannot confirm a guess at a field the view hides, and a daemon restart
+  changes every revision: an intent sent across a restart carries one the restarted daemon never
+  issued, and is refused with `stale_dashboard`, whose reason asks the operator to reload the page.
+  An id has one revision, over every entry stored under it, so a remove, which deletes them all,
+  is refused once any of them has changed. A client reads only own, string-valued
+  keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
+  an inherited property.
+  `discovered` is empty until the folder lands. `references` lists every environment name a
+  shaper uses, each `{env:NAME}` its headers reference and each variable a `command` shaper or
+  a locally started MCP server passes through in `env`, as `set` or `unset` in the daemon's
+  environment, never a value. A name is `set` only when a call would send it, so Mission
+  Control's own token and state directory, an empty value and a value carrying the daemon's
+  token read `unset`. A variable named only in a header the transport replaces, such as
+  `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -264,25 +297,71 @@ All three routes are behind the flag and answer 404 while it is off.
     nothing. Stored ids that belong to no row keep their slots. When the move would pass the
     order's bound of 128 ids, stored ids that name no registered or discovered shaper are left
     out, the oldest kept, and otherwise it is refused with `order_full`.
+  - `{ "kind": "place", "id": "...", "after": "..." | null, "expect": "..." }` is the same move
+    bound to the revision shown, which the dashboard sends: once that definition is replaced, into
+    another stage included, it is refused with `shaper_changed` instead of placing the replacement.
+    It is a kind of its own rather than `expect` on `move`, because a daemon older than it strips
+    a field it does not know and would apply the move by id, but refuses a kind it does not know.
   - `{ "kind": "reorder", "order": ["...", "..."] }` sets the run order within each stage.
   - `{ "kind": "settings", "caller": { "user": "..." }, "limits": {...} }` changes the declared
     caller identity and the budgets.
 
-  `expect` is the `shapingEntryRevision` of the entry as the sender showed it: 16 hex digits
-  over its view, from `src/shared/shaping.ts`. When it is sent and the stored entry has changed
+  `expect` is the entry's revision from the view's `revisions`, as the sender showed it. A
+  client sends it back as given and never computes one. When it is sent and the stored entry has changed
   since, the intent answers 409 `shaper_changed` and nothing is stored, so a click never removes
-  or switches on a replacement another window wrote in the meantime. Any other refused intent
+  or switches on a replacement another window wrote in the meantime. The daemon remembers the
+  revisions it has issued, the last few thousand: an `expect` it never issued, from a tab loaded
+  before revisions were the daemon's (which computes its own, of whatever definition it showed)
+  or from a request sent across a daemon restart, answers 409 `stale_dashboard` instead, whose
+  reason asks the operator to reload the page, since retrying from that tab cannot succeed.
+  The other way round, a dashboard that receives a view with no
+  `revisions`, from a daemon rolled back to an older build, draws its rows with switching,
+  removal, moves and dry runs off and asks the operator to reload. Any other refused intent
   answers 400 with `{ error, reason }`.
+
+  The dashboard sends each write with an `x-mission-shaping-order` header: its tab's id, the
+  write's number, and the controls it affects. As a write is about to apply, after any wait such
+  as shaper discovery, it answers 409 `superseded` and changes nothing once a later write from the
+  same tab has been applied to one of those controls. So a write whose answer the panel stopped
+  waiting for, which it may then send again, never overwrites the newer edit.
+  That ordering lives in the daemon's memory, so the header also names the daemon process whose
+  view the tab last read (the view's `instance`, random per process): a write made against a
+  process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
+  the restarted daemon no longer knows what came after it. An ordered write that names no instance
+  was made against a daemon older than instances, so it is refused the same way. The tab's id is
+  kept in its session storage, so it stays the same across any number of reloads: a write sent
+  before a reload and delayed past it is refused once one sent after it has applied. A duplicated
+  tab copies that storage and shares the id, so a tab and its duplicates are ordered together: a
+  delayed older write from any of them is refused once a newer one from any of them applied, which
+  keeps the newer edit, and the refusal says the newer change may have been made in a duplicate.
+  Each sequence is the time the write was sent, in microseconds, never lower than the last the tab
+  sent. A write numbered the same as one already applied on its control, as a tab and its
+  duplicate can number two saves, is refused the same way: the one applied first stands. The
+  daemon keeps each record of an applied write for ten minutes after it last applied, on its
+  monotonic clock, and at most 4,096 of them whatever ids callers send, dropping the oldest first.
+  Dropping a record, either way, raises a floor to the sequence it held, and a write at or below
+  that floor answers 409 `expired` with the floor: every write a dropped record would have refused
+  is refused that way instead. That comparison is of sequences only, so setting the wall clock
+  forward or back never makes such a write eligible again. A write sent more than ten minutes ago
+  by the wall clock answers 409 `expired` too, even on a daemon where nothing else was written. A
+  tab refused this way numbers its next writes above the floor, so making the change again goes
+  through even after the clock was set back. A header that is sent but cannot be read, or whose
+  sequence is more than a minute ahead of both the daemon's clock and the floor, answers 400
+  `unreadable_order` and changes nothing; a write without the header, from any other client, is
+  not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
-  is refused with 409 `shaper_changed` as above, and `repository` is
+  is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
   engine, whatever its stored choice. A path that is not inside a checkout, such as a mistyped
   one that names an ordinary folder, answers 400 `unknown_repository` and runs nothing. A
   gatherer runs at the path given. The repository is named after the checkout, or after the
   repository that owns it when the path is a linked worktree. It answers
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
-  a credential value was removed from its reply (`redacted`, set by the remote transports in
-  Phase 5), the section that would be injected, and each entry in it. The summary's optional
+  a value was removed from its reply or reason (`redacted`), the section that would be injected,
+  and each entry in it. `redacted` means a value the shaper was handed came back and was
+  scrubbed: a value resolved into one of its headers, a `{caller.*}` value included, or, for a
+  local shaper, a variable named in its `env` list or an inherited URL that carries a user name
+  and password. It does not by itself mean a credential was involved. The summary's optional
   `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
@@ -323,7 +402,55 @@ Arrives with the dispatch seam.
 every open window, in the rail, settings search and the palette alike, with no reload; a
 window already open on its link shows the panel the moment the flag turns on. Every change
 below applies at once in every open window, one write at a time. A refused write rolls back and
-shows the daemon's reason beside the control that sent it.
+shows the daemon's reason beside the control that sent it. The daemon's answer decides whether a
+write succeeded: a frame from another window can free the panel first, but a refusal that
+arrives after it is still shown. The control that sent a write stays locked until that write's
+answer arrives, even once the panel is free: a row's switch, removal and moves, the identity and
+budgets' Save (its fields stay editable), and the import dialog's Save. So no second write on the
+same control can go out first and then be undone by the first, as a delayed switch on could undo
+a newer switch off, since a switch keeps the revision it is checked against. An import also holds
+its shaper's row, since it stores that shaper switched off: while it awaits its answer the row's
+switch, removal and moves wait, and while a write on the row awaits its answer an import of that
+shaper waits too, with the dialog saying why. A move holds its stage the same way: while one awaits its answer,
+no other row in that stage moves, since the held move would land after it and undo it. When a write on
+another control went out before a refusal arrived, the refusal names the earlier action, so it
+never reads as the outcome of the change just made. A refusal belongs to its control: a write
+under another control leaves it in place, and acting on the same control again dismisses it. A write whose
+answer never arrives, because it timed out or the connection failed, is reported as unconfirmed,
+never as refused, and never as saved: only the daemon's answer ties an outcome to a request,
+since the same state can come from another write or predate this one. When a stream update
+showed the change stored, the message says so, and an import's dialog stays open for the
+operator to close. For an import of a definition already stored, an update shows it stored only
+once that shaper's revision has moved on: before then any frame, an unrelated write's included,
+would look the same. From a daemon that sends no revisions there is nothing to compare, so no
+update counts and only the daemon's answer settles such an import. An import's outcome that arrives after its dialog was closed is shown
+beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
+arrives while the dialog is open again. Both name the shaper whose save it answers, and the
+dialog says so when that is not the manifest it shows.
+An outcome for a shaper the list no longer shows, such as a removal refused because another
+window removed it first, is shown above the list under **Shapers no longer listed**, each with
+the id of the shaper it was for. An
+unconfirmed write that a stream update showed stored says so in the past tense, and leaves the
+current state to the list. A stream update counts as a switch's outcome only for the definition
+the switch was sent for, so a peer replacing the shaper and switching the replacement the same way
+is never taken for it, nor drawn on it: while a switch or removal waits for its answer, a
+replacement written meanwhile is shown as stored. Such a frame also releases the panel at once for the next
+edit, since the old request can no longer reach what is stored; its answer is still shown when it
+arrives. A write answered before the frame that carries it, as an identical reimport can be,
+leaves each row it moved to a revision the view does not show yet with its switch, removal, moves
+and dry run unavailable, since any of them would name an older revision and be refused. Each view
+names the daemon commit it shows (`commit`, which every change of the view advances, by any
+writer), and the write's answer names the commit it made, so the row waits until the stream
+reaches that commit or a later one, even when another writer's frame moved the row's revision on
+in between. Answers can arrive out of order, so a late answer naming an earlier commit never
+lowers the commit a row already waits for. A dry run already open on such a row waits with it: its **Run** stays
+off until the update arrives. An outcome shown above the list, for a shaper no longer listed or for the
+last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
+budgets sends only the fields that differ from the stored values, and its answer clears only the
+edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears
+nothing: what was entered stays, to compare with the stored settings and send again. A reply clears a
+field only while it answers the latest save that sent that field, so the same draft sent twice is
+never cleared by the earlier save's late answer.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery
@@ -332,7 +459,10 @@ shows the daemon's reason beside the control that sent it.
   them once another window has replaced that shaper. A row that names environment variables lists them, each marked set or not set
   once the daemon reports it, never with a value. An entry this build cannot run is listed last,
   under **Not supported by this build**, with its reason. It can be removed, and switched off if
-  an older build left it on, but not switched on, moved or dry-run.
+  an older build left it on, but not switched on, moved or dry-run. A later stored entry that
+  repeats an id an earlier one owns, which a restore from another build can leave, is listed
+  there for information only, with no controls: the owning row says how many entries repeat its
+  id, and removing it removes them too.
 - **Import manifest.** Paste a manifest or choose its file. It is read with the daemon's own
   schema, and before anything is saved the dialog shows its stage, the exact command and
   arguments or the URL and headers, every environment variable it names, and what it is given.
@@ -341,7 +471,9 @@ shows the daemon's reason beside the control that sent it.
   repositories' local paths and every other credential are left out, but the text that is sent
   goes as written: a prompt, title, fact or summary that contains a path, file contents or a
   secret sends that too. Text longer than four times a stored definition's 16 KiB is refused
-  before it is read or parsed. **Save
+  before it is read or parsed. Choosing a file clears what was reviewed before it, so Save waits
+  until that file has been read and reviewed, and a file that is too large or fails to read
+  leaves nothing to save. **Save
   switched off** stores it off, whatever its manifest says and whatever was stored for its id
   before, so it runs only once you switch it on. A manifest that breaks the credential rule, or
   names a `./` command a registered shaper cannot resolve, is refused with its reason and
@@ -353,7 +485,8 @@ shows the daemon's reason beside the control that sent it.
 - **Dry run.** Pick a repository Mission Control knows, or type a checkout's path, add a prompt
   if the shaper needs one, and run it. It runs whether or not it is switched on, saves nothing,
   and shows the outcome, the duration, the version and each entry it would add. Closing the
-  dialog stops the run. If another window replaces or removes the shaper while the dialog is
+  dialog stops the run. A shaper just imported here can be dry-run once the daemon has answered
+  for it, never on the drawing shown before that. If another window replaces or removes the shaper while the dialog is
   open, the dialog says so and will not run.
 - **Remove** asks once more, then deletes the shaper's stored definition and its on or off
   choice. The confirmation closes if another window replaces the shaper first. When a shaper in
@@ -375,18 +508,162 @@ Arrives with discovery of `shapers/` under the state home.
 
 ## Remote shapers
 
-Arrives with the `mcp` and `http` transports. Their config shapes are already accepted: an `mcp`
-shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
-`http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
-`{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
-reference: a header named `authorization`, `proxy-authorization` or `cookie`, or whose name
-contains `token`, `secret`, `key`, `password`, `auth` or `credential`, without case, that is
-not empty holds `{env:NAME}` references and nothing literal. `Authorization` and `Proxy-Authorization` may put
-`Bearer`, `Basic`, `Token` or `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other
-leading word is refused as part of the secret. A URL carries no user name, password or query
-string. A definition with literal secret text is
-refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
-is `unavailable`.
+A shaper can be a tool on an MCP server (`mcp`) or an HTTP endpoint (`http`). Registering one
+is configuration only: Mission Control holds no adapter for any company's server, and every
+header name, tool name and URL below is a placeholder.
+
+### An `mcp` shaper
+
+```json
+{
+  "id": "acme-guidance",
+  "label": "Acme guidance",
+  "stage": "select",
+  "version": "v1.4.0",
+  "transport": {
+    "type": "mcp",
+    "tool": "get_guidance",
+    "contextDelivery": "folded",
+    "server": {
+      "type": "http",
+      "url": "https://guidance.acme.example/mcp",
+      "headers": {
+        "authorization": "Bearer {env:ACME_GUIDANCE_TOKEN}",
+        "x-acme-user": "{caller.user}"
+      }
+    }
+  }
+}
+```
+
+`PUT /api/shaping` with `{ "kind": "upsert", "shaper": … }` stores it switched off. Dry-run it
+with `POST /api/shaping/test`, then switch it on with `enable`. A server started on this machine
+instead names `{ "type": "stdio", "command": "acme-guidance-mcp", "args": [], "env": [] }`, with
+the same rules for its command and environment as a [`command` shaper](#writing-a-command-shaper).
+
+- **One call per repository.** The server is connected once per shaping run, by the first call
+  that needs it, shared by every call of the run that names the same server, and closed when
+  the run ends. A server started locally is one process for the whole run.
+- **`contextDelivery`** decides the tool's arguments. Either way the complete collected input
+  reaches the tool, and no setting withholds any of it.
+  - `folded`, the default, calls the tool with exactly FR-02's three arguments,
+    `{ task, repo: { name, facts?, summary? }, version? }`, so an existing `get_guidance` tool
+    is called unchanged. `task` is the prompt, a blank line, and this fixed block, which states
+    every field of the request's `context` except local paths:
+
+    ```text
+    Task context from Mission Control:
+    - Task: t_123
+    - Title: Retry failed charges
+    - Kind: ship
+    - Harness: claude (sdk)
+    - After-work step: Review and merge (workflow wf_1)
+    - Labels: payments
+    - Priority: high
+    - Caller: declared-user (agent claude, conversation t_123)
+    - This call is about: repo-01
+    - Repositories: repo-01 billing-api (primary, branch task/retry, base abc123), repo-02 ledger (additional, branch task/retry, base def456)
+    ```
+
+    An absent value reads `none`, and an undeclared caller `undeclared`. A present value is
+    written as it is, unless it could be read as something else: one that is `none` or
+    `undeclared` itself, holds a backslash, a quote, a line break, or a `,` `(` or `)`, or starts or ends with
+    whitespace, is
+    written as a JSON string, such as `branch "none"` or `Title: "Two\nlines"`. So every value
+    reads back as exactly itself, and none can start a line of its own.
+  - `argument` calls it with four, `{ task, repo, version?, context }`: the prompt alone, and
+    the request's whole `context` object. Use it for a tool that declares a `context` argument.
+- **Repositories by slot.** Each attached repository has a slot, `repo-01` for the primary and
+  then `repo-02` onward in attachment order, and the call names the one it is about: the
+  folded line `This call is about`, or `context.target`. Two worktrees of one repository are
+  told apart that way.
+- **Local paths.** `repo` never carries a path. In `argument` mode a server started on this
+  machine receives the worktree paths in `context.repositories`, and a remote one never does.
+- **The reply** is read from the tool's structured content when it is an object, otherwise
+  from its first text content parsed as JSON, and must match [the contract](#the-contract). A
+  tool error is `failed`, with its text.
+- **256 KiB per message.** Every message from the server is capped while it is received: over
+  stdio one line at a time, over streamable HTTP by stopping a body, or one event of
+  an event stream, at the cap. Such a reply is `failed` at once, naming the cap, the server is
+  closed and nothing over the cap is parsed. A later call of the run connects again.
+- **A reply is owed to every request.** Over streamable HTTP, `202 Accepted` with no body is
+  accepted only for a notification. An `initialize` or `tools/call` answered that way is `failed`
+  at once with fixed text, rather than waiting out its budget for a reply that cannot come.
+- **A malformed reply fails its own call.** A reply that is not JSON, or not a JSON-RPC message,
+  on one call's response (its body, or an event of its stream) fails that call with fixed text,
+  and other calls on the connection go on. One on the handshake, or on the server's shared
+  stream, fails the connection, and a later call of the run connects again.
+
+### An `http` shaper
+
+```json
+{
+  "id": "acme-context",
+  "label": "Acme context",
+  "stage": "gather",
+  "transport": {
+    "type": "http",
+    "url": "https://context.acme.example/v1/shape",
+    "headers": { "x-api-key": "{env:ACME_CONTEXT_KEY}" }
+  }
+}
+```
+
+Mission Control `POST`s [the request](#the-contract) as JSON and reads the result from the
+body. A status outside 2xx is `failed`, with the status. The body is read to at most 256 KiB,
+and a longer one is `failed` without being read further. The call's timeout aborts the request.
+
+### What both share
+
+- **Egress.** HTTPS only, except plain HTTP to this machine's loopback, decided before anything
+  is sent. A plain `http` URL to any other host gets no request and is `unavailable`, with or
+  without a credential header. Redirects are followed by hand and only on the URL's origin: one
+  that leaves it is refused, so no other host ever receives the headers. A 307 or 308 is
+  followed with the request's method and body. A 301, 302 or 303 would resend the request as a
+  GET without its body, so the endpoint would never see the task: it is refused and the call is
+  `failed`. A cookie a server sets is never kept or sent back. A header configured twice in
+  different letter case makes the shaper `unavailable`.
+- **References.** Header values may reference `{caller.user}`, the identity declared under
+  `caller.user`, `{caller.agent}`, the harness, `{caller.conversation}`, the task id, and
+  `{env:NAME}`, the daemon's environment variable `NAME`. They are resolved when the call is
+  made. One that resolves to nothing, an empty value or one of only spaces and tabs included,
+  caller values as much as `{env:NAME}`, fails closed: no request is sent, and the outcome is
+  `unavailable`, with a reason that names the reference and never a value. A dry run has no task, harness or conversation, so a shaper that references them
+  is `unavailable` there. `{env:NAME}` never resolves Mission Control's own token, credentials
+  or state directory, or a value that carries the daemon's token.
+  [Configuration](configuration.md#task-shaping-references) says where the daemon's environment
+  comes from, and `GET /api/shaping` reports each referenced name as `set` or `unset`.
+- **Credentials are references.** A header named `authorization`, `proxy-authorization` or
+  `cookie`, or whose name contains `token`, `secret`, `key`, `password`, `auth` or
+  `credential`, without case, that is not empty holds `{env:NAME}` references and nothing
+  literal. `Authorization` and `Proxy-Authorization` may put `Bearer`, `Basic`, `Token` or
+  `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other leading word is refused as part of
+  the secret. A URL carries no user name, password or query string. A definition with literal
+  secret text is refused, so it is never stored or backed up.
+- **A shaper cannot hand a value back.** Every value resolved into a header is replaced wherever
+  it appears in a reply: entry paths, titles and bodies, the summary, fact values, notes, the
+  version and a failure reason. An `{env:NAME}` value becomes `[NAME redacted]`, and a caller
+  value `[caller.user redacted]`, `[caller.agent redacted]` or `[caller.conversation redacted]`.
+  Only the references a shaper's own headers use are scrubbed from its replies, so a shaper
+  that never sends `{caller.agent}` keeps the word `claude`. Every value is matched anywhere,
+  however short, so for a shaper that sends `{caller.agent}` as `pi`, "pipeline" comes back as
+  `[caller.agent redacted]peline`, and an entry or fact whose id or name holds `pi` is dropped.
+  That over-redaction is deliberate. Keys the result schema defines are
+  never changed. A fact name or entry id that contains a value is dropped with a note, never
+  renamed. The shaper is marked `redacted`, and its outcome does not change. For a server
+  started locally, a variable named in its `env` list is removed from its replies the same way,
+  as it is for a `command` shaper. The request's `context.caller` still carries the caller
+  values to every shaper: what is guarded is the reply Mission Control records and returns.
+- **Trace context and work unit id.** When the launch has a W3C trace context, every call
+  carries it: `traceparent`, and `tracestate` when there is one, as headers on an `http` call
+  and on every request of a streamable-HTTP `mcp` call, and as `TRACEPARENT` and `TRACESTATE`
+  in the environment of a server started locally. When the shaping run has a work unit id, it
+  rides the same way, as the `x-work-unit-id` header and the `WORK_UNIT_ID` variable. Every
+  `mcp` `tools/call` also carries them in `params._meta`, as `traceparent`, `tracestate` and
+  `work_unit_id`. A configured header or variable of any of these names, compared without
+  case, is always removed first, with or without a value to send, so only the launch's own
+  are ever sent. Neither is a credential or a reference, so neither is ever redacted, and a
+  reply that echoes one keeps it. A dry run carries neither.
 
 ## The built-in gatherer
 

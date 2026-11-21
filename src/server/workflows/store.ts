@@ -128,6 +128,7 @@ import {
   withInspectorGate,
   workflowInspectorGate,
   workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -5551,6 +5552,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -9076,6 +9078,19 @@ export class WorkflowStore {
     return row ? parseWorkflowDeliveryRow(row) : null;
   }
 
+  /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events e
+      JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
+        AND d.run_id = e.run_id
+      WHERE e.run_id = ? AND e.event_kind = 'session_action_prompt_observed'
+        AND json_extract(e.payload_json, '$.episodeId') = ?
+        AND json_extract(e.payload_json, '$.promptedAt') = ?
+        AND json_extract(e.payload_json, '$.promptRevision') IS ?
+        AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
+        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
+  }
+
   deliveryForPacket(
     submissionId: string,
     kind: WorkflowDelivery["kind"],
@@ -9313,7 +9328,7 @@ export class WorkflowStore {
           || version?.completionPolicy.kind !== "inspector") return null;
       const updated = this.updateInspectorGate({
         runId: run.id, expectedState, state,
-        status: version.completionPolicy.onFindings === "inspector_only"
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
           ? "waiting_for_new_head" : "waiting_for_session",
         phase: "inspector_findings", now,
       });
@@ -9382,8 +9397,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9624,8 +9638,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"

@@ -243,6 +243,41 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Task shaping references
+
+A [remote shaper](task-shaping.md#remote-shapers)'s header values hold references, never
+secrets. Each is resolved when the call is made and never stored, logged or sent to the
+dashboard, and every resolved value, caller values included, is redacted from what the shaper
+sends back.
+
+| Reference | Resolves to |
+| --- | --- |
+| `{caller.user}` | The identity declared in `app_config.shaping.caller.user`. Free text, unverified, not a secret |
+| `{caller.agent}` | The task's harness: `claude`, `codex` or `pi` |
+| `{caller.conversation}` | The task id |
+| `{env:NAME}` | The daemon's own environment variable `NAME`, read at call time |
+
+A reference that resolves to nothing, an empty value included, fails closed: the shaper is not
+called and its outcome is `unavailable`, naming the reference. `{env:NAME}` never resolves
+Mission Control's own API token, its token file, its scout credentials, or its state directory
+under any name, and never a value that carries the daemon's token. `GET /api/shaping` reports
+every referenced name as `set` or `unset`, never its value, and so it does for each variable a
+`command` shaper or a locally started MCP server passes through in its `env` list.
+
+**Where the daemon's environment comes from.** `{env:NAME}` reads the daemon process's
+environment and nothing else: not your login shell, and not a file. What that environment holds
+depends on how the daemon was started:
+
+- From a terminal (`npm run dev`, `make start`, or `npm start`), it inherits that shell's
+  exports. Export the variable before starting the daemon.
+- The desktop app and the `npm run install-service` LaunchAgent are started by `launchd`,
+  which does not read your shell's profile, so an `export` in `~/.zshrc` never reaches them.
+  Set the variable for your login session with `launchctl setenv NAME value`, then quit and
+  reopen the app, or restart the service.
+
+The daemon reads its environment once, when it starts, so a variable set or changed afterwards
+reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` until then.
+
 ## Desktop update channel
 
 **Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into

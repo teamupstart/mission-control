@@ -40,6 +40,7 @@ import { getShapingConfig } from "./index.ts";
 import {
   callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
 } from "./transports/index.ts";
+import { carriedWorkUnitId } from "./transports/carriers.ts";
 
 /**
  * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
@@ -79,6 +80,15 @@ export interface ShapeTaskInput {
    * It is never logged or recorded. Phase 2 passes it in.
    */
   trace?: ShapingTraceContext | null;
+  /**
+   * The shaping run's work unit id, when the task has one. Every call of the run carries it
+   * unchanged as `ctx.workUnitId`: a header on `http` and streamable-HTTP `mcp` calls,
+   * `params._meta.work_unit_id` on every `tools/call`, and `WORK_UNIT_ID` for a local process.
+   * Opaque and not a credential, so it is never redacted, and never logged or recorded. Absent
+   * until the task that mints it lands; a value that could not travel as a header is treated
+   * as absent.
+   */
+  workUnitId?: string | null;
 }
 
 export interface ShapeTaskDeps {
@@ -234,6 +244,7 @@ async function runShaping(
   input.signal?.addEventListener("abort", onCancel, { once: true });
   if (input.signal?.aborted) run.abort();
   const scope = runScope();
+  const workUnitId = carriedWorkUnitId(input.workUnitId);
   const repositories = orderRepositories(input.context.repositories);
   const multiRepo = repositories.length > 1;
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
@@ -314,12 +325,21 @@ async function runShaping(
     let abandon: ReturnType<typeof setTimeout> | undefined;
     let onStop: (() => void) | undefined;
     let reply: TransportReply | "abandoned";
+    // When the transport settled: first as the transport itself reports it, where it produced the
+    // reply, then as its promise settles. The continuation below can run later than either on a
+    // busy event loop, and a reply in time must not be judged by when it was read.
+    let producedAt: number | undefined;
+    let settledAt: number | undefined;
     try {
       reply = await Promise.race([
         // The parsed request, so a transport receives only the fields the wire contract declares.
         callTransport(wire.data, entry.shaper, {
-          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
-        }, transports),
+          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null, workUnitId,
+          settled: () => { producedAt ??= performance.now(); },
+        }, transports).then((settled) => {
+          settledAt = performance.now();
+          return settled;
+        }),
         new Promise<"abandoned">((done) => {
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
           onStop = () => done("abandoned");
@@ -333,8 +353,9 @@ async function runShaping(
       if (onStop) run.signal.removeEventListener("abort", onStop);
       call.abort();
     }
-    const late = performance.now() - callStart > timeoutMs;
     if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
+    // The transport's own moment first, then the engine's, then now: each is earlier than this read.
+    const late = (producedAt ?? settledAt ?? performance.now()) - callStart > timeoutMs;
     // The call's deadline applies to every reply, not only to data. A busy event loop can let a
     // transport settle after the deadline before the overdue timer runs: whatever it says then
     // is a timeout, keeping the transport's own timeout diagnostic when it gave one.
@@ -351,9 +372,14 @@ async function runShaping(
     // place, such as an invalid fact's name kept for validation. Removing it counts as redaction.
     const redact = reply.redact ?? ((text: string) => text);
     const holdsNamed = reply.holdsNamed ?? (() => false);
+    // The record collapses whitespace, which can turn a spacing variant of a value into the
+    // value itself: the text is scrubbed as written, collapsed, and scrubbed again, and either
+    // pass removing a value marks the record.
     const scrub = (text: string): string => {
-      if (holdsNamed(text)) redacted = true;
-      return redact(text);
+      const first = redact(text);
+      const flat = first.replace(/\s+/g, " ").trim();
+      if (holdsNamed(text) || holdsNamed(flat)) redacted = true;
+      return redact(flat);
     };
     let value = reply.data;
     if (typeof value === "string") {

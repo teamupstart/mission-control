@@ -3011,6 +3011,14 @@ export interface ReviewSnooze {
   optionId: string | null;
   /** When it last came back to the operator, or null while it has not yet. */
   remindedAt: number | null;
+  /**
+   * False when no snooze of this question has told its agent anything yet: a message-mode
+   * question (`async-input`) snoozed only on "Keep doing what it said", which sends nothing and
+   * leaves `mode` unrecorded (it reads as `judgment`). Its next snooze may still choose what the
+   * agent does meanwhile. Absent once a mode was recorded, which is every other snooze, and on a
+   * row from an older daemon; absent reads as told.
+   */
+  instructed?: boolean;
 }
 
 /**

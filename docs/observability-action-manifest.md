@@ -249,6 +249,8 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `request_plan_decisions` | Review creation, `attention.request`; subsequent polling excluded |
 | `request_review` | Review creation, `attention.request`; subsequent polling excluded |
 | `create_task` | Task owner, `task.create`; dispatch remains Phase 3 |
+| `list_open_questions` | Read-only outstanding-question query, explicitly excluded |
+| `withdraw_question` | Review owner, `attention.withdraw` |
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |

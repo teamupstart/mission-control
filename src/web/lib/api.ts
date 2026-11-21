@@ -1,5 +1,6 @@
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
+import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -1226,12 +1227,12 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
-      headers: body ? { "content-type": "application/json" } : {},
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: options.signal,
     });
@@ -1247,9 +1248,9 @@ async function request<T extends ActionResult = ActionResult>(
   }
 }
 
-const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("POST", path, body, options);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
@@ -2180,6 +2181,11 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
+  /** Validate a pinned revision change and return both task snapshots without saving. */
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange, signal?: AbortSignal) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }, { signal }),
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -2188,10 +2194,8 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  taskPlanDependencies: (id: string) =>
-    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+    post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
    * which is not writable through `updateTask` or any create body.
@@ -2370,8 +2374,11 @@ export const api = {
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
-  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal }) =>
-    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, options),
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
+      signal: options?.signal,
+      ...(options?.order ? { headers: { [SHAPING_WRITE_ORDER_HEADER]: options.order } } : {}),
+    }),
   /**
    * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
    * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.

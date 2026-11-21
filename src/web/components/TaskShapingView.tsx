@@ -1,14 +1,16 @@
-import { useState } from "react";
-import { SHAPING_LIMIT_RANGES, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import { useRef, useState } from "react";
+import { SHAPING_LIMIT_RANGES, shapingViewHasRevisions, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import {
   moveIntent,
   shaperEnvironmentStatus,
   shaperReach,
   shapingList,
+  shapingStageLockKey,
   type ShapingListGroup,
   type ShapingListRow,
+  type ShapingWriteOutcome,
 } from "../lib/shaping-settings.ts";
-import { ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
+import { EarlierOutcomes, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported", { title: string; hint: string }> = {
@@ -16,6 +18,8 @@ const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported",
   select: { title: "Select", hint: "Choose guidance for the task, with what the gatherers found." },
   unsupported: { title: "Not supported by this build", hint: "Kept exactly as stored and never called. Switch one off or remove it." },
 };
+
+const NO_LOCKS: ReadonlySet<string> = new Set();
 
 const TRANSPORT_LABEL = { command: "Command", mcp: "MCP", http: "HTTP", builtin: "Built in" } as const;
 
@@ -31,6 +35,12 @@ export function TaskShapingView({
   references = {},
   pending = null,
   errors = {},
+  earlier = {},
+  outcomeArrivals = {},
+  outcomeSubjects = {},
+  locked = NO_LOCKS,
+  awaitingRevision = NO_LOCKS,
+  onDismiss,
   ready = true,
   onSet,
   onTest,
@@ -42,8 +52,20 @@ export function TaskShapingView({
   references?: ShapingReferenceStatus;
   pending?: ShapingIntent | null;
   errors?: Record<string, string>;
+  /** Older outcomes under each control, newest first, kept apart from its current one. */
+  earlier?: Record<string, string[]>;
+  /** When each control's latest outcome arrived, in arrival order. */
+  outcomeArrivals?: Record<string, number>;
+  /** The shaper each control's newest outcome was for. */
+  outcomeSubjects?: Record<string, string>;
+  /** Controls whose request still awaits its answer: each takes no new write until it arrives. */
+  locked?: ReadonlySet<string>;
+  /** Rows an accepted write left at a revision the view does not show yet. */
+  awaitingRevision?: ReadonlySet<string>;
+  /** Clears the outcomes shown under one control, for those drawn above the list. */
+  onDismiss?: (key: string) => void;
   ready?: boolean;
-  onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
+  onSet: (intent: ShapingIntent, key: string) => Promise<ShapingWriteOutcome>;
   onTest: ShapingTestRunner;
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
@@ -55,11 +77,24 @@ export function TaskShapingView({
   readFolderIds?: () => Promise<readonly string[] | null>;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
+  // Numbers each opening of the import dialog. A save answers after the stream may already have
+  // freed the dialog, and by then the operator may have closed it and opened a new one: the
+  // answer closes only the dialog that sent it.
+  const importSession = useRef(0);
+  // How far the import outcomes had arrived when the dialog opened: any that arrives after it,
+  // from a save sent by a dialog closed meanwhile and an earlier one arriving late included, is
+  // shown in the open dialog, which covers the list.
+  const importOpenedAt = useRef(0);
+  const openImport = (): void => {
+    importSession.current += 1;
+    importOpenedAt.current = outcomeArrivals.import ?? 0;
+    setImporting(true);
+  };
   // Each of these is bound to the revision of the entry the operator was shown: when another
   // window replaces that shaper, the confirmation or dialog no longer applies to what is stored,
   // and the daemon refuses any intent still carrying the old revision.
-  const [testing, setTesting] = useState<{ id: string; label: string; revision: string } | null>(null);
-  const [removing, setRemoving] = useState<{ id: string; revision: string; folder: boolean | null } | null>(null);
+  const [testing, setTesting] = useState<{ id: string; label: string; revision: string | null } | null>(null);
+  const [removing, setRemoving] = useState<{ id: string; revision: string | null; folder: boolean | null } | null>(null);
   const confirmRemoval = (entry: ShapingListRow): void => {
     setRemoving({ id: entry.id, revision: entry.revision, folder: null });
     if (!readFolderIds) return;
@@ -68,14 +103,46 @@ export function TaskShapingView({
   };
   const busy = !ready || pending !== null || config === null;
   const groups = config ? shapingList(config) : [];
+  const listed = new Set(groups.flatMap((group) => group.rows.map((entry) => `row:${entry.id}`)));
+  const orphans = config === null ? [] : [...new Set([...Object.keys(errors), ...Object.keys(earlier)])]
+    .filter((key) => key.startsWith("row:") && !listed.has(key)).sort();
   const count = config?.shapers.length ?? 0;
 
   const row = (entry: ShapingListRow, group: ShapingListGroup, at: number): React.JSX.Element => {
+    if (entry.duplicate) {
+      // A repeat of an id an earlier entry owns: information only. Every intent naming this id,
+      // and every revision, belongs to the owning row, so no control here can act on it.
+      return (
+        <div className="shaping-row" key={`${entry.id}:repeat:${at}`} role="group" aria-label={`${entry.label} (repeated id)`}>
+          <div className="shaping-row-copy">
+            <div className="shaping-row-title">
+              <strong>{entry.label}</strong>
+              <code className="shaping-row-id">{entry.id}</code>
+              <span className="shaping-chip">Repeated id</span>
+            </div>
+            {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
+            <p className="shaping-row-note">
+              It never runs. Removing the shaper that owns the id {entry.id} removes this entry too.
+            </p>
+          </div>
+        </div>
+      );
+    }
     const key = `row:${entry.id}`;
     const shaper = entry.shaper;
     const environment = shaper ? shaperEnvironmentStatus(shaper, references) : [];
     // An entry that cannot run may only be switched off, never on (`plan.md`).
     const canSwitch = entry.on || entry.problem === null;
+    // Without the daemon's revision nothing here can say which definition it acts on: a view from
+    // a daemon older than this dashboard carries none, and an import still being drawn has none yet.
+    // A write that changed it was accepted, but the revision it now has has not reached the view:
+    // any action here would name an older one and be refused, so none is offered until it arrives.
+    const awaitingUpdate = awaitingRevision.has(`row:${entry.id}`);
+    const unbound = entry.revision === null || awaitingUpdate;
+    // This row's own write still awaits its answer: none of its writes is offered until it arrives.
+    const rowBusy = busy || locked.has(key);
+    // A move in this stage still awaits its answer: no other row here moves until it arrives.
+    const stageBusy = rowBusy || (group.stage !== null && locked.has(shapingStageLockKey(group.stage)));
     // A confirmation opened for an earlier definition of this id does not apply to its replacement.
     const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
     return (
@@ -102,6 +169,14 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
+          <EarlierOutcomes messages={earlier[key]} />
+          {entry.repeats > 0 && (
+            <p className="shaping-row-note">
+              {entry.repeats === 1
+                ? `Another stored entry repeats the id ${entry.id}. Removing this shaper removes it too.`
+                : `${entry.repeats} more stored entries repeat the id ${entry.id}. Removing this shaper removes them too.`}
+            </p>
+          )}
           {confirmRemove && removing.folder && (
             <p className="shaping-row-note">
               A shaper in the shapers folder also has the id {entry.id}. Removing this registration leaves that one
@@ -114,16 +189,18 @@ export function TaskShapingView({
             <>
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
-                  disabled={busy || at === 0}
+                  disabled={stageBusy || unbound || at === 0}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
-                  disabled={busy || at === group.rows.length - 1}
+                  disabled={stageBusy || unbound || at === group.rows.length - 1}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
-                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready}
+                {/* Only with the daemon's revision: an optimistic import has none yet, and a dry run
+                    sent without one could run a replacement written before its frame arrives. */}
+                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready || unbound}
                   onClick={() => setTesting({ id: entry.id, label: entry.label, revision: entry.revision })}>Dry run</button>
               </Tooltip>
             </>
@@ -134,24 +211,28 @@ export function TaskShapingView({
                 <button type="button" className="btn btn-ghost" onClick={() => setRemoving(null)}>Keep</button>
               </Tooltip>
               <Tooltip label="Delete this shaper's stored definition and its on or off choice">
-                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy}
-                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision }, key); }}>Remove</button>
+                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={rowBusy || unbound}
+                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision ?? undefined }, key); }}>Remove</button>
               </Tooltip>
             </>
           ) : (
             <Tooltip label="Remove this shaper. Asks once more first.">
-              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy}
+              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={rowBusy || unbound}
                 onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
-          <Tooltip label={!canSwitch
+          <Tooltip label={awaitingUpdate
+            ? "Waiting for the update that carries this shaper's latest change."
+            : unbound
+            ? "Unavailable until the daemon says which definition this is. Reload the page."
+            : !canSwitch
             ? "This build cannot run it, so it cannot be switched on."
             : entry.problem !== null
               ? "Stored on, but this build never runs it. Switch it off."
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
-              disabled={busy || !canSwitch} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
-              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision }, key)}>
+              disabled={rowBusy || !canSwitch || unbound} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
+              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
           </Tooltip>
@@ -167,7 +248,7 @@ export function TaskShapingView({
         guidance for it. A shaper you register is stored switched off: dry-run it, then switch it on. Every
         change applies at once in every open window.
       </p>
-      {config && <ShapingSettingsForm config={config} busy={busy} error={errors.settings ?? null} onSet={onSet} />}
+      {config && <ShapingSettingsForm config={config} busy={busy} locked={locked.has("settings")} error={errors.settings ?? null} earlier={earlier.settings} onSet={onSet} />}
       <div className="feature-flag-list shaping-list" data-anchor="task-shaping/shapers">
         <div className="settings-pane-head shaping-list-head">
           <div className="settings-pane-title-row">
@@ -176,10 +257,55 @@ export function TaskShapingView({
           </div>
           <span data-anchor="task-shaping/import">
             <Tooltip label="Paste or choose a shaper manifest and review what it runs or calls before saving it">
-              <button type="button" className="btn" disabled={busy} onClick={() => setImporting(true)}>Import manifest…</button>
+              <button type="button" className="btn" disabled={busy} onClick={openImport}>Import manifest…</button>
             </Tooltip>
           </span>
         </div>
+        {/* The dialog is the only other place an import's outcome shows. A stream frame can free it
+            before the answer lands, and the operator may close it then: a refusal that arrives
+            afterwards is shown here, beside the button that opens the dialog again. */}
+        {config !== null && count > 0 && !shapingViewHasRevisions(config) && (
+          // A daemon older than this dashboard sends no revisions, so no row can say which
+          // definition an action would act on.
+          <p className="shaping-list-outcome shaping-revisions-missing" role="status">
+            The daemon did not say which definition each shaper is, so switching, removing and dry runs
+            are unavailable here. Reload the page to load the dashboard that matches it.
+          </p>
+        )}
+        {/* A row's outcome is drawn inside the row. One for a shaper no longer listed, such as a
+            removal refused because another window removed it first, would vanish with its row,
+            so it is shown here instead. */}
+        {orphans.length > 0 && (
+          <div className="shaping-list-outcome" role="group" aria-label="Shapers no longer listed">
+            {orphans.map((key) => {
+              const id = key.slice("row:".length);
+              // The row is gone, so the outcome names its shaper itself: a message such as an
+              // unconfirmed write says nothing of which shaper it was for.
+              return (
+                <div key={key} className="shaping-orphan-outcome" role="group" aria-label={`Outcome for ${id}`}>
+                  <div className="shaping-orphan-copy">
+                    <code className="shaping-row-id">{id}</code>
+                    {errors[key] && <p role="alert">{errors[key]}</p>}
+                    <EarlierOutcomes messages={earlier[key]} />
+                  </div>
+                  {onDismiss && <DismissOutcome label={id} onDismiss={() => onDismiss(key)} />}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!importing && (errors.import || earlier.import) && (
+          <div className="shaping-list-outcome" role="group" aria-label="Last import">
+            <div className="shaping-orphan-outcome">
+              <div className="shaping-orphan-copy">
+                {outcomeSubjects.import && <code className="shaping-row-id">{outcomeSubjects.import}</code>}
+                {errors.import && <p role="alert">{errors.import}</p>}
+                <EarlierOutcomes messages={earlier.import} />
+              </div>
+              {onDismiss && <DismissOutcome label="the last import" onDismiss={() => onDismiss("import")} />}
+            </div>
+          </div>
+        )}
         {config === null && <p className="feature-flag-empty">Loading shapers…</p>}
         {config !== null && count === 0 && (
           <p className="feature-flag-empty">No shapers registered. Import a manifest to add one.</p>
@@ -200,16 +326,20 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null}
+        <ShapingImportDialog config={config} busy={busy || locked.has("import")} locked={locked} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import} subject={outcomeSubjects.import ?? null}
+          fresh={(outcomeArrivals.import ?? 0) > importOpenedAt.current}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
-            const saved = await onSet({ kind: "upsert", shaper }, "import");
-            if (saved) setImporting(false);
+            const session = importSession.current;
+            const outcome = await onSet({ kind: "upsert", shaper }, "import");
+            // Closing is the dialog's to do, and only for the dialog that sent this save.
+            return outcome === "saved" && importSession.current === session;
           }} />
       )}
       {testing && (
         <ShapingTestDialog id={testing.id} label={testing.label} revision={testing.revision}
-          current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id)?.revision ?? null}
+          current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id && !entry.duplicate)?.revision ?? null}
+          waiting={awaitingRevision.has(`row:${testing.id}`)}
           repositories={repositories} onTest={onTest} onClose={() => setTesting(null)} />
       )}
     </section>
@@ -229,6 +359,16 @@ function kib(bytes: number): string {
 }
 
 /** The form's three fields, as typed. */
+/** Clears an outcome drawn above the list, which has no row or dialog of its own to go with. */
+function DismissOutcome({ label, onDismiss }: { label: string; onDismiss: () => void }): React.JSX.Element {
+  return (
+    <Tooltip label="Clear this message. Nothing is changed.">
+      <button type="button" className="btn btn-ghost shaping-outcome-dismiss" aria-label={`Dismiss the outcome for ${label}`}
+        onClick={onDismiss}>Dismiss</button>
+    </Tooltip>
+  );
+}
+
 interface SettingsFields {
   user: string;
   deadlineMs: string;
@@ -241,11 +381,14 @@ interface SettingsFields {
  * makes appears here at once. A save sends only the fields typed in here, so it never writes this
  * window's stale copy of a value another window has changed since.
  */
-function ShapingSettingsForm({ config, busy, error, onSet }: {
+function ShapingSettingsForm({ config, busy, locked, error, earlier, onSet }: {
   config: ShapingConfigView;
   busy: boolean;
+  /** Its own save still awaits its answer: the fields stay editable, but nothing is sent again. */
+  locked: boolean;
   error: string | null;
-  onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
+  earlier?: readonly string[];
+  onSet: (intent: ShapingIntent, key: string) => Promise<ShapingWriteOutcome>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<Partial<SettingsFields>>({});
   const confirmed: SettingsFields = { user: config.caller.user, deadlineMs: String(config.limits.deadlineMs), totalKiB: kib(config.limits.totalBytes) };
@@ -276,7 +419,18 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
   const dirty = changed.user || changed.deadlineMs || changed.totalBytes;
   const edited = Object.keys(draft).length > 0;
   const valid = !deadlineProblem && !totalProblem && !userProblem;
-  const edit = (patch: Partial<SettingsFields>) => setDraft((current) => ({ ...current, ...patch }));
+  // Bumped by every edit of a field, so a save's answer clears only the edits it sent: typing a
+  // field away and back to the submitted text while the save is in flight is a new edit.
+  const generations = useRef<Partial<Record<keyof SettingsFields, number>>>({});
+  /** Numbers each save, and records per field the latest save that sent it. */
+  const submissions = useRef(0);
+  const latestSubmission = useRef<Partial<Record<keyof SettingsFields, number>>>({});
+  const edit = (patch: Partial<SettingsFields>) => {
+    for (const field of Object.keys(patch) as Array<keyof SettingsFields>) {
+      generations.current[field] = (generations.current[field] ?? 0) + 1;
+    }
+    setDraft((current) => ({ ...current, ...patch }));
+  };
   const save = async (): Promise<void> => {
     const intent: SettingsIntent = { kind: "settings" };
     if (changed.user) intent.caller = { user: shown.user.trim() };
@@ -285,22 +439,37 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
     if (changed.totalBytes) limits.totalBytes = totalBytes;
     if (Object.keys(limits).length > 0) intent.limits = limits;
     // Saved or refused, the submitted fields go back to showing the daemon's config: a refusal is
-    // a roll back, with its reason below. Only the values this save sent are cleared, and only
-    // if they are unchanged: the stream can free the form before the reply lands, and an edit
-    // made in that interval is a new draft, not part of this save.
-    const submitted = draft;
-    await onSet(intent, "settings");
+    // a roll back, with its reason below. Only the edits this save sent are cleared: the stream
+    // can free the form before the reply lands, and an edit made in that interval, even one that
+    // types the same text again, is a new draft, not part of this save. Only fields the intent
+    // carries count as sent: a draft that matched the stored value was left out, and stays a
+    // draft whatever the reply says.
+    const sentFields: Array<keyof SettingsFields> = [];
+    if (intent.caller) sentFields.push("user");
+    if (intent.limits?.deadlineMs !== undefined) sentFields.push("deadlineMs");
+    if (intent.limits?.totalBytes !== undefined) sentFields.push("totalKiB");
+    const submitted = Object.fromEntries(sentFields.map((field) => [field, generations.current[field]])) as
+      Partial<Record<keyof SettingsFields, number>>;
+    // The same draft can be sent twice without an edit, once the stream frees the form and a peer
+    // changes the stored value again, so its generation alone cannot tell the two saves apart.
+    // Each save is numbered, and a reply clears a field only while it answers the latest save of it.
+    const submission = ++submissions.current;
+    for (const field of sentFields) latestSubmission.current[field] = submission;
+    const outcome = await onSet(intent, "settings");
+    // An unconfirmed save may not have been stored, and one never sent certainly was not: the
+    // fields keep what the operator entered, to compare with what the list shows and send again.
+    if (outcome === "unconfirmed" || outcome === "not_sent") return;
     setDraft((current) => {
       const next = { ...current };
       for (const field of Object.keys(submitted) as Array<keyof SettingsFields>) {
-        if (next[field] === submitted[field]) delete next[field];
+        if (generations.current[field] === submitted[field] && latestSubmission.current[field] === submission) delete next[field];
       }
       return next;
     });
   };
   return (
     <form className="shaping-settings" aria-label="Caller identity and budgets"
-      onSubmit={(event) => { event.preventDefault(); if (dirty && valid && !busy) void save(); }}>
+      onSubmit={(event) => { event.preventDefault(); if (dirty && valid && !busy && !locked) void save(); }}>
       <div className="shaping-field" data-anchor="task-shaping/identity">
         <label htmlFor="shaping-caller-user">Caller identity</label>
         <input id="shaping-caller-user" className="field-input" type="text" value={shown.user} placeholder="you@example.com" maxLength={300}
@@ -333,12 +502,13 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
         </div>
       </div>
       {error && <p role="alert">{error}</p>}
+      <EarlierOutcomes messages={earlier} />
       <div className="shaping-settings-actions">
         <Tooltip label="Put back the saved values">
           <button type="button" className="btn btn-ghost" disabled={!edited || busy} onClick={() => setDraft({})}>Reset</button>
         </Tooltip>
         <Tooltip label="Save the caller identity and budgets for every window">
-          <button type="submit" className="btn" disabled={!dirty || !valid || busy}>Save</button>
+          <button type="submit" className="btn" disabled={!dirty || !valid || busy || locked}>Save</button>
         </Tooltip>
       </div>
     </form>

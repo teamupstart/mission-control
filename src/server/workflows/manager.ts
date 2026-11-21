@@ -1,6 +1,7 @@
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { findingPublication } from "@shared/inspector-findings.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -115,6 +116,7 @@ import {
   withInspectorGate,
   workflowInspectorGate,
   workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -185,6 +187,7 @@ import {
   completionWatchesPullRequests,
   sessionActionAdapter,
   type SessionActionAdoptedPullRequest,
+  type SessionActionRepositoryFacts,
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
@@ -657,6 +660,10 @@ export class WorkflowManager {
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
+  /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
+  private readonly publicationTrees = new Map<string, string>();
+  private readonly publicationTreeRetryAt = new Map<string, number>();
+  private readonly pendingPublicationTrees = new Map<string, Promise<string | null>>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
    *
@@ -876,6 +883,11 @@ export class WorkflowManager {
     this.resumptionTimer = null;
     await this.engine.stop();
     await Promise.allSettled(this.backgroundTasks);
+  }
+
+  /** Settle scheduled manager work, including work it queues; future timer ticks are excluded. */
+  async settleBackgroundWork(): Promise<void> {
+    while (this.backgroundTasks.size > 0) await Promise.allSettled(this.backgroundTasks);
   }
 
   list(includeArchived = false): WorkflowSummary[] {
@@ -3635,8 +3647,7 @@ export class WorkflowManager {
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     const inspectorOnlyDelivery =
       delivery.kind === "inspector_feedback"
-      && version?.completionPolicy.kind === "inspector"
-      && version.completionPolicy.onFindings === "inspector_only";
+      && workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
     if (
       input.resolution === "discard_and_new_round"
       && inspectorOnlyDelivery
@@ -4997,8 +5008,9 @@ export class WorkflowManager {
       if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
         && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
         && publishedTree !== acceptedTree) {
-        this.transitionInspectorGate(run, state, {
+        const changedState: WorkflowInspectorGateState = {
           ...state,
+          targetHeadSha: submittedHead,
           waitReason: "reviewed_tree_changed",
           reviewedContent: {
             submissionId: parent.id,
@@ -5006,7 +5018,22 @@ export class WorkflowManager {
             treeOid: acceptedTree,
             publishedTreeOid: publishedTree,
           },
-        }, "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        };
+        const changedRun = this.transitionInspectorGate(run, state, changedState,
+          "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        if (!changedRun) return;
+        // Publication and completed Inspector review identify the same current head.
+        // Deliver its posted findings even though the earlier Persona review cannot approve it.
+        // Retain the review obligation through delivery, recovery and the next submission.
+        if (ledger.headSha === submittedHead) {
+          const findings = loadInspectorComments(state.prKey!).filter((row) =>
+            row.status !== "resolved" && findingPublication(row).state === "posted");
+          if (findings.length > 0) {
+            await this.handleInspectorFindings(
+              changedRun, submission, binding, version, changedState, ledger.round, findings, now,
+            );
+          }
+        }
         return;
       }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
@@ -5150,12 +5177,13 @@ export class WorkflowManager {
       waitReason: "findings",
       findingFingerprints: fingerprints,
     };
-    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
+    const inspectorOnly = workflowInspectorOnlyRepair(version.completionPolicy, state);
+    const policy = inspectorOnly ? "inspector_only" : "restart_workflow";
     const findingEvent = {
       prKey: state.prKey,
       targetHeadSha: state.targetHeadSha,
       ...findingFingerprintAudit(fingerprints),
-      policy: version.completionPolicy.onFindings,
+      policy,
     };
     if (!binding.sessionId) {
       this.transitionInspectorGate(
@@ -5183,8 +5211,9 @@ export class WorkflowManager {
       targetHeadSha: state.targetHeadSha,
       inspectorRound,
       reviewPosture: nextState.reviewPosture,
-      policy: version.completionPolicy.onFindings,
+      policy,
       findings,
+      freshPublishedReview: workflowInspectorGateNeedsFreshReview(state),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const deliveryId = randomUUID();
@@ -5210,7 +5239,7 @@ export class WorkflowManager {
           deliveryId,
           payloadSha256: rendered.payloadSha256,
           ...findingFingerprintAudit(fingerprints),
-          policy: version.completionPolicy.onFindings,
+          policy,
         },
         now,
       });
@@ -5618,8 +5647,7 @@ export class WorkflowManager {
       }
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
       if (
         delivery.kind !== "inspector_feedback"
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
@@ -6205,6 +6233,9 @@ export class WorkflowManager {
       ? await this.capturedContinuationHead(capturedChild, repository?.root ?? null)
       : null;
     const parentContext = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const acceptedContentTreeOid = parentContext.success
+      ? workflowPublicationTree(parentContext.data.evidence)
+      : null;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -6214,11 +6245,9 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
       capturedHeadOid,
-      acceptedContentTreeOid: parentContext.success
-        ? workflowPublicationTree(parentContext.data.evidence)
-        : null,
+      acceptedContentTreeOid,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
@@ -6271,18 +6300,22 @@ export class WorkflowManager {
    * timer, and a cached copy is exactly how an action would keep waiting for a head that had
    * already arrived.
    *
-   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
-   * request reachable at all. The poller retires a closed row in the statement after the one
-   * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * preserve the PR as a completed action with a warning. Anything retired before this action
-   * was even delivered
-   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
-   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
+   * Recent retirements preserve closures observed during this action. Earlier merges on the
+   * checkout's branch remain candidates too: publication may predate a later completion turn.
+   * Resolve identity once per root and merged trees only for this repository and branch.
    */
   private async adoptedPullRequestsForAction(
     observedSince: number,
+    repository: SessionActionRepositoryFacts | null,
+    resolvePublishedTrees: boolean,
+    now: number,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
+    // Missing-object cooldowns expire independently of the bounded successful-tree cache.
+    // Otherwise a history larger than that cache retries every missing object on every scan.
+    for (const [key, retryAt] of this.publicationTreeRetryAt) {
+      if (retryAt <= now) this.publicationTreeRetryAt.delete(key);
+    }
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
     // repository are the ordinary case, and this runs on the settle path of every waiting
     // action.
@@ -6294,24 +6327,63 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
-    // retires a closed pull request on the same tick it first observes the closure, so without
-    // the second half the adapter could never reach the one state it is meant to block on.
-    const rows = loadAdoptedInspectorPrsSince(observedSince);
-    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
-    return rows.map((pr, index) => ({
-      key: pr.key,
-      url: pr.url,
-      number: pr.number,
-      repositoryRoot: resolved[index] ?? null,
-      branch: pr.headRefName,
-      observedHeadOid: pr.observedHeadSha,
-      observedState: pr.observedState,
-      observedAt: pr.observedAt,
-      sessionId: pr.sessionId,
-      adoptedAt: pr.adoptedAt,
-      checkout: pr.cwd,
-    }));
+    // Page retained merges without discarding older proof. Resolve sequentially so a reused
+    // branch cannot launch one Git process per historical PR in a single settle check.
+    const adopted: SessionActionAdoptedPullRequest[] = [];
+    let after: { adoptedAt: number; key: string } | null = null;
+    for (;;) {
+      const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null, after);
+      if (!rows.length) return adopted;
+      for (const pr of rows) {
+        const repositoryRoot = await identify(pr.repoRoot);
+        let mergedContentTreeOid: string | null = null;
+        if (resolvePublishedTrees && pr.observedState === "MERGED" && pr.observedHeadSha && repository
+          && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch) {
+          const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
+          let treeOid = this.publicationTrees.get(key) ?? null;
+          if (!treeOid && !this.publicationTreeRetryAt.has(key)) {
+            let pending = this.pendingPublicationTrees.get(key);
+            if (!pending) {
+              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(error => {
+                workflowLog("warn", { event: "session_action_publication_tree_unavailable", call: pr.key,
+                  state: pr.observedHeadSha,
+                  error: error instanceof Error ? ("code" in error && typeof error.code === "string" ? error.code : error.name) : "unknown" });
+                return null;
+              });
+              this.pendingPublicationTrees.set(key, pending);
+            }
+            try {
+              treeOid = await pending;
+              if (!treeOid) this.publicationTreeRetryAt.set(key, now + 60_000);
+            } finally {
+              if (this.pendingPublicationTrees.get(key) === pending) this.pendingPublicationTrees.delete(key);
+            }
+          }
+          mergedContentTreeOid = treeOid;
+          if (treeOid) {
+            this.publicationTreeRetryAt.delete(key);
+            this.publicationTrees.delete(key);
+            this.publicationTrees.set(key, treeOid);
+            if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          }
+        }
+        adopted.push({
+          mergedContentTreeOid,
+          key: pr.key,
+          url: pr.url,
+          number: pr.number,
+          repositoryRoot,
+          branch: pr.headRefName,
+          observedHeadOid: pr.observedHeadSha,
+          observedState: pr.observedState,
+          observedAt: pr.observedAt,
+          sessionId: pr.sessionId,
+          adoptedAt: pr.adoptedAt,
+          checkout: pr.cwd,
+        });
+      }
+      after = rows[rows.length - 1]!;
+    }
   }
 
   /**
@@ -6803,7 +6875,22 @@ export class WorkflowManager {
     // the write is still unresolved, and an echo that arrives with no authorship on file is
     // captured as the human's Goal - which for a repair packet means the next round reviews
     // the work against Mission Control's own previous complaint.
-    reserveInjection(session.id, sending.payload, "workflow");
+    reserveInjection(session.id, sending.payload, "workflow", () => {
+      // The Registry consumes this receipt after recording the prompt's work episode.
+      // A later human retype has no receipt, even when its text equals this packet.
+      if (sending.kind !== "session_action") return;
+      const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+      if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+      try {
+        this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+          deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+          promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+        });
+      } catch (error) {
+        workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+          error: error instanceof Error ? error.name : "unknown" });
+      }
+    });
     let result: InjectResult;
     try {
       result = await this.inject(
@@ -8656,7 +8743,19 @@ export class WorkflowManager {
     }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
-    if (unchanged) {
+    // An evidence-only reply to delivered findings can leave Git unchanged while the
+    // published tree still owes review. Require activity after delivery so pre-send idle
+    // cannot spend a repair round. A plain reviewed-tree hold remains operator-owned.
+    const gate = this.gateState(run);
+    const reviewAfterDeliveredFindings = gate?.waitReason === "findings"
+      && workflowInspectorGateNeedsFreshReview(gate)
+      && this.store.listDeliveries(run.id).some((delivery) =>
+        delivery.submissionId === latest.id
+        && delivery.kind === "inspector_feedback"
+        && delivery.state === "delivered"
+        && delivery.deliveredAt !== null
+        && (current?.lastActivity ?? 0) > delivery.deliveredAt);
+    if (unchanged && !reviewAfterDeliveredFindings) {
       this.recordResumptionWithheld(run, latest, "repository_unchanged", now);
       this.maybeRemindParkedRound(run, binding, latest, now);
       if (run.currentPhase === "pr_handoff") {

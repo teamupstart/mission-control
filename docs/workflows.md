@@ -801,12 +801,30 @@ reported on the completed action. None sends a repair packet or spends a repair 
 
 A pull request the bound session adopted **before** the instruction was delivered also completes
 the action, so a session that finds its existing pull request and opens no duplicate is not left
-waiting. It must belong to the same session, still be open, resolve to this checkout's
+waiting. It must belong to the same session, still be open (or have been observed merging
+during the action wait), resolve to this checkout's
 repository, and have no observed branch or state that contradicts it. When the ledger recorded
 the checkout it was opened from, that must match this one too; when it recorded none, the looser
 rule applies and the completion warning says so. The branch and state are normally unobserved
 here, because only the GitHub Inspector's poller records them and it does not run while the
 Inspector is disabled.
+
+A pull request that **merged before** the action was delivered can also satisfy it. Mission
+Control reads the retained Inspector observation for the same repository and branch and resolves
+its published Git tree. That tree must equal the reviewed publication tree. The continuation
+must still have that content and no unpublished changes. Runs records the merged PR URL and
+explains that no new PR is needed. Unknown or different publication proof still requires a PR;
+changes discovered during continuation capture offer the existing resubmit recovery.
+
+A merged, idle task is reconsidered when its workflow finishes or is cancelled, and at startup.
+If a later prompt rolled its single-repository work into a new episode, settlement additionally
+requires a durable receipt tying that episode's latest prompt to an action delivered by the
+latest terminal workflow run, plus a clean checkout matching the recorded merged PR. An
+operator follow-up never borrows that receipt, even if it repeats the action's text. Publication
+and ownership are rechecked after any scout archive wait. Busy sessions, queued work and active
+workflow runs retain ownership, except that merging still releases a blocked `request_input`
+call through its atomic task-completion path. Assigned-agent completions remain reversible when
+work resumes, and dependency edges still require their own bound episode's merge.
 
 ### Command nodes
 
@@ -1968,6 +1986,12 @@ When that action's only reachable downstream node is End, the child segment is l
 **verified shipping** rather than another evidence number. Its notice states that the pull
 request is open at the captured commit, published content matches the prior accepted review, and
 no new evidence review was started.
+
+Every session-action wait names its next actor in the same explanation on Runs and on Fleet's
+Board cards and Console rail. Awaiting PR names the session that must open or identify the PR;
+Needs you names the operator who must answer; capture and queued delivery name Mission Control.
+The explanation stays visible even when workflow details are collapsed and disappears when the
+run finishes. The held-session section does not promise automatic progress for an operator wait.
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from the **Review worklist**, which is about what the run

@@ -125,9 +125,17 @@ test("gather settles before select starts, and selectors receive merged facts an
 
 test("calls in a stage run in parallel", async () => {
   const config = configWith([shaper("a", "select"), shaper("b", "select"), shaper("c", "select")]);
-  const started = Date.now();
-  const result = await run(config, async () => { await sleep(150); return data({}); });
-  assert.ok(Date.now() - started < 400, "six calls of 150 ms did not run one after another");
+  // Overlap, measured directly: elapsed time would also grow under a scheduler pause.
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(config, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(150);
+    inFlight--;
+    return data({});
+  });
+  assert.equal(peak, Math.min(6, SHAPING_LIMITS.concurrentCalls), "six calls were in flight together, up to the bound");
   assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok", "ok", "ok"]);
 });
 
@@ -277,6 +285,22 @@ test("input.trace reaches every call of a run as ctx.trace unchanged, and appear
   const none: unknown[] = [];
   await run(config, (_request, _entry, ctx) => { none.push(ctx.trace); return data({ guidance: [] }); }, input(1));
   assert.deepEqual(none, [null, null], "no context is null, not undefined");
+});
+
+test("input.workUnitId reaches every call of a run as ctx.workUnitId, appears in no record, and an unsendable one is absent", async () => {
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  const seen: unknown[] = [];
+  const result = await run(config, (_request, _entry, ctx) => {
+    seen.push(ctx.workUnitId);
+    return data({ guidance: [{ id: "a", body: "b" }] });
+  }, input(2, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(seen, ["wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z"], "two shapers, two repositories");
+  assert.equal(JSON.stringify(result).includes("wu_01JD5Z"), false);
+  for (const absent of [undefined, null, "", "two words", "line\nbreak", "x".repeat(257)]) {
+    const none: unknown[] = [];
+    await run(config, (_request, _entry, ctx) => { none.push(ctx.workUnitId); return data({ guidance: [] }); }, input(1, { workUnitId: absent }));
+    assert.deepEqual(none, [null, null], `${JSON.stringify(absent)} is absent`);
+  }
 });
 
 test("no NUL from a shaper reply reaches an entry, the section or a selector's request", async () => {
@@ -551,9 +575,11 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport, and the built-in needs a worktree", async (t) => {
-  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
-  const http = remote("http");
+test("the built-in needs a worktree, and the remote shapers are reached through the real transports", async (t) => {
+  // Plain http to a host that is not loopback: the real transports refuse it before sending anything,
+  // so this reaches no network while still proving the registry routes to them.
+  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "http://x.test/mcp" } } });
+  const http = ShaperSchema.parse({ id: "http", label: "HTTP", stage: "select", transport: { type: "http", url: "http://example.test/shape" } });
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
   // A worktree path this test controls and never creates, so the host's filesystem cannot answer for it.
   const base = mkdtempSync(join(tmpdir(), "mission-shaping-absent-"));
@@ -561,10 +587,11 @@ test("the placeholder transports answer unavailable, naming the transport, and t
   const absent = input(1);
   absent.context.repositories = absent.context.repositories.map((repo) => ({ ...repo, path: join(base, "billing-api") }));
   const result = await shapeTask(absent, { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
+  const refused = "The shaper's URL is plain http to a host that is not this machine, so no request was sent. Use https.";
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
     ["files", "unavailable", "The repository's worktree is not available on this machine."],
-    ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
-    ["http", "unavailable", "The HTTP transport is not available in this build yet."],
+    ["mcp", "unavailable", refused],
+    ["http", "unavailable", refused],
   ]);
 });
 
@@ -778,4 +805,20 @@ test("a dry run calls exactly one shaper, switched off or not", async () => {
   assert.deepEqual(await dryRunShaper("ghost", input(1), { config, discovered: [] }), {
     ok: false, error: "unknown_shaper", reason: 'No shaper has the id "ghost".',
   });
+});
+
+test("a reply the transport produced in time is kept, though the engine reads it after the deadline", async () => {
+  const config = configWith([shaper("s", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } });
+  const result = await run(config, (_request, _entry, ctx) => {
+    // The transport reports its outcome at once, inside the call's 100 ms.
+    ctx.settled?.();
+    // Synchronous work then runs ahead of the engine reading the reply, until well past the deadline.
+    queueMicrotask(() => {
+      const until = performance.now() + 250;
+      while (performance.now() < until) { /* busy */ }
+    });
+    return data({ guidance: [{ id: "on-time", body: "answered on time" }] });
+  }, input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok"], "judged by when the transport produced it");
+  assert.deepEqual(result.entries.map((entry) => entry.id), ["on-time"]);
 });

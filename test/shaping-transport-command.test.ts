@@ -6,6 +6,7 @@ import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpa
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { helperArgv, helperStopFile } from "./fixtures/fake-shaper-helper.mjs";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
 import { SHAPING_LIMITS, ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
@@ -45,7 +46,7 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
 function ctx(timeoutMs = 10_000, extra: Partial<TransportContext> = {}): TransportContext {
   return {
     deadline: Date.now() + timeoutMs, timeoutMs, signal: new AbortController().signal,
-    scope: { shared: new Map(), defer() {} }, root: null, trace: null, ...extra,
+    scope: { shared: new Map(), defer() {} }, root: null, trace: null, workUnitId: null, ...extra,
   } as TransportContext;
 }
 /** A data reply decoded: the text as written, or the value a scrubbed reply already is. */
@@ -89,6 +90,32 @@ test("a command shaper gets the launch's trace context, and never one inherited 
   }
 });
 
+test("a command shaper gets the run's work unit id as WORK_UNIT_ID when there is one, and never one inherited or configured", async () => {
+  const names = ["WORK_UNIT_ID", "work_unit_id"] as const;
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  process.env.WORK_UNIT_ID = "wu-from-the-daemon";
+  process.env.work_unit_id = "wu-lower-case";
+  try {
+    const named = { env: ["WORK_UNIT_ID", "work_unit_id"] };
+    const args = [FIXTURE, "echo", "env=WORK_UNIT_ID", "env=work_unit_id"];
+    const present = echoed(await callCommand(request(), shaper(args, named), ctx(10_000, { workUnitId: "wu_01JD5Z" })));
+    assert.deepEqual(present.env, { WORK_UNIT_ID: "wu_01JD5Z", work_unit_id: null });
+    const absent = echoed(await callCommand(request(), shaper(args, named), ctx()));
+    assert.deepEqual(absent.env, { WORK_UNIT_ID: null, work_unit_id: null }, "with none, nothing at all");
+    assert.equal(absent.envKeys.some((key) => /^work_unit_id$/i.test(key)), false);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a work unit id is never redacted: it is an opaque id, not a credential", async () => {
+  const reply = await callCommand(request(), shaper([FIXTURE, "leak", "WORK_UNIT_ID"]), ctx(10_000, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with wu_01JD5Z" });
+});
+
 test("a trace value is never redacted: it is neither a credential nor a reference", async () => {
   const saved = process.env.SHAPER_FIXTURE_SECRET;
   process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
@@ -99,6 +126,149 @@ test("a trace value is never redacted: it is neither a credential nor a referenc
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("an unset named variable that matches an inherited property cannot break reply scrubbing", async () => {
+  const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["constructor", "toString"], stage: "select" }), ctx());
+  assert.equal(reply.kind, "data", JSON.stringify(reply));
+  assert.equal(decoded(reply).guidance[0].body, "first entry for billing-api");
+});
+
+test("a named variable called __proto__ is an own property of the child's environment", () => {
+  const base = JSON.parse('{"__proto__":"proto-value","PATH":"/usr/bin:/bin"}') as NodeJS.ProcessEnv;
+  const env = shaperCommandEnv(base, ["__proto__"], "", null, "wu_01JD5Z");
+  assert.ok(Object.hasOwn(env, "__proto__"), Object.keys(env).join(","));
+  assert.equal(Object.getOwnPropertyDescriptor(env, "__proto__")?.value, "proto-value");
+  assert.ok(Object.keys(env).includes("__proto__"), "and is enumerated, so a spawn passes it on");
+  assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
+});
+
+test("a named value a command reprints with its whitespace normalized is redacted and marked", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane\t\tDoe";
+  try {
+    const failed = await callCommand(request(), shaper([FIXTURE, "leak-normalized", "SHAPER_FIXTURE_SPACED"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.deepEqual(failed, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [SHAPER_FIXTURE_SPACED redacted]", redacted: true });
+    // The reply's redactor, which the engine runs over reasons built from a reply, agrees.
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    assert.equal(reply.kind, "data");
+    const data = reply as { redact?: (text: string) => string; holdsNamed?: (text: string) => boolean };
+    assert.equal(data.holdsNamed?.("note for Jane Doe"), true);
+    assert.equal(data.redact?.("note for Jane Doe"), "note for [SHAPER_FIXTURE_SPACED redacted]");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
+/** A value longer than any in this process's environment, and at least 1,000 characters. */
+function longestEnvValue(prefix: string): string {
+  const longest = Math.max(1_000, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
+  const alphabet = "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f";
+  return `${prefix}${Array.from({ length: longest }, (_, i) => alphabet[(i * 7 + (i >> 5)) % alphabet.length]).join("")}`;
+}
+
+test("a command's stderr cut inside a JSON-escaped spelling of a named value keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Longer than anything else the child receives, so it alone sets the margin kept beyond the
+  // tail; escaped, each copy is six times that, and the recorded stderr's front edge cuts one.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("esc-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "40"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    // No escape survives: the whole escaped copy was removed, and the cut one was dropped.
+    assert.equal(reason.includes("\\u00"), false, reason.slice(0, 300));
+    assert.match(reason, /^The command exited with code 5/);
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut inside a named value escaped at the deepest supported level keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Escaped three levels deep, each copy is nine characters for each of the value's own, past the
+  // six a one-level margin keeps: the old margin's front edge fell inside the second copy.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("deep-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "30", "3"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("u00"), false, reason.slice(Math.max(0, reason.indexOf("u00") - 120), reason.indexOf("u00") + 60));
+    assert.match(reason, /^The command exited with code 5: /);
+    assert.match(reason, /\[SHAPER_FIXTURE_ESCAPED redacted\]/, "the whole copies are redacted");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut where the margin a named value needs is over the cap is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_HUGE;
+  // 216 characters of margin for each of 5,000 is past the 1 MiB cap; 1.1 MB of filler cuts it.
+  process.env.SHAPER_FIXTURE_HUGE = `huge-${"h".repeat(5_000)}`;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "stderr-flood", "SHAPER_FIXTURE_HUGE", "1100000"], { env: ["SHAPER_FIXTURE_HUGE"] }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 6: its stderr is not quoted: it was too long to scrub safely" });
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_HUGE;
+    else process.env.SHAPER_FIXTURE_HUGE = saved;
+  }
+});
+
+test("an inherited value inside a spelling of a named value does not break that spelling up", async () => {
+  const saved = { spaced: process.env.SHAPER_FIXTURE_SPACED, inner: process.env.SHAPER_FIXTURE_INNER };
+  // The named value printed with its space widened to three, and an inherited value that is
+  // exactly the middle of that spelling: removed first, it would leave both ends behind.
+  process.env.SHAPER_FIXTURE_SPACED = "tokenAAAA9 zq7xBBBBBB";
+  process.env.SHAPER_FIXTURE_INNER = "9   zq";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "3"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    for (const piece of ["AAAA", "BBBB", "7x"]) assert.equal(reason.includes(piece), false, reason);
+    assert.equal(reason, "The command exited with code 4: [redacted]");
+    assert.equal(reply.redacted, true);
+    // The reply's redactor finds them on the original text the same way.
+    const data = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    const redact = (data as { redact?: (text: string) => string }).redact;
+    assert.equal(redact?.("see tokenAAAA9   zq7xBBBBBB here"), "see [redacted] here");
+  } finally {
+    for (const [name, value] of [["SHAPER_FIXTURE_SPACED", saved.spaced], ["SHAPER_FIXTURE_INNER", saved.inner]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "50000"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("Doe"), false, reason);
+    assert.equal(reason, "The command exited with code 4: its stderr is not quoted: it was too long to scrub safely");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
+test("a named __proto__ variable reaches a command shaper's process", async () => {
+  const saved = Object.getOwnPropertyDescriptor(process.env, "__proto__")?.value as string | undefined;
+  process.env["__proto__"] = "proto-value-77c1";
+  try {
+    const seen = echoed(await callCommand(request(), shaper([FIXTURE, "echo", "env=__proto__"], { env: ["__proto__"] }), ctx()));
+    // The echoed value is the passed variable, which the reply scrub removes under its name.
+    assert.equal(seen.env["__proto__"], "[__proto__ redacted]");
+    assert.ok(seen.envKeys.includes("__proto__"), "the child's environment holds it");
+  } finally {
+    if (saved === undefined) delete process.env["__proto__"];
+    else process.env["__proto__"] = saved;
   }
 });
 
@@ -127,7 +297,41 @@ const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
   return done();
 };
 
-test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", async (t) => {
+/**
+ * Whether this process can remove a directory it may not read, as root or any process holding
+ * CAP_DAC_OVERRIDE can. Then a locked tree is no lock at all, and a test about one has nothing to
+ * prove.
+ */
+const bypassesDirectoryPermissions = ((): boolean => {
+  const probe = mkdtempSync(join(tmpdir(), "shaping-permission-probe-"));
+  const locked = join(probe, "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "file"), "");
+  chmodSync(locked, 0o000);
+  try {
+    rmSync(locked, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (existsSync(locked)) chmodSync(locked, 0o700);
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
+/**
+ * Stop whatever helper a fixture recorded, whether or not the test reached its own cleanup. It
+ * writes the helper's stop file, which the helper watches and exits on, and signals no pid at all:
+ * a helper that has already exited may have had its pid given to an unrelated process, and any
+ * check made before a signal could go stale before the signal lands.
+ */
+const stopRecorded = (pidFile: string): void => {
+  writeFileSync(helperStopFile(pidFile), "");
+};
+
+test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", {
+  skip: bypassesDirectoryPermissions ? "this process can remove a directory it may not read, so nothing is locked" : false,
+}, async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
   const outside = mkdtempSync(join(tmpdir(), "shaping-outside-"));
@@ -148,7 +352,7 @@ test("a selector that locks a directory still answers; cleanup changes no permis
     chmodSync(outside, 0o700);
     rmSync(outside, { recursive: true, force: true });
     if (cwd) {
-      chmodSync(join(cwd, "locked"), 0o700);
+      if (existsSync(join(cwd, "locked"))) chmodSync(join(cwd, "locked"), 0o700);
       rmSync(cwd, { recursive: true, force: true });
     }
   }
@@ -628,9 +832,7 @@ test("a helper outside the process group that holds the pipes cannot keep them o
     for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
     assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    stopRecorded(pidFile);
   }
 });
 
@@ -639,6 +841,8 @@ test("a helper left in the group after a successful reply is reaped when the cal
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then has nothing to stop.
+  let gone = false;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "orphan-helper", pidFile]), ctx(30_000));
     assert.equal(reply.kind, "data", "the shaper answered normally");
@@ -647,9 +851,10 @@ test("a helper left in the group after a successful reply is reaped when the cal
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper did not outlive the dry run");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    if (!gone) stopRecorded(pidFile);
   }
 });
 
@@ -658,6 +863,8 @@ test("a successful reply is kept when a helper in the group still holds the pipe
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then has nothing to stop.
+  let gone = false;
   try {
     const started = Date.now();
     // A generous timeout: the reply must come from the shaper's exit, not from the timeout.
@@ -670,9 +877,10 @@ test("a successful reply is kept when a helper in the group still holds the pipe
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper holding the pipes was stopped");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    if (!gone) stopRecorded(pidFile);
   }
 });
 
@@ -689,9 +897,7 @@ test("a reply that arrives just before the deadline is kept, though a helper out
     assert.match((reply as { data: string }).data, /answered just before the deadline/);
     assert.ok(Date.now() - started < timeoutMs, `returned within the call's budget (${Date.now() - started} ms)`);
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    stopRecorded(pidFile);
   }
 });
 
@@ -729,16 +935,25 @@ test("stopping a call kills its whole process group, descendants included", asyn
   const controller = new AbortController();
   const pending = callCommand(request(), shaper([FIXTURE, "grandchild", pidFile]), ctx(120_000, { signal: controller.signal }));
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
-  for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  assert.ok(pid > 0, "the shaper started its own child");
-  controller.abort();
-  assert.equal((await pending).kind, "timed_out");
-  let alive = true;
-  for (let attempt = 0; attempt < 200 && alive; attempt++) {
-    try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+  // Set once the liveness check has seen the descendant exit; cleanup then has nothing to stop.
+  let gone = false;
+  try {
+    for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(pid > 0, "the shaper started its own child");
+    controller.abort();
+    assert.equal((await pending).kind, "timed_out");
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+    }
+    gone = !alive;
+    assert.equal(alive, false, "the shaper's own child was killed with it");
+  } finally {
+    // The liveness check above runs first, so a transport regression still fails the test.
+    controller.abort();
+    if (!gone) stopRecorded(pidFile);
   }
-  assert.equal(alive, false, "the shaper's own child was killed with it");
 });
 
 test("an abort stops the call at once", async () => {
@@ -769,17 +984,15 @@ test("an overflow settles as soon as the cap is crossed, though a helper outside
   const startedFile = join(scratch, "overflow-started");
   rmSync(pidFile, { force: true });
   rmSync(startedFile, { force: true });
-  let pid = 0;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "escape-overflow", pidFile, startedFile]), ctx(30_000));
     const answered = Date.now();
-    pid = Number(readFileSync(pidFile, "utf8"));
     assert.deepEqual(reply, { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
     // The drain this replaces waited a full second after the cap; the answer now comes at once.
     const sinceOutput = answered - Number(readFileSync(startedFile, "utf8"));
     assert.ok(sinceOutput < 900, `answered ${sinceOutput} ms after the shaper started writing`);
   } finally {
-    if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    stopRecorded(pidFile);
   }
 });
 
@@ -809,4 +1022,61 @@ test("a shaper definition cannot name a shell string or a relative path outside 
   }
   const ok: Shaper = ShaperSchema.parse({ id: "x", label: "X", stage: "gather", transport: { type: "command", command: "node" } });
   assert.equal(ok.transport.type, "command");
+});
+
+test("the command transport reports when its outcome is known, before its reply settles", async () => {
+  const events: string[] = [];
+  const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx(10_000, { settled: () => events.push("settled") })).then((value) => {
+    events.push("replied");
+    return value;
+  });
+  assert.equal(reply.kind, "data");
+  assert.deepEqual(events, ["settled", "replied"]);
+  // A failure reports it too.
+  let failed = 0;
+  await callCommand(request(), shaper([FIXTURE, "fail"]), ctx(10_000, { settled: () => failed++ }));
+  assert.equal(failed, 1);
+});
+
+test("fallback cleanup stops the recorded helper through its stop file and signals no pid", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const pidFile = join(scratch, "stop-file.pid");
+  // An unrelated process that holds the pid the file names, as a recycled pid would.
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  // The helper this pid file really records, started the way the fixture starts its helpers.
+  const helper = spawn(process.execPath, helperArgv(pidFile), { stdio: "ignore" });
+  try {
+    writeFileSync(pidFile, String(unrelated.pid));
+    stopRecorded(pidFile);
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "the recorded helper exits on its own");
+    assert.equal(aliveNow(unrelated.pid!), true, "and the process the pid file names is never signalled");
+  } finally {
+    unrelated.kill("SIGKILL");
+    helper.kill("SIGKILL");
+    rmSync(pidFile, { force: true });
+    rmSync(helperStopFile(pidFile), { force: true });
+  }
+});
+
+test("a helper whose directory is removed exits, though its stop file never appeared", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  // A teardown that removes the scratch directory before the helper polled for its stop file.
+  const home = mkdtempSync(join(scratch, "helper-home-"));
+  const helper = spawn(process.execPath, helperArgv(join(home, "helper.pid")), { stdio: "ignore" });
+  try {
+    await sleep(150);
+    assert.equal(aliveNow(helper.pid!), true, "it runs while its directory is there");
+    rmSync(home, { recursive: true, force: true });
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "it exits once the directory is gone");
+  } finally {
+    helper.kill("SIGKILL");
+  }
 });

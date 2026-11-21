@@ -27,6 +27,7 @@ import {
   markReviewWaitAttached,
   reviewWaitAttached,
   markReviewWaitDetached,
+  cancelUnclaimedSnoozeInstruction,
   snoozeReviewRow,
   updateReviewStatus,
   wakeReviewRow,
@@ -384,7 +385,14 @@ export class ReviewManager {
     if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
     if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
     if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
-    return this.settle(review, "withdrawn", reason);
+    // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
+    // may already have reached the agent, so keep their records for delivery reconciliation.
+    let noteKey: string | null = null;
+    const withdrawn = this.settle(review, "withdrawn", reason, null, null, () => {
+      noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+    });
+    if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
+    return withdrawn;
   }
 
   /**

@@ -5708,6 +5708,14 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  */
 export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
 
+/** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
+export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE id = ? AND state = 'queued' AND claimed_at IS NULL
+    RETURNING note_key`).get(`${SNOOZE_INSTRUCTION_TURN_PREFIX}${reviewId}`) as { note_key: string } | undefined;
+  return row?.note_key ?? null;
+}
+
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
   noteKey: string;

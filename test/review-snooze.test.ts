@@ -28,7 +28,10 @@ legacy.exec(`
 `);
 legacy.close();
 
-const { inTransaction, openDb, loadPendingReviews } = await import("../src/server/db.ts");
+const {
+  inTransaction, openDb, loadPendingReviews, listPendingTurns, createPendingTurn,
+  claimNextPendingTurn, markPendingTurnUncertain,
+} = await import("../src/server/db.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, ReviewResolutionError, SnoozeActorRefusal } = await import("../src/server/reviews.ts");
@@ -332,6 +335,54 @@ test("a snooze the agent hears as its tool result sends no second copy, and a la
   f.reviews.snooze(review.id, HOUR);
   assert.deepEqual(f.turns(), []);
 });
+
+test("withdrawing a message-mode question cancels only its unclaimed snooze instruction, including after recovery", () => {
+  const f = fixture("withdraw-snooze");
+  const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  f.reviews.snooze(review.id, HOUR, { mode: "hold" });
+  const instruction = f.turns()[0]!;
+  assert.equal(instruction.id, `review-continuation:snooze:${review.id}`);
+  assert.equal(instruction.claimedAt, null);
+  assert.match(instruction.text, /Not answered yet/);
+
+  const other = f.ask();
+  f.reviews.detachWait(other.id, f.id);
+  f.reviews.snooze(other.id, HOUR);
+  createPendingTurn({ id: `ordinary:${review.id}`, noteKey: instruction.noteKey, text: "Keep working", now: Date.now() });
+  f.registry.refreshPendingTurns(instruction.noteKey);
+  const retained = f.turns().filter((turn) => turn.id !== instruction.id);
+  assert.equal(retained.length, 2);
+
+  f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed");
+  assert.equal(f.registry.getReview(review.id)?.status, "withdrawn");
+  assert.deepEqual(listPendingTurns(instruction.noteKey), retained, "the canceled instruction is removed durably");
+  assert.deepEqual(f.turns(), retained, "the live outbox also loses the instruction without an answer replacing it");
+  new ReviewManager(f.registry).startContinuationRecovery(f.deliver);
+  assert.deepEqual(f.turns(), retained, "recovery does not requeue a withdrawn question's instruction");
+});
+
+for (const state of ["sending", "uncertain"] as const) {
+  test(`withdrawing a message-mode question preserves its ${state} snooze instruction`, () => {
+    const f = fixture(`withdraw-snooze-${state}`);
+    const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
+      snoozable: true, waitMode: "message",
+    });
+    f.reviews.snooze(review.id, HOUR);
+    const noteKey = f.turns()[0]!.noteKey;
+    const claimed = claimNextPendingTurn(noteKey, Date.now())!;
+    assert.equal(claimed.id, `review-continuation:snooze:${review.id}`);
+    if (state === "uncertain") markPendingTurnUncertain(claimed.id, claimed.revision, "Delivery not confirmed", Date.now());
+    f.registry.refreshPendingTurns(noteKey);
+    const before = f.turns();
+
+    f.reviews.withdrawQuestion(f.id, review.id, "The dependent work was removed");
+    assert.equal(f.registry.getReview(review.id)?.status, "withdrawn");
+    assert.deepEqual(listPendingTurns(noteKey), before, "do not discard a record of a message that may have reached the agent");
+    assert.deepEqual(f.turns(), before);
+  });
+}
 
 test("an owed instruction that could not be handed over yet is delivered when recovery starts", () => {
   const f = fixture("owed-later");

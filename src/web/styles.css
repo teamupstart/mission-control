@@ -31638,6 +31638,19 @@ span.line-run-prov {
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
+.workflow-action-wait {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+.workflow-action-wait strong { color: var(--fg); }
+.rail-row > .workflow-action-wait { grid-column: 1 / -1; }
+
 .fleet-section-why {
   font-size: 10px;
   line-height: 1.45;

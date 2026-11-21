@@ -2766,8 +2766,24 @@ const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
     + "session's turn. It goes out on its own; nothing is needed from you.",
 };
 
+/** The next actor is explicit even when the session is idle after its action turn. */
+const ACTION_WAIT_NEXT: Record<SessionActionWaitReason, string> = {
+  preparing: "Next: Mission Control prepares the instruction.",
+  awaiting_send: "Next: Mission Control sends the authorized instruction; in Preview, you send it from the run's delivery controls.",
+  awaiting_pickup: "Next: the session must pick up the delivered instruction.",
+  working: "Next: the session must finish the instruction.",
+  needs_operator: "Next: you must answer the session's question.",
+  awaiting_proof: "Next: the session must supply the required proof for Mission Control to verify.",
+  capturing: "Next: Mission Control captures the evidence and advances the run.",
+  awaiting_pull_request: "Next: the session must open or identify the pull request.",
+  awaiting_pushed_head: "Next: the session must push the reviewed commit.",
+  pull_request_wrong_repository: "Next: the session must publish in the reviewed repository, or you can recover the run.",
+  pull_request_wrong_branch: "Next: the session must publish from the reviewed branch, or you can recover the run.",
+  queued_for_conversation: "Next: Mission Control sends this instruction when the other run releases the session.",
+};
+
 export function actionWaitSentence(reason: SessionActionWaitReason): string {
-  return ACTION_WAIT_SENTENCES[reason];
+  return `${ACTION_WAIT_SENTENCES[reason]} ${ACTION_WAIT_NEXT[reason]}`;
 }
 
 /**

@@ -182,6 +182,7 @@ import {
   completionWatchesPullRequests,
   sessionActionAdapter,
   type SessionActionAdoptedPullRequest,
+  type SessionActionRepositoryFacts,
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
@@ -6184,7 +6185,7 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository),
       capturedHeadOid,
       acceptedContentTreeOid: parentContext.success
         ? workflowPublicationTree(parentContext.data.evidence)
@@ -6241,16 +6242,13 @@ export class WorkflowManager {
    * timer, and a cached copy is exactly how an action would keep waiting for a head that had
    * already arrived.
    *
-   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
-   * request reachable at all. The poller retires a closed row in the statement after the one
-   * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * preserve the PR as a completed action with a warning. Anything retired before this action
-   * was even delivered
-   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
-   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
+   * Recent retirements preserve closures observed during this action. Earlier merges on the
+   * checkout's branch remain candidates too: publication may predate a later completion turn.
+   * Resolve identity once per root and merged trees only for this repository and branch.
    */
   private async adoptedPullRequestsForAction(
     observedSince: number,
+    repository: SessionActionRepositoryFacts | null,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
@@ -6264,12 +6262,16 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
-    // retires a closed pull request on the same tick it first observes the closure, so without
-    // the second half the adapter could never reach the one state it is meant to block on.
-    const rows = loadAdoptedInspectorPrsSince(observedSince);
+    // Historical merges remain proof candidates even after Inspector retires their rows.
+    const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null);
     const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
+    const trees = await Promise.all(rows.map((pr, index) =>
+      pr.observedState === "MERGED" && pr.observedHeadSha && repository
+        && resolved[index] === repository.repositoryId && pr.headRefName === repository.branch
+        ? (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null)
+        : null));
     return rows.map((pr, index) => ({
+      mergedContentTreeOid: trees[index] ?? null,
       key: pr.key,
       url: pr.url,
       number: pr.number,

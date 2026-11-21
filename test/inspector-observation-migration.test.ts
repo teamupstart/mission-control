@@ -232,3 +232,12 @@ test("a pull request retired BEFORE the action was delivered is history, not a c
     true,
   );
 });
+
+test("an older merged PR is visible only for the requested action branch", () => {
+  updateInspectorPr(KEY, { state: "closed", observedState: "MERGED", observedAt: 1,
+    headRefName: "already-published" }, 1);
+  assert.ok(loadAdoptedInspectorPrsSince(9000, "already-published").some(pr => pr.key === KEY));
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "other").some(pr => pr.key === KEY), false);
+  updateInspectorPr(KEY, { observedState: "CLOSED" }, 1);
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "already-published").some(pr => pr.key === KEY), false);
+});

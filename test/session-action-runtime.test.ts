@@ -144,6 +144,7 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  realLedger?: boolean;
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
@@ -211,7 +212,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       headOid: full(head.sha),
       headCommittedAt: null,
     }),
-    adoptedPullRequests: () => adopted,
+    adoptedPullRequests: options.realLedger ? undefined : () => adopted,
+    readRepositoryId: async root => root,
     resolveCommit: async (_root, headSha) => full(headSha),
     resolveCommitTree: async () => contentTree.oid,
     requireSkill: options.requireSkill
@@ -542,10 +544,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
 type Harness = Awaited<ReturnType<typeof harness>>;
 
 /** Bind, submit, and wait for the first action to be waiting with its packet prepared. */
-async function runToAction(h: Harness): Promise<string> {
+async function runToAction(h: Harness, prompted = false): Promise<string> {
   const bound = h.manager.createBinding({
     workflowVersionId: h.versionId,
     sessionId: h.sessionId,
+    ...(prompted ? { triggerMode: "foreman_complete" as const } : {}),
   });
   assert.equal(bound.ok, true, "the binding was refused");
   const bindingId = bound.ok ? bound.value.id : "";
@@ -577,9 +580,30 @@ async function runToAction(h: Harness): Promise<string> {
         links: [{ clientItemId: evidenceId, role: "execution" }],
     }]);
   }
-  const submitted = await h.manager.submit(bindingId, { requestId: `submit-${h.sessionId}` });
-  assert.equal(submitted.ok, true, "the submission failed");
-  const runId = submitted.ok ? submitted.value.run.id : "";
+  let runId: string;
+  if (prompted) {
+    const objective = "Publish the reviewed plan";
+    h.registry.upsertGoal(h.sessionId, {
+      prompt: objective, text: objective, objective, focus: objective,
+      relationship: "initial", rationale: "Plan completion", objectiveVersion: 1,
+      promptRevision: 1, resolvedPromptRevision: 1, pendingPrompts: [], source: "heuristic",
+    }, Date.now());
+    h.runActionTurn();
+    const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
+    const claim = await h.manager.claimCompletion(h.sessionId, {
+      completionKind: "prompted", marker: "a".repeat(64), summary: "Nothing remains to publish",
+      evidenceFingerprint: "published-plan",
+      expectedIntent: { objective, objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
+      expectedWorkCycle: { logicalKey: cycle.logicalKey, generation: cycle.generation },
+    });
+    assert.ok(claim.claimed, JSON.stringify(claim));
+    runId = claim.runId;
+    assert.equal(h.store.getRun(runId)?.triggerSource, "foreman");
+  } else {
+    const submitted = await h.manager.submit(bindingId, { requestId: `submit-${h.sessionId}` });
+    assert.equal(submitted.ok, true, "the submission failed");
+    runId = submitted.ok ? submitted.value.run.id : "";
+  }
   await waitFor(
     () => h.store.listSubmissions(runId)
       .some((submission) => h.store.listAttempts(submission.id)
@@ -2036,5 +2060,44 @@ for (const { parentProof, childProof, changed, number } of [
     } finally {
       await h.stop();
     }
+  });
+}
+
+for (const changed of [false, true]) {
+  test(`a plan's previously merged PR ${changed ? "does not cover new work" : "satisfies a later Pull Request action"}`, async () => {
+    const { adoptInspectorPr } = await import("../src/server/db.ts");
+    const { mkTask } = await import("./helpers/session-fixture.ts");
+    const h = await harness(`old-merge-${changed}`, { pullRequest: true, realLedger: true });
+    try {
+      h.repository.root = `/repo/old-merge-${changed}`;
+      h.registry.upsertTask(mkTask({ id: `plan-${changed}`, kind: "plan", status: "running", sessionId: h.sessionId }));
+      const head = h.full(h.head.sha);
+      const key = `owner/repo#${changed ? 1571 : 1570}`;
+      const url = `https://github.com/owner/repo/pull/${changed ? 1571 : 1570}`;
+      adoptInspectorPr({ key, url, owner: "owner", repo: "repo", number: changed ? 1571 : 1570,
+        repoRoot: h.repository.root, cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "closed",
+        headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null,
+        failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
+        mergedAt: 1, mergeBlock: null, observedHeadSha: head, observedState: "MERGED", observedAt: 1,
+        headRefName: "feature", title: "Published plan", adoptedAt: 1, updatedAt: 1 });
+      const runId = await runToAction(h, true);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action packet");
+      const attemptId = waitingActionAttemptId(h, runId);
+      // The fake session consumes the packet and reports nothing to publish. No PR is adopted.
+      if (changed) h.contentTree.oid = h.full("unpublished-plan");
+      h.runActionTurn();
+      await h.manager.sweepSessionActions(SETTLED());
+      if (changed) {
+        await waitFor(() => h.store.runSummary(runId)?.actionWait === "awaiting_pull_request",
+          "unpublished work should still require a PR");
+        assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      } else {
+        await waitFor(() => h.store.getRun(runId)?.status === "completed", "old merge stranded the run");
+        const attempt = h.store.getAttempt(attemptId)!;
+        assert.match(JSON.stringify(attempt), /Already published through merged pull request/);
+        assert.match(JSON.stringify(attempt), /1570/);
+        assert.equal(h.store.listDeliveries(runId).length, 1);
+      }
+    } finally { await h.stop(); }
   });
 }

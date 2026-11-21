@@ -8,6 +8,7 @@ import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   InspectorRailMark,
   PrRailMark,
   ScheduleOriginRailMark,
@@ -257,6 +258,7 @@ export function RailRow({
             </span>
           </span>
         </span>
+        <WorkflowActionWait runs={workflowRuns ?? (workflowRun ? [workflowRun] : [])} />
       </button>
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>

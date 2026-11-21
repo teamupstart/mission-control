@@ -714,3 +714,178 @@ test("managed merge completion closes regardless of the assigned-agent reuse set
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.match(f.registry.promptResourceBlockerForSession(f.id) ?? "", /being closed/);
 });
+
+for (const status of ["completed", "cancelled"] as const) {
+  test(`a merged idle plan settles when its workflow is ${status}`, async () => {
+    const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+    const f = fleet(`workflow-${status}`);
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
+    const run = { ...LADDER_SUMMARY, id: `run-${status}`, sessionId: f.id,
+      status: "waiting_for_action" as const, phase: "session_action" };
+    f.registry.upsertWorkflowRun(run);
+    merge(f);
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    f.registry.upsertWorkflowRun({ ...run, status, phase: "done" });
+    assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+    assert.equal(f.registry.getTask(f.taskId)?.outcomeUrl, PR);
+  });
+}
+
+for (const status of ["completed", "cancelled"] as const) {
+  test(`startup observation settles an idle merged plan with a ${status} workflow`, async () => {
+    const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const f = fleet(`startup-workflow-${status}`);
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
+    const run = { ...LADDER_SUMMARY, id: `startup-run-${status}`, sessionId: f.id,
+      status: "waiting_for_action" as const, phase: "session_action" };
+    f.registry.upsertWorkflowRun(run);
+    merge(f);
+    await f.tasks.stop();
+
+    // Restore the terminal run while TaskManager is offline. No listener can settle it.
+    f.registry.upsertWorkflowRun({ ...run, status, phase: "done" });
+    assert.equal(f.registry.getSession(f.id)?.state, "idle");
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(f.registry.sessionsObserved(), true);
+
+    // onSessionsObserved replays completed discovery to the new manager. There is no
+    // fresh workflow or session update to drive the ordinary event-based settlement.
+    new TaskManager(f.registry);
+    const settled = f.registry.getTask(f.taskId)!;
+    assert.equal(settled.status, "done");
+    assert.equal(settled.outcomeUrl, PR);
+    assert.ok(settled.completedAt);
+  });
+}
+
+test("a terminal workflow cannot settle a busy agent or bypass another active run", async () => {
+  const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+  const f = fleet("workflow-still-busy", true);
+  const run = { ...LADDER_SUMMARY, id: "finished", sessionId: f.id, status: "completed" as const };
+  merge(f);
+  f.registry.upsertWorkflowRun(run);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  f.registry.upsertWorkflowRun({ ...run, id: "sibling", status: "waiting_for_action" });
+  f.registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`, transcriptPath: null, env: {} });
+  f.registry.upsertWorkflowRun(run);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+for (const status of ["completed", "cancelled"] as const) {
+  for (const published of [true, false]) test(`rolled-over plan after ${status}, publication proof=${published}`, async () => {
+    const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+    const proof = deferred();
+    const f = fleet(`rolled-${status}-${published}`, true, {
+      resetWouldDestroyWork: async () => null,
+      kill: async () => ({ ok: true }),
+      mergedPublicationCoversCheckout: async () => { await proof.promise; return published; },
+    });
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
+    merge(f);
+    const before = f.registry.workEpisodeForSession(f.id)!;
+    f.registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `${f.id}-episode`,
+      cwd: `/repo/${f.id}`, transcriptPath: null, env: {}, prompt: "Pull Request", ts: Date.now() + 1 });
+    assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, before.episodeId);
+    f.registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${f.id}-episode`,
+      cwd: `/repo/${f.id}`, transcriptPath: null, env: {}, ts: Date.now() + 2 });
+    f.registry.upsertWorkflowRun({ ...LADDER_SUMMARY, id: `rolled-run-${status}-${published}`, sessionId: f.id, status });
+    proof.resolve();
+    for (let i = 0; i < 20 && f.registry.getTask(f.taskId)?.status === "running"; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(f.registry.getTask(f.taskId)?.status, published ? "done" : "running");
+  });
+}
+
+for (const failureStage of ["publication", "completion"] as const) {
+  test(`rolled-over settlement distinguishes ${failureStage} failure and permits a later retry`, async (t) => {
+    const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const failure = new Error(`${failureStage} unavailable`);
+    let failing = true;
+    const f = fleet(`rolled-failure-${failureStage}`, true, {
+      resetWouldDestroyWork: async () => null,
+      kill: async () => ({ ok: true }),
+      mergedPublicationCoversCheckout: async () => {
+        if (failing && failureStage === "publication") throw failure;
+        return true;
+      },
+    });
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
+    const run = { ...LADDER_SUMMARY, id: `failure-run-${failureStage}`, sessionId: f.id,
+      status: "waiting_for_action" as const, phase: "session_action" };
+    f.registry.upsertWorkflowRun(run);
+    merge(f);
+    const before = f.registry.workEpisodeForSession(f.id)!;
+    f.registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `${f.id}-episode`,
+      cwd: `/repo/${f.id}`, transcriptPath: null, env: {}, prompt: "Pull Request", ts: Date.now() + 1 });
+    assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, before.episodeId);
+    f.registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${f.id}-episode`,
+      cwd: `/repo/${f.id}`, transcriptPath: null, env: {}, ts: Date.now() + 2 });
+
+    const errors: unknown[][] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
+    const completeTask = f.tasks.complete.bind(f.tasks);
+    const completion = t.mock.method(f.tasks, "complete", async (...args: Parameters<typeof completeTask>) => {
+      if (failing && failureStage === "completion") throw failure;
+      return completeTask(...args);
+    });
+    const terminal = { ...run, status: "completed" as const, phase: "done" };
+    f.registry.upsertWorkflowRun(terminal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(completion.mock.callCount(), failureStage === "completion" ? 1 : 0);
+    assert.deepEqual(errors, failureStage === "completion"
+      ? [["[merge] settling published task after workflow failed:", f.taskId, failure]] : []);
+
+    failing = false;
+    f.registry.upsertWorkflowRun(terminal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.registry.getTask(f.taskId)?.status, "done", "failed settlement releases its in-flight entry");
+    assert.equal(f.registry.getTask(f.taskId)?.outcomeUrl, PR);
+  });
+}
+
+test("rolled-over settlement verifies the actual clean checkout against the merged PR", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const { writeFileSync } = await import("node:fs");
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const { mergedPublicationCoversCheckout } = await import("../src/server/tasks.ts");
+  const repo = mkdtempSync(join(home, "publication-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  git("init", "-b", "plan");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.test");
+  writeFileSync(join(repo, "plan.md"), "Reviewed plan");
+  git("add", "."); git("commit", "-m", "Plan");
+  const head = git("rev-parse", "HEAD");
+  const url = "https://github.com/example/repo/pull/1570";
+  adoptInspectorPr({ key: "example/repo#1570", url, owner: "example", repo: "repo", number: 1570,
+    repoRoot: repo, cwd: repo, sessionId: "proof", source: "hook", state: "closed",
+    headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null,
+    failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
+    mergedAt: 1, mergeBlock: null, observedHeadSha: head, observedState: "MERGED", observedAt: 1,
+    headRefName: "plan", title: "Plan", adoptedAt: 1, updatedAt: 1 });
+  const session = { cwd: repo, gitBranch: "plan" } as Session;
+  assert.equal(await mergedPublicationCoversCheckout(session, url), true);
+  await t.test("rejects another repository with the same merged commit and clean content tree", async () => {
+    const otherRepo = mkdtempSync(join(home, "other-publication-"));
+    git("clone", "--no-hardlinks", repo, otherRepo);
+    const otherGit = (...args: string[]) =>
+      execFileSync("git", ["-C", otherRepo, ...args], { encoding: "utf8" }).trim();
+    assert.equal(otherGit("rev-parse", "HEAD"), head);
+    assert.equal(otherGit("rev-parse", "HEAD^{tree}"), git("rev-parse", "HEAD^{tree}"));
+    assert.equal(otherGit("status", "--porcelain"), "");
+    assert.equal(otherGit("branch", "--show-current"), session.gitBranch);
+    assert.notEqual(otherGit("rev-parse", "--path-format=absolute", "--git-common-dir"),
+      git("rev-parse", "--path-format=absolute", "--git-common-dir"));
+    assert.equal(await mergedPublicationCoversCheckout({ ...session, cwd: otherRepo }, url), false);
+  });
+  writeFileSync(join(repo, "plan.md"), "Unpublished changes");
+  assert.equal(await mergedPublicationCoversCheckout(session, url), false);
+  git("add", "."); git("commit", "-m", "Unpublished");
+  assert.equal(await mergedPublicationCoversCheckout(session, url), false);
+  assert.equal(await mergedPublicationCoversCheckout({ ...session, gitBranch: "other" }, url), false);
+});

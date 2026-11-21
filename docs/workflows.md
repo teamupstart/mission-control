@@ -808,6 +808,18 @@ rule applies and the completion warning says so. The branch and state are normal
 here, because only the GitHub Inspector's poller records them and it does not run while the
 Inspector is disabled.
 
+A pull request that **merged before** the action was delivered can also satisfy it. Mission
+Control reads the retained Inspector observation for the same repository and branch and resolves
+its published Git tree. That tree must equal the reviewed publication tree. The continuation
+must still have that content and no unpublished changes. Runs records the merged PR URL and
+explains that no new PR is needed. Unknown or different publication proof still requires a PR;
+changes discovered during continuation capture offer the existing resubmit recovery.
+
+A merged, idle task is reconsidered when its workflow finishes or is cancelled, and at startup.
+If a later prompt rolled its single-repository work into a new episode, settlement additionally
+requires a clean checkout matching the recorded merged PR. Busy sessions, queued work and active
+workflow runs retain ownership.
+
 ### Command nodes
 
 A **Command** represents a deterministic command gate instead of a model review. **A
@@ -1941,6 +1953,12 @@ When that action's only reachable downstream node is End, the child segment is l
 **verified shipping** rather than another evidence number. Its notice states that the pull
 request is open at the captured commit, published content matches the prior accepted review, and
 no new evidence review was started.
+
+Every session-action wait names its next actor in the same explanation on Runs and on Fleet's
+Board cards and Console rail. Awaiting PR names the session that must open or identify the PR;
+Needs you names the operator who must answer; capture and queued delivery name Mission Control.
+The explanation stays visible even when workflow details are collapsed and disappears when the
+run finishes. The held-session section does not promise automatic progress for an operator wait.
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from the **Review worklist**, which is about what the run

@@ -1,3 +1,4 @@
+import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { realpathSync } from "node:fs";
 import {
   SESSION_ACTION_COMPLETION_CAPABILITIES,
@@ -130,6 +131,8 @@ export interface SessionActionAdoptedPullRequest {
   branch: string | null;
   /** The remote head the last poll SAW, as a full object id, or null until the first poll. */
   observedHeadOid: string | null;
+  /** Resolved tree of a historical merged head, supplied by the manager. */
+  mergedContentTreeOid?: string | null;
   /** What that poll saw the pull request's state to be, or null until the first poll. */
   observedState: "OPEN" | "CLOSED" | "MERGED" | null;
   /** When that poll happened, or null until the first one. */
@@ -415,7 +418,26 @@ const pullRequest: SessionActionAdapter = {
   validateSnapshot: () => null,
 
   decide: (context) => {
+    // An old merge is proof only when it covers the reviewed content. Do not let it
+    // enter the ordinary adoption fallback, which intentionally treats freshness as advisory.
+    const historicalMerges = context.adoptedPullRequests.filter(pr =>
+      pr.observedState === "MERGED" && pr.adoptedAt < context.deliveredAt);
     const repository = context.repository;
+    if (repository && context.acceptedContentTreeOid) {
+      const published = historicalMerges.filter(pr =>
+        belongsToBranch(pr, repository.repositoryId, repository.branch ?? "")
+        && pr.mergedContentTreeOid === context.acceptedContentTreeOid);
+      const chosen = published.sort((a, b) => a.number - b.number)[0];
+      if (chosen) return {
+        kind: "complete",
+        continuationExpectation: {
+          ...pullRequestExpectation(chosen, context.acceptedContentTreeOid),
+          mergedContentTreeOid: chosen.mergedContentTreeOid,
+        },
+        warnings: [pullRequestWarning(`Already published through merged pull request ${chosen.url}. Its published tree matches the reviewed content; no new pull request is needed.`)],
+      };
+    }
+    context = { ...context, adoptedPullRequests: context.adoptedPullRequests.filter(pr => !historicalMerges.includes(pr)) };
     const openedThisTurn = context.adoptedPullRequests.filter(
       (pr) => openedByThisTurn(pr, context.session.id, context.deliveredAt),
     );
@@ -559,6 +581,15 @@ const pullRequest: SessionActionAdapter = {
         code: "capture_failed",
         detail: "A pull request action requires a pull request continuation expectation",
       };
+    }
+    if (expectation.mergedContentTreeOid) {
+      if (expectation.mergedContentTreeOid !== expectation.acceptedContentTreeOid
+        || workflowPublicationTree(capture.context.evidence) !== expectation.mergedContentTreeOid
+        || workflowHasUnpublishedChanges(capture.context.evidence)) {
+        return { kind: "blocked", code: "published_content_changed",
+          detail: `The merged pull request ${expectation.pullRequestUrl} does not cover the continuation's content. Publish the remaining work and resubmit the workflow.` };
+      }
+      return null;
     }
     if (!capture.capturedHeadOid) {
       return {

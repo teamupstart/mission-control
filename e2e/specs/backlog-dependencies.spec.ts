@@ -557,6 +557,50 @@ test("typing during a successful pin save retains the new draft with the saved d
   expect(saved.dependencies).toEqual(savedPin.dependencies);
 });
 
+test("collapsing backlog details preserves the selected revision, pending request, and staged preview", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  const fold = dialog.getByRole("button", { name: /^Backlog details/ });
+  await fold.click();
+  await expect(dialog.getByLabel("Revision", { exact: true })).toBeHidden();
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await fold.click();
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("2");
+
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  await dashboard.route(`**/api/tasks/${before.id}/update`, async route => {
+    if (route.request().postDataJSON().previewOnly) { started(); await held; }
+    await route.continue();
+  });
+  try {
+    await dialog.getByRole("button", { name: "Preview revision change" }).click();
+    await requested;
+    await fold.click();
+    await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  } finally { release(); }
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await fold.click();
+  const preview = dialog.getByRole("region", { name: "Pinned revision preview" });
+  await expect(preview).toBeVisible();
+  const previewText = await preview.innerText();
+  await fold.click();
+  await expect(preview).toBeHidden();
+  await fold.click();
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("2");
+  await expect(preview).toBeVisible();
+  expect(await preview.innerText()).toBe(previewText);
+  expect(await read()).toEqual(before);
+  await dialog.getByRole("textbox", { name: /^Title/ }).focus();
+  await shoot(dashboard, "revision-change-preview-refolded");
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(await read()).toEqual(before);
+});
+
 test("a stalled revision preview times out and releases Cancel without saving", async ({ dashboard, daemon }) => {
   const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
   const before = await read();

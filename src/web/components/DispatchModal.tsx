@@ -3578,8 +3578,9 @@ function DispatchModal({
                 </span>
               </button>
             </Tooltip>
-            {detailsOpen && (
-              <div className={`dispatch-more-body${guidedDim}`}>
+            {/* A collapsed fold must retain the revision editor that owns the staged preview. */}
+            {(detailsOpen || editingPin !== null) && (
+              <div className={`dispatch-more-body${guidedDim}`} hidden={!detailsOpen}>
                 <div className="field-row">
                   <label className="field">
                     <span className="field-label">

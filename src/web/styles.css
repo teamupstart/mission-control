@@ -12644,6 +12644,9 @@ button.dispatch-guided-rung .dispatch-guided-num {
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
 }
+.dispatch-more-body[hidden] {
+  display: none;
+}
 
 /* The task-level scheduling choice belongs with the backlog metadata, but it is not another
    text field. A bounded row gives the copy and the same switch used on stored backlog cards

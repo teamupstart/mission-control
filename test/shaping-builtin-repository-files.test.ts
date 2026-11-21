@@ -386,17 +386,20 @@ test("a named pipe with no writer is skipped at once, there from the start or sw
   const { root } = fixture({ "notes.md": "regular\n" });
   mkfifo(join(root, "pipe"));
   // The watchdog that makes a regression fail rather than hang: an open that waits for a writer
-  // never returns by itself, so after the deadline the test becomes that writer, which releases
+  // never returns by itself, so from the deadline on the test becomes that writer, which releases
   // the open, and records that it had to. Opening the write end non-blocking succeeds only while
-  // a reader is waiting, so it is harmless when nothing blocked.
+  // a reader is waiting, so it is harmless when nothing blocked. It keeps trying until the test
+  // ends, so an open that a busy machine starts only after the deadline is still released.
   let rescued = false;
-  const watchdog = setTimeout(() => {
+  let watching: ReturnType<typeof setInterval> | undefined;
+  const release = () => {
     for (const fifo of [join(root, "pipe"), join(root, "notes.md")]) {
       try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); rescued = true; } catch { /* no reader waiting */ }
     }
-  }, 3_000);
-  t.after(() => clearTimeout(watchdog));
-  const startedAt = performance.now();
+  };
+  const deadline = setTimeout(() => { release(); watching = setInterval(release, 50); }, 3_000);
+  const stopWatching = () => { clearTimeout(deadline); clearInterval(watching); };
+  t.after(stopWatching);
   const before = seam({});
   assert.deepEqual(await readWorktreeFile(root, "pipe", 1024, before), { ok: false, skip: "not-a-regular-file" });
   assert.equal(before.opened.length, 0, "never opened: the lookup alone skips it");
@@ -411,9 +414,8 @@ test("a named pipe with no writer is skipped at once, there from the start or sw
   });
   assert.deepEqual(await readWorktreeFile(root, "notes.md", 1024, swapped), { ok: false, skip: "not-a-regular-file" });
   assert.equal(swapped.opened.length, 1, "opened without blocking, then refused on the handle");
-  clearTimeout(watchdog);
+  stopWatching();
   assert.equal(rescued, false, "neither open waited for a writer");
-  assert.ok(performance.now() - startedAt < 3_000, "neither case waited for a writer");
 });
 
 test("a signal stops the run between files", async () => {

@@ -59,10 +59,12 @@ onSend((conversation, fingerprint) => {
   // A delivery whose turn has landed but that no reader has bound yet is bound first, so its
   // echo is decided too.
   if (conversation.transcript) ledger.bindLanded(conversation.key, conversation.transcript, Date.now());
+  // Settled as "none" only when the file was read and ends at the mid-turn record. With no
+  // transcript, or a read that failed, an echo may already be written, so nothing is ruled out.
+  if (!conversation.transcript) return;
   for (const row of ledger.rows(conversation.key)) {
     if (row.messageId === null || row.fingerprint !== fingerprint || row.steerEcho !== null) continue;
-    const echo = conversation.transcript ? steerEchoOf(row, conversation.transcript) : undefined;
-    if (echo === undefined) settleSteerEcho(row, null);
+    if (steerEchoOf(row, conversation.transcript) === STEER_ECHO_PENDING) settleSteerEcho(row, null);
   }
 });
 
@@ -154,10 +156,12 @@ export function stampReviewDeliveryHandoff(
   const base = cycle?.generation ?? 0;
   const queued = cycle?.active === true;
   const turn = base + (queued ? 2 : 1);
-  if (turn <= row.echoTurnGeneration && entry.base >= base) return;
   entry.base = Math.max(entry.base, base);
   row.echoTurnGeneration = Math.max(row.echoTurnGeneration, turn);
-  row.echoEligibleAt = queued ? null : now;
+  // The TTL counts from the handoff, never from the reservation: a row that waited longer than
+  // HUMAN_ECHO_TTL_MS with the cycle unchanged would otherwise owe nothing by the time its echo
+  // arrived. It starts now when the echo's turn is the next one, and waits otherwise.
+  row.echoEligibleAt = row.echoTurnGeneration <= base + 1 ? now : null;
   persistEcho(row);
 }
 
@@ -300,6 +304,7 @@ export function reviewMessageTurns(
       if (!found.matched.has(m.id) || rowsByTurn.has(m.id) || found.ambiguous.has(m.id)) continue;
       const fingerprint = injectionFingerprint(m.text);
       const row = boundRows.find((r) => r.fingerprint === fingerprint && steerEchoOf(r, transcript) === m.id);
+      // (A pending or unreadable answer is a symbol, never a message id, so it matches nothing.)
       if (row) rowsByTurn.set(m.id, row);
     }
   }
@@ -325,10 +330,14 @@ function settleSteerEcho(row: ReviewDeliveryRow, echo: string | null): string | 
  * The turn that echoes a bound delivery's mid-turn record: the next turn in the file, when it is
  * a plain user record of the same words, with no agent turn or other message between them (the
  * rule `collapseSteerEchoes` draws by). Walked forward from the delivery's own offset, so it does
- * not depend on the page being read. Undefined while the file ends right after the record, as the
- * echo may still be written; settled and remembered once anything follows it.
+ * not depend on the page being read. `STEER_ECHO_PENDING` while the file was read and ends right
+ * after the record, as the echo may still be written; `STEER_ECHO_UNREADABLE` when the read failed,
+ * which decides nothing; settled and remembered once anything follows the record.
  */
-function steerEchoOf(row: ReviewDeliveryRow, transcript: NonNullable<DeliveryConversation["transcript"]>): string | null | undefined {
+function steerEchoOf(
+  row: ReviewDeliveryRow,
+  transcript: NonNullable<DeliveryConversation["transcript"]>,
+): string | null | typeof STEER_ECHO_PENDING | typeof STEER_ECHO_UNREADABLE {
   if (row.steerEcho !== null) return row.steerEcho || null;
   const settle = (echo: string | null): string | null => settleSteerEcho(row, echo);
   let from = row.transcriptOffset ?? 0;
@@ -350,12 +359,17 @@ function steerEchoOf(row: ReviewDeliveryRow, transcript: NonNullable<DeliveryCon
       from = page.end;
     }
   } catch {
-    return undefined;
+    return STEER_ECHO_UNREADABLE;
   }
   // The bound turn was not found under its id (a parser that re-synthesizes ids): no echo is
   // credited on a guess. Found and last in the file: its echo may not be written yet.
-  return seen ? undefined : settle(null);
+  return seen ? STEER_ECHO_PENDING : settle(null);
 }
+
+/** The file was read and ends right after the mid-turn record: the echo may yet be written. */
+const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
+/** The file could not be read: nothing about the echo is known. */
+const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
 
 /**
  * Drop unbound deliveries past the delivery window: they can no longer bind anything. Bound rows

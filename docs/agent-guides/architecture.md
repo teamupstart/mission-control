@@ -399,13 +399,15 @@ persisted on the row (`steer_echo`), and any other send of the same words - an o
 Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
 `DeliveryLedger.reserve` - settles it from what the file already holds before that send is
 written (`onSend`), so an identical copy that lands right after a steered delivery is never
-taken for its echo. Each row also persists the one prompt-hook echo it owes:
+taken for its echo. Only a read that reaches the end of the file settles "no echo"; a failed read
+or a missing transcript decides nothing. Each row also persists the one prompt-hook echo it owes:
 `captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
 delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
 work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
 operator sends of the same words always yield M Goal revisions. The debt's turn is stamped when
 the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
-terminal write boundary), not at reservation, and no completion or TTL clears it before then. An arrival that spent the
+terminal write boundary), not at reservation, and no completion or TTL clears it before then;
+the TTL itself restarts at the handoff. An arrival that spent the
 echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
 
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through

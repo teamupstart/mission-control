@@ -173,6 +173,29 @@ test("a controller's delegated copy sent right after a steered delivery, before 
   }
 });
 
+test("a send of a steered delivery's words while its transcript cannot be read never rules out an echo already written", () => {
+  for (const unreadable of ["read throws", "no transcript"] as const) {
+    restart();
+    const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
+    const review = storeReview("s1");
+    const text = answerText([review]);
+    reserveReviewDelivery(t.conversation(k), text, { active: true, generation: 0 } as never, now);
+    const taken = t.append("taken", text, now + 1);
+    taken.takenMidTurn = true;
+    attribute("s1", t, k, [taken]); // bound; the echo is not written yet
+    const echo = t.append("echo", text, now + 2);
+    // Another send of the same words begins while the file cannot be read.
+    const good = t.conversation(k);
+    const broken = unreadable === "read throws"
+      ? { key: k, transcript: { ...good.transcript!, read: { ...good.transcript!.read, after: () => { throw new Error("EIO"); } } } }
+      : { key: k, transcript: null };
+    noteOtherSend(broken as never, text, now + 3);
+    restart();
+    const [shown] = attribute("s1", t, k, [echo]);
+    assert.equal(shown!.presentation?.kind, "review-message", `the written echo is still the delivery's (${unreadable})`);
+  }
+});
+
 test("a steered delivery's echo already written before another send of its words keeps its card", () => {
   const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
   const text = answerText([storeReview("s1")]);
@@ -528,6 +551,15 @@ test("a turn that completes while a delivery waits for its handoff never clears 
   stampReviewDeliveryHandoff(k, again, { active: false, generation: 1 } as never, now);
   expireReviewDeliveryEchoes(k, 2, now + 1);
   assert.equal(claimReviewDeliveryEcho(k, [text], now + 2), false);
+});
+
+test("a delivery that waited longer than the TTL with the cycle unchanged still owes its echo from the handoff", () => {
+  const k = conversationKey(); const now = Date.now();
+  const text = answerText([randomUUID()]);
+  // Reserved against an idle conversation long before the handoff, and the cycle never moved.
+  const id = reserveReviewDelivery({ key: k, transcript: null }, text, { active: false, generation: 4 } as never, now - HUMAN_ECHO_TTL_MS - 60_000)!;
+  stampReviewDeliveryHandoff(k, id, { active: false, generation: 4 } as never, now);
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + 1_000), true, "the TTL counts from the handoff");
 });
 
 test("bookkeeping for a delivery that ends uncertain - never confirmed, never refused - ages out", () => {

@@ -28,7 +28,7 @@ export function validatePlanInputs(inputs: TaskPlanInput[], roots: string[]): vo
 }
 
 /** Keep editor guidance and save/delivery validation on the same exact-origin matcher. */
-function planInputEdges(input: TaskPlanInput, dependencies: Task["dependencies"]): Task["dependencies"] {
+export function planInputEdges(input: TaskPlanInput, dependencies: Task["dependencies"]): Task["dependencies"] {
   const saved = planRevisionRecord(input.planId, input.revision);
   return dependencies.filter((edge) => edge.type === "plan"
     ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision

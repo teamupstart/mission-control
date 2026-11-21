@@ -3,7 +3,16 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
+export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: PINNED_PLAN_CHANGE_FLAG_ID,
+    label: "Change pinned plan revision",
+    description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
+    stage: "preview",
+    keywords: ["backlog", "plan", "revision", "dependency"],
+  },
   {
     id: "codex-resident-native-mcp",
     label: "Codex resident native MCP",

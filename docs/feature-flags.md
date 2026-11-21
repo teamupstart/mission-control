@@ -8,6 +8,10 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
+**Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
+[atomic pin change](dispatch-and-backlog.md#change-a-pinned-plan-revision-preview). Turning it off
+refuses new changes through the action; existing pins and dependencies stay unchanged.
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one

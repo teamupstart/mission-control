@@ -1,3 +1,6 @@
+import { featureEnabled } from "./feature-flags/index.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { planInputEdges } from "./plans/inputs.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
@@ -4180,7 +4183,7 @@ export class TaskManager {
         return { ok: false, error: `task is ${current.status}, not in the backlog` };
       }
       if (current === prepared.base) {
-        this.registry.upsertTask(prepared.task);
+        if (!patch.previewOnly) this.registry.upsertTask(prepared.task);
         return { ok: true, task: prepared.task };
       }
       if (options.backlogOnly || attempt > 0) {
@@ -4204,6 +4207,55 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    let planChangeDependencies: TaskDependency[] | undefined;
+    if (patch.planInputChange || patch.previewOnly) {
+      if (!featureEnabled(PINNED_PLAN_CHANGE_FLAG_ID)) return { ok: false, error: "Change pinned plan revision preview is disabled" };
+      if (t.status !== "backlog") return { ok: false, error: "task is not in the backlog" };
+    }
+    if (patch.planInputChange) {
+      if (patch.planInputs !== undefined || patch.dependencies !== undefined) return { ok: false, error: "Use planInputChange separately from planInputs and dependencies" };
+      try {
+        const { from, to, expectedUpdatedAt } = patch.planInputChange;
+        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== t.updatedAt) throw new PlanStoreError("Task changed; reopen the editor and preview again");
+        const index = (t.planInputs ?? []).findIndex(input => input.repoKey === from.repoKey && input.planId === from.planId && input.revision === from.revision && JSON.stringify(input.files) === JSON.stringify(from.files));
+        if (index < 0) throw new PlanStoreError("Pinned input changed; reopen the editor and preview again");
+        validatePlanInputs([to], [t.repoRoot, ...t.extraRepos.map(r => r.repoRoot)]);
+        const planInputs = [...t.planInputs!];
+        planInputs[index] = to;
+        // Remove only this pin's superseded edges, retaining any still used by another pin.
+        const oldEdges = planInputEdges(from, t.dependencies);
+        const dependencies = t.dependencies.filter(edge => !oldEdges.includes(edge)
+          || planInputs.some(input => planInputEdges(input, [edge]).length > 0));
+        if (!planInputEdges(to, dependencies).length && !publicationReceipt(to)) {
+          const saved = planRevisionRecord(to.planId, to.revision);
+          const manifest = readPlanRevision(to.planId, to.revision).manifest;
+          const source = saved.task_id ? this.getDurable(saved.task_id) : null;
+          const input: TaskDependencyInput = manifest.policy.storage === "local" && source?.kind === "plan" && source.planPolicy?.storage === "local"
+            ? { type: "plan", repoKey: to.repoKey, planId: to.planId, revision: to.revision }
+            : saved.task_id ? { type: "task", taskId: saved.task_id }
+              : { type: "session", sessionId: saved.session_id };
+          const candidates = [...dependencies];
+          // A finished source can be selected only with merge proof for the revision's
+          // exact episode. Completion status alone never manufactures a satisfied edge.
+          if (input.type === "task" && !candidates.some(edge => dependencyKey(edge) === dependencyKey(input))) {
+            const target = this.getDurable(input.taskId);
+            const binding = [taskWorkEpisodeForTask(input.taskId), ...historicalTaskWorkEpisodeBindingsForTask(input.taskId)]
+              .find(bound => bound?.episodeId === saved.episode_id && bound.sessionId === saved.session_id);
+            if (target && binding) {
+              const edge: TaskDependency = { type: "task", taskId: target.id, title: target.title,
+                sessionId: binding.sessionId, episodeId: binding.episodeId, agentSessionId: binding.agentSessionId,
+                branch: binding.branch, prUrl: binding.prUrl, selectedAt: Date.now(), satisfiedAt: null };
+              const mergedUrl = this.mergeUrlForDependency(edge, "");
+              if (mergedUrl) candidates.push({ ...edge, prUrl: mergedUrl, satisfiedAt: binding.mergedAt ?? Date.now() });
+            }
+          }
+          dependencies.push(...this.resolveDependencies([input], t.id, candidates));
+        }
+        if (dependencies.length > MAX_TASK_DEPENDENCIES) throw new TaskDependencyError("Too many task dependencies");
+        planChangeDependencies = dependencies;
+        patch = { ...patch, planInputs, dependencies: dependencies.map(dependencyInputOf) };
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
     if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: "task is being assigned" };
     }
@@ -4369,7 +4421,7 @@ export class TaskManager {
     }
     try {
       if (patch.dependencies !== undefined) {
-        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, planChangeDependencies ?? t.dependencies);
         validatePlanInputDependencies({ planInputs: patch.planInputs ?? t.planInputs, dependencies });
       }
     } catch (error) {

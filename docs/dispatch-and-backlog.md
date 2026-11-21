@@ -2218,3 +2218,28 @@ publication prerequisite plus direct implementation task merge dependencies. Art
 never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
 using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
 the versioned tool contract, validation compatibility, retention and recovery.
+
+### Change a pinned plan revision (preview)
+
+Enable **Change pinned plan revision** in Settings > Feature flags. In a backlog task's
+Dependencies section, choose **Change pinned revision**, enter the exact plan ID, revision,
+and comma-separated Markdown filenames, then choose **Preview revision change**. The preview
+shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
+the input and originating prerequisite together; Cancel revision change leaves them untouched.
+Save any separate dependency edits before using this action.
+
+Only the superseded pin's prerequisites are removed. An origin still required by another pin
+stays, as do unrelated implementation dependencies and recorded merge evidence. A completed
+replacement origin can be added only with merge proof for the exact saved work episode.
+Missing files, revisions from another repository, stale previews, and invalid dependencies
+are refused without saving either half. No newer revision is selected automatically.
+
+The MCP **update_task** tool accepts the same action as
+`planInputChange: { from, to, expectedUpdatedAt? }`, where both inputs contain
+`repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
+`before` and `after` without writing, then repeat with `previewOnly: false` to save.
+The optional timestamp binds the preview to the task configuration you read.
+It also accepts explicit `planInputs` and `dependencies` arrays together under existing
+validation, even when the preview flag is off. Do not combine those arrays with
+`planInputChange`. Only the new `planInputChange` action and `previewOnly` mode require
+the preview flag; omitted fields keep their saved values.

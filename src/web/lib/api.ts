@@ -1,3 +1,4 @@
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
@@ -2188,6 +2189,10 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
+  previewPlanChange: async (id: string, planInputChange: TaskPlanInputChange): Promise<{ ok: boolean; task?: Task; error?: string }> => {
+    const response = await fetch("/api/tasks/" + encodeURIComponent(id) + "/update", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planInputChange, previewOnly: true }) });
+    return response.json();
+  },
   taskPlanDependencies: (id: string) =>
     fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>

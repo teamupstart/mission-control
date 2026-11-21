@@ -864,3 +864,38 @@ test("a source sync that would drop a pinned plan input's prerequisite is refuse
   assert.deepEqual(f.tasks.get(dependent.id)!.dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [f.task.id]);
   assert.equal(f.tasks.get(dependent.id)!.title, "Pinned merge");
 });
+
+test("explicit revision changes preserve shared origins and never reinterpret mixed local work as publication", async () => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  const f = await fixture(false, "ship");
+  const from = { ...f.input, files: ["plan.md"] };
+  const shared = { ...f.input, files: ["phase-1.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Shared plan origin", intent: "Keep the other pin", backlog: true, workflowId: null,
+    planInputs: [from, shared], dependencies: [{ type: "task", taskId: f.task.id }] });
+  await savePlan(f.authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files: f.files });
+  const to = { ...from, revision: 2 };
+  const result = await f.tasks.update(dependent.id, { planInputChange: { from, to } });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.task!.planInputs, [to, shared]);
+  assert.deepEqual(result.task!.dependencies, dependent.dependencies, "both pins retain their shared exact origin");
+
+  f.registry.resetWorkEpisode(f.id);
+  f.registry.upsertTask({ ...f.task, status: "running" });
+  f.registry.bindTaskToWorkEpisode(f.task.id, f.id);
+  const authority = planAuthority(f.registry, f.registry.getSession(f.id)!, "repo-01");
+  await savePlan(authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 2, files: f.files });
+  // A separate pin sharing the old task edge prevents replacing its episode silently.
+  const refused = await f.tasks.update(dependent.id, { planInputChange: { from: to, to: { ...to, revision: 3 } } });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(f.tasks.get(dependent.id)!.planInputs, [to, shared]);
+  // With only the superseded pin, the same task can move to its new work episode.
+  const single = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "New episode pin", intent: "Use current episode", backlog: true, workflowId: null });
+  f.registry.upsertTask({ ...single, planInputs: [to], dependencies: dependent.dependencies });
+  const moved = await f.tasks.update(single.id, { planInputChange: { from: to, to: { ...to, revision: 3 } } });
+  assert.equal(moved.ok, true, moved.error);
+  assert.equal(moved.task!.dependencies[0]!.type, "task");
+  assert.equal(moved.task!.dependencies[0]!.episodeId, authority.episodeId);
+  assert.equal(moved.task!.dependencies[0]!.satisfiedAt, null, "an older merge cannot satisfy the new episode");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false });
+});

@@ -2,7 +2,7 @@ export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -1726,6 +1726,8 @@ const UpdateTaskFieldsSchema = z
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
+    planInputChange: TaskPlanInputChangeSchema.optional(),
+    previewOnly: z.boolean().optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
@@ -1759,6 +1761,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   title: true,
   intent: true,
   planInputs: true,
+  planInputChange: true,
+  previewOnly: true,
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
@@ -1784,7 +1788,6 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
-  planInputs: true,
   personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),

@@ -1,3 +1,7 @@
+import { PinnedPlanChange } from "./PinnedPlanChange.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
@@ -1538,6 +1542,9 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
+  const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
+  const [editingPin, setEditingPin] = useState<number | null>(null);
+  const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
   useEffect(() => {
@@ -1554,6 +1561,7 @@ function DispatchModal({
     : null;
   const dependencyKey = dependencyInputKey;
   function removalReason(key: string): string | null {
+    if (pinChange) return "Cancel the revision change before editing dependencies.";
     if (planRequirementsProblem) return planRequirementsProblem;
     const required = planRequirementsResult?.requirements.filter(requirement =>
       requirement.dependencyKeys.includes(key) && !draft.dependencies.some(candidate =>
@@ -1816,7 +1824,7 @@ function DispatchModal({
 
   function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
     stashedDependencies.current = NO_STASH;
-    update({ dependencies });
+    if (!pinChange) update({ dependencies });
   }
 
   /**
@@ -2730,7 +2738,8 @@ function DispatchModal({
       return;
     }
     const { workflowId } = settled;
-    const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
+    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
+    const patch = pinChange ? { ...draftPatch, planInputChange: pinChange } : draftPatch;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
     // the repo and nothing else, and a Single dispatch posts the form.
@@ -3620,12 +3629,16 @@ function DispatchModal({
                       and the picker only offers what is not already chosen. */}
                   {hasPlanPins && <div className="field-hint">
                     Pinned plan inputs:
-                    {editing?.planInputs?.map(input => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
+                    {editing?.planInputs?.map((input, inputIndex) => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
                       <Tooltip label={`Open pinned plan revision ${input.revision} in a new tab`}>
                         <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
                           {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
                         </a>
                       </Tooltip>{" · "}{input.files.join(", ")}
+                      {(pinChangesEnabled || editingPin === inputIndex) && editing && <PinnedPlanChange task={editing} input={input}
+                        disabled={!pinChangesEnabled || busy || (editingPin !== null && editingPin !== inputIndex) || JSON.stringify(draft.dependencies) !== JSON.stringify(editing.dependencies.map(dependencyInputOf))}
+                        onEditing={open => setEditingPin(open ? inputIndex : null)}
+                        onChange={change => { setPinChange(change); if (change) update({}); }} />}
                     </div>)}
                   </div>}
                   <div className="dep-chips">
@@ -3653,6 +3666,7 @@ function DispatchModal({
                                       type="button"
                                       className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
                                       aria-pressed={shown === option}
+                                      disabled={Boolean(pinChange)}
                                       onClick={() =>
                                         updateDependencies(draft.dependencies.map((candidate) =>
                                           dependencyKey(candidate) === key && candidate.type === "task"
@@ -3694,6 +3708,7 @@ function DispatchModal({
                         className="dep-add"
                         value=""
                         aria-label="Add dependency"
+                        disabled={Boolean(pinChange)}
                         onChange={(event) => {
                           const option = dependencyByKey.get(event.target.value);
                           if (option) {

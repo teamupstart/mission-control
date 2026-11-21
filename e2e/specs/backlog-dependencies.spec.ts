@@ -12,7 +12,7 @@ import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 async function post(daemon: DaemonHandle, path: string, body: object) {
-  const res = await fetch(`${daemon.baseURL}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const res = await fetch(`${daemon.baseURL}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(path.startsWith("/mcp/") ? { "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() } : {}) }, body: JSON.stringify(body) });
   expect(res.ok, await res.clone().text()).toBe(true);
   return res.json();
 }
@@ -38,15 +38,16 @@ async function shoot(page: Page, name: string) {
   mkdirSync(dir, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 1200 });
   await page.mouse.move(0, 0);
-  await page.getByRole("dialog", { name: "Edit a backlog task" }).screenshot({ path: `${dir}${name}.png` });
+  const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change") : page.getByRole("dialog", { name: "Edit a backlog task" });
+  await target.screenshot({ path: `${dir}${name}.png` });
 }
 
-async function savedPlan(daemon: DaemonHandle, local = false) {
+async function savedPlan(daemon: DaemonHandle, local = false, slug = "dependency-plan") {
   if (local) {
     const config = await fetch(`${daemon.baseURL}/api/skills/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ planStorage: "local" }) });
     expect(config.ok, await config.clone().text()).toBe(true);
   }
-  const source = await create(daemon, "Planning origin", { backlog: false, kind: local ? "plan" : "ship" });
+  const source = await create(daemon, slug === "dependency-plan" ? "Planning origin" : "Replacement origin", { backlog: false, kind: local ? "plan" : "ship" });
   let session!: Session;
   await expect.poll(async () => {
     const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Session[];
@@ -54,7 +55,7 @@ async function savedPlan(daemon: DaemonHandle, local = false) {
     return Boolean(session?.agentSessionId && session.state === "idle");
   }).toBe(true);
   const response = await fetch(`${daemon.baseURL}/mcp/plans/save`, { method: "POST", headers: { "content-type": "application/json", "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() }, body: JSON.stringify({
-    env: {}, sessionId: session.id, cwd: session.cwd, repoSlot: "repo-01", slug: "dependency-plan", requestId: randomUUID(), expectedRevision: 0,
+    env: {}, sessionId: session.id, cwd: session.cwd, repoSlot: "repo-01", slug, requestId: randomUUID(), expectedRevision: 0,
     files: [{ name: "plan.md", content: "# Dependency plan" }, { name: "plan.html", content: "<h1>Dependency plan</h1>" }],
   }) });
   expect(response.ok, await response.clone().text()).toBe(true);
@@ -265,3 +266,80 @@ for (const episode of ["current", "historical", "late-opened"] as const) {
   await shoot(dashboard, `manual-complete-late-${episode}-merge`);
 });
 }
+
+for (const retained of [true, false]) test("change pinned revision previews and atomically saves the exact replacement with retained origin: " + retained, async ({ dashboard, daemon }) => {
+  const old = await savedPlan(daemon);
+  const replacement = await savedPlan(daemon, false, "replacement-plan");
+  await post(daemon, "/mcp/plans/save", {
+    env: {}, sessionId: replacement.session.id, cwd: replacement.session.cwd, repoSlot: "repo-01",
+    planId: replacement.input.planId, slug: "replacement-plan", requestId: randomUUID(), expectedRevision: 1,
+    files: [{ name: "plan.md", content: "# Approved replacement" }, { name: "plan.html", content: "<h1>Approved replacement</h1>" },
+      { name: "implementation.md", content: "# Implement the approved replacement" },
+      { name: "implementation.html", content: "<h1>Implement the approved replacement</h1>" }],
+  });
+  replacement.input = { ...replacement.input, revision: 2, files: ["implementation.md"] };
+  const optional = await create(daemon, "Implementation prerequisite");
+  const task = await create(daemon, "Repin implementation", {
+    planInputs: [old.input], dependencies: [{ type: "task", taskId: old.source.id },
+      ...(retained ? [{ type: "task", taskId: replacement.source.id }] : []), { type: "task", taskId: optional.id }],
+  });
+  await daemon.crash();
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE tasks SET dependencies = ? WHERE id = ?").run(JSON.stringify(task.dependencies.map(edge =>
+      edge.type === "task" && edge.taskId === replacement.source.id ? { ...edge, satisfiedAt: 10 } : edge)), task.id);
+    db.prepare("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?").run(replacement.source.id);
+    db.prepare("DELETE FROM sdk_sessions WHERE id = ?").run(replacement.session.id);
+    db.prepare("UPDATE task_work_episode_bindings SET merged_at = 10, pr_url = ? WHERE task_id = ?").run("https://github.com/acme/demo-repo/pull/1568", replacement.source.id);
+  });
+  await daemon.restart();
+  let dialog = await editor(dashboard, daemon, task.title);
+  await expect(dialog.getByRole("button", { name: "Change pinned revision" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  const flag = await fetch(daemon.baseURL + "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });
+  expect(flag.ok).toBe(true);
+  dialog = await editor(dashboard, daemon, task.title);
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
+  await dialog.getByLabel("Revision", { exact: true }).fill("999");
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await dialog.getByLabel("Revision", { exact: true }).fill(String(replacement.input.revision));
+  await dialog.getByLabel(/^Markdown files/).fill(replacement.input.files.join(", "));
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  const preview = dialog.getByRole("region", { name: "Pinned revision preview" });
+  const expectPreviewPins = async () => {
+    const oldPin = preview.locator("p").filter({ hasText: /^Old:/ });
+    const newPin = preview.locator("p").filter({ hasText: /^New:/ });
+    await expect(oldPin).toHaveText("Old: " + old.input.planId + " revision 1 · plan.md");
+    await expect(newPin).toHaveText("New: " + replacement.input.planId + " revision 2 · implementation.md");
+    await expect(oldPin.getByRole("link")).toHaveAttribute("href", "/?plan=" + old.input.planId + "&revision=1");
+    await expect(newPin.getByRole("link")).toHaveAttribute("href", "/?plan=" + replacement.input.planId + "&revision=2");
+  };
+  await expectPreviewPins();
+  await expect(preview).toContainText("Remove: Planning origin");
+  await expect(preview).toContainText(retained ? "Replacement origin (merged/published)" : "Add: Replacement origin");
+  await expect(preview).toContainText("Implementation prerequisite (waiting)");
+  const read = async () => (await (await fetch(daemon.baseURL + "/api/tasks")).json() as Task[]).find(t => t.id === task.id)!;
+  expect((await read()).planInputs).toEqual([old.input]);
+  await expectContentClearsBorder(dialog);
+  await shoot(dashboard, "revision-change-preview-" + retained);
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  expect((await read()).planInputs).toEqual([old.input]);
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(preview).toBeVisible();
+  await expectPreviewPins();
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toBeHidden();
+  const saved = await read();
+  expect(saved.planInputs).toEqual([replacement.input]);
+  expect(saved.dependencies.map(edge => edge.type === "task" ? edge.taskId : "").sort()).toEqual([replacement.source.id, optional.id].sort());
+  expect(saved.dependencies.find(edge => edge.type === "task" && edge.taskId === replacement.source.id)!.satisfiedAt).toBe(10);
+  expect(saved.dependencies.find(edge => edge.type === "task" && edge.taskId === optional.id)).toEqual(task.dependencies.at(-1));
+  dialog = await editor(dashboard, daemon, task.title);
+  await expect(dialog.getByRole("link", { name: "replacement-plan revision 2" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Remove dependency: Replacement origin" })).toBeDisabled();
+  await shoot(dashboard, "revision-change-saved-" + retained);
+});

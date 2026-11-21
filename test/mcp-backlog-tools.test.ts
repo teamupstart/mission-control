@@ -275,6 +275,58 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
   assert.deepEqual(read.planInputs, planInputs);
   assert.deepEqual(read.dependencies, stored.dependencies);
 
+  await t.test("update_task previews and atomically replaces exact pins and prerequisites", async () => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const subject = await f.create({ workflowId: null, planInputs, planPrerequisites: [identity],
+      dependencies: [{ type: "task", taskId: code.id }] });
+    const second = await savePlan(planAuthority(f.registry, f.registry.getSession("sdk:backlog-test")!, "repo-01"), {
+      repoSlot: "repo-01", requestId: randomUUID(), planId: identity.planId, slug: "merged-mcp-contract", expectedRevision: 1,
+      files: [{ name: "plan.md", content: "# Revision two" }, { name: "phase.md", content: "# Implementation" }, { name: "phase.html", content: "<h1>Implementation</h1>" },
+        { name: "plan.html", content: "<h1>Revision two</h1>" }],
+    });
+    const to = { ...identity, revision: second.manifest.revision, files: ["phase.md"] };
+    const before = getTask(subject.id)!;
+    const planInputChange = { from: planInputs[0], to, expectedUpdatedAt: before.updatedAt };
+    await f.call("update_task", { taskId: subject.id, planInputChange, previewOnly: true }, /preview is disabled/);
+    applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+    for (const conflicting of [{ planInputs: [to] }, { dependencies: [] }]) {
+      await f.call("update_task", { taskId: subject.id, planInputChange, ...conflicting },
+        /Use planInputChange separately from planInputs and dependencies/);
+      assert.deepEqual(getTask(subject.id), before, "mixed revision-change payload leaves the saved pin and dependencies unchanged");
+    }
+    await f.call("update_task", { taskId: subject.id, planInputs: [to] }, /must also be an exact Markdown input/);
+    await f.call("update_task", { taskId: subject.id, planInputChange: { ...planInputChange, to: { ...to, files: ["missing.md"] } } }, /absent/);
+    assert.deepEqual(getTask(subject.id), before, "refused edits do not write either half");
+    const preview = await f.call<{ before: Task; after: Task }>("update_task", { taskId: subject.id, planInputChange, previewOnly: true });
+    assert.deepEqual(preview!.before.planInputs, planInputs);
+    assert.deepEqual(preview!.after.planInputs, [to]);
+    assert.deepEqual(getTask(subject.id), before, "preview writes nothing");
+    const updated = await f.call("update_task", { taskId: subject.id, planInputChange });
+    assert.deepEqual(updated!.planInputs, [to]);
+    assert.deepEqual(updated!.dependencies[0], before.dependencies[0], "unrelated work edge is retained");
+    assert.equal(updated!.dependencies[1]!.type, "plan");
+    assert.equal((updated!.dependencies[1] as { revision: number }).revision, 2);
+    await f.call("update_task", { taskId: subject.id, planInputChange }, /Task changed|Pinned input changed/);
+    const deps = before.dependencies.map(edge => edge.type === "task" ? { type: "task", taskId: edge.taskId }
+      : { type: "plan", ...identity });
+    applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false });
+    await f.call("update_task", { taskId: subject.id, planInputs, dependencies: deps });
+    assert.deepEqual(getTask(subject.id)!.planInputs, planInputs, "raw MCP atomic updates remain available with the preview disabled");
+    const restored = getTask(subject.id)!;
+    await f.call("update_task", { taskId: subject.id, planInputs: [to] }, /must also be an exact Markdown input/);
+    await f.call("update_task", { taskId: subject.id, planInputChange: { from: planInputs[0], to } }, /preview is disabled/);
+    assert.deepEqual(getTask(subject.id), restored, "validation and the new action gate still refuse without writing");
+    const dashboard = await f.app.request("/api/tasks/" + subject.id + "/update", {
+      method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ planInputs: [to], dependencies: [
+        { type: "task", taskId: code.id }, { type: "plan", ...identity, revision: 2 },
+      ] }),
+    });
+    assert.equal(dashboard.status, 200, await dashboard.clone().text());
+    assert.deepEqual(getTask(subject.id)!.planInputs, [to], "dashboard atomic updates also remain available with the preview disabled");
+    assert.deepEqual(getTask(subject.id)!.dependencies[0], before.dependencies[0]);
+  });
+
   await t.test("list_tasks returns saved configuration, exact plan inputs and the running task's durable PR", async () => {
     const labels = ["mcp", "read-payload"];
     await f.call("update_task", { taskId: created.id, labels, enabled: false });

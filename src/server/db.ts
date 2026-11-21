@@ -149,6 +149,8 @@ import {
   HOME_DISPATCH_ACTOR_NAMES,
   HOME_DISPATCH_ACTOR_PREFIXES,
   HUMAN_REVIEW_STATUSES,
+  CONVERSATION_QUESTION_RECORDS,
+  isConversationQuestionRecord,
   isConversationResolvedReview,
   isHomeDispatchResolvedReview,
 } from "@shared/review-item.ts";
@@ -5445,6 +5447,11 @@ function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
     mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
     optionId: r.snooze_option_id ?? null,
     remindedAt: r.snooze_reminded_at ?? null,
+    // A recorded mode is what the agent was told. Only a silent message-mode "Keep doing what it
+    // said" snooze leaves it unrecorded (`snoozeReviewRow`); a judgment snooze stored before that
+    // rule did tell its agent, and keeps reading as told. Spread only when false, so every other
+    // row decodes exactly as it always did.
+    ...(r.snooze_mode == null ? { instructed: false } : {}),
   };
 }
 
@@ -5510,6 +5517,17 @@ export function insertReview(r: ReviewItem): void {
  * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
  * time the agent is told what to do meanwhile; a second snooze of a question that came back
  * moves `until` and nothing the agent was told.
+ *
+ * A message-mode question (`wait_mode = 'message'`, the `async-input` flag) is always unheard and
+ * detached, yet snoozing it in `judgment` mode owes the agent nothing: that choice reads "Keep
+ * doing what it said", and the agent was already told to carry on when the question was filed.
+ * Telling it again would interrupt a turn to repeat its own receipt. `option` and `hold` change
+ * what it does, so they are owed exactly as for any other detached question.
+ *
+ * Because that silent snooze tells the agent nothing, it does not use up the first-snooze slot:
+ * `snooze_mode` and `snooze_option_id` stay NULL (and read back as `judgment`), so when the
+ * question comes back and is snoozed again on Hold or a provisional option, that choice is
+ * stored and sent exactly as a first snooze's would be.
  */
 export function snoozeReviewRow(
   id: string,
@@ -5532,10 +5550,15 @@ export function snoozeReviewRow(
               snoozed_at = ?,
               snoozed_until = ?,
               snooze_instruction_owed_at = CASE
-                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL THEN ?
+                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL
+                  AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
                 ELSE snooze_instruction_owed_at END,
-              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
-              snooze_mode = COALESCE(snooze_mode, ?),
+              snooze_option_id = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_option_id END,
+              snooze_mode = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_mode END,
               mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
         WHERE id = ? AND status = 'pending'
         RETURNING *`,
@@ -5544,8 +5567,11 @@ export function snoozeReviewRow(
       snooze.at,
       snooze.until,
       snooze.listening ? 1 : 0,
+      snooze.mode,
       snooze.at,
+      snooze.mode,
       snooze.optionId,
+      snooze.mode,
       snooze.mode,
       snooze.at,
       id,
@@ -5669,6 +5695,16 @@ export function reviewWaitAttached(id: string): boolean {
 /** Quote fixed identifiers from a shared policy as SQL string literals. Never pass input here. */
 function sqlLiterals(values: Iterable<string>): string {
   return [...values].map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+/**
+ * `isConversationQuestionRecord` over a review row, built from `CONVERSATION_QUESTION_RECORDS`, so
+ * the history route admits exactly the questions the dashboard admits live. Exported so a test can
+ * show the two agree over every defined case.
+ */
+export function conversationQuestionRecordSql(): string {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return `(wait_mode IN (${sqlLiterals(waitModes)}) OR closed_reason IN (${sqlLiterals(closedReasons)}))`;
 }
 
 /**
@@ -5913,22 +5949,33 @@ export function loadHumanResolvedReviews(sessionId: string, limit = 500): Review
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
+/**
+ * The conversation replay: every review `loadHumanResolvedReviews` would return for a delegated
+ * session too, plus every question the conversation records for itself whatever became of it
+ * (`isConversationQuestionRecord`): a message-mode question, so its Asked entry and how it ended
+ * (answered, closed by a merge, withdrawn) survive a reload, and a call-mode question a merge
+ * closed. Those extra rows are never evidence of intent, so the evidence read never sees them.
+ */
 export function loadConversationResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
   return loadConversationReviewHistory(sessionId, limit, true);
 }
 
 function loadConversationReviewHistory(sessionId: string, limit: number, includeDelegated: boolean): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
+  // `isConversationQuestionRecord` in SQL, from its one definition. An open or unanswered row has
+  // no `resolved_at`, so both orders read its creation time instead; every answered row orders
+  // exactly as before.
+  const questionRecord = includeDelegated ? ` OR ${conversationQuestionRecordSql()}` : "";
   const rows = openDb()
     .prepare(
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
-            AND status IN (${statuses.map(() => "?").join(", ")})
-          ORDER BY resolved_at DESC, created_at DESC
+            AND (((resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
+            AND status IN (${statuses.map(() => "?").join(", ")}))${questionRecord})
+          ORDER BY COALESCE(resolved_at, created_at) DESC, created_at DESC
           LIMIT ?
-       ) ORDER BY resolved_at ASC, created_at ASC`,
+       ) ORDER BY COALESCE(resolved_at, created_at) ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
   // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
@@ -5936,7 +5983,8 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
   // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
   // conversation replay (`includeDelegated`) never sees them.
   return rows.map(rowToReview).filter((review) =>
-    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
+    isConversationResolvedReview(review)
+    || (includeDelegated ? isConversationQuestionRecord(review) : isHomeDispatchResolvedReview(review)));
 }
 
 /**

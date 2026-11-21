@@ -44,6 +44,7 @@ import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { questionBadge, useQuestionAgent } from "../lib/async-questions.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
   PIPELINE_PROVIDER_INFO,
@@ -1786,7 +1787,12 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
   );
 }
 
-/** The status badge; a button that opens the reviews modal when there are pending reviews. */
+/**
+ * The status badge; a button that opens the reviews modal when there is something to answer. A
+ * session still working past its message-mode questions (`async-input`) reads "N questions open"
+ * in the tone it already wears, never amber; once it stops, `stateDisplay` turns it amber and
+ * this is today's amber button (`questionBadge`).
+ */
 export function StateBadge({
   session,
   onOpenReviews,
@@ -1801,20 +1807,20 @@ export function StateBadge({
   // doing. The Console detail draws this component, so it follows.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = display ?? runtimeState;
-  if (session.pendingReviews > 0 && onOpenReviews) {
+  const agent = useQuestionAgent(session);
+  const asks = onOpenReviews ? questionBadge(agent, st) : null;
+  if (asks && onOpenReviews) {
     return (
-      <Tooltip
-        label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
-      >
+      <Tooltip label={asks.tooltip}>
         <button
-          className={`badge badge-${st.tone} badge-btn${session.pause ? " is-paused" : ""}`}
+          className={`badge badge-${asks.tone} badge-btn${session.pause ? " is-paused" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenReviews();
           }}
         >
           <span className="badge-dot" />
-          {st.label} <Keycap action="review" />{" "}
+          {asks.label} <Keycap action="review" />{" "}
           {/* Its own element so the console header's ladder can shed it: this button is the
               one thing that row is never allowed to hide, so what it gives up on a narrow
               pane is the chord hint and this arrow (`detailHeadLadder.ts`, rung 1). */}

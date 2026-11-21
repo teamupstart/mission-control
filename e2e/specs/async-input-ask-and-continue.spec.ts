@@ -124,8 +124,10 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = page.locator(".console-detail");
   const badge = detail.locator(".badge", { has: page.locator(".badge-dot") }).first();
-  // Still working past its question: not amber, but the question is already in the inbox.
-  await expect(badge).toHaveText(/working/);
+  // Still working past its question: not amber, but the question is already in the inbox. The
+  // badge names the open question in the working tone (Phase 3's working-tone branch).
+  await expect(badge).toHaveText(/1 question open/);
+  await expect(badge).toHaveClass(/badge-working/);
   await expect(badge).not.toHaveClass(/badge-attention/);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n")).toHaveText("1");
   await capture(page, "working-with-question", page);

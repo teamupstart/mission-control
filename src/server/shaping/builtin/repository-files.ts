@@ -83,7 +83,9 @@ const OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBL
 
 export type FileRead =
   | { ok: true; text: string; truncated: boolean }
-  | { ok: false; skip: RepositoryFileSkip };
+  | { ok: false; skip: RepositoryFileSkip }
+  // The call was stopped before this file was opened or read. Not a skip: nothing is recorded.
+  | { ok: false; stopped: true };
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | null)?.code;
@@ -183,6 +185,7 @@ export async function readWorktreeFile(
   configured: string,
   cap: number,
   fs: RepositoryFilesFs = NODE_REPOSITORY_FILES_FS,
+  signal?: AbortSignal,
 ): Promise<FileRead> {
   if (!pathIsConfinable(configured)) return { ok: false, skip: "outside-worktree" };
 
@@ -199,7 +202,8 @@ export async function readWorktreeFile(
     return { ok: false, skip: lookupSkip(error) };
   }
 
-  // Open.
+  // Open. A lookup can stall past the deadline; a stopped call starts no new I/O when it returns.
+  if (signal?.aborted) return { ok: false, stopped: true };
   let handle: Awaited<ReturnType<RepositoryFilesFs["open"]>>;
   try { handle = await fs.open(real, OPEN_FLAGS); }
   catch (error) {
@@ -230,7 +234,9 @@ export async function readWorktreeFile(
       return { ok: false, skip: "outside-worktree" };
     }
 
-    // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off.
+    // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off. A call
+    // stopped while the identity checks ran reads nothing; the handle is still closed below.
+    if (signal?.aborted) return { ok: false, stopped: true };
     // The read allows a byte order mark and the line-end lookahead on top of the cap.
     let bounded: { bytes: Buffer; exceeded: boolean };
     try { bounded = contentWithinCap((await readFileWithinCap(handle, boundedReadBytes(cap))).bytes, cap); }
@@ -337,7 +343,8 @@ export async function gatherRepositoryFiles(
       continue;
     }
     const cap = Math.min(maxBytes, SHAPING_LIMITS.entryBytes);
-    const read = await readWorktreeFile(root, configured, cap, fs);
+    const read = await readWorktreeFile(root, configured, cap, fs, signal);
+    if ("stopped" in read) return null;
     if (!read.ok) { skips.push(skipNote("file", configured, read.skip)); continue; }
     if (blankCut(read)) { cut = true; skips.push(skipNote("file", configured, blankCutReason(cap))); continue; }
     guidance.push({ id: configured, title: configured, path: configured, body: read.text, ...(read.truncated ? { truncated: true } : {}) });
@@ -345,7 +352,8 @@ export async function gatherRepositoryFiles(
 
   if (options.summary !== undefined) {
     if (signal.aborted) return null;
-    const read = await readWorktreeFile(root, options.summary, SHAPING_LIMITS.summaryBytes, fs);
+    const read = await readWorktreeFile(root, options.summary, SHAPING_LIMITS.summaryBytes, fs, signal);
+    if ("stopped" in read) return null;
     if (!read.ok) skips.push(skipNote("summary", options.summary, read.skip));
     else if (blankCut(read)) { cut = true; skips.push(skipNote("summary", options.summary, blankCutReason(SHAPING_LIMITS.summaryBytes))); }
     else { summary = read.text; cut ||= read.truncated; }
@@ -353,7 +361,8 @@ export async function gatherRepositoryFiles(
 
   if (options.facts !== undefined) {
     if (signal.aborted) return null;
-    const read = await readWorktreeFile(root, options.facts, REPOSITORY_FACTS_MAX_BYTES, fs);
+    const read = await readWorktreeFile(root, options.facts, REPOSITORY_FACTS_MAX_BYTES, fs, signal);
+    if ("stopped" in read) return null;
     if (!read.ok) skips.push(skipNote("facts", options.facts, read.skip));
     else if (read.truncated) {
       skips.push(skipNote("facts", options.facts, `larger than ${REPOSITORY_FACTS_MAX_BYTES / KIB} KiB once decoded, so no facts`));

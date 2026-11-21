@@ -487,6 +487,52 @@ test("a signal stops the run between files", async () => {
   assert.equal(reply.kind, "timed_out");
 });
 
+test("a signal that fires during a file's lookup or its identity checks starts no new I/O for it", async () => {
+  const { root } = fixture({ "one.md": "one\n" });
+  /** The real filesystem, counting opens, reads and closes, with `stop` fired at a chosen point. */
+  const counted = (stopAt: "lookup" | "identity") => {
+    const stop = new AbortController();
+    const seen = { opens: 0, reads: 0, closes: 0 };
+    const fs: RepositoryFilesFs = {
+      realpath: (target) => NODE_REPOSITORY_FILES_FS.realpath(target),
+      async lstat(target) {
+        const info = await NODE_REPOSITORY_FILES_FS.lstat(target);
+        if (stopAt === "lookup") stop.abort();
+        return info;
+      },
+      async open(target, flags) {
+        seen.opens++;
+        const handle = await NODE_REPOSITORY_FILES_FS.open(target, flags);
+        return {
+          read: ((...args: Parameters<typeof handle.read>) => { seen.reads++; return handle.read(...args); }) as typeof handle.read,
+          close: () => { seen.closes++; return handle.close(); },
+          async stat() {
+            const info = await handle.stat();
+            if (stopAt === "identity") stop.abort();
+            return info;
+          },
+        };
+      },
+    };
+    return { stop, seen, fs };
+  };
+
+  // A lookup that returns after the deadline: the file is never opened.
+  const lookup = counted("lookup");
+  assert.deepEqual(await readWorktreeFile(root, "one.md", 1024, lookup.fs, lookup.stop.signal), { ok: false, stopped: true });
+  assert.deepEqual(lookup.seen, { opens: 0, reads: 0, closes: 0 });
+
+  // The deadline passes while the opened handle is checked: nothing is read, and the handle is closed.
+  const identity = counted("identity");
+  assert.deepEqual(await readWorktreeFile(root, "one.md", 1024, identity.fs, identity.stop.signal), { ok: false, stopped: true });
+  assert.deepEqual(identity.seen, { opens: 1, reads: 0, closes: 1 });
+
+  // The gatherer stops there too, with no skip recorded for the file it did not read.
+  const gathered = counted("identity");
+  assert.equal(await gatherRepositoryFiles(root, options({ include: [{ path: "one.md" }] }), gathered.stop.signal, gathered.fs), null);
+  assert.deepEqual(gathered.seen, { opens: 1, reads: 0, closes: 1 });
+});
+
 const filesShaper = (opts: Record<string, unknown>, extra: Record<string, unknown> = {}) => ShaperSchema.parse({
   id: "files", label: "Repository files", stage: "gather", transport: { type: "builtin", builtin: "repository-files", options: opts }, ...extra,
 });

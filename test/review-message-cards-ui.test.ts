@@ -190,3 +190,24 @@ test("the review history always settles: a read that rejects or fails holds noth
   // Settled with nothing found, a delivered answer is then drawn as gone, never as loading for good.
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true })), ["delivered:1b0c@d"]);
 });
+
+test("a disabled review-history hook counts as settled, so a delivered card never stays on loading", async () => {
+  const { useTimelineReviews } = await import("../src/web/lib/timelineReviews.ts");
+  // The hook as a host drives it, feeding the merge exactly as the conversation panel does.
+  function Probe({ enabled }: { enabled: boolean }) {
+    const history = useTimelineReviews("s", [], enabled);
+    const out = mergeConversation(transcriptRows([delivered("d", 3_000, [A])]), [], history.reviews, [],
+      { loaded: history.loaded, lineage: history.lineage });
+    const row = out.find((r) => r.kind === "delivered") as Extract<ConversationRow, { kind: "delivered" }>;
+    return createElement(UnavailableReviewCard, {
+      envelope: "answer", loading: row.loading, delivery: { state: "delivered", turnId: "d", at: 3_000 },
+    });
+  }
+  // Disabled: nothing is fetched, so nothing is waited for.
+  const disabled = renderToStaticMarkup(createElement(Probe, { enabled: false }));
+  assert.doesNotMatch(disabled, /Loading the question/);
+  assert.match(disabled, /This question is no longer available/);
+  // Enabled, before its read has settled: still loading, which is the case the flag separates.
+  const enabled = renderToStaticMarkup(createElement(Probe, { enabled: true }));
+  assert.match(enabled, /Loading the question/);
+});

@@ -699,6 +699,14 @@ interface CompletionInput {
    * agent nothing will ever revisit. See `completeTaskWithSessionClosure`.
    */
   closeSessionId?: string | null;
+  /**
+   * Runs inside `finishCompletion` after its checks and before any write, for state that must
+   * change with the completion or not at all. A throw aborts the completion with the task
+   * untouched. Used by merge-driven completion to close the session's outstanding
+   * request_input questions only once completion is certain: a scout whose archive check
+   * refuses never reaches it, so its questions stay answerable.
+   */
+  beforeFinish?: () => void;
 }
 
 /**
@@ -1753,23 +1761,33 @@ export class TaskManager {
     // Closing a question publishes a `session_upsert`, which re-enters this listener for the
     // same session before the close has returned. One settle per task at a time.
     if (this.mergeSettling.has(t.id)) return;
+    const closeQuestions = () => {
+      const held = this.mergeSettling.has(t.id);
+      this.mergeSettling.add(t.id);
+      try { this.mergeQuestions?.close(s.id); }
+      finally { if (!held) this.mergeSettling.delete(t.id); }
+    };
     this.mergeSettling.add(t.id);
     try {
-      // Closure is a condition of completion: it commits every outstanding question in one
-      // transaction, and a failure leaves them all open and the task running, to be tried again
-      // on the next observation, rather than a finished task with questions still open.
-      try { this.mergeQuestions?.close(s.id); }
-      catch (error) {
-        console.error("[merge] closing open questions failed; the task stays running:", t.id, error);
+      if (blockedInCall) {
+        // No completion here: closing the call's question lets it return, and the idle turn that
+        // follows completes the task through the path below.
+        try { closeQuestions(); }
+        catch (error) { console.error("[merge] closing a blocked call's question failed:", t.id, error); }
         return;
       }
-      if (blockedInCall) return;
       // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
       // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
       // provenance that makes it reversible - still happens synchronously inside this call, so
       // the reopen path sees exactly what it always did. For a scout it lands once the archive
       // is verified, which is the only ordering that can be true: a scout is not done until its
       // report is durable.
+      //
+      // Closing the questions is part of that completion (`beforeFinish`), never ahead of it.
+      // It commits every outstanding question in one transaction just before the status write.
+      // A failed close aborts the completion, leaving the questions open and the task running
+      // for the next observation. A completion that refuses first (a scout whose archive is not
+      // ready) never closes them, so the operator can still answer.
       this.completeInBackground(t.id, {
         outcome: outcome.outcome,
         outcomeUrl: outcome.url,
@@ -1777,6 +1795,7 @@ export class TaskManager {
         requireStopped: false,
         confirmIncompleteScout: false,
         inferredFrom: s.id,
+        beforeFinish: closeQuestions,
       }, undefined, () => {
         this.closeMergedSessionAfterCompletion({
           taskId: t.id,
@@ -5926,6 +5945,7 @@ export class TaskManager {
     this.assertCompletable(id, input.requireStopped);
     const t = this.registry.getTask(id);
     if (!t) return null;
+    input.beforeFinish?.();
     this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {

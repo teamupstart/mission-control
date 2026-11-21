@@ -31,10 +31,15 @@ const decisions = (question: string): PlanDecision[] => [
   { id: "q", question, options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
 ];
 
-function fleet(id: string, closeFails = { times: 0 }) {
+function fleet(id: string, closeFails = { times: 0 }, scout?: { ready: boolean }) {
   const registry = new Registry();
   for (const stale of registry.listTasks()) registry.removeTask(stale.id);
-  const tasks = new TaskManager(registry);
+  // A scout completes only once its archive gate says its report is durable.
+  const archives = scout && {
+    ensureReady: async () => (scout.ready ? { ok: true as const } : { ok: false as const, problems: ["no report submitted yet"] }),
+    settleBeforeCleanup: async () => ({ ok: true as const }),
+  };
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
   const reviews = new ReviewManager(registry);
   // The daemon's wiring (`src/server/index.ts`), with the flag read per merge.
   tasks.useMergeQuestions({
@@ -51,7 +56,10 @@ function fleet(id: string, closeFails = { times: 0 }) {
   };
   registry.applyDiscovery([d]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${id}-episode`, cwd, transcriptPath: null, env: {} });
-  registry.upsertTask(baseTask({ id: `task-${id}`, title: "Ship the thing", status: "running", sessionId: id, worktreePath: null }));
+  registry.upsertTask(baseTask({
+    id: `task-${id}`, title: "Ship the thing", status: "running", sessionId: id, worktreePath: null,
+    ...(scout ? { kind: "scout" as const } : {}),
+  }));
   registry.bindTaskToWorkEpisode(`task-${id}`, id);
   const merge = () => {
     const episode = registry.workEpisodeForSession(id)!;
@@ -232,4 +240,26 @@ test("a merge seen between a call-mode ask and its first poll closes the questio
   f.hook("Stop");
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+});
+
+test("a merged scout whose report is not ready keeps its questions open, and closes them when it completes", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const scout = { ready: false };
+  const f = fleet("s-merge-scout", { times: 0 }, scout);
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+
+  f.merge();
+  await tick(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "the archive check refused the completion");
+  assert.equal(f.registry.getReview(filed.id)?.status, "pending", "so the question is still the operator's to answer");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, undefined);
+
+  // The report lands; the next observation completes the scout and closes the question with it.
+  scout.ready = true;
+  f.hook("Stop");
+  await tick(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(filed.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
 });

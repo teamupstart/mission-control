@@ -1,7 +1,8 @@
 # Asynchronous input: answers render as answer cards
 
-Status: approved by the operator on 2026-11-20 (revision 1), decisions recorded below; phased
-in `phased-plan.md`. Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
+Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
+phased in `phased-plan.md`. Revision 3 binds recognition to a recorded daemon delivery after the
+plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
 ## Adopted decisions
@@ -70,10 +71,25 @@ Mission Control review 1b0c9f4e-... was answered ...
 
 ### 2. Recognising the turn, durably
 
-`src/server/transcript-attribution.ts` already attaches a `presentation` to user turns it can
-explain (the launch prompt and resident wakes). It gains one more case. A user turn whose first
-non-blank line parses as an envelope, and whose every review id belongs to this session in the
-reviews table, gets:
+A marker alone proves nothing: anyone who can type into the session, the operator included, can
+paste one. Recognition therefore rests on a durable record of the daemon's own delivery, and the
+marker is only a cheap filter and a label for the agent.
+
+- **Delivery record.** When the outbox hands a review message to the agent, the daemon writes one
+  row per delivery to a new table beside `session_delegated_turns` (`src/server/db.ts`): the
+  conversation key, the fingerprint of the exact delivered text (`injectionFingerprint`), the
+  review ids it carried, the delivery time and the transcript size at that moment. Delegated
+  turns already use this pattern so that their sender survives a restart.
+- **Binding.** A row binds to the first user turn written after its transcript offset whose text
+  has the same fingerprint, and the binding (the native message id) is never re-pointed. The
+  binding logic in `src/server/delegated-turns.ts` is extracted into a shared helper that both
+  tables use, not copied.
+- **Only a bound turn changes.** `src/server/transcript-attribution.ts`, which already attaches a
+  `presentation` to launch prompts and resident wakes, changes a turn only when a delivery row is
+  bound to it. The review ids come from the row, not from the text. A turn carrying a marker with
+  no bound delivery renders as the plain text it is, with its normal authorship. That includes an
+  operator pasting a marker, or pasting the exact text of a delivered message later. A bound turn
+  gets:
 
 - `origin: "harness"`, so its byline, find scope and the rail's Yours tab treat it as Mission
   Control's, including after a restart, when the in-memory record is gone.
@@ -81,14 +97,16 @@ reviews table, gets:
   reviewIds: string[] }`. It is added to the `TranscriptPresentation` union in
   `src/shared/types.ts` beside `launch` and `resident`, not by repurposing either.
 
-Ids are checked against the session's own reviews, so a turn that merely contains the marker,
-for example the operator pasting one, renders as the plain text it is. Recognition reads only
-the reviews table and the transcript, both durable, so it survives restarts and works on
-history.
+Recognition reads only the delivery table, the reviews table and the transcript, all durable, so
+it survives restarts and works on history back to the table's retention window. A delivery that
+cannot bind (no readable transcript size at send time) leaves its turn as raw text rather than
+guessing.
 
-The Goal reader gains the same check: `Registry.captureHookGoalPrompt` never captures a prompt
-whose first line is a valid envelope for this session. This closes the window in which a
-restart between delivery and the prompt-hook echo lets an answer through as a Goal revision.
+The Goal reader uses the same record: `Registry.captureHookGoalPrompt` skips a prompt only when it
+matches a delivery row for this conversation whose single echo has not yet been claimed. The
+claim is recorded on the row, so a restart between delivery and the prompt-hook echo cannot let
+the answer through as a Goal revision. A later arrival of the same text is the operator typing
+it, and is captured as usual.
 
 ### 3. Drawing it
 
@@ -160,7 +178,8 @@ sequenceDiagram
   D->>O: "[mission-control:answer review=id]" + today's text
   W-->>W: card at resolvedAt, "On its way to the agent"
   O->>A: user turn (agent reads the full text)
-  T->>A: reads turn, parses line, checks ids belong to session
+  D->>D: record delivery (fingerprint, review ids, transcript offset)
+  T->>A: reads turn, binds it to the recorded delivery
   T->>W: turn with origin harness + presentation review-message
   W-->>W: one gold card at the delivery turn, "Delivered to the agent"
 ```
@@ -173,9 +192,10 @@ text Phase 2 writes) and Phase 3 (both edit the conversation's review placement 
 `src/web/lib/episodes.ts` and `src/web/lib/timelineReviews.ts`, and the transcript renderings).
 UI work, so it runs on Claude Opus 5.5 or higher.
 
-Estimated 300 to 400 non-test lines: the envelope module, the writer at the outbox, recognition
-in transcript attribution, the Goal reader check, the presentation union, the projection, the
-placement and de-duplication rule, and the two renderings.
+Estimated 380 to 480 non-test lines: the envelope module, the writer at the outbox, the delivery
+table and its shared binding helper, recognition in transcript attribution, the Goal reader
+check, the presentation union, the projection, the placement and de-duplication rule, and the
+two renderings.
 
 ## Out of scope
 
@@ -189,22 +209,26 @@ placement and de-duplication rule, and the two renderings.
 
 | Risk | Handling |
 | --- | --- |
-| A harness alters the delivered text (trims, prefixes, or merges a steered message into another turn). | Recognition looks for the envelope on the first non-blank line only. Anything else renders as today's raw text, so a miss looks like today, never like a wrong card. One fake-agent spec per runtime that delivers answers (SDK and terminal) pins it. |
+| A harness alters the delivered text (trims, prefixes, or merges a steered message into another turn). | The altered turn no longer matches the delivery's fingerprint, so it binds to nothing and renders as today's raw text. A miss looks like today, never like a wrong card. One fake-agent spec per runtime that delivers answers (SDK and terminal) pins it. |
 | The agent is confused by the marker line. | It is a plain, self-describing header above unchanged text. Verified with the fake agents and one real dispatch per harness before the flag goes default-on, alongside the receipt check the async-input plan already requires. |
-| An operator types or pastes the marker. | Ids must belong to this session's reviews. A pasted marker for a real answer only re-draws that answer, which is harmless. |
+| An operator types or pastes the marker, or the whole text of a delivered answer. | Nothing changes for that turn. Only a turn bound to a recorded daemon delivery is drawn as a card, and each delivery binds to exactly one turn, so a pasted copy keeps its operator authorship, stays visible as typed, and is still eligible for Goal capture. |
+| A delivery cannot bind (transcript size unreadable at send time). | Its turn renders as raw text, as today, never as a card on a guess. |
 | The card moves from `resolvedAt` to the delivery turn when the answer is delivered. | Accepted for a single card per answer; the "On its way" line explains the interim state. |
 
 ## Verification
 
 - Unit (`test/`): envelope write and parse round trip, coalesced ids, malformed and partial
-  lines, non-ASCII rejection; recognition accepts only ids of this session; `origin` is
-  `harness` with an empty injection record (the restart case); the Goal reader refuses a marked
-  prompt; projection and `mergeConversation` draw one card per review, at the delivery turn
+  lines, non-ASCII rejection; a card is drawn only for a turn bound to a recorded delivery; a
+  pasted copy of a delivered message, a marker with a different body, and a marker with valid ids
+  but no delivery all render as plain operator text; the binding and `origin: harness` survive a
+  restart with an empty injection record; the Goal reader skips only the one unclaimed echo of a
+  recorded delivery and captures a retyped copy; projection and `mergeConversation` draw one card per review, at the delivery turn
   when present and at `resolvedAt` with "On its way" when queued; a call-mode answer returned
   through its call is unchanged; flag off writes no line.
 - Playwright (`e2e/`, fake agents, no model tokens): with the flag on, an answer given from the
   inbox appears as one gold answer card, in chat and terminal renderings, with no raw "Mission
-  Control review" text visible and no "you" byline; the disclosure shows the raw text; after a
+  Control review" text visible and no "you" byline; the disclosure shows the raw text; an operator
+  message that pastes a marker stays a visible operator turn; after a
   daemon restart and reload the card is still a card; two answers delivered together draw two
   cards on one turn; Remind me later with a provisional option draws the snoozed line, not raw
   instructions. Modal-free, so no inset check is needed unless the disclosure opens a modal.

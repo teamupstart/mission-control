@@ -20,6 +20,13 @@ at answer time until then; the work is one phase after async-input Phases 2 and 
 - Delivery may go to a runtime-transfer successor (`runtimeTransferSuccessor` in
   `deliverToOutbox`; reviews move with `transferPendingReviews`). Recognition must accept a
   review owned by this session or by a session in its transfer lineage.
+- Review ids in the text do not prove who wrote the turn: an operator can paste a marker for a
+  real review of the same session. Delegated turns already solved the same problem durably:
+  `session_delegated_turns` (`src/server/db.ts`) records one row per delivery with the delivered
+  text's fingerprint and the target transcript's size, and `delegatedTurnSources`
+  (`src/server/delegated-turns.ts`) binds each row to exactly one later turn and never re-points
+  it. Review-message recognition uses the same mechanism through a shared binding helper, so
+  there is one binding rule rather than two.
 - `attributeTranscript` (`src/server/transcript-attribution.ts:26`) is the single server-side
   pass over transcript turns. Its callers are the transcript route, the transcript stream,
   retro worthiness and workflow context. Attaching the presentation there reaches every reader
@@ -40,9 +47,10 @@ at answer time until then; the work is one phase after async-input Phases 2 and 
 
 ## Sizing and phase count
 
-Estimated 300 to 400 non-test implementation lines: the envelope module (about 60), the writer
-at the queueing point (about 30), recognition and the lineage check (about 60), the Goal reader
-check (about 10), the presentation union and projection (about 50), placement and
+Estimated 380 to 480 non-test implementation lines: the envelope module (about 60), the writer
+at the queueing point (about 30), the delivery table, its writer at delivery and the binding
+helper extracted from delegated turns (about 90), recognition (about 40), the Goal reader echo
+claim (about 20), the presentation union and projection (about 50), placement and
 de-duplication (about 50), and the two renderings with the disclosure and status line (about 90).
 
 One phase. Splitting the server marker from the dashboard rendering would land a marker line no
@@ -51,7 +59,7 @@ test fixture. The work is a single vertical slice that a mid-tier model can impl
 
 | Phase | File | Delivers | Depends on | Est. lines |
 | --- | --- | --- | --- | --- |
-| 1 (async-input Phase 4) | `phase-1-answer-cards.md` | Marker line, durable recognition, answer cards at delivery, Remind me later line, Goal reader check | async-input Phase 2 and Phase 3 merged | 300 to 400 |
+| 1 (async-input Phase 4) | `phase-1-answer-cards.md` | Marker line, delivery record and binding, answer cards at delivery, Remind me later line, Goal reader check | async-input Phase 2 and Phase 3 merged | 380 to 480 |
 
 ```mermaid
 graph LR
@@ -75,6 +83,14 @@ Owned here:
 
 - `src/shared/review-message-envelope.ts`: the only writer and parser of the marker line.
 - `TranscriptPresentation` kind `review-message` with `envelope` and `reviewIds`.
+- The review-message delivery table and the shared delivery-binding helper. Recognition and the
+  Goal reader trust only a bound delivery row, never the marker text.
+
+## Plan pull request review
+
+One Inspector finding on #1612 was accepted and applied in revision 3: review-id ownership alone
+let an operator's pasted marker turn their own message into an answer card, change its authorship
+and skip Goal capture. Recognition now requires a durable delivery record bound to the turn.
 
 ## Final verification
 

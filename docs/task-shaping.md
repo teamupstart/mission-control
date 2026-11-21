@@ -479,5 +479,11 @@ JSON. Only one at a cut, where the read stopped inside the file, is dropped.
 
 A facts file that is not valid JSON, not a flat object of strings or string lists, or larger
 than 64 KiB is skipped with a sentence that says so. A worktree that is not on this machine
-makes the call `unavailable`. The call's signal is checked between files, so a call stopped at
-the step's deadline reads no further file.
+makes the call `unavailable`. The call's signal is checked before every filesystem call, so a
+call stopped at the step's deadline starts no further lookup, open or read.
+
+The gatherer runs in the daemon, on Node's shared pool of file-I/O threads, and a call already
+running on a hung network mount cannot be cancelled. So every `repository-files` call in the
+daemon shares one gate, with one filesystem call in flight at a time: a stalled worktree can hold
+at most one of the pool's threads, and other daemon file work keeps the rest. A call waiting for
+the gate holds no thread and gives up at its deadline.

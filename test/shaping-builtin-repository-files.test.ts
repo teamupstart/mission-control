@@ -16,7 +16,8 @@ import {
   type Shaper, type ShapingRequest,
 } from "../src/shared/shaping.ts";
 import {
-  boundedReadBytes, callRepositoryFiles, contentWithinCap, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
+  boundedReadBytes, CallStopped, callRepositoryFiles, contentWithinCap, fileText, FsGate, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath,
+  readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, REPOSITORY_FILES_GATE, skipNotes,
   type RepositoryFilesFs,
 } from "../src/server/shaping/builtin/repository-files.ts";
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
@@ -500,6 +501,99 @@ test("a signal stops the run between files", async () => {
   const request = gatherRequest(root);
   const reply = await callRepositoryFiles(request, options_, { signal: AbortSignal.abort() });
   assert.equal(reply.kind, "timed_out");
+});
+
+test("the gate runs one call at a time, and a waiter stopped before its turn starts nothing", async () => {
+  const gate = new FsGate();
+  let release!: () => void;
+  const held = gate.run(() => new Promise<string>((done) => { release = () => done("first"); }));
+  let started = 0;
+  const stop = new AbortController();
+  const stoppedWaiter = gate.run(async () => { started++; return "never"; }, stop.signal);
+  const patientWaiter = gate.run(async () => { started++; return "second"; });
+  await new Promise((done) => setImmediate(done));
+  assert.equal(gate.queued, 2, "both wait while the first call holds the gate");
+  stop.abort();
+  await assert.rejects(stoppedWaiter, CallStopped);
+  assert.equal(gate.queued, 1, "a stopped waiter leaves the queue at once");
+  release();
+  assert.equal(await held, "first");
+  assert.equal(await patientWaiter, "second");
+  assert.equal(started, 1, "the stopped waiter's call never started");
+  assert.equal(gate.queued, 0);
+  await assert.rejects(gate.run(async () => "late", AbortSignal.abort()), CallStopped, "an already-stopped call never starts");
+
+  // A release wakes the first waiter. If that waiter was stopped in the meantime, it passes the
+  // turn on as it leaves, so the waiter behind it is not stranded on a gate nobody holds.
+  // The front waiter's signal becomes stopped exactly as the release wakes it: the gate removes its
+  // abort listener when it wakes a waiter, so that is when this signal flips.
+  let releaseAgain!: () => void;
+  const holding = gate.run(() => new Promise<void>((done) => { releaseAgain = done; }));
+  const wokenThenStopped = { aborted: false, addEventListener() {}, removeEventListener() { this.aborted = true; } };
+  const front = gate.run(async () => "front", wokenThenStopped as unknown as AbortSignal);
+  const back = gate.run(async () => "back");
+  await new Promise((done) => setImmediate(done));
+  assert.equal(gate.queued, 2);
+  releaseAgain();
+  await holding;
+  await assert.rejects(front, CallStopped);
+  assert.equal(await back, "back", "the waiter behind a stopped one still gets its turn");
+  assert.equal(gate.queued, 0);
+});
+
+test("concurrent reads keep one filesystem call in flight daemon-wide, and a read stuck behind a hung call gives up", async () => {
+  const { root } = fixture(Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f${i}.md`, `file ${i}\n`])));
+  let inFlight = 0;
+  let most = 0;
+  const tracked = <T,>(op: () => Promise<T>) => async () => {
+    inFlight++;
+    most = Math.max(most, inFlight);
+    try { return await op(); } finally { inFlight--; }
+  };
+  const counting: RepositoryFilesFs = {
+    realpath: (target) => tracked(() => NODE_REPOSITORY_FILES_FS.realpath(target))(),
+    lstat: (target) => tracked(() => NODE_REPOSITORY_FILES_FS.lstat(target))(),
+    async open(target, flags) {
+      const handle = await tracked(() => NODE_REPOSITORY_FILES_FS.open(target, flags))();
+      return {
+        read: ((...args: Parameters<typeof handle.read>) => tracked(() => handle.read(...args))()) as typeof handle.read,
+        stat: () => tracked(() => handle.stat())(),
+        close: () => tracked(() => handle.close())(),
+      };
+    },
+  };
+  const reads = await Promise.all(Array.from({ length: 6 }, (_, i) => readWorktreeFile(root, `f${i}.md`, 1024, counting)));
+  assert.deepEqual(reads.map((read) => read.ok && read.text), Array.from({ length: 6 }, (_, i) => `file ${i}\n`));
+  assert.equal(most, 1, "never more than one call on the worker pool at once");
+
+  // A lookup on a hung mount holds the gate. A read behind it waits without starting anything, and
+  // its deadline releases it as stopped.
+  let unhang!: () => void;
+  let lookups = 0;
+  const hung: RepositoryFilesFs = {
+    ...NODE_REPOSITORY_FILES_FS,
+    // Only the first lookup hangs: the mount answers again once it is released.
+    realpath: (target) => (++lookups === 1
+      ? new Promise((done) => { unhang = () => done(NODE_REPOSITORY_FILES_FS.realpath(target)); })
+      : NODE_REPOSITORY_FILES_FS.realpath(target)),
+  };
+  const stuck = readWorktreeFile(root, "f0.md", 1024, hung);
+  try {
+    await new Promise((done) => setImmediate(done));
+    let calls = 0;
+    const behind: RepositoryFilesFs = { ...NODE_REPOSITORY_FILES_FS, realpath: (target) => { calls++; return NODE_REPOSITORY_FILES_FS.realpath(target); } };
+    const deadline = new AbortController();
+    const waiting = readWorktreeFile(root, "f1.md", 1024, behind, deadline.signal);
+    await new Promise((done) => setImmediate(done));
+    assert.equal(REPOSITORY_FILES_GATE.queued, 1);
+    deadline.abort();
+    assert.deepEqual(await waiting, { ok: false, stopped: true });
+    assert.equal(calls, 0, "it never reached the filesystem");
+  } finally {
+    unhang();
+  }
+  assert.equal((await stuck).ok, true, "the hung call finishes once its mount answers");
+  assert.equal(REPOSITORY_FILES_GATE.queued, 0);
 });
 
 test("a signal that fires during a file's lookup or its identity checks starts no new I/O for it", async () => {

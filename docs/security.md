@@ -532,4 +532,6 @@ how long an open on a hung network filesystem takes.
 This proves no file outside the worktree is read while the worktree's directories are not being
 rearranged during the read. A process running as the operator that swaps a directory on the
 path in a tight race can still get an outside file read, and that process could read the file
-itself. [The guide](task-shaping.md#the-built-in-gatherer) states every rule.
+itself. Every `repository-files` filesystem call in the daemon goes through one gate, one at a
+time, so a hung network mount can hold at most one of Node's shared file-I/O threads.
+[The guide](task-shaping.md#the-built-in-gatherer) states every rule.

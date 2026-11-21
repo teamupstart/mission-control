@@ -72,6 +72,87 @@ export const NODE_REPOSITORY_FILES_FS: RepositoryFilesFs = {
   },
 };
 
+/** Thrown by a gated call that was stopped before it started. Read as `stopped`, never as a skip. */
+export class CallStopped extends Error {
+  constructor() { super("The shaping call stopped before this filesystem call started."); }
+}
+
+/**
+ * At most one filesystem call in flight across every `repository-files` call in the daemon.
+ *
+ * Node runs these calls on its shared worker pool, four threads by default, and a call already
+ * running on a hung network mount cannot be cancelled: it holds its thread until the mount
+ * answers, deadline or not. With every call through this gate, a stalled worktree can hold at most
+ * one of those threads, and unrelated daemon file work keeps the others. A caller waits for the
+ * gate without holding a thread, and gives up as soon as its call is stopped. Local reads are a
+ * few milliseconds, so the queue costs little.
+ */
+export class FsGate {
+  private busy = false;
+  private readonly waiting = new Set<() => void>();
+
+  /** Run `op` alone. A `signal` stopped before `op` starts throws `CallStopped` and starts nothing. */
+  async run<T>(op: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    // A stopped caller may have been the one a release woke. It passes the turn on before it
+    // leaves, or the waiters behind it would wait on a gate nobody holds.
+    const stop = (): never => {
+      if (!this.busy) this.wakeOne();
+      throw new CallStopped();
+    };
+    while (this.busy) {
+      if (signal?.aborted) stop();
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          this.waiting.delete(wake);
+          signal?.removeEventListener("abort", wake);
+          resolve();
+        };
+        this.waiting.add(wake);
+        signal?.addEventListener("abort", wake, { once: true });
+      });
+    }
+    if (signal?.aborted) stop();
+    this.busy = true;
+    try {
+      return await op();
+    } finally {
+      this.busy = false;
+      this.wakeOne();
+    }
+  }
+
+  /** Wake one waiter. It looks again, and waits again if another call took the gate first. */
+  private wakeOne(): void {
+    const [next] = this.waiting;
+    next?.();
+  }
+
+  /** Calls waiting for the gate, for tests. */
+  get queued(): number { return this.waiting.size; }
+}
+
+/** The daemon's one gate for this gatherer. */
+export const REPOSITORY_FILES_GATE = new FsGate();
+
+/**
+ * `fs` with every call through `gate`. Calls for a stopped `signal` throw `CallStopped` instead of
+ * starting. A handle's close is gated too, but never stopped: an opened file is always closed.
+ */
+export function gatedFs(fs: RepositoryFilesFs, signal: AbortSignal | undefined, gate: FsGate = REPOSITORY_FILES_GATE): RepositoryFilesFs {
+  return {
+    realpath: (target) => gate.run(() => fs.realpath(target), signal),
+    lstat: (target) => gate.run(() => fs.lstat(target), signal),
+    async open(target, flags) {
+      const handle = await gate.run(() => fs.open(target, flags), signal);
+      return {
+        read: ((...args: Parameters<FileHandle["read"]>) => gate.run(() => handle.read(...args), signal)) as FileHandle["read"],
+        stat: () => gate.run(() => handle.stat(), signal),
+        close: () => gate.run(() => handle.close()),
+      };
+    },
+  };
+}
+
 /**
  * `O_NOFOLLOW` refuses a final component that became a link after the lookup. `O_NONBLOCK`
  * makes the open return at once for a named pipe with no writer or a device, instead of waiting
@@ -205,10 +286,15 @@ export async function readWorktreeFile(
   root: string,
   configured: string,
   cap: number,
-  fs: RepositoryFilesFs = NODE_REPOSITORY_FILES_FS,
+  files: RepositoryFilesFs = NODE_REPOSITORY_FILES_FS,
   signal?: AbortSignal,
 ): Promise<FileRead> {
   if (!pathIsConfinable(configured)) return { ok: false, skip: "outside-worktree" };
+  // Every call goes through the daemon's one gate (`REPOSITORY_FILES_GATE`).
+  const fs = gatedFs(files, signal);
+  // A failed call is a skip, unless it was stopped before it started.
+  const failed = (error: unknown, skip: RepositoryFileSkip): FileRead =>
+    error instanceof CallStopped ? { ok: false, stopped: true } : { ok: false, skip };
   // Every filesystem call below can stall on a slow mount. The signal is checked before each one
   // starts, so a call stopped at its deadline starts no further I/O: a lookup that returns late is
   // the last one, and an open handle goes straight to `finally` to be closed.
@@ -218,7 +304,7 @@ export async function readWorktreeFile(
   // Path. The real path, with every link resolved, must lie inside the worktree's real path.
   let real: string;
   try { real = await fs.realpath(path.join(root, configured)); }
-  catch (error) { return { ok: false, skip: lookupSkip(error) }; }
+  catch (error) { return failed(error, lookupSkip(error)); }
   if (!inside(root, real)) return { ok: false, skip: "outside-worktree" };
   if (stopped()) return { ok: false, stopped: true };
   try {
@@ -226,7 +312,7 @@ export async function readWorktreeFile(
     // Never opened: a directory, a socket, a pipe or a device is skipped on its lookup alone.
     if (!info.isFile()) return { ok: false, skip: "not-a-regular-file" };
   } catch (error) {
-    return { ok: false, skip: lookupSkip(error) };
+    return failed(error, lookupSkip(error));
   }
 
   // Open.
@@ -235,14 +321,14 @@ export async function readWorktreeFile(
   try { handle = await fs.open(real, OPEN_FLAGS); }
   catch (error) {
     // ELOOP: the final component was replaced by a link after the lookup.
-    return { ok: false, skip: errorCode(error) === "ELOOP" ? "not-a-regular-file" : lookupSkip(error) };
+    return failed(error, errorCode(error) === "ELOOP" ? "not-a-regular-file" : lookupSkip(error));
   }
   try {
     // Identity. Everything is decided on the handle, which is the file that will be read.
     if (stopped()) return { ok: false, stopped: true };
     let opened: BigIntStats;
     try { opened = await handle.stat(); }
-    catch { return { ok: false, skip: "unreadable" }; }
+    catch (error) { return failed(error, "unreadable"); }
     if (!opened.isFile()) return { ok: false, skip: "not-a-regular-file" };
     if (opened.size > BigInt(REPOSITORY_FILE_MAX_BYTES)) return { ok: false, skip: "too-large" };
     if (stopped()) return { ok: false, stopped: true };
@@ -254,10 +340,10 @@ export async function readWorktreeFile(
     let again: string;
     let named: BigIntStats;
     try { again = await fs.realpath(real); }
-    catch (error) { return { ok: false, skip: lookupSkip(error) }; }
+    catch (error) { return failed(error, lookupSkip(error)); }
     if (stopped()) return { ok: false, stopped: true };
     try { named = await fs.lstat(real); }
-    catch (error) { return { ok: false, skip: lookupSkip(error) }; }
+    catch (error) { return failed(error, lookupSkip(error)); }
     if (again !== real || !inside(root, again) || !named.isFile() || !sameFile(named, opened)) {
       return { ok: false, skip: "outside-worktree" };
     }
@@ -266,7 +352,7 @@ export async function readWorktreeFile(
     // read allows a byte order mark and the line-end lookahead on top of the cap.
     let read: Buffer | null;
     try { read = await readUpTo(handle, boundedReadBytes(cap), stopped); }
-    catch { return { ok: false, skip: "unreadable" }; }
+    catch (error) { return failed(error, "unreadable"); }
     if (read === null) return { ok: false, stopped: true };
     const bounded = contentWithinCap(read, cap);
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
@@ -453,14 +539,17 @@ export async function callRepositoryFiles(
   const worktree = request.repo.path;
   if (!worktree) return { kind: "unavailable", reason: "The repository's worktree is not available on this machine." };
   const stoppedReply: TransportReply = { kind: "timed_out", reason: "The shaping step stopped before every configured file was read." };
-  // The worktree's own lookups are checked like every file's: none starts once the call stopped.
+  // The worktree's own lookups are gated and checked like every file's: none starts once the
+  // call stopped.
   if (ctx.signal.aborted) return stoppedReply;
+  const gated = gatedFs(fs, ctx.signal);
   let root: string;
   try {
-    root = await fs.realpath(worktree);
+    root = await gated.realpath(worktree);
     if (ctx.signal.aborted) return stoppedReply;
-    if (!(await fs.lstat(root)).isDirectory()) throw new Error("not a directory");
-  } catch {
+    if (!(await gated.lstat(root)).isDirectory()) throw new Error("not a directory");
+  } catch (error) {
+    if (error instanceof CallStopped) return stoppedReply;
     return { kind: "unavailable", reason: "The repository's worktree is not available on this machine." };
   }
   const result = await gatherRepositoryFiles(root, options, ctx.signal, fs);

@@ -147,6 +147,11 @@ export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1):
  * replaces this either way. An upsert that this build would refuse draws nothing.
  */
 export function previewShapingIntent(view: ShapingConfigView, intent: ShapingIntent): ShapingConfigView {
+  // An intent bound to a revision applies only to that definition. Once another window has
+  // replaced it, drawing the click by id would show the replacement switched or removed, which the
+  // daemon will refuse: the view is drawn as stored while the request's answer is awaited.
+  if ((intent.kind === "enable" || intent.kind === "remove") && intent.expect !== undefined
+    && shapingViewRevision(view, intent.id) !== intent.expect) return view;
   const overrides = { ...view.overrides };
   switch (intent.kind) {
     case "upsert": {

@@ -583,3 +583,17 @@ test("only the owning entry may say an import replaces it, never a repeat behind
   assert.equal((daemonShapingView(alone).shapers[0] as { replaceable?: true }).replaceable, true);
   assert.equal(applyShapingIntent(alone, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("twin")) }).ok, true);
 });
+
+test("a switch or removal bound to a replaced definition is not drawn on its replacement", () => {
+  const sent = view({ shapers: [gatherer("a")] });
+  const expect = sent.revisions.a!;
+  const replaced = view({ shapers: [gatherer("a", { label: "Replacement" })] });
+  for (const intent of [
+    { kind: "enable" as const, id: "a", enabled: true, expect },
+    { kind: "remove" as const, id: "a", expect },
+  ]) {
+    assert.equal(previewShapingIntent(replaced, intent), replaced, `${intent.kind}: the replacement is drawn as stored`);
+    assert.notEqual(previewShapingIntent(sent, intent), sent, `${intent.kind}: the definition it was sent for is drawn changed`);
+  }
+  assert.equal(previewShapingIntent(sent, { kind: "enable", id: "a", enabled: true, expect }).overrides.a, true);
+});

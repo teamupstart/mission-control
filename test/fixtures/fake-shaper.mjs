@@ -3,7 +3,8 @@
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HELPER_MARKER } from "./fake-shaper-helper.mjs";
+// Each helper runs until its test writes the stop file next to its pid file (fake-shaper-helper.mjs).
+import { helperArgv } from "./fake-shaper-helper.mjs";
 
 const [mode = "ok", ...rest] = process.argv.slice(2);
 const chunks = [];
@@ -14,9 +15,6 @@ const reply = (value) => process.stdout.write(JSON.stringify(value));
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 // A PID file appears whole or not at all: a test that waits for it to exist must never read it
 // between its creation and its write, which an ordinary write allows.
-// A helper's argv names it and the pid file it is recorded in, so a test's cleanup can tell the
-// process it is about to signal is this helper, never an unrelated one that was given its pid.
-const helperArgv = (pidFile) => ["-e", "setInterval(() => {}, 1000)", HELPER_MARKER, pidFile];
 const writePid = (path, pid) => {
   writeFileSync(`${path}.partial`, String(pid));
   renameSync(`${path}.partial`, path);

@@ -1707,3 +1707,34 @@ test("a late refusal of an earlier settings save never clears the same draft sen
   await expect(identity).toHaveValue("resent-draft");
   await page.unroute("**/api/shaping");
 });
+
+test("a pending switch is not drawn on a replacement another window left off", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("drawn-notes", "Drawn notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Drawn notes")).toHaveAccessibleName("Drawn notes: off");
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await pill(page, "Drawn notes").click();
+  await reached.opened;
+  // Drawn at once, for the definition it was sent for.
+  await expect(pill(page, "Drawn notes")).toHaveAccessibleName("Drawn notes: on");
+  // Another window replaces it and leaves the replacement off: the pending click no longer applies to it.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("drawn-notes", "Drawn notes", { timeoutMs: 20_000 }) });
+  // From the replacement's frame, well inside the write's own 15 s timeout, which would also end the drawing.
+  await expect(pill(page, "Drawn notes")).toHaveAccessibleName("Drawn notes: off", { timeout: 3_000 });
+  goes.open();
+  expect((await held!.response())?.status()).toBe(409);
+  await expect(row(page, "Drawn notes").getByRole("alert")).toContainText("changed in another window");
+  await expect(pill(page, "Drawn notes")).toHaveAccessibleName("Drawn notes: off");
+  expect((await shapingConfig(daemon)).overrides["drawn-notes"]).toBe(false);
+  await page.unroute("**/api/shaping");
+});

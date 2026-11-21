@@ -36,6 +36,8 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
+  /** Numbers each outcome in the order it arrived, whichever request it answers. */
+  const arrivals = useRef(0);
   /**
    * Every request a stream frame showed stored, kept per request until its HTTP result settles:
    * a newer write must not erase an earlier one's receipt before that one's reply is lost.
@@ -78,7 +80,7 @@ export function useShapingSettings(
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
       const message = parsed.error.issues[0]?.message ?? "This change is not valid.";
-      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, message }]));
+      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, arrived: ++arrivals.current, message }]));
       return false;
     }
     const request = parsed.data;
@@ -103,7 +105,7 @@ export function useShapingSettings(
           ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
           : "The daemon's answer did not arrive.";
         const message = shapingUnconfirmedText(request, shown, latest.current !== request, cause);
-        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, message }]));
+        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message }]));
         if (writing.current === request) {
           writing.current = null;
           setPending(null);
@@ -137,7 +139,7 @@ export function useShapingSettings(
       // reading as the outcome of the change just made under the same control.
       const reason = error instanceof Error ? error.message : String(error);
       const message = shapingRefusalText(request, reason, latest.current !== request);
-      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, message }]));
+      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message }]));
       if (writing.current === request) {
         writing.current = null;
         setPending(null);
@@ -158,10 +160,12 @@ export function useShapingSettings(
     earlier: Object.fromEntries(Object.entries(refusals).filter(([, list]) => list.length > 1)
       .map(([key, list]) => [key, list.slice(1).map((refusal) => refusal.message)])),
     /**
-     * The request number of each control's newest refusal, so a view can tell an outcome that
-     * arrived after a given moment from one it already showed, whatever their text.
+     * When each control's latest outcome arrived, by arrival order: a view that records it can tell
+     * an outcome that arrived after that moment from one it already showed, whatever its text and
+     * whichever request it answers, an earlier one arriving late included.
      */
-    outcomeNumbers: Object.fromEntries(Object.entries(refusals).map(([key, list]) => [key, list[0]!.number])),
+    outcomeArrivals: Object.fromEntries(Object.entries(refusals)
+      .map(([key, list]) => [key, Math.max(...list.map((refusal) => refusal.arrived))])),
     ready: live,
     set,
   };
@@ -171,6 +175,8 @@ export type ShapingSettings = ReturnType<typeof useShapingSettings>;
 interface Refusal {
   /** The request it answers, in the order requests were sent. */
   number: number;
+  /** When it arrived, in the order outcomes arrived. */
+  arrived: number;
   message: string;
 }
 

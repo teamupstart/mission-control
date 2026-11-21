@@ -1407,3 +1407,46 @@ test("a refused removal of a shaper another window removed first is shown above 
   await capture(page, "orphan-outcome");
   await page.unroute("**/api/shaping");
 });
+
+test("a reopened import dialog shows an earlier save's refusal that arrives after a newer one", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // Two saves of the same manifest are held; the test answers each with a refusal, newer first.
+  const answers = [gate(), gate()];
+  const sent = [gate(), gate()];
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const at = puts++;
+    sent[at]!.open();
+    await answers[at]!.opened;
+    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: `Save ${at + 1} was refused.` }) });
+  });
+  const shaper = commandShaper("twin-saves", "Twin saves");
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const save = dialog.getByRole("button", { name: "Save switched off" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await save.click();
+  await sent[0]!.opened;
+  // Another window imports the same definition: the frame frees Save, and it is saved again.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await sent[1]!.opened;
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  // The newer save's refusal arrives while the dialog is closed, beside the import button.
+  answers[1]!.open();
+  const outcome = panel(page).getByRole("group", { name: "Last import" });
+  await expect(outcome.getByRole("alert")).toHaveText("Save 2 was refused.");
+  // Reopened, then the earlier save's refusal arrives: the open dialog shows it.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  answers[0]!.open();
+  await expect(dialog.getByRole("list", { name: "Earlier refusals" }))
+    .toHaveText("An earlier change, importing twin-saves, was refused: Save 1 was refused.");
+  await expect(dialog.getByRole("alert")).toHaveText("Save 2 was refused.");
+  await page.unroute("**/api/shaping");
+});

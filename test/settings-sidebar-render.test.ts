@@ -26,7 +26,7 @@ const FLAGS_OFF: FeatureFlagsConfig = { enableAll: false, overrides: {} };
 const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
 
 function shapingSettings(config: ShapingConfigView | null = daemonShapingView(SHAPING_CONFIG_DEFAULTS)): ShapingSettings {
-  return { config, confirmed: config, pending: null, pendingKey: null, errors: {}, earlier: {}, outcomeNumbers: {}, ready: true, set: async () => true };
+  return { config, confirmed: config, pending: null, pendingKey: null, errors: {}, earlier: {}, outcomeArrivals: {}, ready: true, set: async () => true };
 }
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";

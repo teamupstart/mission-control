@@ -653,6 +653,22 @@ test("the operator's queued words are announced as a person's delivery on both r
   assert.deepEqual(heard, [{ sessionId: sdk.id, key }, { sessionId: terminal.id, key }]);
 });
 
+test("an operator's queued words the driver refuses are taken back as a person's delivery", async (t) => {
+  // A refusal is positive evidence nothing landed, so the announcement is withdrawn beside the
+  // other-send record, and a waiting session's matching automated delivery stops being contested.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
+  const sdk = sdkFixture("person-refused", async () => null);
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+  assert.deepEqual(heard.map((h) => h.released), [false, true]);
+  assert.equal(heard[1]!.id, heard[0]!.id);
+});
+
 test("terminal rows remain sending until a hook proves prompt pickup", async () => {
   const f = terminalFixture("pickup", async () => ({
     ok: true,

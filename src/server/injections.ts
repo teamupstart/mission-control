@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
 
 /**
@@ -190,9 +190,13 @@ function announceAutomated(delivery: AutomatedDelivery): void {
 /** A person's words Mission Control is about to write into a session (`notePersonDelivery`). */
 export interface PersonDelivery {
   sessionId: string;
+  /** This send's own id, so a withdrawal takes back only it and not another of the same words. */
+  id: string;
   at: number;
   /** `injectionFingerprint` of the text, as an automated delivery's `key` is. */
   key: string;
+  /** The send provably never landed, and is taken back (`withdrawPersonDelivery`). */
+  released: boolean;
 }
 
 export type PersonDeliveryListener = (delivery: PersonDelivery) => void;
@@ -201,8 +205,8 @@ const personListeners = new Set<PersonDeliveryListener>();
 
 /**
  * Hear every delivery of a person's own words Mission Control writes into a session: the
- * operator's composer turns and sends, and a controlling session's messages. Returns the
- * unsubscribe.
+ * operator's composer turns and sends, and a controlling session's messages, and each one taken
+ * back because it provably never landed. Returns the unsubscribe.
  *
  * The declared-wait writer's other half (`Registry.notePersonDelivery`). Its nudge matching
  * reads a turn's prompt, and a person can send the very words an automated delivery still on
@@ -214,14 +218,7 @@ export function onPersonDelivery(listener: PersonDeliveryListener): () => void {
   return () => personListeners.delete(listener);
 }
 
-/**
- * Announce that a person's words are about to be written into this session. Called by every
- * door Mission Control carries them through, before the write, like `reserveInjection`: the
- * prompt hook can report the text back while the send is still in flight. Nothing is stored
- * here; the listeners decide what it means.
- */
-export function notePersonDelivery(sessionId: string, text: string): void {
-  const delivery: PersonDelivery = { sessionId, at: Date.now(), key: injectionFingerprint(text) };
+function announcePerson(delivery: PersonDelivery): void {
   for (const listener of personListeners) {
     try {
       listener(delivery);
@@ -229,6 +226,32 @@ export function notePersonDelivery(sessionId: string, text: string): void {
       /* a listener that cannot record must not break the delivery it was told about */
     }
   }
+}
+
+/**
+ * Announce that a person's words are about to be written into this session. Called by every
+ * door Mission Control carries them through, before the write, like `reserveInjection`: the
+ * prompt hook can report the text back while the send is still in flight. Nothing is stored
+ * here; the listeners decide what it means. The returned delivery is what
+ * `withdrawPersonDelivery` takes back.
+ */
+export function notePersonDelivery(sessionId: string, text: string): PersonDelivery {
+  const delivery: PersonDelivery = {
+    sessionId, id: randomUUID(), at: Date.now(), key: injectionFingerprint(text), released: false,
+  };
+  announcePerson(delivery);
+  return delivery;
+}
+
+/**
+ * Take back a person's send with POSITIVE evidence that nothing landed, the same line
+ * `releaseInjection` and `withdrawOtherSend` draw: a send whose outcome is unknown keeps its
+ * announcement, because its turn may still start. A null delivery (a door that announced
+ * nothing, such as an automated origin) is a no-op.
+ */
+export function withdrawPersonDelivery(delivery: PersonDelivery | null): void {
+  if (!delivery || delivery.released) return;
+  announcePerson({ ...delivery, released: true });
 }
 
 /**

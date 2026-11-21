@@ -41,7 +41,9 @@ import {
   releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  withdrawPersonDelivery,
   type HumanEchoTicket,
+  type PersonDelivery,
 } from "./injections.ts";
 import { unref } from "./util/timers.ts";
 
@@ -957,10 +959,12 @@ export class PendingTurnManager {
     // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
     // report it back while the send is still in flight (see `reserveInjection`).
     const author = daemonAuthorOf(turn);
-    if (author) reserveInjection(session.id, turn.text, author);
     // The operator's own words: always the session's wake, even when they repeat an automated
-    // delivery still on its way (see `notePersonDelivery`).
-    else notePersonDelivery(session.id, turn.text);
+    // delivery still on its way (see `notePersonDelivery`). Withdrawn wherever this row is
+    // released as positively undelivered, beside `withdrawOtherSend`.
+    let personSend: PersonDelivery | null = null;
+    if (author) reserveInjection(session.id, turn.text, author);
+    else personSend = notePersonDelivery(session.id, turn.text);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -993,6 +997,7 @@ export class PendingTurnManager {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -1073,6 +1078,7 @@ export class PendingTurnManager {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
     } finally {
@@ -1090,9 +1096,10 @@ export class PendingTurnManager {
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
     const author = daemonAuthorOf(turn);
+    // The operator's own words, announced and withdrawn as `deliverSdk` does.
+    let personSend: PersonDelivery | null = null;
     if (author) reserveInjection(session.id, turn.text, author);
-    // The operator's own words, announced as `deliverSdk` does.
-    else notePersonDelivery(session.id, turn.text);
+    else personSend = notePersonDelivery(session.id, turn.text);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1151,6 +1158,7 @@ export class PendingTurnManager {
       } else {
         if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -1217,6 +1225,7 @@ export class PendingTurnManager {
     } else {
       if (author) releaseInjection(session.id, turn.text);
       withdrawOtherSend(otherSend);
+      withdrawPersonDelivery(personSend);
       releasePendingTurn(
         turn.id,
         turn.revision,

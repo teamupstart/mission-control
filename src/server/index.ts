@@ -239,8 +239,7 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
   registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
 // And a person's own words, so an automated delivery of the same words cannot pass off the
 // person's turn as Mission Control's nudge.
-const stopPersonDeliveries = onPersonDelivery((delivery) =>
-  registry.notePersonDelivery(delivery.sessionId, delivery.at, delivery.key));
+const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,

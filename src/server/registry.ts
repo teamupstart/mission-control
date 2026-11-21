@@ -1088,7 +1088,7 @@ export class Registry extends EventEmitter {
    * contested too. In memory only: the window is a couple of minutes, and what outlives it (a
    * nudge already contested) is stored on the wait itself.
    */
-  private awaitingPersonSends = new Map<string, PendingNudge[]>();
+  private awaitingPersonSends = new Map<string, Array<{ id: string; at: number; key: string }>>();
   /**
    * The prompt fingerprints of the hook event being applied right now, for
    * `observeAwaitingTurn` to read while that event's emit is in flight. Set and cleared around
@@ -9673,7 +9673,8 @@ export class Registry extends EventEmitter {
 
   /**
    * Store on a waiting session's wait that a person's own words (from `onPersonDelivery`) are
-   * about to be written into it: the operator's, or a controlling session's.
+   * about to be written into it: the operator's, or a controlling session's. `released` takes
+   * back the send `id` because it provably never landed.
    *
    * A person's turn is always the wake, and it needs no help being one when its prompt is its
    * own. It does when the words are byte-for-byte those of an automated delivery still pending
@@ -9681,14 +9682,36 @@ export class Registry extends EventEmitter {
    * Mission Control's. So every pending delivery of the same words is marked contested, and
    * stored that way, which `useUpAwaitingNudge` reads as the wake. The send is also remembered
    * for a couple of minutes, for an automated delivery of the same words claimed after it.
+   *
+   * A send taken back leaves no person's turn to come, so its contest is lifted, unless another
+   * person's send of the same words still stands: otherwise the automated delivery's own turn
+   * would read as the wake and end a wait whose process may still be running.
    */
-  notePersonDelivery(sessionId: string, at: number, textKey: string): void {
-    const s = this.sessions.get(sessionId);
+  notePersonDelivery(delivery: { sessionId: string; id: string; at: number; key: string; released: boolean }): void {
+    const s = this.sessions.get(delivery.sessionId);
     if (!s) return;
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record) return;
-    this.awaitingPersonSends.set(key, [...this.recentPersonSends(key, at), { at, key: textKey }].slice(-32));
+    const textKey = delivery.key;
+    if (delivery.released) {
+      const sends = (this.awaitingPersonSends.get(key) ?? []).filter((send) => send.id !== delivery.id);
+      if (sends.length > 0) this.awaitingPersonSends.set(key, sends);
+      else this.awaitingPersonSends.delete(key);
+      if (sends.some((send) => send.key === textKey)) return;
+      if (!record.pendingNudges.some((nudge) => nudge.key === textKey && nudge.contested)) return;
+      const next = {
+        ...record,
+        pendingNudges: record.pendingNudges.map((nudge) => nudge.key === textKey ? { at: nudge.at, key: nudge.key } : nudge),
+      };
+      upsertSessionAwaiting(next);
+      this.awaitings.set(key, next);
+      return;
+    }
+    this.awaitingPersonSends.set(
+      key,
+      [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: textKey }].slice(-32),
+    );
     if (!record.pendingNudges.some((nudge) => nudge.key === textKey && !nudge.contested)) return;
     const next = {
       ...record,
@@ -9699,7 +9722,7 @@ export class Registry extends EventEmitter {
   }
 
   /** The person deliveries into this wait's session still inside the contest window at `now`. */
-  private recentPersonSends(key: string, now: number): PendingNudge[] {
+  private recentPersonSends(key: string, now: number): Array<{ id: string; at: number; key: string }> {
     return (this.awaitingPersonSends.get(key) ?? []).filter((send) => now - send.at <= AWAITING_CONTEST_WINDOW_MS);
   }
 

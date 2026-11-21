@@ -29,7 +29,7 @@ const { isAwaiting, awaitingOverdue } = await import("../src/shared/session.ts")
 const { detectStall, NO_UNPUSHED } = await import("../src/shared/stall.ts");
 const {
   reserveInjection, releaseInjection, recordInjection, confirmReservedInjection, onAutomatedDelivery, forgetInjections,
-  onPersonDelivery, notePersonDelivery, injectionFingerprint,
+  onPersonDelivery, notePersonDelivery, withdrawPersonDelivery, injectionFingerprint,
 } = await import("../src/server/injections.ts");
 
 type ReviewManagerT = import("../src/server/reviews.ts").ReviewManager;
@@ -128,7 +128,7 @@ function clearedEvents(sessionId: string): Array<Record<string, unknown>> {
 function wireNudges(registry: RegistryT): () => void {
   const stopAutomated = onAutomatedDelivery((delivery) =>
     registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
-  const stopPerson = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery.sessionId, delivery.at, delivery.key));
+  const stopPerson = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
   return () => {
     stopAutomated();
     stopPerson();
@@ -753,25 +753,64 @@ test("a person's message in the same words as a pending automated delivery is th
   }
 });
 
-test("the dashboard's send and inject doors announce the operator's words as a person's", async (t) => {
+test("the dashboard's send and inject doors announce the operator's words as a person's, and take back a send that never landed", async (t) => {
   const registry = new Registry();
   const app = mkApp(registry);
   const sdk = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "claude", name: "embedded", cwd: "/repo", agentSessionId: `agent-aw-doors-${seq}` });
-  const heard: Array<{ sessionId: string; key: string }> = [];
-  t.after(onPersonDelivery((delivery) => { heard.push({ sessionId: delivery.sessionId, key: delivery.key }); }));
+  const heard: Array<{ id: string; key: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, key: delivery.key, released: delivery.released }); }));
   const post = (path: string, body: unknown) => app.request(path, {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  // The deliveries themselves fail here (no driver is attached); the announcement is made
-  // before the write, as the reservation it sits beside is.
+  // No driver is attached, so each send is refused before anything is written: announced
+  // before the write, as the reservation beside it is, then taken back on that positive
+  // evidence, so it contests nothing.
   await post(`/api/sessions/${sdk.id}/send`, { text: "Send words", origin: "human" });
   await post(`/api/sessions/${sdk.id}/inject`, { text: "Inject words", origin: "human" });
-  assert.deepEqual(heard, [
-    { sessionId: sdk.id, key: injectionFingerprint("Send words") },
-    { sessionId: sdk.id, key: injectionFingerprint("Inject words") },
+  assert.equal(heard.length, 4);
+  assert.deepEqual(heard.map((h) => [h.key, h.released]), [
+    [injectionFingerprint("Send words"), false], [injectionFingerprint("Send words"), true],
+    [injectionFingerprint("Inject words"), false], [injectionFingerprint("Inject words"), true],
   ]);
+  assert.equal(heard[1]!.id, heard[0]!.id, "the withdrawal named a different send");
+  assert.equal(heard[3]!.id, heard[2]!.id);
+});
+
+test("a person's send that never landed lifts its contest, unless another send of the same words still stands", (t) => {
+  // Contesting the delivery before the person's send resolves is what makes their turn the
+  // wake. A send that then provably fails leaves no person's turn to come, and keeping the
+  // contest would read the automated delivery's own turn as the wake and end a wait whose
+  // process may still be running.
+  const WRAP = "Please wrap up and open the pull request.";
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const nudgeOf = (d: DiscoveredSession) =>
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!.pendingNudges[0];
+
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  reserveInjection(d.syntheticId, WRAP, "foreman");
+  const failed = notePersonDelivery(d.syntheticId, WRAP);
+  assert.equal(nudgeOf(d)?.contested, true);
+  withdrawPersonDelivery(failed);
+  assert.equal(nudgeOf(d)?.contested, undefined, "a failed send left its contest standing");
+  hook(registry, d, "UserPromptSubmit", WRAP);
+  assert.ok(registry.getAwaiting(d.syntheticId), "the automated delivery's own turn read as the wake after the person's send failed");
+
+  // Two sends of the same words, and only one fails: the other's turn is still coming.
+  const e = working(registry);
+  assert.equal(registry.reportAwaiting(e.syntheticId, body()).ok, true);
+  hook(registry, e, "Stop");
+  reserveInjection(e.syntheticId, WRAP, "foreman");
+  notePersonDelivery(e.syntheticId, WRAP);
+  withdrawPersonDelivery(notePersonDelivery(e.syntheticId, WRAP));
+  assert.equal(nudgeOf(e)?.contested, true, "one failed send lifted the contest another still holds");
+  hook(registry, e, "UserPromptSubmit", WRAP);
+  assert.equal(registry.getAwaiting(e.syntheticId), null);
+  assert.equal(clearedEvents(e.syntheticId).at(-1)?.actor, "wake");
 });
 
 test("a note-key rotation carries the wait to the new key, as it carries a blocker", () => {

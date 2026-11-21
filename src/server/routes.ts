@@ -356,6 +356,7 @@ import {
   notePersonDelivery,
   releaseInjection,
   reserveInjection,
+  withdrawPersonDelivery,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
@@ -6192,7 +6193,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
     // A person's words (the operator's, or a controlling session's) are always the session's
     // wake, even when they repeat an automated delivery still on its way, so say so first.
-    if (origin === "human" || origin === "session") notePersonDelivery(session.id, parsed.data.text);
+    // Taken back only on positive evidence that nothing landed, below; an unknown outcome keeps
+    // it, since the person's turn may still start.
+    const personSend = origin === "human" || origin === "session" ? notePersonDelivery(session.id, parsed.data.text) : null;
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -6205,7 +6208,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
-      if (otherSend && sent.pasted === false) withdrawOtherSend(otherSend);
+      if (sent.pasted === false) {
+        if (otherSend) withdrawOtherSend(otherSend);
+        withdrawPersonDelivery(personSend);
+      }
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
       // question this answers is how often conversation operations land, not what they said.
@@ -6592,7 +6598,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
     // A person's words, the operator's or a controller's, announced as such before the write,
     // for the reason `/send` gives.
-    if (origin === "human" || origin === "session") notePersonDelivery(session.id, text);
+    const personSend = origin === "human" || origin === "session" ? notePersonDelivery(session.id, text) : null;
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.
@@ -6656,6 +6662,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
     if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
     // here rather than at the button for the reason this whole route exists: `ok` is the only
     // place delivery is actually known, and on the pane arm it is genuinely different from

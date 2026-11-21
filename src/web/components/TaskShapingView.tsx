@@ -5,6 +5,7 @@ import {
   shaperEnvironmentStatus,
   shaperReach,
   shapingList,
+  shapingStageLockKey,
   type ShapingListGroup,
   type ShapingListRow,
   type ShapingWriteOutcome,
@@ -131,6 +132,8 @@ export function TaskShapingView({
     const unbound = entry.revision === null;
     // This row's own write still awaits its answer: none of its writes is offered until it arrives.
     const rowBusy = busy || locked.has(key);
+    // A move in this stage still awaits its answer: no other row here moves until it arrives.
+    const stageBusy = rowBusy || (group.stage !== null && locked.has(shapingStageLockKey(group.stage)));
     // A confirmation opened for an earlier definition of this id does not apply to its replacement.
     const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
     return (
@@ -177,12 +180,12 @@ export function TaskShapingView({
             <>
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
-                  disabled={rowBusy || at === 0}
+                  disabled={stageBusy || at === 0}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
-                  disabled={rowBusy || at === group.rows.length - 1}
+                  disabled={stageBusy || at === group.rows.length - 1}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">

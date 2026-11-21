@@ -102,7 +102,7 @@ export function useShapingSettings(
    * same state can come from another write, or have been stored before this one went out.
    */
   const set = async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
-    const keys = shapingLockKeys(intent, key);
+    const keys = shapingLockKeys(intent, key, confirmed);
     if (!live || writing.current || keys.some((held) => lockedNow.current.has(held))) return "not_sent";
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.

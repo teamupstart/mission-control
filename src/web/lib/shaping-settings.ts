@@ -214,16 +214,28 @@ export function shapingIntentSuperseded(view: ShapingConfigView, intent: Shaping
     && shapingViewRevision(view, intent.id) !== intent.expect;
 }
 
+/** The lock every move within `stage` holds while it awaits its answer. */
+export function shapingStageLockKey(stage: string): string {
+  return `stage:${stage}`;
+}
+
 /**
  * Every control a write can affect, all locked while it awaits its answer and all required free
  * before it is sent. An import stores its shaper switched off, so it also holds that shaper's row:
  * a switch on sent while it waits could otherwise be undone by the import landing after it, and an
- * import is not sent while a write on that row awaits its own answer.
+ * import is not sent while a write on that row awaits its own answer. A move places its shaper
+ * among the rest of its stage, so it holds that stage: a move of another row there, sent while it
+ * waits, could otherwise be undone by it landing after. A whole reorder holds every stage.
  */
-export function shapingLockKeys(intent: ShapingIntent, key: string): string[] {
-  if (intent.kind !== "upsert") return [key];
-  const row = `row:${(intent.shaper as { id?: unknown }).id}`;
-  return row === key ? [key] : [key, row];
+export function shapingLockKeys(intent: ShapingIntent, key: string, view: ShapingConfigView | null = null): string[] {
+  const keys = new Set([key]);
+  if (intent.kind === "upsert") keys.add(`row:${(intent.shaper as { id?: unknown }).id}`);
+  if (intent.kind === "move") {
+    const entry = view?.shapers.find((candidate) => candidate.id === intent.id && !isUnsupportedShaper(candidate));
+    if (entry && !isUnsupportedShaper(entry)) keys.add(shapingStageLockKey(entry.stage));
+  }
+  if (intent.kind === "reorder") for (const stage of SHAPING_STAGES) keys.add(shapingStageLockKey(stage));
+  return [...keys];
 }
 
 export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boolean {

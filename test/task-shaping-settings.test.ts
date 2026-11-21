@@ -621,3 +621,13 @@ test("an import holds its shaper's row as well as the import control; other writ
   assert.deepEqual(shapingLockKeys({ kind: "enable", id: "held", enabled: true }, "row:held"), ["row:held"]);
   assert.deepEqual(shapingLockKeys({ kind: "settings", caller: { user: "x" } }, "settings"), ["settings"]);
 });
+
+test("a move holds its stage, and a whole reorder holds every stage", () => {
+  const shown = view({ shapers: [gatherer("a"), gatherer("b"), { ...remote }] });
+  assert.deepEqual(shapingLockKeys({ kind: "move", id: "a", after: "b" }, "row:a", shown), ["row:a", "stage:gather"]);
+  assert.deepEqual(shapingLockKeys({ kind: "move", id: "acme-guidance", after: null }, "row:acme-guidance", shown), ["row:acme-guidance", "stage:select"]);
+  // A move of a shaper the view does not draw holds only its own control.
+  assert.deepEqual(shapingLockKeys({ kind: "move", id: "nobody", after: null }, "row:nobody", shown), ["row:nobody"]);
+  assert.deepEqual(shapingLockKeys({ kind: "reorder", order: ["a", "b"] }, "order", shown),
+    ["order", ...SHAPING_STAGES.map((stage) => `stage:${stage}`)]);
+});

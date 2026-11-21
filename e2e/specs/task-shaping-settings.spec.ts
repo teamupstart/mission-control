@@ -1759,3 +1759,39 @@ test("a pending import and a write on its shaper's row never overtake each other
   await expect(dialog.getByRole("status")).toHaveCount(0);
   await page.unroute("**/api/shaping");
 });
+
+test("a delayed move keeps its stage's moves locked, so another row's move never gets undone", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("first-row", "First row") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("second-row", "Second row") });
+  await putShaping(daemon, { kind: "reorder", order: ["first-row", "second-row"] });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(gatherRows(page)).toHaveText(["First row", "Second row"]);
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  // Moving the first row down is held before the daemon.
+  await page.getByRole("button", { name: "Move First row down" }).click();
+  await reached.opened;
+  // Another window puts the second row first: its frame frees the panel.
+  await putShaping(daemon, { kind: "move", id: "second-row", after: null });
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+  await expect(gatherRows(page)).toHaveText(["Second row", "First row"]);
+  // No move in that stage is offered until the held one is answered.
+  await expect(page.getByRole("button", { name: "Move Second row down" })).toBeDisabled();
+  goes.open();
+  expect((await held!.response())?.status()).toBe(200);
+  // The held move lands, idempotently, and only then can the other row move.
+  await expect(page.getByRole("button", { name: "Move Second row down" })).toBeEnabled();
+  await page.getByRole("button", { name: "Move Second row down" }).click();
+  await expect.poll(async () => (await shapingConfig(daemon)).order.filter((id) => id.endsWith("-row"))).toEqual(["first-row", "second-row"]);
+  await expect(gatherRows(page)).toHaveText(["First row", "Second row"]);
+  await page.unroute("**/api/shaping");
+});

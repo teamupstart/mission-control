@@ -175,3 +175,18 @@ test("find reaches the delivered text inside the disclosure, as Mission Control'
   assert.equal(hits[0]!.scope, "injected");
   assert.equal(hits[0]!.who, "mission control");
 });
+
+test("the review history always settles: a read that rejects or fails holds nothing back", async () => {
+  const { loadReviewHistory } = await import("../src/web/lib/timelineReviews.ts");
+  const own = [review(A)];
+  const inherited = [review(B, { sessionId: "predecessor" })];
+  const reject = () => Promise.reject(new Error("network down"));
+  // A failed lineage read cannot hide the session's own answers.
+  assert.deepEqual(await loadReviewHistory("s", { own: async () => own, lineage: reject }), { stored: own, lineage: [] });
+  // Nor the other way round.
+  assert.deepEqual(await loadReviewHistory("s", { own: reject, lineage: async () => inherited }), { stored: [], lineage: inherited });
+  // A read that answers null (a non-OK response) settles as empty.
+  assert.deepEqual(await loadReviewHistory("s", { own: async () => null, lineage: async () => null }), { stored: [], lineage: [] });
+  // Settled with nothing found, a delivered answer is then drawn as gone, never as loading for good.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true })), ["delivered:1b0c@d"]);
+});

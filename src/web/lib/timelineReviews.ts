@@ -48,15 +48,13 @@ export function useTimelineReviews(
     setLineage([]);
     setSettledFor(null);
     if (!enabled) return;
-    // Both reads settle before the history counts as loaded: an answer delivered here can name a
-    // question a runtime-transfer predecessor asked, which only the lineage read returns.
-    void Promise.all([api.resolvedReviews(sessionId), api.lineageReviews(sessionId)]).then(([rows, inherited]) => {
+    void loadReviewHistory(sessionId).then(({ stored: rows, lineage: inherited }) => {
       // Guarded against the session switching mid-flight: without this, a slow response for
       // the session you just left would land in the panel for the one you just opened, and
       // its answers would read as this session's.
       if (!alive) return;
-      if (rows) setStored(rows);
-      if (inherited) setLineage(inherited);
+      setStored(rows);
+      setLineage(inherited);
       setSettledFor(sessionId);
     });
     return () => {
@@ -71,8 +69,30 @@ export function useTimelineReviews(
   // of reviews, and the merge downstream already walks the rows once per render.
   return {
     reviews: timelineReviewsFor(sessionId, stored, live, asyncInput),
-    loaded: settledFor === sessionId,
+    // A disabled hook reads nothing, so there is nothing to wait for: settled at once.
+    loaded: !enabled || settledFor === sessionId,
     lineage,
+  };
+}
+
+/**
+ * Read a session's durable review history and its runtime-transfer predecessors', always
+ * settling. Both reads count before the history is loaded, since an answer delivered here can
+ * name a question a predecessor asked; but each lands on its own, and a read that fails or
+ * rejects contributes nothing rather than holding the other back or leaving the history
+ * unsettled, where every delivered answer would read as loading for good.
+ */
+export async function loadReviewHistory(
+  sessionId: string,
+  read: {
+    own: (id: string) => Promise<ReviewItem[] | null>;
+    lineage: (id: string) => Promise<ReviewItem[] | null>;
+  } = { own: api.resolvedReviews, lineage: api.lineageReviews },
+): Promise<{ stored: ReviewItem[]; lineage: ReviewItem[] }> {
+  const [own, inherited] = await Promise.allSettled([read.own(sessionId), read.lineage(sessionId)]);
+  return {
+    stored: own.status === "fulfilled" && own.value ? own.value : [],
+    lineage: inherited.status === "fulfilled" && inherited.value ? inherited.value : [],
   };
 }
 

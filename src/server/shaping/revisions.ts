@@ -12,6 +12,34 @@ import { canonicalJson, shapingConfigView, type ShapingConfig, type ShapingConfi
 const KEY = randomBytes(32);
 
 /**
+ * Each id's generation in this daemon process. Content alone cannot tell a definition from the
+ * same definition stored again after a replacement, so a write held since the first could pass
+ * once the original is imported again. The generation advances whenever what is stored under an
+ * id changes, by any writer, and on every import or removal of it, identical content included,
+ * and it is part of every revision: no later state of an id ever has an earlier one's revision.
+ */
+const generations = new Map<string, number>();
+
+/** Advance `id`'s generation: an import or removal of it, which a revision issued before must not survive. */
+export function advanceShapingGeneration(id: string): void {
+  generations.set(id, (generations.get(id) ?? 0) + 1);
+}
+
+/** Advance the generation of every id whose stored entries differ between `before` and `after`. */
+export function noteShapingEntriesChanged(before: ShapingConfig, after: ShapingConfig): void {
+  const byId = (config: ShapingConfig): Map<string, string> => {
+    const groups = new Map<string, unknown[]>();
+    for (const entry of config.shapers) groups.set(entry.id, [...(groups.get(entry.id) ?? []), entry]);
+    return new Map([...groups].map(([id, entries]) => [id, canonicalJson(entries)]));
+  };
+  const was = byId(before);
+  const now = byId(after);
+  for (const id of new Set([...was.keys(), ...now.keys()])) {
+    if (was.get(id) !== now.get(id)) advanceShapingGeneration(id);
+  }
+}
+
+/**
  * Revisions this daemon process has issued, most recent last, so a refusal can tell a revision
  * that is merely stale from one the daemon never issued. Bounded: an issued revision is 16
  * characters, and only one far older than the last few thousand issued is ever forgotten, which
@@ -27,7 +55,8 @@ const ISSUED_KEPT = 4096;
  * changes it.
  */
 export const shapingReviser: ShapingReviser = (entries) => {
-  const revision = createHmac("sha256", KEY).update(canonicalJson(entries)).digest("hex").slice(0, 16);
+  const generation = entries.length > 0 ? generations.get(entries[0]!.id) ?? 0 : 0;
+  const revision = createHmac("sha256", KEY).update(canonicalJson({ generation, entries })).digest("hex").slice(0, 16);
   issued.delete(revision);
   issued.add(revision);
   if (issued.size > ISSUED_KEPT) issued.delete(issued.values().next().value!);

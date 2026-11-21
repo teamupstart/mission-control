@@ -1003,3 +1003,34 @@ test("an earlier dashboard's revision of a replaceable entry, hashed without the
     assert.equal(((await answer.json()) as { error: string }).error, "stale_dashboard");
   }
 });
+
+test("a definition stored again after a replacement never gets its earlier revision back", async () => {
+  const read = async () => ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions;
+  const original = fixture("aba", "gather", "ok");
+  assert.equal((await put({ kind: "upsert", shaper: original })).status, 200);
+  const first = (await read()).aba!;
+  // Replaced, then the original imported again: the same content as when `first` was issued.
+  assert.equal((await put({ kind: "upsert", shaper: fixture("aba", "gather", "degraded") })).status, 200);
+  assert.equal((await put({ kind: "upsert", shaper: original })).status, 200);
+  const again = (await read()).aba!;
+  assert.notEqual(again, first, "a new generation, so a write held since the first can never pass");
+  const held = await put({ kind: "enable", id: "aba", enabled: true, expect: first });
+  assert.equal(held.status, 409);
+  assert.equal(((await held.json()) as { error: string }).error, "shaper_changed");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides.aba, false, "it stays off");
+  // An identical import with nothing in between starts a new generation too.
+  assert.equal((await put({ kind: "upsert", shaper: original })).status, 200);
+  assert.notEqual((await read()).aba, again);
+  // So does a change by another writer, such as a settings restore, back to the same content.
+  const current = (await read()).aba!;
+  const stored = getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS;
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...stored, shapers: [] });
+  shaping.reloadShaping();
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, stored);
+  shaping.reloadShaping();
+  assert.notEqual((await read()).aba, current);
+  // An enable changes no stored definition, so it keeps the revision.
+  const before = (await read()).aba!;
+  assert.equal((await put({ kind: "enable", id: "aba", enabled: true, expect: before })).status, 200);
+  assert.equal((await read()).aba, before);
+});

@@ -10,7 +10,7 @@ import {
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
 import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
-import { shapingReviser } from "./revisions.ts";
+import { advanceShapingGeneration, noteShapingEntriesChanged, shapingReviser } from "./revisions.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -88,6 +88,8 @@ function store(): Store {
 
 function publish(state: Store, config: ShapingConfig): ShapingConfig {
   const changed = !sameShapingConfig(state.config, config);
+  // Before any listener derives a view: every revision it carries is of the new generation.
+  noteShapingEntriesChanged(state.config, config);
   state.config = freeze(config);
   // Capture the committed value and the membership, and finish delivering one config to every
   // listener before the next, even when a listener writes again.
@@ -147,5 +149,9 @@ export function applyShapingIntent(intent: ShapingIntent, discovered: readonly D
   // Enforce the stored bounds on the whole record, not only the intent.
   const config = ShapingConfigSchema.parse(result.config);
   setAppConfig(APP_CONFIG_ENTRIES.shaping, config);
+  // An import or removal starts a new generation of its id even when the stored content is the
+  // same as before, so a write held from before it can never pass afterwards.
+  if (intent.kind === "upsert") advanceShapingGeneration(intent.shaper.id);
+  if (intent.kind === "remove") advanceShapingGeneration(intent.id);
   return { ok: true, config: publish(state, config) };
 }

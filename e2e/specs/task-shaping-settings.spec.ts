@@ -1778,3 +1778,38 @@ test("a switch superseded by another window's replacement releases the panel, an
   await expect(pill(page, "Held switch")).toHaveAccessibleName("Held switch: off");
   await page.unroute("**/api/shaping");
 });
+
+test("a held switch never applies to the same definition imported again after a replacement", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const original = commandShaper("revived-notes", "Revived notes");
+  await putShaping(daemon, { kind: "upsert", shaper: original });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Revived notes")).toHaveAccessibleName("Revived notes: off");
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await pill(page, "Revived notes").click();
+  await reached.opened;
+  // Another window replaces it, which releases the panel...
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("revived-notes", "Revived notes", { timeoutMs: 20_000 }) });
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled({ timeout: 3_000 });
+  // ...and the operator imports the original definition again, stored off.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(original));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  // The held switch, for the first time that definition was stored, now reaches the daemon.
+  goes.open();
+  expect((await held!.response())?.status()).toBe(409);
+  await expect(pill(page, "Revived notes")).toHaveAccessibleName("Revived notes: off");
+  expect((await shapingConfig(daemon)).overrides["revived-notes"]).toBe(false);
+  await page.unroute("**/api/shaping");
+});

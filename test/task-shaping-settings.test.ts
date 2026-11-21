@@ -534,3 +534,17 @@ test("a row and the settings form show their current refusal, with older ones li
   // Nothing is drawn where there is no older refusal.
   assert.equal(/Earlier refusals/.test(render(view({ shapers: [gatherer("a")] }))), false);
 });
+
+test("an enable bound to a revision is reflected only by the definition it was sent for", () => {
+  const sent = view({ shapers: [gatherer("a")] });
+  const expect = sent.revisions.a!;
+  const intent = { kind: "enable" as const, id: "a", enabled: true, expect };
+  assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")], overrides: { a: true } }), intent), true,
+    "the same definition switched on");
+  // A peer replaced it and switched the replacement on: the choice matches, the definition does not.
+  const replaced = view({ shapers: [gatherer("a", { label: "Replacement" })], overrides: { a: true } });
+  assert.notEqual(replaced.revisions.a, expect);
+  assert.equal(shapingIntentReflected(replaced, intent), false);
+  // Without a revision, the choice alone still decides.
+  assert.equal(shapingIntentReflected(replaced, { kind: "enable", id: "a", enabled: true }), true);
+});

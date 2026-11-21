@@ -567,6 +567,10 @@ test("a refused write is shown even after a peer's frame already showed what it 
   await pill(page, "Swap notes").click();
   await requested;
   // The peer replaces the definition this window showed, then switches the replacement on.
+  // A peer switches the same definition on: that frame is this click's outcome and frees the
+  // row. Only then does it replace the definition, so the held click names one that is gone.
+  await putShaping(daemon, { kind: "enable", id: "swap-notes", enabled: true });
+  await expect(pill(page, "Swap notes")).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("swap-notes", "Swap notes", { timeoutMs: 20_000 }) });
   await putShaping(daemon, { kind: "enable", id: "swap-notes", enabled: true });
   await expect(pill(page, "Swap notes")).toHaveAccessibleName("Swap notes: on");
@@ -671,6 +675,10 @@ test("a refusal that lands after a newer write on the same row names the earlier
   const first = page.waitForRequest(isPut);
   await pill(page, "Late notes").click();
   await requested;
+  // A peer switches the same definition on: that frame is this click's outcome and frees the
+  // row. Only then does it replace the definition, so the held click names one that is gone.
+  await putShaping(daemon, { kind: "enable", id: "late-notes", enabled: true });
+  await expect(pill(page, "Late notes")).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("late-notes", "Late notes", { timeoutMs: 20_000 }) });
   await putShaping(daemon, { kind: "enable", id: "late-notes", enabled: true });
   await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: on");
@@ -1027,6 +1035,10 @@ test("a later write that succeeds on a row clears the earlier write's refusal sh
   const first = page.waitForRequest(isPut);
   await pill(page, "Clear notes").click();
   await firstSent.opened;
+  // A peer switches the same definition on: that frame is this click's outcome and frees the
+  // row. Only then does it replace the definition, so the held click names one that is gone.
+  await putShaping(daemon, { kind: "enable", id: "clear-notes", enabled: true });
+  await expect(pill(page, "Clear notes")).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("clear-notes", "Clear notes", { timeoutMs: 20_000 }) });
   await putShaping(daemon, { kind: "enable", id: "clear-notes", enabled: true });
   await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: on");
@@ -1067,6 +1079,10 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
   await pill(page, "Both notes").click();
   await sent[0]!.opened;
   // A peer replaces and switches it on: the frame frees the row for the second click.
+  // A peer switches the same definition on: that frame is this click's outcome and frees the
+  // row. Only then does it replace the definition, so the held click names one that is gone.
+  await putShaping(daemon, { kind: "enable", id: "both-notes", enabled: true });
+  await expect(pill(page, "Both notes")).toBeEnabled();
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes", { timeoutMs: 20_000 }) });
   await putShaping(daemon, { kind: "enable", id: "both-notes", enabled: true });
   await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: on");
@@ -1402,9 +1418,12 @@ test("a refused removal of a shaper another window removed first is shown above 
   goes.open();
   expect((await held!.response())?.status()).toBe(400);
   // The row is gone, so the refusal is shown above the list instead of vanishing with it.
-  await expect(panel(page).getByRole("group", { name: "Shapers no longer listed" }).getByRole("alert"))
-    .toHaveText("No registered shaper has the id \"gone-notes\".");
+  const orphans = panel(page).getByRole("group", { name: "Shapers no longer listed" });
+  await expect(orphans.getByRole("alert")).toHaveText("No registered shaper has the id \"gone-notes\".");
   await capture(page, "orphan-outcome");
+  // The operator clears it: nothing else changes, and the group goes with its last outcome.
+  await orphans.getByRole("button", { name: "Dismiss the outcome for gone-notes" }).click();
+  await expect(orphans).toHaveCount(0);
   await page.unroute("**/api/shaping");
 });
 
@@ -1448,5 +1467,35 @@ test("a reopened import dialog shows an earlier save's refusal that arrives afte
   await expect(dialog.getByRole("list", { name: "Earlier refusals" }))
     .toHaveText("An earlier change, importing twin-saves, was refused: Save 1 was refused.");
   await expect(dialog.getByRole("alert")).toHaveText("Save 2 was refused.");
+  await page.unroute("**/api/shaping");
+});
+
+test("an enable whose answer is lost is not credited by a frame for a replacement", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("credit-notes", "Credit notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Credit notes")).toHaveAccessibleName("Credit notes: off");
+  // The click is held before the daemon. Let through, the daemon refuses it, and that answer is lost.
+  const reached = gate();
+  const goes = gate();
+  let refusal = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    refusal = (await route.fetch()).status();
+    await route.abort("connectionreset");
+  });
+  await pill(page, "Credit notes").click();
+  await reached.opened;
+  // A peer replaces the definition and switches the replacement on: the switch matches, the definition does not.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("credit-notes", "Credit notes", { timeoutMs: 20_000 }) });
+  await putShaping(daemon, { kind: "enable", id: "credit-notes", enabled: true });
+  goes.open();
+  const alert = row(page, "Credit notes").getByRole("alert");
+  await expect(alert).toHaveText(
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
+  );
+  expect(refusal, "the daemon refused it, though no answer reached the window").toBe(409);
   await page.unroute("**/api/shaping");
 });

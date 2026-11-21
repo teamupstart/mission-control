@@ -765,3 +765,19 @@ test("a dry run calls exactly one shaper, switched off or not", async () => {
     ok: false, error: "unknown_shaper", reason: 'No shaper has the id "ghost".',
   });
 });
+
+test("a reply the transport produced in time is kept, though the engine reads it after the deadline", async () => {
+  const config = configWith([shaper("s", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } });
+  const result = await run(config, (_request, _entry, ctx) => {
+    // The transport reports its outcome at once, inside the call's 100 ms.
+    ctx.settled?.();
+    // Synchronous work then runs ahead of the engine reading the reply, until well past the deadline.
+    queueMicrotask(() => {
+      const until = performance.now() + 250;
+      while (performance.now() < until) { /* busy */ }
+    });
+    return data({ guidance: [{ id: "on-time", body: "answered on time" }] });
+  }, input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok"], "judged by when the transport produced it");
+  assert.deepEqual(result.entries.map((entry) => entry.id), ["on-time"]);
+});

@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
-import type { Hono } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND } from "@shared/types.ts";
@@ -78,6 +78,12 @@ export async function checkoutFor(
 
 export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: CheckoutProbes } = {}): void {
   const gate = requireFeature("task-shaping");
+  // Both writes are refused unless they come from the dashboard, as a dry run executes a shaper.
+  // Before the body limit, so a forged request is refused as forbidden whatever its size.
+  const loopbackWrite: MiddlewareHandler = async (c, next) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    await next();
+  };
 
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
@@ -85,9 +91,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     return c.json({ config: daemonShapingView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
-  app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
-    // Both writes are refused unless they come from the dashboard: a dry run executes a shaper.
-    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+  app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingIntentSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -103,8 +107,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     }
   });
 
-  app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
-    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+  app.post("/api/shaping/test", gate, loopbackWrite, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind, expect } = parsed.data;

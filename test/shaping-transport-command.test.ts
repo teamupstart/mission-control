@@ -846,3 +846,17 @@ test("a shaper definition cannot name a shell string or a relative path outside 
   const ok: Shaper = ShaperSchema.parse({ id: "x", label: "X", stage: "gather", transport: { type: "command", command: "node" } });
   assert.equal(ok.transport.type, "command");
 });
+
+test("the command transport reports when its outcome is known, before its reply settles", async () => {
+  const events: string[] = [];
+  const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx(10_000, { settled: () => events.push("settled") })).then((value) => {
+    events.push("replied");
+    return value;
+  });
+  assert.equal(reply.kind, "data");
+  assert.deepEqual(events, ["settled", "replied"]);
+  // A failure reports it too.
+  let failed = 0;
+  await callCommand(request(), shaper([FIXTURE, "fail"]), ctx(10_000, { settled: () => failed++ }));
+  assert.equal(failed, 1);
+});

@@ -903,3 +903,17 @@ test("both shaping writes refuse a request a page on another site could send", a
   });
   assert.equal(own.status, 200);
 });
+
+test("a forged shaping write is refused as forbidden whatever its size, before the body limit", async () => {
+  // Past both routes' body limits: the dry run's, the larger, is about 6 MiB.
+  const huge = JSON.stringify({ kind: "settings", caller: { user: "x".repeat(7 * 1024 * 1024) } });
+  for (const [path, method] of [["/api/shaping", "PUT"], ["/api/shaping/test", "POST"]] as const) {
+    const forged = await app.request(path, { method, headers: { ...headers, "content-type": "text/plain" }, body: huge });
+    assert.equal(forged.status, 403, path);
+    const foreign = await app.request(path, { method, headers: { ...headers, origin: "https://attacker.example" }, body: huge });
+    assert.equal(foreign.status, 403, path);
+    // From the dashboard, the same body still meets the limit.
+    const own = await app.request(path, { method, headers, body: huge });
+    assert.equal(own.status, 413, path);
+  }
+});

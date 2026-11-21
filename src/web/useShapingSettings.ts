@@ -168,6 +168,8 @@ export function useShapingSettings(
       .map(([key, list]) => [key, Math.max(...list.map((refusal) => refusal.arrived))])),
     ready: live,
     set,
+    /** Clear every outcome shown under one control, as the operator's own dismissal. */
+    dismiss: (key: string) => setRefusals((current) => withRefusals(current, key, [])),
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;

@@ -201,7 +201,11 @@ export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingI
       // The registration is gone. What the daemon kept for a folder shaper of that id is its own.
       return !view.shapers.some((entry) => entry.id === intent.id);
     case "enable":
-      return view.overrides[intent.id] === intent.enabled;
+      // The choice alone is not this request's outcome: a peer may have replaced the shaper and
+      // switched the replacement the same way. Bound to a revision, it counts only for the
+      // definition it was sent for; an enable never changes a revision, so a stored one keeps it.
+      return view.overrides[intent.id] === intent.enabled
+        && (intent.expect === undefined || shapingViewRevision(view, intent.id) === intent.expect);
     case "move": {
       // The shaper sits right after the named neighbour, or first, among its stage's rows.
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));

@@ -33,6 +33,7 @@ export function TaskShapingView({
   errors = {},
   earlier = {},
   outcomeArrivals = {},
+  onDismiss,
   ready = true,
   onSet,
   onTest,
@@ -48,6 +49,8 @@ export function TaskShapingView({
   earlier?: Record<string, string[]>;
   /** When each control's latest outcome arrived, in arrival order. */
   outcomeArrivals?: Record<string, number>;
+  /** Clears the outcomes shown under one control, for those drawn above the list. */
+  onDismiss?: (key: string) => void;
   ready?: boolean;
   onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
   onTest: ShapingTestRunner;
@@ -241,16 +244,24 @@ export function TaskShapingView({
           <div className="shaping-list-outcome" role="group" aria-label="Shapers no longer listed">
             {orphans.map((key) => (
               <div key={key} className="shaping-orphan-outcome">
-                {errors[key] && <p role="alert">{errors[key]}</p>}
-                <EarlierRefusals messages={earlier[key]} />
+                <div className="shaping-orphan-copy">
+                  {errors[key] && <p role="alert">{errors[key]}</p>}
+                  <EarlierRefusals messages={earlier[key]} />
+                </div>
+                {onDismiss && <DismissOutcome label={key.slice("row:".length)} onDismiss={() => onDismiss(key)} />}
               </div>
             ))}
           </div>
         )}
         {!importing && (errors.import || earlier.import) && (
           <div className="shaping-list-outcome" role="group" aria-label="Last import">
-            {errors.import && <p role="alert">{errors.import}</p>}
-            <EarlierRefusals messages={earlier.import} />
+            <div className="shaping-orphan-outcome">
+              <div className="shaping-orphan-copy">
+                {errors.import && <p role="alert">{errors.import}</p>}
+                <EarlierRefusals messages={earlier.import} />
+              </div>
+              {onDismiss && <DismissOutcome label="the last import" onDismiss={() => onDismiss("import")} />}
+            </div>
           </div>
         )}
         {config === null && <p className="feature-flag-empty">Loading shapers…</p>}
@@ -305,6 +316,16 @@ function kib(bytes: number): string {
 }
 
 /** The form's three fields, as typed. */
+/** Clears an outcome drawn above the list, which has no row or dialog of its own to go with. */
+function DismissOutcome({ label, onDismiss }: { label: string; onDismiss: () => void }): React.JSX.Element {
+  return (
+    <Tooltip label="Clear this message. Nothing is changed.">
+      <button type="button" className="btn btn-ghost shaping-outcome-dismiss" aria-label={`Dismiss the outcome for ${label}`}
+        onClick={onDismiss}>Dismiss</button>
+    </Tooltip>
+  );
+}
+
 interface SettingsFields {
   user: string;
   deadlineMs: string;

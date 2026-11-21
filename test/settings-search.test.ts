@@ -45,6 +45,7 @@ const SHAPING: ShapingSettings = {
   errors: {}, earlier: {}, outcomeArrivals: {},
   ready: true,
   set: async () => true,
+  dismiss: () => {},
 };
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";

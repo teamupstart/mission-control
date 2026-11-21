@@ -241,7 +241,8 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 All three routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
 `POST /api/shaping/test` also answer 403 `forbidden` unless the body is declared
 `application/json` and any `Origin` is a loopback `http:` origin, the check other browser-write
-routes use, so a page on another site cannot store an intent or run a shaper.
+routes use, so a page on another site cannot store an intent or run a shaper. The check runs
+before the body limit, so such a request is refused as forbidden whatever its size.
 
 - **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
@@ -349,7 +350,10 @@ arrives while the dialog is open again. Only the latest save sent from a dialog 
 An outcome for a shaper the list no longer shows, such as a removal refused because another
 window removed it first, is shown above the list under **Shapers no longer listed**. An
 unconfirmed write that a stream update showed stored says so in the past tense, and leaves the
-current state to the list. A save of the caller identity and
+current state to the list. A stream update counts as a switch's outcome only for the definition
+the switch was sent for, so a peer replacing the shaper and switching the replacement the same way
+is never taken for it. An outcome shown above the list, for a shaper no longer listed or for the
+last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays.
 

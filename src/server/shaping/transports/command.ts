@@ -345,6 +345,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       ctx.signal.removeEventListener("abort", onAbort);
       releaseStdio(child as ChildProcess | undefined);
       reapGroup(child as ChildProcess | undefined);
+      // The outcome is known now: the engine judges the deadline by this moment.
+      ctx.settled?.();
       settle(reply);
       cleanup((text) => redactReceived(text, received));
     };

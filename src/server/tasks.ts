@@ -159,7 +159,14 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
-import { CHECKOUT_UNVERIFIED_REASON, deliveredWithoutContext, launchUnconfirmed, shapeLaunch, withTaskContext } from "./shaping/launch.ts";
+import {
+  CHECKOUT_UNVERIFIED_REASON,
+  PANE_UNVERIFIED_REASON,
+  deliveredWithoutContext,
+  launchUnconfirmed,
+  shapeLaunch,
+  withTaskContext,
+} from "./shaping/launch.ts";
 import type { shapeTask } from "./shaping/engine.ts";
 import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
@@ -5384,8 +5391,12 @@ export class TaskManager {
         if (!receiving) {
           return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
         }
-        const stillReady = await paneReady(receiving);
-        if (!stillReady.ok) {
+        // A probe that throws is inconclusive rather than a "no": the session is already reset, so
+        // the original prompt goes ahead without the context, through the delivery's own guard.
+        const stillReady = await paneReady(receiving).catch(() => null);
+        if (stillReady === null) {
+          shaping = deliveredWithoutContext(shaping, PANE_UNVERIFIED_REASON);
+        } else if (!stillReady.ok) {
           return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
         }
       }
@@ -5393,7 +5404,8 @@ export class TaskManager {
       // could have moved it while shapers ran or the pane was probed. Read last, as the final await
       // before delivery: the session and task are then rechecked by the guard `inject` runs at the
       // write itself, which cannot run Git.
-      if (carriesContext && live.cwd) {
+      // Asked of the section as it now stands: one the probe above dropped has nothing left to verify.
+      if (carriesContext && shaping.section && live.cwd) {
         const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
         if (now.baseSha === null || checkout.baseSha === null) {
           // Unreadable is not changed: with either read unknown nothing can be compared, and the agent

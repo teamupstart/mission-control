@@ -511,3 +511,30 @@ test("a restart reads the record back with the task", () => {
   const registry = new Registry();
   assert.equal(registry.getTask("restart")?.shaping?.sessionId, "live");
 });
+
+test("a durable read hides a superseded record while its clean-up is pending", async () => {
+  const { taskShapingForReads } = await import("../src/server/shaping/reads.ts");
+  setFlag(true);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "durable-pending", status: "running", sessionId: "kept" }));
+  registry.commitTaskShaping("durable-pending", "kept", record("kept"), "first text");
+  registry.shapingCommitter = () => { throw new Error("disk full"); };
+  registry.shapingClearer = () => { throw new Error("still full"); };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // Handed back to the same session: the commit and its clean-up both fail.
+    assert.equal(registry.commitTaskShaping("durable-pending", "kept", null, ""), false);
+    const durable = db.getTask("durable-pending")!;
+    assert.equal(durable.shaping?.sessionId, "kept", "the stale record is still on disk and names this session");
+    // What MCP's `get_task` and `list_tasks` project from that row.
+    assert.equal(taskShapingForReads(durable).shaping, undefined, "and no durable read presents it as current");
+  } finally {
+    console.warn = warn;
+    registry.shapingCommitter = null;
+    registry.shapingClearer = null;
+  }
+  // Once the clean-up succeeds, nothing is pending and nothing stale is left to hide.
+  registry.upsertTask({ ...registry.getTask("durable-pending")!, priority: "high" });
+  assert.equal(db.getTask("durable-pending")?.shaping, undefined);
+});

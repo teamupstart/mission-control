@@ -19,7 +19,14 @@ import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
 import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
-import { sessionShapingForReads, taskShapingForReads } from "./shaping/reads.ts";
+import {
+  forgetSupersededShaping,
+  hasSupersededShaping,
+  noteSupersededShaping,
+  sessionShapingForReads,
+  supersededShapingFor,
+  taskShapingForReads,
+} from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -7626,7 +7633,7 @@ export class Registry extends EventEmitter {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
     // The row just persisted, so the database is taking writes again: settle a superseded
     // shaping record a failed clean-up left on disk (see `hideSupersededShaping`).
-    if (this.pendingShapingClears.size > 0) this.retryShapingClear(task.id);
+    if (hasSupersededShaping()) this.retryShapingClear(task.id);
   }
 
   /**
@@ -7764,7 +7771,7 @@ export class Registry extends EventEmitter {
     try {
       (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
       // This commit settled the row, so no earlier clean-up may touch it now.
-      this.pendingShapingClears.delete(taskId);
+      forgetSupersededShaping(taskId);
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
       this.hideSupersededShaping(taskId, sessionId);
@@ -7821,7 +7828,7 @@ export class Registry extends EventEmitter {
     // Memory drops it now. On disk it is cleared only while it still names this session, and a
     // clear that fails too is retried after the task's next persisted write - the handover's
     // own, a moment later - so a restart does not read the earlier delivery back as this one's.
-    this.pendingShapingClears.set(taskId, sessionId);
+    noteSupersededShaping(taskId, sessionId);
     this.retryShapingClear(taskId);
     const { shaping: _stale, ...rest } = current;
     this.tasks.set(taskId, rest);
@@ -7830,14 +7837,13 @@ export class Registry extends EventEmitter {
   }
 
   /** Superseded records whose on-disk clear has not succeeded yet: task id to the session they name. */
-  private readonly pendingShapingClears = new Map<string, string>();
 
   private retryShapingClear(taskId: string): void {
-    const sessionId = this.pendingShapingClears.get(taskId);
+    const sessionId = supersededShapingFor(taskId);
     if (sessionId === undefined) return;
     try {
       (this.shapingClearer ?? dbClearTaskShapingFor)(taskId, sessionId);
-      this.pendingShapingClears.delete(taskId);
+      forgetSupersededShaping(taskId);
     } catch (error) {
       console.warn(`[shaping] could not clear task ${taskId}'s superseded shaping record yet:`, error);
     }

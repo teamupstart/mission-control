@@ -292,6 +292,10 @@ export function deliveredWithoutContext(shaping: LaunchShaping, reason: string):
   return { summary: withoutDeliveredSection(shaping.summary, reason, "degraded"), section: "" };
 }
 
+/** Why a handover sent its original prompt: the pane could not be probed again before delivery. */
+export const PANE_UNVERIFIED_REASON =
+  "the agent's pane could not be probed again before delivery, so the original prompt was sent without the context";
+
 /** Why a launch whose wrapper left no readable receipt is not recorded as delivered. */
 export const TURN_ONE_UNCONFIRMED_REASON =
   "the launch could not confirm which turn one the agent received, so the context is not counted as delivered";

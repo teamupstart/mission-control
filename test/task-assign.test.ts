@@ -1813,23 +1813,31 @@ test("a turn the operator starts and finishes while shapers run stops the handov
   }
 });
 
-test("a pane probe that throws after shaping still releases the handover's turn watch", async () => {
+test("a pane probe that throws after shaping sends the original prompt, and releases the handover's turn watch", async () => {
   setShaping(true);
   try {
     const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-probe-throws-");
     r.upsertTask(mkTask({ repoRoot: clone }));
     const listeners = r.listenerCount("event");
     let probes = 0;
-    await assert.rejects(tasks.assign("t1", sessionId, {
+    let typed = "";
+    const res = await tasks.assign("t1", sessionId, {
       reset: cleanReset,
       shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // The probe after shaping is inconclusive: it throws rather than answering.
       paneReady: async () => {
         if (++probes === 2) throw new Error("the pane probe failed");
         return { ok: true };
       },
-      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
-    }), /the pane probe failed/);
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
     assert.equal(probes, 2);
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.doesNotMatch(typed, /## Task context/, "the already-reset session gets its original prompt");
+    assert.equal(r.getTask("t1")?.status, "running");
+    const record = currentShaping(r.getTask("t1")!);
+    assert.equal(record?.state, "degraded");
+    assert.match(record?.limit?.reason ?? "", /pane could not be probed again before delivery/);
     assert.equal(r.listenerCount("event"), listeners, "no listener outlives the handover");
   } finally {
     setShaping(false);

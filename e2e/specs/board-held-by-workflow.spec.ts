@@ -524,10 +524,17 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds).not.toContainText("Action needed · Operator");
   await expect(holds).toContainText("In progress · Session");
 
+  // Wait for the observer to record the durable blocker before reconnecting. Otherwise the
+  // snapshot can race its first sweep and still show the earlier Preview operator wait.
+  await expect.poll(async () => (await api<{ summary: typeof summary }>(daemon,
+    `/api/workflow-runs/${runId}`)).summary.resumption?.reason, { timeout: 30_000 }).toBe("session_blocked");
   // A reconnect snapshot restores daemon truth; the same explanation appears in the Console rail.
   await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
   await dashboard.reload();
-  await expect(holds).toContainText("Action needed · Operator");
+  await expect(holds).toContainText("Waiting · Platform team");
+  await expect(holds).not.toContainText("Action needed · Operator");
+  await expect(holds.getByRole("link")).toHaveCount(1);
+  await expect(holds.getByRole("link")).toHaveAttribute("href", `#/runs/${runId}`);
   await shoot(dashboard, "hold-console");
   await api(daemon, "/api/feature-flags", { kind: "flag", id: "workflow-hold-details", enabled: false }, "PUT");
   await expect(holds).toHaveCount(0);

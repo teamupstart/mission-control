@@ -350,8 +350,10 @@ both are refused, the newer write's reason stays the control's refusal and a lat
 apart from it, under **Earlier refusals**. A refusal belongs to its control: a write under another
 control leaves it in place, and acting on the same control again dismisses it. A write whose
 answer never arrives, because it timed out or the connection failed, is reported as unconfirmed,
-never as refused. When the event stream already showed it stored, the panel treats it as saved,
-so an import's dialog closes. An import's outcome that arrives after its dialog was closed is shown
+never as refused, and never as saved: only the daemon's answer ties an outcome to a request,
+since the same state can come from another write or predate this one. When a stream update
+showed the change stored, the message says so, and an import's dialog stays open for the
+operator to close. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
 arrives while the dialog is open again. Only the latest save sent from a dialog closes it on success.
 An outcome for a shaper the list no longer shows, such as a removal refused because another

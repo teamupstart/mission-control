@@ -70,8 +70,9 @@ export function useShapingSettings(
   }, [pending, reflected, live]);
 
   /**
-   * Send one intent. Resolves true when the daemon accepted it, or when its answer was lost but
-   * the event stream already showed the change stored.
+   * Send one intent. Resolves true only when the daemon's answer accepted it. A stream frame that
+   * shows the change frees the controls early, but it is no acknowledgment of this request: the
+   * same state can come from another write, or have been stored before this one went out.
    */
   const set = async (intent: ShapingIntent, key: string): Promise<boolean> => {
     if (!live || writing.current) return false;
@@ -98,8 +99,9 @@ export function useShapingSettings(
       const result = await api.setShaping(request, { signal: timeout });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
-        // refusing it, so it is never reported as a refusal. When the stream already showed the
-        // change stored, the window treats it as saved and says the answer was lost.
+        // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
+        // ties an outcome to this request. When a frame showed the change stored, the message says
+        // so, in the past tense, and leaves deciding to the operator.
         const shown = observed.current.has(request);
         const cause = timeout.aborted
           ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
@@ -110,7 +112,7 @@ export function useShapingSettings(
           writing.current = null;
           setPending(null);
         }
-        return shown;
+        return false;
       }
       if (!result.ok) {
         throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");

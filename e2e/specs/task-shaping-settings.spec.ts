@@ -1179,7 +1179,8 @@ test("an import whose answer is lost is reported unconfirmed, never refused", as
   const manifest = dialog.getByRole("textbox", { name: "Manifest" });
   const save = dialog.getByRole("button", { name: "Save switched off" });
 
-  // Stored, and shown by the stream, but the answer never arrives: the dialog closes as saved.
+  // Stored, and shown by the stream, but the answer never arrives. Only the answer ties an
+  // outcome to this request, so the dialog stays open and says what the stream showed.
   await page.route("**/api/shaping", async (route) => {
     if (route.request().method() !== "PUT") return route.fallback();
     await route.fetch();
@@ -1190,8 +1191,13 @@ test("an import whose answer is lost is reported unconfirmed, never refused", as
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   await manifest.fill(JSON.stringify(commandShaper("lost-answer", "Lost answer")));
   await save.click();
-  await expect(dialog).toHaveCount(0);
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.",
+  );
+  await expect(dialog).toBeVisible();
   await expect(pill(page, "Lost answer")).toHaveAccessibleName("Lost answer: off");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
   await page.unroute("**/api/shaping");
 
   // Never reaching the daemon, the outcome is unknown: the dialog stays open and says so.
@@ -1569,4 +1575,36 @@ test("a view without revisions, as a rolled-back daemon sends, turns revision-bo
   await expect(page.getByRole("button", { name: "Dry-run Older notes" })).toBeDisabled();
   // The rest of the panel still works.
   await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+});
+
+test("a frame from an unrelated write never stands in for a lost import answer", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("resaved-notes", "Resaved notes");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Resaved notes")).toHaveAccessibleName("Resaved notes: off");
+  // The same manifest saved again is held before the daemon, then never arrives.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Another window changes an unrelated setting: its frame still shows the manifest stored.
+  await putShaping(daemon, { kind: "settings", caller: { user: "unrelated-write" } });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  goes.open();
+  // That frame frees the dialog, but is no answer to this save: it stays open and says so.
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.",
+  );
+  await expect(dialog).toBeVisible();
+  await page.unroute("**/api/shaping");
 });

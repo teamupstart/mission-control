@@ -62,6 +62,7 @@ import type {
   ModPaneOpen,
   ModState,
 } from "../../src/mod/host.ts";
+import { routes as dispatch } from "./home-dispatch-fakes-dispatch.ts";
 import { renderPane, type PaneProps, type PaneView } from "../../src/mod/pane/index.ts";
 
 export { createFakeClaude } from "./home-dispatch-fake-claude.ts";
@@ -305,7 +306,7 @@ export const ROUTE_REQUEST_SCHEMAS: Partial<Record<FakeRouteKey, ZodType>> = {
  * Per-phase fixture files, one entry each. Add `import { routes as inbox } from
  * "./home-dispatch-fakes-inbox.ts";` above and `inbox` here. Later entries win.
  */
-export const AREA_FIXTURES: readonly FakeRouteOverrides[] = [];
+export const AREA_FIXTURES: readonly FakeRouteOverrides[] = [dispatch];
 
 /* ------------------------------------------------------------------ the fake daemon */
 

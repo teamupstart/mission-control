@@ -52,7 +52,11 @@ function sharedGoBuildCache(): string {
   return SHARED_GO_BUILD_CACHE;
 }
 
-/** Remove only expired Pipeline caller files left by a previous daemon crash. */
+/**
+ * Remove only expired Pipeline caller files left by a previous daemon crash, and turn-one outcome
+ * files (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
+ * and the dispatch that would have read and removed them died with that daemon.
+ */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   let entries: string[];
   try {
@@ -62,6 +66,14 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
   }
   for (const entry of entries) {
     if (!entry.startsWith("session-")) continue;
+    const outcomeOf = entry.endsWith(".turn-one") ? join(DISPOSABLE_STATE_ROOT, entry.slice(0, -".turn-one".length)) : null;
+    if (outcomeOf) {
+      // Still running under a live wrapper, or still owned by this daemon: leave it.
+      if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf)) {
+        rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+      }
+      continue;
+    }
     const stateHome = join(DISPOSABLE_STATE_ROOT, entry);
     if (liveDisposableStateHomes.has(stateHome)) continue;
     try {

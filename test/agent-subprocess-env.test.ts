@@ -330,8 +330,13 @@ test("at the exact limit where an interpreter re-exec fails, the wrapper launche
     }
     return pane;
   };
-  const runs = (file: string, args: readonly string[], env: Record<string, string>) =>
-    spawnSync(file, args, { env, stdio: "ignore" }).error === undefined;
+  // Started means the interpreter itself ran: once the outer shell is up, a refused re-exec shows
+  // only as a nonzero status, and the stand-in interpreter never writes its record.
+  const runs = (file: string, args: readonly string[], env: Record<string, string>) => {
+    rmSync(out, { force: true });
+    const ran = spawnSync(file, args, { env, stdio: "ignore" });
+    return ran.error === undefined && ran.status === 0 && existsSync(out);
+  };
   // The largest padding under which the shaped launch itself still starts, found by bisection so
   // the case holds on any platform's accounting.
   let fits = 0;
@@ -343,7 +348,13 @@ test("at the exact limit where an interpreter re-exec fails, the wrapper launche
   }
   const pane = paneWith(fails);
   assert.equal(runs(agent, shaped.slice(1), pane), false, "the shaped launch cannot start in this environment");
+  // And it is the interpreter's re-exec that is refused there: the outer script itself starts, and
+  // fails only when it hands the argv on under the interpreter's long path.
+  const outer = spawnSync(agent, shaped.slice(1), { env: pane, stdio: "ignore" });
+  assert.equal(outer.error, undefined, "the outer script starts at this limit");
+  assert.notEqual(outer.status, 0, "and its interpreter's exec fails");
   assert.equal(runs(agent, fallback.slice(1), pane), true, "the original one can");
+  rmSync(out, { force: true });
 
   const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
   execFileSync(argv[0]!, argv.slice(1), { env: pane });
@@ -352,4 +363,24 @@ test("at the exact limit where an interpreter re-exec fails, the wrapper launche
   rmSync(`${stateHome}.turn-one`, { force: true });
   assert.equal(outcome, "original");
   assert.equal(readFileSync(out, "utf8"), String("the original prompt".length), "and the agent started with it");
+});
+
+test("restart recovery removes a turn-one outcome whose launch is over, and keeps a live one", async () => {
+  const { reconcileDisposableAgentStateHomes, createDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
+  // A launch whose wrapper already removed its state home, from a daemon that has since died.
+  const orphan = join(DISPOSABLE_STATE_ROOT, "session-orphaned-turn-one");
+  writeFileSync(`${orphan}.turn-one`, "original");
+  // A launch still running: its state home exists.
+  const live = createDisposableAgentStateHome();
+  writeFileSync(`${live}.turn-one`, "shaped");
+  try {
+    reconcileDisposableAgentStateHomes();
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed");
+    assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
+  } finally {
+    rmSync(`${orphan}.turn-one`, { force: true });
+    rmSync(`${live}.turn-one`, { force: true });
+    rmSync(live, { recursive: true, force: true });
+  }
 });

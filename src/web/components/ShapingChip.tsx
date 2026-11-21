@@ -172,7 +172,12 @@ export function ShapingViewer({
                 </span>
                 {shaper.sha256 && (
                   // Which definition ran: the manifest's bytes for a folder shaper, the stored entry for a registered one.
-                  <span className="task-context-definition">Definition <code title={shaper.sha256}>sha256 {shaper.sha256.slice(0, 12)}</code></span>
+                  <span className="task-context-definition">
+                    Definition{" "}
+                    <Tooltip label={`sha256 ${shaper.sha256}`}>
+                      <code tabIndex={0}>sha256 {shaper.sha256.slice(0, 12)}</code>
+                    </Tooltip>
+                  </span>
                 )}
                 {shaper.reason && <span className="task-context-reason">{shaper.reason}</span>}
                 {shaper.redacted && (

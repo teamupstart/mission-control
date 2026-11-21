@@ -369,6 +369,10 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   const ship = await post("/api/launch-failures/retry", { taskId: "ship-f" });
   assert.equal(ship.status, 200, JSON.stringify(ship.body));
   assert.equal((ship.body.task as Task).id, "ship-f");
+  // Both fixtures predate the work unit column. The retried ship is the same row, given its
+  // id by the dispatch; the chat is given one when its replacement inherits from it.
+  assert.ok(registry.getTask("ship-f")!.workUnitId);
+  assert.equal(registry.getTask("ship-f")!.workUnitId, db.getTask("ship-f")!.workUnitId);
 
   const chat = await post("/api/launch-failures/retry", { taskId: "chat-f" });
   assert.equal(chat.status, 200, JSON.stringify(chat.body));
@@ -377,6 +381,9 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   assert.equal(clone.kind, "chat");
   assert.equal(clone.intent, "Talk it over");
   assert.equal(lf.launchWorkKey(clone), lf.launchWorkKey(registry.getTask("chat-f")!), "the same work, so its start answers the failure");
+  assert.ok(clone.workUnitId, "the replacement has a work unit");
+  assert.equal(clone.workUnitId, registry.getTask("chat-f")!.workUnitId, "the same work, so the same work unit");
+  assert.equal(db.getTask("chat-f")!.workUnitId, clone.workUnitId, "the source's id was saved, not only shown");
 
   assert.deepEqual(dispatched, ["ship-f", clone.id]);
   const resident = await post("/api/launch-failures/retry", { taskId: "w1" });

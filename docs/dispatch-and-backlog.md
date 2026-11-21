@@ -814,6 +814,15 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### Work units
+
+Every task has a [work unit](work-units.md) id, `workUnitId`, except a resident run's. A plan
+task and the phase tasks its session files through MCP `create_task` share one. Which other
+tasks share a work unit and which get their own is set out in
+[Which tasks share one](work-units.md#which-tasks-share-one). A task shelved before work units
+existed gets its id when it is next dispatched or assigned. `list_tasks` can list the tasks of
+one work unit.
+
 ### One agent, one task at a time - but not one task per agent
 
 **An agent runs tasks one after another, for as long as it's alive.** Finish one, take the

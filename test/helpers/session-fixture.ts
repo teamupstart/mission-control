@@ -136,6 +136,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
   const now = 1000;
   return {
     id: "t1",
+    workUnitId: null,
     title: "T",
     intent: "do the thing",
     kind: "ship",

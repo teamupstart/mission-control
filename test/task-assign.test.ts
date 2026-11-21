@@ -2097,3 +2097,18 @@ test("a checkout unreadable before shaping but readable after it sends the origi
     setShaping(false);
   }
 });
+
+test("the branch probe tells a detached checkout from one it could not read", async () => {
+  const { headBranch } = await import("../src/server/dispatcher.ts");
+  const { clone } = setupInRepo("mission-assign-branch-probe-");
+  gitIn(clone, "checkout", "-b", "feature/probe");
+  assert.equal(await headBranch(clone), "feature/probe");
+  gitIn(clone, "checkout", "--detach");
+  assert.equal(await headBranch(clone), null, "detached HEAD has no branch");
+  const notARepo = mkdtempSync(join(tmpdir(), "mission-not-a-repo-"));
+  try {
+    assert.equal(await headBranch(notARepo), undefined, "an unreadable checkout is unknown, not detached");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});

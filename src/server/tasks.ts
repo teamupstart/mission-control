@@ -7345,7 +7345,11 @@ async function boundedCheckoutState(dir: string, ms: number): Promise<{ baseSha:
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      Promise.all([headCommit(dir), headBranch(dir)]).then(([baseSha, branch]) => ({ baseSha, branch })).catch(() => unknown),
+      // A branch that could not be read makes the whole state unknown, as an unreadable commit does,
+      // so it takes the original-prompt fallback rather than passing for "detached" on both reads.
+      Promise.all([headCommit(dir), headBranch(dir)])
+        .then(([baseSha, branch]) => (baseSha === null || branch === undefined ? unknown : { baseSha, branch }))
+        .catch(() => unknown),
       new Promise<typeof unknown>((resolve) => { timer = setTimeout(() => resolve(unknown), ms); }),
     ]);
   } finally {

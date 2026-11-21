@@ -3105,13 +3105,18 @@ export function worktreeSlotPath(taskId: string, slot: number): string {
  * and the agent can work in it, and refusing the whole dispatch over a baseline that is
  * only consumed by later phases would trade a working session for a bookkeeping field.
  */
-/** The checkout's current branch, or null when HEAD is detached or cannot be read. */
-export async function headBranch(dir: string): Promise<string | null> {
+/**
+ * The checkout's current branch, null when HEAD is detached, or undefined when it cannot be read.
+ * `symbolic-ref -q` exits 1 for a detached HEAD and with another status for an error, so a failed
+ * read is never mistaken for a detached checkout.
+ */
+export async function headBranch(dir: string): Promise<string | null | undefined> {
   const r = await run("git", ["-C", dir, "symbolic-ref", "--short", "-q", "HEAD"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
   const branch = r.stdout.trim();
-  return r.code === 0 && branch ? branch : null;
+  if (r.code === 0 && branch) return branch;
+  return r.code === 1 ? null : undefined;
 }
 
 export async function headCommit(dir: string): Promise<string | null> {

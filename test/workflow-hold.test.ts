@@ -23,6 +23,29 @@ test("manual and preview reviews name the operator, automatic repairs name the s
   assert.match(workflowHold({ ...run, resumption: { reason: "session_blocked", round: 1, resumesItself: true } })!.reason, /blocker is cleared/);
 });
 
+test("the current blocker owns an automatic repair wait before the resumption observer records it", () => {
+  for (const resumption of [null, undefined]) {
+    const waiting = { ...run, resumptionPolicy: "auto" as const, deliveryMode: "live" as const, resumption };
+    for (const waitingOn of ["Platform team", ""]) {
+      const blocker = Object.freeze({ waitingOn });
+      const hold = workflowHold(waiting, blocker)!;
+      assert.equal(hold.actor, "Blocker owner");
+      assert.equal(hold.actorLabel, waitingOn || undefined);
+      assert.equal(hold.inProgress, false);
+      assert.match(hold.reason, /next round opens once its blocker is cleared/);
+      assert.equal(hold.runId, run.id);
+      assert.deepEqual(workflowHold({ ...waiting, deliveryHold: {
+        runId: "owner", deliveryId: "packet", repoRoot: "/repos/backend",
+        kind: "persona_feedback", state: "delivered",
+      } }, blocker), hold, "sibling ownership cannot mask the current blocker");
+      assert.equal(workflowHold({ ...waiting, status: "running" }, blocker)?.inProgress, true);
+    }
+    assert.equal(workflowHold(waiting, null)?.actor, "Session");
+    assert.equal(workflowHold(waiting, null)?.inProgress, true);
+    assert.equal(waiting.resumption, resumption, "projection must not invent a persisted resumption event");
+  }
+});
+
 test("Inspector association gaps differ from healthy automatic reviews", () => {
   const missing = workflowHold({ ...run, status: "waiting_for_pr", gateWaitReason: "unadopted_pr" })!;
   assert.equal(missing.actor, "Operator");

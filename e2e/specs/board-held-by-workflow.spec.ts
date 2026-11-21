@@ -586,6 +586,13 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
     (window as Window & { holdStream: EventSource }).holdStream.dispatchEvent(
       new MessageEvent("message", { data: JSON.stringify({ type: "session_upsert", session }) }));
   }, blocked);
+  // The session blocker frame can arrive before the observer records a resumption reason.
+  await update({ ...summary, deliveryMode: "live", resumptionPolicy: "auto", resumption: null });
+  await expect(currentHold).toContainText("Waiting · Platform team");
+  await expect(currentHold).toContainText("next round opens once its blocker is cleared");
+  await expect(currentHold).not.toContainText("In progress · Session");
+  await expect(currentHold).toHaveAttribute("href", `#/runs/${runId}`);
+  await shoot(dashboard, "hold-blocker-before-observer");
   await update({ ...summary, deliveryMode: "live", resumptionPolicy: "auto",
     resumption: { reason: "session_blocked", round: summary.round, resumesItself: true } });
   await expect(holds).toContainText("Waiting · Platform team");

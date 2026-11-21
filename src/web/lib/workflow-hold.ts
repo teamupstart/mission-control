@@ -49,6 +49,11 @@ function workflowRunHold(run: WorkflowRunSummary, blocker?: Pick<SessionBlocker,
     if (["unchanged_repository", "unchanged_evidence", "reattached_resubmit_required"].includes(run.phase)) {
       return describe("Operator", `${blockedPhaseClause(run.phase)}; review the run before continuing.`);
     }
+    // Session updates can reach Fleet before the observer records session_blocked.
+    if (blocker) {
+      return { ...describe("Blocker owner", workflowResumptionWithheldSentence("session_blocked", run.round)!),
+        ...(blocker.waitingOn ? { actorLabel: blocker.waitingOn } : {}) };
+    }
     return describe("Session", "Repairing review feedback; the workflow resumes after the session settles.", true);
   }
   if (run.status === "waiting_for_action") {

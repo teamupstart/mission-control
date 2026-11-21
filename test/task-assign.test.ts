@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -2028,6 +2028,40 @@ test("a handover whose shaper failed falls back to the original prompt, past the
     assert.doesNotMatch(typed, /## Task context/, "the original prompt was delivered");
     assert.equal(r.getTask("t1")?.status, "running");
     assert.equal(currentShaping(r.getTask("t1")!)?.state, "degraded", "and the failure is recorded");
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a checkout that cannot be read again before delivery sends the original prompt without context", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-unreadable-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = "";
+    const hidden = `${clone}-git-hidden`;
+    try {
+      const res = await tasks.assign("t1", sessionId, {
+        reset: cleanReset,
+        shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+        // The checkout becomes unreadable after shaping: the post-shaping read cannot confirm it.
+        paneReady: async () => {
+          if (++probes === 2) renameSync(join(clone, ".git"), hidden);
+          return { ok: true };
+        },
+        inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+      });
+      assert.equal(res.ok, true, res.ok ? "" : res.error);
+      assert.doesNotMatch(typed, /## Task context/, "the original prompt, without context it could not verify");
+      assert.equal(r.getTask("t1")?.status, "running");
+      const record = currentShaping(r.getTask("t1")!);
+      assert.equal(record?.state, "degraded");
+      assert.equal(record?.entries, 0);
+      assert.match(record?.limit?.reason ?? "", /checkout could not be read again before delivery/);
+    } finally {
+      if (existsSync(hidden)) renameSync(hidden, join(clone, ".git"));
+    }
   } finally {
     setShaping(false);
   }

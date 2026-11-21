@@ -159,7 +159,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
-import { launchUnconfirmed, shapeLaunch, withTaskContext } from "./shaping/launch.ts";
+import { CHECKOUT_UNVERIFIED_REASON, deliveredWithoutContext, launchUnconfirmed, shapeLaunch, withTaskContext } from "./shaping/launch.ts";
 import type { shapeTask } from "./shaping/engine.ts";
 import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
@@ -5322,7 +5322,7 @@ export class TaskManager {
       const checkout = shapingOn && live.cwd
         ? await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS)
         : { baseSha: null, branch: live.gitBranch ?? null };
-      const shaping = await shapeLaunch({
+      let shaping = await shapeLaunch({
         // The baseline is the commit the reset left the checkout on, read only when shaping runs.
         task: { ...ready, worktreePath: live.cwd, branch: checkout.branch, baseSha: checkout.baseSha },
         runtime: live.runtime,
@@ -5395,7 +5395,11 @@ export class TaskManager {
       // write itself, which cannot run Git.
       if (carriesContext && live.cwd) {
         const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
-        if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+        if (now.baseSha === null) {
+          // Unreadable is not changed: the agent is already reset, so the original prompt goes ahead
+          // without context that could not be confirmed to fit this checkout.
+          shaping = deliveredWithoutContext(shaping, CHECKOUT_UNVERIFIED_REASON);
+        } else if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
           return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
         }
       }

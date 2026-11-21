@@ -279,6 +279,19 @@ export function launchFellBack(shaping: LaunchShaping): LaunchShaping {
   return { summary: withoutDeliveredSection(shaping.summary, TURN_ONE_FALLBACK_REASON, "degraded"), section: "" };
 }
 
+/** Why a handover sent its original prompt: its checkout could not be read again before delivery. */
+export const CHECKOUT_UNVERIFIED_REASON =
+  "the checkout could not be read again before delivery, so the original prompt was sent without the context";
+
+/**
+ * The record for a handover that dropped its section because the checkout the context was chosen
+ * for could not be confirmed unchanged. Degraded, nothing counted as delivered, the reason kept.
+ */
+export function deliveredWithoutContext(shaping: LaunchShaping, reason: string): LaunchShaping {
+  if (!shaping.summary) return { summary: null, section: "" };
+  return { summary: withoutDeliveredSection(shaping.summary, reason, "degraded"), section: "" };
+}
+
 /** Why a launch whose wrapper left no readable receipt is not recorded as delivered. */
 export const TURN_ONE_UNCONFIRMED_REASON =
   "the launch could not confirm which turn one the agent received, so the context is not counted as delivered";

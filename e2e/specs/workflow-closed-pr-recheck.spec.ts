@@ -429,7 +429,11 @@ test("a published tree changed after review offers fresh review without another 
   const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const tree = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
   strandAsClosed(daemon, runId);
-  withDaemonDb(daemon, (db) => {
+  // The seeded gate state is fake: the run's real evidence says its tree was published. Every
+  // update from the bound session re-evaluates this gate (`scheduleGatesForSession`), and an idle
+  // session still sends them, so a re-evaluation can replace this seed with the real verdict
+  // at any moment. Seeding is a function so the action below can re-seed right before it acts.
+  const seedTreeChanged = (): void => withDaemonDb(daemon, (db) => {
     const submission = db.prepare("SELECT id FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
       .get(runId) as { id: string };
     const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
@@ -446,6 +450,7 @@ test("a published tree changed after review offers fresh review without another 
     db.prepare("UPDATE inspector_prs SET state = 'open', observed_state = 'OPEN', head_sha = ?, observed_head_sha = ? WHERE key = ?")
       .run(head, head, PR_KEY);
   });
+  seedTreeChanged();
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const header = dashboard.locator("header.wf-run-head");
   const review = header.getByRole("button", { name: "Review pushed head" });
@@ -458,12 +463,25 @@ test("a published tree changed after review offers fresh review without another 
   await expect(pane).toContainText(`tree ${tree.slice(0, 8)}`);
   await shoot(dashboard, dashboard, "08-published-tree-needs-review");
   await shoot(dashboard, header, "09-review-pushed-head-action");
-  await review.click();
   const confirm = dashboard.getByRole("dialog", { name: "Review pushed head" });
-  await expect(confirm).toBeVisible();
-  await expectContentClearsBorder(confirm);
-  await expect(confirm).toContainText("even though the checkout has not changed since publication");
-  await confirm.getByRole("button", { name: /Start round 2|Preview fresh evidence/ }).click();
+  const roundTwo = (): number => withDaemonDb(daemon, (db) => (db.prepare(
+    "SELECT COUNT(*) AS count FROM workflow_submissions WHERE run_id = ? AND round = 2",
+  ).get(runId) as { count: number }).count);
+  // A session update can re-evaluate the fake seed between the page load and the click, and the
+  // route then correctly refuses a run that is no longer waiting. Re-seed and reload right before
+  // acting, and retry until round 2 was really started: the click under test, not a timing win.
+  await expect(async () => {
+    if (roundTwo() === 0) {
+      seedTreeChanged();
+      await dashboard.reload();
+      await review.click({ timeout: 5_000 });
+      await expect(confirm).toBeVisible({ timeout: 5_000 });
+      await expectContentClearsBorder(confirm);
+      await expect(confirm).toContainText("even though the checkout has not changed since publication");
+      await confirm.getByRole("button", { name: /Start round 2|Preview fresh evidence/ }).click({ timeout: 5_000 });
+    }
+    await expect.poll(roundTwo, { timeout: 5_000 }).toBe(1);
+  }).toPass({ timeout: 60_000 });
   await expect(confirm).toBeHidden();
   await expect.poll(() => withDaemonDb(daemon, (db) => db.prepare(`
     SELECT COUNT(*) AS count FROM workflow_node_attempts a JOIN workflow_submissions s ON s.id = a.submission_id

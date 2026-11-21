@@ -369,13 +369,15 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
   const { reconcileDisposableAgentStateHomes, createDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
   const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
   // A launch whose wrapper already removed its state home, from a daemon that has since died.
-  const orphan = join(DISPOSABLE_STATE_ROOT, "session-orphaned-turn-one");
+  // Unique names, so a concurrent run of this file cannot reclaim or remove this run's fixtures.
+  const tag = `${process.pid}-${Date.now()}`;
+  const orphan = join(DISPOSABLE_STATE_ROOT, `session-orphaned-turn-one-${tag}`);
   writeFileSync(`${orphan}.turn-one`, "original");
   // A launch still running: its state home exists.
   const live = createDisposableAgentStateHome();
   writeFileSync(`${live}.turn-one`, "shaped");
   // An orphan that cannot be removed - a non-empty directory - sorted ahead of the others.
-  const stuck = join(DISPOSABLE_STATE_ROOT, "session-0-stuck-turn-one");
+  const stuck = join(DISPOSABLE_STATE_ROOT, `session-0-stuck-turn-one-${tag}`);
   mkdirSync(join(`${stuck}.turn-one`, "held"), { recursive: true });
   const warn = console.warn;
   const warnings: unknown[] = [];
@@ -384,7 +386,7 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
     reconcileDisposableAgentStateHomes();
     assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
     assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
-    assert.ok(warnings.some((w) => /could not remove the orphaned turn-one outcome session-0-stuck-turn-one/.test(String(w))), "the stuck one was logged");
+    assert.ok(warnings.some((w) => String(w).includes(`could not remove the orphaned turn-one outcome session-0-stuck-turn-one-${tag}`)), "the stuck one was logged");
   } finally {
     console.warn = warn;
     rmSync(`${stuck}.turn-one`, { recursive: true, force: true });

@@ -40,6 +40,14 @@ export function forEachOccurrence(text: string, value: string, wholeToken: boole
   }
 }
 
+/** A stretch of text, `[start, end)`, already known to spell a value, and the label it names. */
+export interface RedactionSpan {
+  start: number;
+  end: number;
+  /** Every name the span is removed under: several references can resolve to one value. */
+  labels: readonly string[];
+}
+
 /** One value to remove, how it must stand to count, and the label its replacement names. */
 export interface RedactionTarget {
   value: string;
@@ -69,6 +77,11 @@ export function redactSpans(
   render: (labels: readonly string[]) => string,
   dropBefore = 0,
   maxLength = Number.POSITIVE_INFINITY,
+  /**
+   * Spans a caller already found, `[start, end)` in `text`, merged in as matches are: no search
+   * runs for them, so many distinct spellings cost no more than the scan that found them.
+   */
+  spans: readonly RedactionSpan[] = [],
 ): string {
   // One search per value. A value is whole-token only if every target naming it is.
   const byValue = new Map<string, { wholeToken: boolean; labels: Set<string> }>();
@@ -78,7 +91,9 @@ export function redactSpans(
     if (entry) { entry.wholeToken &&= target.wholeToken; entry.labels.add(target.label); }
     else byValue.set(target.value, { wholeToken: target.wholeToken, labels: new Set([target.label]) });
   }
-  const labelList = [...new Set(targets.map((target) => target.label))];
+  const labelSet = new Set(targets.map((target) => target.label));
+  for (const span of spans) for (const label of span.labels) labelSet.add(label);
+  const labelList = [...labelSet];
   const labelBit = new Map(labelList.map((label, at) => [label, at]));
   // depth[i] > 0 inside a match. Labels as bit words per start offset, only when there is more
   // than one label to tell apart.
@@ -94,6 +109,15 @@ export function redactSpans(
       if (marks) for (const bit of bits) marks[start * words + (bit >> 5)]! |= 1 << (bit & 31);
       matched = true;
     });
+  }
+  for (const span of spans) {
+    if (span.end <= span.start || span.start < 0 || span.end > text.length) continue;
+    depth[span.start]! += 1;
+    depth[span.end]! -= 1;
+    if (marks) {
+      for (const label of span.labels) { const bit = labelBit.get(label)!; marks[span.start * words + (bit >> 5)]! |= 1 << (bit & 31); }
+    }
+    matched = true;
   }
   if (!matched && dropBefore <= 0) return text.length > maxLength ? text.slice(0, maxLength) : text;
   let out = "";

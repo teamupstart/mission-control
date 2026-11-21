@@ -64,6 +64,16 @@ switch (mode) {
     // Exactly this many bytes of stdout, so a test can stand on either side of the cap.
     process.stdout.write("x".repeat(Number(rest[0] ?? 300 * 1024)));
     break;
+  case "leak-normalized":
+    // The named value with every run of whitespace in it printed as one space, then a failure.
+    process.stderr.write(`could not authenticate with ${(process.env[rest[0]] ?? "").replace(/\s+/g, " ")}`);
+    process.exit(4);
+    break;
+  case "leak-spaced":
+    // The named value with each run of whitespace in it widened to that many spaces, then a failure.
+    process.stderr.write((process.env[rest[0]] ?? "").replace(/\s+/g, " ".repeat(Number(rest[1] ?? 1))));
+    process.exit(4);
+    break;
   case "leak":
     // Repeats the value it was handed on stderr, then fails: its reason must not carry it.
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
@@ -85,6 +95,25 @@ switch (mode) {
     process.stderr.write(bytes.subarray(cut));
     await sleep(50);
     process.exitCode = 4;
+    break;
+  }
+  case "leak-escaped": {
+    // The value spelled as JSON \u escapes, six characters for each of its own, then escaped as
+    // the text of a JSON string once more for each further level, repeated so the recorded tail's
+    // front edge cuts through one escaped copy of it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    let escaped = [...value].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    for (let level = 1; level < Number(rest[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
+    // Exits once the pipe has taken all of it: a large write is asynchronous on a pipe here.
+    process.stderr.write(`${escaped}\n`.repeat(Number(rest[1] ?? 12)), () => process.exit(5));
+    break;
+  }
+  case "stderr-flood": {
+    // The value, then this many bytes of filler, so the recorded tail is cut far past it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    process.stderr.write(`${value}\n`);
+    for (let left = Number(rest[1] ?? 0); left > 0; left -= 65_536) process.stderr.write("x".repeat(Math.min(left, 65_536)));
+    process.stderr.write("\n", () => process.exit(6));
     break;
   }
   case "leak-long": {

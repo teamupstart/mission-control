@@ -45,7 +45,7 @@ not reach such a server (section 5, D8).
 |---|---|---|
 | D1 | Which tasks inherit by default | A task created by a plan task's session inherits that plan task's work unit. Any other session gets a new unit unless it passes `workUnit: "inherit"`. |
 | D2 | How the worker's own MCP calls get the header | Mission Control sets `WORK_UNIT_ID`. The owner of an MCP server's config references it. Mission Control injects no header. |
-| D3 | Tasks that exist before this ships | No inference. Such a task gets a new id at its next dispatch. |
+| D3 | Tasks that exist before this ships | No inference. Such a task gets a new id at its next dispatch or assignment. |
 | D4 | Which telemetry lanes export the unhashed id | Every lane that exports traces. |
 | D5 | After the plan | Create the phased implementation plan and schedule its tasks. |
 | D6 | Residents. Asked of Jordan in the plan validation repair on 2026-11-20, with two options: cover pinned residents by filling the same reference at launch (a fifth phase), or leave residents out of work units | **Leave residents out of work units.** A resident run is a standing agent, not a piece of work. It gets no work unit: no id on its task, no launch variable, no span attribute, so its spans and MCP calls cannot be found by work unit. Tasks a resident schedules get their own. This narrows R3 and R5, and it is the one exception to "every task has a work unit". |

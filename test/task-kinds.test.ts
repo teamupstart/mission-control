@@ -205,6 +205,9 @@ test("chat has the approved conversational copy", () => {
     launch: "harness",
     autopilot: false,
     foremanInvite: true,
+    // A chat is a piece of work, and the tasks its session files are their own.
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   });
 });
@@ -215,6 +218,8 @@ test("pipeline is provider-owned work and never backlog autopilot work", () => {
     launch: "pipeline",
     autopilot: false,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });

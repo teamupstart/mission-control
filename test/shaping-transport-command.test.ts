@@ -46,7 +46,7 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
 function ctx(timeoutMs = 10_000, extra: Partial<TransportContext> = {}): TransportContext {
   return {
     deadline: Date.now() + timeoutMs, timeoutMs, signal: new AbortController().signal,
-    scope: { shared: new Map(), defer() {} }, root: null, trace: null, ...extra,
+    scope: { shared: new Map(), defer() {} }, root: null, trace: null, workUnitId: null, ...extra,
   } as TransportContext;
 }
 /** A data reply decoded: the text as written, or the value a scrubbed reply already is. */
@@ -90,6 +90,32 @@ test("a command shaper gets the launch's trace context, and never one inherited 
   }
 });
 
+test("a command shaper gets the run's work unit id as WORK_UNIT_ID when there is one, and never one inherited or configured", async () => {
+  const names = ["WORK_UNIT_ID", "work_unit_id"] as const;
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  process.env.WORK_UNIT_ID = "wu-from-the-daemon";
+  process.env.work_unit_id = "wu-lower-case";
+  try {
+    const named = { env: ["WORK_UNIT_ID", "work_unit_id"] };
+    const args = [FIXTURE, "echo", "env=WORK_UNIT_ID", "env=work_unit_id"];
+    const present = echoed(await callCommand(request(), shaper(args, named), ctx(10_000, { workUnitId: "wu_01JD5Z" })));
+    assert.deepEqual(present.env, { WORK_UNIT_ID: "wu_01JD5Z", work_unit_id: null });
+    const absent = echoed(await callCommand(request(), shaper(args, named), ctx()));
+    assert.deepEqual(absent.env, { WORK_UNIT_ID: null, work_unit_id: null }, "with none, nothing at all");
+    assert.equal(absent.envKeys.some((key) => /^work_unit_id$/i.test(key)), false);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a work unit id is never redacted: it is an opaque id, not a credential", async () => {
+  const reply = await callCommand(request(), shaper([FIXTURE, "leak", "WORK_UNIT_ID"]), ctx(10_000, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with wu_01JD5Z" });
+});
+
 test("a trace value is never redacted: it is neither a credential nor a reference", async () => {
   const saved = process.env.SHAPER_FIXTURE_SECRET;
   process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
@@ -100,6 +126,149 @@ test("a trace value is never redacted: it is neither a credential nor a referenc
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("an unset named variable that matches an inherited property cannot break reply scrubbing", async () => {
+  const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["constructor", "toString"], stage: "select" }), ctx());
+  assert.equal(reply.kind, "data", JSON.stringify(reply));
+  assert.equal(decoded(reply).guidance[0].body, "first entry for billing-api");
+});
+
+test("a named variable called __proto__ is an own property of the child's environment", () => {
+  const base = JSON.parse('{"__proto__":"proto-value","PATH":"/usr/bin:/bin"}') as NodeJS.ProcessEnv;
+  const env = shaperCommandEnv(base, ["__proto__"], "", null, "wu_01JD5Z");
+  assert.ok(Object.hasOwn(env, "__proto__"), Object.keys(env).join(","));
+  assert.equal(Object.getOwnPropertyDescriptor(env, "__proto__")?.value, "proto-value");
+  assert.ok(Object.keys(env).includes("__proto__"), "and is enumerated, so a spawn passes it on");
+  assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
+});
+
+test("a named value a command reprints with its whitespace normalized is redacted and marked", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane\t\tDoe";
+  try {
+    const failed = await callCommand(request(), shaper([FIXTURE, "leak-normalized", "SHAPER_FIXTURE_SPACED"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.deepEqual(failed, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [SHAPER_FIXTURE_SPACED redacted]", redacted: true });
+    // The reply's redactor, which the engine runs over reasons built from a reply, agrees.
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    assert.equal(reply.kind, "data");
+    const data = reply as { redact?: (text: string) => string; holdsNamed?: (text: string) => boolean };
+    assert.equal(data.holdsNamed?.("note for Jane Doe"), true);
+    assert.equal(data.redact?.("note for Jane Doe"), "note for [SHAPER_FIXTURE_SPACED redacted]");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
+/** A value longer than any in this process's environment, and at least 1,000 characters. */
+function longestEnvValue(prefix: string): string {
+  const longest = Math.max(1_000, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
+  const alphabet = "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f";
+  return `${prefix}${Array.from({ length: longest }, (_, i) => alphabet[(i * 7 + (i >> 5)) % alphabet.length]).join("")}`;
+}
+
+test("a command's stderr cut inside a JSON-escaped spelling of a named value keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Longer than anything else the child receives, so it alone sets the margin kept beyond the
+  // tail; escaped, each copy is six times that, and the recorded stderr's front edge cuts one.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("esc-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "40"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    // No escape survives: the whole escaped copy was removed, and the cut one was dropped.
+    assert.equal(reason.includes("\\u00"), false, reason.slice(0, 300));
+    assert.match(reason, /^The command exited with code 5/);
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut inside a named value escaped at the deepest supported level keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Escaped three levels deep, each copy is nine characters for each of the value's own, past the
+  // six a one-level margin keeps: the old margin's front edge fell inside the second copy.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("deep-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "30", "3"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("u00"), false, reason.slice(Math.max(0, reason.indexOf("u00") - 120), reason.indexOf("u00") + 60));
+    assert.match(reason, /^The command exited with code 5: /);
+    assert.match(reason, /\[SHAPER_FIXTURE_ESCAPED redacted\]/, "the whole copies are redacted");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut where the margin a named value needs is over the cap is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_HUGE;
+  // 216 characters of margin for each of 5,000 is past the 1 MiB cap; 1.1 MB of filler cuts it.
+  process.env.SHAPER_FIXTURE_HUGE = `huge-${"h".repeat(5_000)}`;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "stderr-flood", "SHAPER_FIXTURE_HUGE", "1100000"], { env: ["SHAPER_FIXTURE_HUGE"] }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 6: its stderr is not quoted: it was too long to scrub safely" });
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_HUGE;
+    else process.env.SHAPER_FIXTURE_HUGE = saved;
+  }
+});
+
+test("an inherited value inside a spelling of a named value does not break that spelling up", async () => {
+  const saved = { spaced: process.env.SHAPER_FIXTURE_SPACED, inner: process.env.SHAPER_FIXTURE_INNER };
+  // The named value printed with its space widened to three, and an inherited value that is
+  // exactly the middle of that spelling: removed first, it would leave both ends behind.
+  process.env.SHAPER_FIXTURE_SPACED = "tokenAAAA9 zq7xBBBBBB";
+  process.env.SHAPER_FIXTURE_INNER = "9   zq";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "3"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    for (const piece of ["AAAA", "BBBB", "7x"]) assert.equal(reason.includes(piece), false, reason);
+    assert.equal(reason, "The command exited with code 4: [redacted]");
+    assert.equal(reply.redacted, true);
+    // The reply's redactor finds them on the original text the same way.
+    const data = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    const redact = (data as { redact?: (text: string) => string }).redact;
+    assert.equal(redact?.("see tokenAAAA9   zq7xBBBBBB here"), "see [redacted] here");
+  } finally {
+    for (const [name, value] of [["SHAPER_FIXTURE_SPACED", saved.spaced], ["SHAPER_FIXTURE_INNER", saved.inner]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "50000"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("Doe"), false, reason);
+    assert.equal(reason, "The command exited with code 4: its stderr is not quoted: it was too long to scrub safely");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
+test("a named __proto__ variable reaches a command shaper's process", async () => {
+  const saved = Object.getOwnPropertyDescriptor(process.env, "__proto__")?.value as string | undefined;
+  process.env["__proto__"] = "proto-value-77c1";
+  try {
+    const seen = echoed(await callCommand(request(), shaper([FIXTURE, "echo", "env=__proto__"], { env: ["__proto__"] }), ctx()));
+    // The echoed value is the passed variable, which the reply scrub removes under its name.
+    assert.equal(seen.env["__proto__"], "[__proto__ redacted]");
+    assert.ok(seen.envKeys.includes("__proto__"), "the child's environment holds it");
+  } finally {
+    if (saved === undefined) delete process.env["__proto__"];
+    else process.env["__proto__"] = saved;
   }
 });
 

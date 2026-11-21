@@ -5,13 +5,13 @@ Task shaping asks operator-configured programs for context about a task. Each pr
 at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
-**What this build does.** You register a `command` shaper, or the built-in
+**What this build does.** You register a `command`, `mcp` or `http` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
 the API, and dry-run it against a repository. Mission Control calls it at the stage it is
 registered for, validates and caps what it returns, and reports the section it would add to a
-worker's first prompt and an outcome for each shaper. A `command` shaper can serve either
-stage, `gather` or `select`. `repository-files` serves `gather` only, and a definition that
-places it at `select` is refused. Nothing is called at dispatch: no worker
+worker's first prompt and an outcome for each shaper. A `command`, `mcp` or `http` shaper can
+serve either stage, `gather` or `select`. `repository-files` serves `gather` only, and a
+definition that places it at `select` is refused. Nothing is called at dispatch: no worker
 receives shaped context yet.
 
 **What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
@@ -135,7 +135,7 @@ Each shaper's part of a run ends in one outcome, recorded with its reason and du
 | `failed` | A non-zero exit, a reply that states an error, or a transport that broke |
 | `timed_out` | The call outran its timeout, or the step's deadline |
 | `invalid` | Output that is not JSON, or does not match the result shape |
-| `unavailable` | The shaper could not be reached: a missing command, no worktree, or a transport this build does not offer yet |
+| `unavailable` | The shaper could not be reached: a missing command, no worktree, a reference that did not resolve, a URL the egress rule refuses, or a transport this build does not offer yet |
 
 The run is `degraded` when any shaper's outcome is not `ok`. When a shaper is called for
 several repositories, its outcome is the worst of its calls. Truncation is not degradation.
@@ -216,6 +216,9 @@ A `command` shaper is any program. Mission Control runs it once per call:
   or named in `env`, in any case, is always removed first, so only the launch's own values are
   ever sent. A trace value is not a credential, so it is never redacted. A dry run has no launch
   and carries none.
+- **Work unit id.** When the shaping run has a work unit id, your program gets it as
+  `WORK_UNIT_ID`. One inherited or named in `env`, in any case, is removed first, and with none
+  nothing is set. It is an opaque id, not a credential, so it is never redacted.
   [Security](security.md#task-shaping) states the exact rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
@@ -273,7 +276,13 @@ before the body limit, so such a request is refused as forbidden whatever its si
   is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
   an inherited property.
-  `discovered` and `references` are empty until the folder and the remote transports land.
+  `discovered` is empty until the folder lands. `references` lists every environment name a
+  shaper uses, each `{env:NAME}` its headers reference and each variable a `command` shaper or
+  a locally started MCP server passes through in `env`, as `set` or `unset` in the daemon's
+  environment, never a value. A name is `set` only when a call would send it, so Mission
+  Control's own token and state directory, an empty value and a value carrying the daemon's
+  token read `unset`. A variable named only in a header the transport replaces, such as
+  `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -348,8 +357,11 @@ before the body limit, so such a request is refused as forbidden whatever its si
   gatherer runs at the path given. The repository is named after the checkout, or after the
   repository that owns it when the path is a linked worktree. It answers
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
-  a credential value was removed from its reply (`redacted`, set by the remote transports in
-  Phase 5), the section that would be injected, and each entry in it. The summary's optional
+  a value was removed from its reply or reason (`redacted`), the section that would be injected,
+  and each entry in it. `redacted` means a value the shaper was handed came back and was
+  scrubbed: a value resolved into one of its headers, a `{caller.*}` value included, or, for a
+  local shaper, a variable named in its `env` list or an inherited URL that carries a user name
+  and password. It does not by itself mean a credential was involved. The summary's optional
   `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
@@ -496,18 +508,162 @@ Arrives with discovery of `shapers/` under the state home.
 
 ## Remote shapers
 
-Arrives with the `mcp` and `http` transports. Their config shapes are already accepted: an `mcp`
-shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
-`http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
-`{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
-reference: a header named `authorization`, `proxy-authorization` or `cookie`, or whose name
-contains `token`, `secret`, `key`, `password`, `auth` or `credential`, without case, that is
-not empty holds `{env:NAME}` references and nothing literal. `Authorization` and `Proxy-Authorization` may put
-`Bearer`, `Basic`, `Token` or `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other
-leading word is refused as part of the secret. A URL carries no user name, password or query
-string. A definition with literal secret text is
-refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
-is `unavailable`.
+A shaper can be a tool on an MCP server (`mcp`) or an HTTP endpoint (`http`). Registering one
+is configuration only: Mission Control holds no adapter for any company's server, and every
+header name, tool name and URL below is a placeholder.
+
+### An `mcp` shaper
+
+```json
+{
+  "id": "acme-guidance",
+  "label": "Acme guidance",
+  "stage": "select",
+  "version": "v1.4.0",
+  "transport": {
+    "type": "mcp",
+    "tool": "get_guidance",
+    "contextDelivery": "folded",
+    "server": {
+      "type": "http",
+      "url": "https://guidance.acme.example/mcp",
+      "headers": {
+        "authorization": "Bearer {env:ACME_GUIDANCE_TOKEN}",
+        "x-acme-user": "{caller.user}"
+      }
+    }
+  }
+}
+```
+
+`PUT /api/shaping` with `{ "kind": "upsert", "shaper": … }` stores it switched off. Dry-run it
+with `POST /api/shaping/test`, then switch it on with `enable`. A server started on this machine
+instead names `{ "type": "stdio", "command": "acme-guidance-mcp", "args": [], "env": [] }`, with
+the same rules for its command and environment as a [`command` shaper](#writing-a-command-shaper).
+
+- **One call per repository.** The server is connected once per shaping run, by the first call
+  that needs it, shared by every call of the run that names the same server, and closed when
+  the run ends. A server started locally is one process for the whole run.
+- **`contextDelivery`** decides the tool's arguments. Either way the complete collected input
+  reaches the tool, and no setting withholds any of it.
+  - `folded`, the default, calls the tool with exactly FR-02's three arguments,
+    `{ task, repo: { name, facts?, summary? }, version? }`, so an existing `get_guidance` tool
+    is called unchanged. `task` is the prompt, a blank line, and this fixed block, which states
+    every field of the request's `context` except local paths:
+
+    ```text
+    Task context from Mission Control:
+    - Task: t_123
+    - Title: Retry failed charges
+    - Kind: ship
+    - Harness: claude (sdk)
+    - After-work step: Review and merge (workflow wf_1)
+    - Labels: payments
+    - Priority: high
+    - Caller: declared-user (agent claude, conversation t_123)
+    - This call is about: repo-01
+    - Repositories: repo-01 billing-api (primary, branch task/retry, base abc123), repo-02 ledger (additional, branch task/retry, base def456)
+    ```
+
+    An absent value reads `none`, and an undeclared caller `undeclared`. A present value is
+    written as it is, unless it could be read as something else: one that is `none` or
+    `undeclared` itself, holds a backslash, a quote, a line break, or a `,` `(` or `)`, or starts or ends with
+    whitespace, is
+    written as a JSON string, such as `branch "none"` or `Title: "Two\nlines"`. So every value
+    reads back as exactly itself, and none can start a line of its own.
+  - `argument` calls it with four, `{ task, repo, version?, context }`: the prompt alone, and
+    the request's whole `context` object. Use it for a tool that declares a `context` argument.
+- **Repositories by slot.** Each attached repository has a slot, `repo-01` for the primary and
+  then `repo-02` onward in attachment order, and the call names the one it is about: the
+  folded line `This call is about`, or `context.target`. Two worktrees of one repository are
+  told apart that way.
+- **Local paths.** `repo` never carries a path. In `argument` mode a server started on this
+  machine receives the worktree paths in `context.repositories`, and a remote one never does.
+- **The reply** is read from the tool's structured content when it is an object, otherwise
+  from its first text content parsed as JSON, and must match [the contract](#the-contract). A
+  tool error is `failed`, with its text.
+- **256 KiB per message.** Every message from the server is capped while it is received: over
+  stdio one line at a time, over streamable HTTP by stopping a body, or one event of
+  an event stream, at the cap. Such a reply is `failed` at once, naming the cap, the server is
+  closed and nothing over the cap is parsed. A later call of the run connects again.
+- **A reply is owed to every request.** Over streamable HTTP, `202 Accepted` with no body is
+  accepted only for a notification. An `initialize` or `tools/call` answered that way is `failed`
+  at once with fixed text, rather than waiting out its budget for a reply that cannot come.
+- **A malformed reply fails its own call.** A reply that is not JSON, or not a JSON-RPC message,
+  on one call's response (its body, or an event of its stream) fails that call with fixed text,
+  and other calls on the connection go on. One on the handshake, or on the server's shared
+  stream, fails the connection, and a later call of the run connects again.
+
+### An `http` shaper
+
+```json
+{
+  "id": "acme-context",
+  "label": "Acme context",
+  "stage": "gather",
+  "transport": {
+    "type": "http",
+    "url": "https://context.acme.example/v1/shape",
+    "headers": { "x-api-key": "{env:ACME_CONTEXT_KEY}" }
+  }
+}
+```
+
+Mission Control `POST`s [the request](#the-contract) as JSON and reads the result from the
+body. A status outside 2xx is `failed`, with the status. The body is read to at most 256 KiB,
+and a longer one is `failed` without being read further. The call's timeout aborts the request.
+
+### What both share
+
+- **Egress.** HTTPS only, except plain HTTP to this machine's loopback, decided before anything
+  is sent. A plain `http` URL to any other host gets no request and is `unavailable`, with or
+  without a credential header. Redirects are followed by hand and only on the URL's origin: one
+  that leaves it is refused, so no other host ever receives the headers. A 307 or 308 is
+  followed with the request's method and body. A 301, 302 or 303 would resend the request as a
+  GET without its body, so the endpoint would never see the task: it is refused and the call is
+  `failed`. A cookie a server sets is never kept or sent back. A header configured twice in
+  different letter case makes the shaper `unavailable`.
+- **References.** Header values may reference `{caller.user}`, the identity declared under
+  `caller.user`, `{caller.agent}`, the harness, `{caller.conversation}`, the task id, and
+  `{env:NAME}`, the daemon's environment variable `NAME`. They are resolved when the call is
+  made. One that resolves to nothing, an empty value or one of only spaces and tabs included,
+  caller values as much as `{env:NAME}`, fails closed: no request is sent, and the outcome is
+  `unavailable`, with a reason that names the reference and never a value. A dry run has no task, harness or conversation, so a shaper that references them
+  is `unavailable` there. `{env:NAME}` never resolves Mission Control's own token, credentials
+  or state directory, or a value that carries the daemon's token.
+  [Configuration](configuration.md#task-shaping-references) says where the daemon's environment
+  comes from, and `GET /api/shaping` reports each referenced name as `set` or `unset`.
+- **Credentials are references.** A header named `authorization`, `proxy-authorization` or
+  `cookie`, or whose name contains `token`, `secret`, `key`, `password`, `auth` or
+  `credential`, without case, that is not empty holds `{env:NAME}` references and nothing
+  literal. `Authorization` and `Proxy-Authorization` may put `Bearer`, `Basic`, `Token` or
+  `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other leading word is refused as part of
+  the secret. A URL carries no user name, password or query string. A definition with literal
+  secret text is refused, so it is never stored or backed up.
+- **A shaper cannot hand a value back.** Every value resolved into a header is replaced wherever
+  it appears in a reply: entry paths, titles and bodies, the summary, fact values, notes, the
+  version and a failure reason. An `{env:NAME}` value becomes `[NAME redacted]`, and a caller
+  value `[caller.user redacted]`, `[caller.agent redacted]` or `[caller.conversation redacted]`.
+  Only the references a shaper's own headers use are scrubbed from its replies, so a shaper
+  that never sends `{caller.agent}` keeps the word `claude`. Every value is matched anywhere,
+  however short, so for a shaper that sends `{caller.agent}` as `pi`, "pipeline" comes back as
+  `[caller.agent redacted]peline`, and an entry or fact whose id or name holds `pi` is dropped.
+  That over-redaction is deliberate. Keys the result schema defines are
+  never changed. A fact name or entry id that contains a value is dropped with a note, never
+  renamed. The shaper is marked `redacted`, and its outcome does not change. For a server
+  started locally, a variable named in its `env` list is removed from its replies the same way,
+  as it is for a `command` shaper. The request's `context.caller` still carries the caller
+  values to every shaper: what is guarded is the reply Mission Control records and returns.
+- **Trace context and work unit id.** When the launch has a W3C trace context, every call
+  carries it: `traceparent`, and `tracestate` when there is one, as headers on an `http` call
+  and on every request of a streamable-HTTP `mcp` call, and as `TRACEPARENT` and `TRACESTATE`
+  in the environment of a server started locally. When the shaping run has a work unit id, it
+  rides the same way, as the `x-work-unit-id` header and the `WORK_UNIT_ID` variable. Every
+  `mcp` `tools/call` also carries them in `params._meta`, as `traceparent`, `tracestate` and
+  `work_unit_id`. A configured header or variable of any of these names, compared without
+  case, is always removed first, with or without a value to send, so only the launch's own
+  are ever sent. Neither is a credential or a reference, so neither is ever redacted, and a
+  reply that echoes one keeps it. A dry run carries neither.
 
 ## The built-in gatherer
 

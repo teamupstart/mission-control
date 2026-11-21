@@ -5470,6 +5470,11 @@ export function insertReview(r: ReviewItem): void {
  * doing what it said", and the agent was already told to carry on when the question was filed.
  * Telling it again would interrupt a turn to repeat its own receipt. `option` and `hold` change
  * what it does, so they are owed exactly as for any other detached question.
+ *
+ * Because that silent snooze tells the agent nothing, it does not use up the first-snooze slot:
+ * `snooze_mode` and `snooze_option_id` stay NULL (and read back as `judgment`), so when the
+ * question comes back and is snoozed again on Hold or a provisional option, that choice is
+ * stored and sent exactly as a first snooze's would be.
  */
 export function snoozeReviewRow(
   id: string,
@@ -5495,8 +5500,12 @@ export function snoozeReviewRow(
                 WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL
                   AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
                 ELSE snooze_instruction_owed_at END,
-              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
-              snooze_mode = COALESCE(snooze_mode, ?),
+              snooze_option_id = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_option_id END,
+              snooze_mode = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_mode END,
               mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
         WHERE id = ? AND status = 'pending'
         RETURNING *`,
@@ -5507,7 +5516,9 @@ export function snoozeReviewRow(
       snooze.listening ? 1 : 0,
       snooze.mode,
       snooze.at,
+      snooze.mode,
       snooze.optionId,
+      snooze.mode,
       snooze.mode,
       snooze.at,
       id,

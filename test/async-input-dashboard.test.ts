@@ -422,6 +422,18 @@ test("every action's words follow the agent's current status, never contradictin
   assert.match(sheet, /the agent stays stopped unless you choose a provisional option or Hold/);
 });
 
+test("a returned filed question whose earlier snooze sent nothing offers the Meanwhile choice again", () => {
+  const silent = question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } });
+  const html = renderToStaticMarkup(createElement(SnoozeSheet, { review: silent, onBack: () => {} }));
+  assert.match(html, /Hold work that depends on this/);
+  assert.doesNotMatch(html, /keeps doing what you chose last time/);
+  // A question whose earlier snooze did tell its agent something keeps that choice, as before.
+  const told = question({ snooze: { at: NOW - 60 * MIN, until: NOW, mode: "hold", optionId: null, remindedAt: NOW } });
+  assert.match(renderToStaticMarkup(createElement(SnoozeSheet, { review: told, onBack: () => {} })), /keeps doing what you chose last time/);
+  const callMode = question({ waitMode: undefined, snooze: { at: NOW - 60 * MIN, until: NOW, mode: "judgment", optionId: null, remindedAt: NOW } });
+  assert.match(renderToStaticMarkup(createElement(SnoozeSheet, { review: callMode, onBack: () => {} })), /keeps doing what you chose last time/);
+});
+
 test("the snooze labels read true for an agent that never waited", () => {
   const judgment = { mode: "judgment" as const, optionId: null };
   assert.equal(snoozeMeanwhileLabel(question(), judgment), "Keep doing what it said");

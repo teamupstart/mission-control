@@ -3041,7 +3041,10 @@ waited on it, so the sheet reads differently. Its first **Meanwhile** choice is 
 it said**, which quotes the agent's own `meanwhile` line and stays the default. Choosing it sends
 the agent nothing: it was already told to carry on when it filed the question. A provisional
 option or **Hold work that depends on this** changes what the agent does, so either is sent as a
-message, as for any question whose call has ended. The button's hint and the sheet follow the
+message, as for any question whose call has ended. Because "Keep doing what it said" tells the
+agent nothing, it does not count as the one time the agent is told: when the question comes back
+and you snooze it again, the Meanwhile choice is offered again, and a provisional option or Hold
+chosen then is still sent. The button's hint and the sheet follow the
 card's status line: while the agent is still working they say it keeps working, and once it has
 stopped on the question they say so, and that it hears nothing unless you choose a provisional
 option or **Hold**. The snoozed row and the reminder line on the returned question say what you

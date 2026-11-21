@@ -14,7 +14,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-async-input-dashboard-"));
 process.env.MISSION_HOME = home;
 
 const {
-  openDb, insertReview, snoozeReviewRow, updateReviewStatus, loadConversationResolvedReviews, loadHumanResolvedReviews,
+  openDb, insertReview, snoozeReviewRow, wakeReviewRow, updateReviewStatus, loadConversationResolvedReviews, loadHumanResolvedReviews,
   conversationQuestionRecordSql,
 } = await import("../src/server/db.ts");
 const { isConversationQuestionRecord } = await import("../src/shared/review-item.ts");
@@ -50,6 +50,26 @@ const snooze = (id: string, mode: "judgment" | "option" | "hold") =>
 
 test("snoozing a message-mode question on Keep doing what it said owes the agent nothing", () => {
   assert.equal(snooze(question().id, "judgment")?.instructionOwed, false);
+});
+
+test("a silent Keep doing what it said snooze leaves the first-snooze slot, so a later Hold or option is still sent", () => {
+  for (const later of ["hold", "option"] as const) {
+    const q = question();
+    const first = snooze(q.id, "judgment");
+    assert.equal(first?.instructionOwed, false);
+    assert.equal(first?.review.snooze?.mode, "judgment", "an unset mode reads back as Keep doing what it said");
+    const stored = openDb().prepare("SELECT snooze_mode, snooze_option_id FROM reviews WHERE id = ?");
+    assert.deepEqual({ ...stored.get(q.id) }, { snooze_mode: null, snooze_option_id: null });
+    assert.ok(wakeReviewRow(q.id, 6_000));
+    const second = snooze(q.id, later);
+    assert.equal(second?.instructionOwed, true, `${later} after a silent snooze reaches the agent`);
+    assert.deepEqual({ ...stored.get(q.id) }, { snooze_mode: later, snooze_option_id: later === "option" ? "o0" : null });
+    // Once told, a third snooze keeps what the agent was told and owes nothing new.
+    assert.ok(wakeReviewRow(q.id, 7_000));
+    openDb().prepare("UPDATE reviews SET snooze_instruction_queued_at = 6500 WHERE id = ?").run(q.id);
+    assert.equal(snooze(q.id, "judgment")?.instructionOwed, false);
+    assert.equal({ ...stored.get(q.id) }.snooze_mode, later);
+  }
 });
 
 test("a provisional option or hold on a message-mode question is owed as a message, as before", () => {

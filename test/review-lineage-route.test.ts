@@ -78,12 +78,12 @@ test("the history always includes reviews this conversation's deliveries name, b
   insertReviewDelivery({
     id: randomUUID(), noteKey: noteKeyFor(session), fingerprint: "f", envelope: "answer", reviewIds: [old],
     deliveredAt: 3, transcriptOffset: 0, contested: false, confirmedAt: 3, messageId: "delivered-turn", messageTs: 3,
-    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null,
+    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null, handedAt: null,
   });
   insertReviewDelivery({
     id: randomUUID(), noteKey: noteKeyFor(session), fingerprint: "g", envelope: "answer", reviewIds: [unbound],
     deliveredAt: 4, transcriptOffset: 0, contested: false, confirmedAt: 4, messageId: null, messageTs: null,
-    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null,
+    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null, handedAt: null,
   });
   const history = await (await app.request(`/api/sessions/${encodeURIComponent(session.id)}/resolved-reviews`, { headers: HEADERS })).json() as ReviewItem[];
   assert.equal(history.filter((r) => r.id !== old && r.id !== unbound).length, 500, "the cap still applies to the rest");

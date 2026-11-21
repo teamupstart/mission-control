@@ -229,6 +229,16 @@ test("the review history read always resolves, keeps what arrived, and is comple
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: false })), ["delivered:1b0c@d:loading"]);
 });
 
+test("a review-history read that never answers is bounded, so it cannot hold the other source's reviews back", { timeout: 2_000 }, async () => {
+  const { loadReviewHistory, NO_HISTORY } = await import("../src/web/lib/timelineReviews.ts");
+  const own = [review(A)];
+  const hung = () => new Promise<never>(() => {});
+  const read = await loadReviewHistory("s", { own: async () => ({ ok: true as const, value: own }), lineage: hung }, NO_HISTORY, 20);
+  assert.deepEqual({ stored: read.stored, complete: read.complete, refused: read.refused, ownAnswered: read.ownAnswered },
+    { stored: own, complete: false, refused: false, ownAnswered: true },
+    "the session's own answers arrive, and the hung lineage read is a transient failure to retry");
+});
+
 test("a source that answered on an earlier attempt keeps its reviews when a later attempt fails", async () => {
   const { loadReviewHistory, NO_HISTORY } = await import("../src/web/lib/timelineReviews.ts");
   const own = [review(A)];

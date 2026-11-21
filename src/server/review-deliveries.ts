@@ -3,7 +3,9 @@ import type { TranscriptMessage, TranscriptPresentation, WorkCycleSummary } from
 import {
   confirmReviewDelivery as persistConfirmation,
   deleteUnboundReviewDeliveries,
+  moveReviewDeliveries as moveRows,
   loadPrunableReviewDeliveries,
+  markReviewDeliveryHanded,
   updateReviewDeliveryEcho,
   type ReviewDeliveryRow,
 } from "./db.ts";
@@ -124,6 +126,7 @@ export function reserveReviewDelivery(
     echoTurnGeneration: base + (queued ? 2 : 1),
     echoEligibleAt: queued ? null : now,
     steerEcho: null,
+    handedAt: null,
   }), now);
   reservedAt.set(row.id, { base, handed: false, at: now });
   // A list already built gains the new row; one not built yet will read it from the ledger.
@@ -148,6 +151,12 @@ export function stampReviewDeliveryHandoff(
   if (!entry) return;
   entry.handed = true;
   const row = ledger.rows(noteKey).find((r) => r.id === id);
+  // Durable, and before the write: only a handed-over delivery can have produced an echo, and a
+  // restart must not forget which ones were (`claimReviewDeliveryEcho`).
+  if (row && row.handedAt === null) {
+    row.handedAt = now;
+    markReviewDeliveryHanded(id, now);
+  }
   if (!row || !row.echoOwed) return;
   const base = cycle?.generation ?? 0;
   const queued = cycle?.active === true;
@@ -227,7 +236,10 @@ export function claimReviewDeliveryEcho(
   sweep(now);
   const fingerprints = new Set(texts.map(injectionFingerprint));
   for (const row of owingRows(noteKey)) {
-    if (!row.echoOwed || !fingerprints.has(row.fingerprint)) continue;
+    // A delivery never handed to the runtime wrote nothing, so no arrival can be its echo: an
+    // operator sending the same words, even after a restart lost the in-memory reservation, is
+    // the operator's. It keeps its debt in case a handoff still comes.
+    if (!row.echoOwed || row.handedAt === null || !fingerprints.has(row.fingerprint)) continue;
     row.echoOwed = false;
     persistEcho(row);
     // A lapsed debt is cleared all the same, and the search goes on: it owes nothing now.
@@ -368,4 +380,17 @@ export function pruneReviewDeliveries(
     .map((row) => row.id));
   if (removed) ledger.forgetCaches();
   return removed;
+}
+
+/**
+ * A session's conversation key changed from its own session id to the agent's session id: the
+ * same conversation, now under its native key (`noteKeyFor`). Its deliveries move with it, so a
+ * reader under the native key still finds and binds them. A rotation between two agent session
+ * ids (a `/clear`) is a different conversation with a different transcript, so its deliveries
+ * stay where they were: their offsets point into the old file, and moving them could bind a new
+ * turn of the same words that was never theirs.
+ */
+export function followNativeConversationKey(sessionId: string, fromKey: string, toKey: string): void {
+  if (fromKey !== sessionId || fromKey === toKey) return;
+  if (moveRows(fromKey, toKey) > 0) ledger.forgetCaches();
 }

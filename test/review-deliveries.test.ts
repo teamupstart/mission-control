@@ -28,7 +28,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { openDb, createReviewContinuationPendingTurn, createSnoozeInstructionPendingTurn } = await import("../src/server/db.ts");
 const {
   claimReviewDeliveryEcho, confirmReviewDelivery, expireReviewDeliveryEchoes, pruneReviewDeliveries, releaseReviewDelivery,
-  reserveReviewDelivery, reviewDeliveryBookkeeping, stampReviewDeliveryHandoff,
+  reserveReviewDelivery, reviewDeliveryBookkeeping, stampReviewDeliveryHandoff, followNativeConversationKey,
 } = await import("../src/server/review-deliveries.ts");
 const { forgetDeliveryBindingState, noteOtherSend } = await import("../src/server/delivery-binding.ts");
 const { delegatedTurnSources, reserveDelegatedTurn } = await import("../src/server/delegated-turns.ts");
@@ -61,6 +61,13 @@ function storeReview(sessionId: string): string {
   const id = randomUUID();
   openDb().prepare(`INSERT INTO reviews (id, session_id, kind, title, body, status, response, created_at, resolved_at)
     VALUES (?, ?, 'input', 'Which linter?', 'Which linter?', 'answered', 'eslint', 1, 2)`).run(id, sessionId);
+  return id;
+}
+
+/** Reserved, then handed to the runtime as both send paths do before the write. */
+function reserveHanded(conversation: { key: string; transcript: null }, text: string, now = Date.now()): string {
+  const id = reserveReviewDelivery(conversation, text, undefined, now)!;
+  stampReviewDeliveryHandoff(conversation.key, id, undefined, now);
   return id;
 }
 
@@ -352,7 +359,9 @@ test("a bound turn whose reviews can no longer be found is still Mission Control
   }
 });
 
-test("a delivery to a runtime-transfer successor resolves reviews its predecessor asked", () => {
+// Attribution only: the turn names the predecessor's review from the delivery row. Drawing its
+// question from the predecessor's history is the lineage route's (`review-lineage-route.test.ts`).
+test("a delivery to a runtime-transfer successor is attributed with the review its predecessor asked", () => {
   const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
   const review = storeReview("predecessor");
   openDb().prepare(`INSERT INTO session_runtime_transfers
@@ -361,7 +370,7 @@ test("a delivery to a runtime-transfer successor resolves reviews its predecesso
   const text = answerText([review]);
   reserveReviewDelivery(t.conversation(k), text, undefined, now);
   t.append("delivered", text, now + 1);
-  assert.equal(attribute("successor", t, k)[0]!.presentation?.kind, "review-message");
+  assert.deepEqual(attribute("successor", t, k)[0]!.presentation, { kind: "review-message", envelope: "answer", reviewIds: [review] });
 });
 
 test("a bound row survives the prune tick for good; an unbound one past the window binds nothing and is pruned", () => {
@@ -593,13 +602,13 @@ test("an operator prompt that spent the echo of a delivery the runtime then refu
   const key = noteKeyFor(registry.getSession(session.id)!);
   const text = answerText([randomUUID()]);
   const before = revisions();
-  const id = reserveReviewDelivery({ key, transcript: null }, text, undefined)!;
+  const id = reserveHanded({ key, transcript: null }, text);
   submit(text); // the operator's copy arrives while the daemon's send is still pending
   assert.equal(revisions(), before, "counted against the pending delivery for now");
   releaseReviewDelivery(key, id); // the runtime refused it: nothing it sent was echoed
   assert.equal(revisions() - before, 1, "the operator's prompt reaches the Goal");
   // An accepted delivery keeps the count it settled.
-  const accepted = reserveReviewDelivery({ key, transcript: null }, text, undefined)!;
+  const accepted = reserveHanded({ key, transcript: null }, text);
   submit(text);
   confirmReviewDelivery(key, accepted);
   assert.equal(revisions() - before, 1);
@@ -636,7 +645,7 @@ test("bookkeeping for a delivery that ends uncertain - never confirmed, never re
   const k = conversationKey(); const now = Date.now();
   const before = reviewDeliveryBookkeeping();
   const text = answerText([randomUUID()]);
-  reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now);
+  reserveHanded({ key: k, transcript: null }, text, now);
   claimReviewDeliveryEcho(k, [text], now + 1, () => {});
   assert.deepEqual(reviewDeliveryBookkeeping(), { reservations: before.reservations + 1, unacceptedClaims: before.unacceptedClaims + 1 });
   // A day later, the next delivery sweeps what nothing will ever settle.
@@ -649,23 +658,41 @@ test("the Goal reader's owed-echo list stays exact as a long history settles, gr
   // A long history of delivered answers whose echoes have all been accounted for.
   for (let i = 0; i < 40; i++) {
     const old = answerText([randomUUID()]);
-    reserveReviewDelivery({ key: k, transcript: null }, old, undefined, now);
+    reserveHanded({ key: k, transcript: null }, old, now);
     assert.equal(claimReviewDeliveryEcho(k, [old], now + 1), true);
   }
   const text = answerText([randomUUID()]);
   // Built (and empty) before the next delivery: the new one must still be found.
   assert.equal(claimReviewDeliveryEcho(k, [text], now + 2), false);
-  reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now + 3);
-  const refused = reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now + 4)!;
+  reserveHanded({ key: k, transcript: null }, text, now + 3);
+  const refused = reserveHanded({ key: k, transcript: null }, text, now + 4);
   releaseReviewDelivery(k, refused); // the second send was refused: it owes nothing
   assert.equal(claimReviewDeliveryEcho(k, [text], now + 5), true, "the delivery that went out owes one echo");
   assert.equal(claimReviewDeliveryEcho(k, [text], now + 6), false, "and only one: the refused one owes none");
   // After a restart the list is rebuilt from the table alone.
   const again = answerText([randomUUID()]);
-  reserveReviewDelivery({ key: k, transcript: null }, again, undefined, now + 7);
+  reserveHanded({ key: k, transcript: null }, again, now + 7);
   restart();
   assert.equal(claimReviewDeliveryEcho(k, [again], now + 8), true);
   assert.equal(claimReviewDeliveryEcho(k, [again], now + 9), false);
+});
+
+test("a delivery never handed to the runtime spends no operator prompt, even after a restart forgets its reservation", () => {
+  const { registry, session, submit, revisions } = hookSession();
+  const key = noteKeyFor(registry.getSession(session.id)!);
+  const text = answerText([randomUUID()]);
+  const before = revisions();
+  // Reserved, and the daemon restarts before the handoff: nothing was written to the runtime.
+  reserveReviewDelivery({ key, transcript: null }, text, undefined);
+  restart();
+  submit(text);
+  assert.equal(revisions() - before, 1, "the operator's prompt reaches the Goal");
+  // A delivery that was handed over still owes its echo across a restart.
+  const handed = answerText([randomUUID()]);
+  reserveHanded({ key, transcript: null }, handed);
+  restart();
+  submit(handed);
+  assert.equal(revisions() - before, 1, "its echo is spent, not captured");
 });
 
 test("the count survives a restart between a delivery and its echo", () => {
@@ -714,4 +741,29 @@ test("a dropped echo's debt clears at its work cycle's completion or the TTL, ac
   expireReviewDeliveryEchoes(k, 5);
   const cleared = openDb().prepare("SELECT echo_owed FROM session_review_deliveries WHERE id = ?").get(id) as { echo_owed: number };
   assert.equal(cleared.echo_owed, 0);
+});
+
+test("a delivery made under a session's own id follows it to its native key, and never across a /clear", () => {
+  for (const rotation of ["native", "clear"] as const) {
+    restart();
+    const t = fakeTranscript(); const now = Date.now();
+    const sessionId = `proc:ttys-${rotation}:1:0`;
+    // Before the agent's session id is known, the conversation key is the session's own id.
+    const fromKey = rotation === "native" ? sessionId : `agent-before-clear-${serial}`;
+    const toKey = conversationKey();
+    const review = storeReview(sessionId);
+    const text = answerText([review]);
+    const id = reserveReviewDelivery(t.conversation(fromKey), text, undefined, now)!;
+    t.append("delivered", text, now + 5);
+    confirmReviewDelivery(fromKey, id, { now: now + 10 });
+    followNativeConversationKey(sessionId, fromKey, toKey);
+    const [delivered] = attribute(sessionId, t, toKey);
+    if (rotation === "native") {
+      assert.deepEqual(delivered!.presentation, { kind: "review-message", envelope: "answer", reviewIds: [review] },
+        "read under the native key, the turn is still the delivery's card");
+    } else {
+      assert.equal(delivered!.presentation, undefined, "a /clear is another conversation: its rows stay behind");
+      assert.equal(openDb().prepare("SELECT note_key FROM session_review_deliveries WHERE id = ?").get(id)!.note_key, fromKey);
+    }
+  }
 });

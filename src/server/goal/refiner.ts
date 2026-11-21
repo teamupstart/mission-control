@@ -178,8 +178,14 @@ export function startGoalRefiner(registry: Registry): () => void {
         const delegated = registry.pruneDelegatedTurns(now - GOAL_PRUNE_AGE_MS);
         if (delegated > 0) console.log(`[goal] pruned ${delegated} orphaned delegated-turn sender(s)`);
         // And review-message deliveries that never found their turn (`review-deliveries.ts`).
-        const reviewDeliveries = registry.pruneReviewDeliveries(now, now - GOAL_PRUNE_AGE_MS);
-        if (reviewDeliveries > 0) console.log(`[goal] pruned ${reviewDeliveries} unbound review-message deliveries`);
+        // Isolated: this prune walks transcripts, and a failure there must not skip the cleanup
+        // below, which `lastPrune` has already scheduled away until the next window.
+        try {
+          const reviewDeliveries = registry.pruneReviewDeliveries(now, now - GOAL_PRUNE_AGE_MS);
+          if (reviewDeliveries > 0) console.log(`[goal] pruned ${reviewDeliveries} unbound review-message deliveries`);
+        } catch (err) {
+          console.error("[goal] review-message delivery prune failed:", err instanceof Error ? err.message : String(err));
+        }
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same
         // tick, same window, same live-key safety property.

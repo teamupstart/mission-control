@@ -968,7 +968,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       echo_owed            INTEGER NOT NULL DEFAULT 1,
       echo_turn_generation INTEGER NOT NULL DEFAULT 0,
       echo_eligible_at     INTEGER,
-      steer_echo           TEXT             -- a steered delivery's plain echo turn: NULL undecided, '' none
+      steer_echo           TEXT,            -- a steered delivery's plain echo turn: NULL undecided, '' none
+      handed_at            INTEGER          -- when the runtime was handed the text; NULL never handed, owes no echo
     );
     CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_key
       ON session_review_deliveries(note_key, fingerprint);
@@ -3689,6 +3690,8 @@ function outstandingFileCommentIndexSql(): string {
 function migrate(d: DatabaseSync): void {
   migrateHomeDispatch(d);
   migrateTaskWorkUnit(d);
+  // Added within version 41, before it shipped: a database this branch already opened lacks it.
+  addColumn(d, "session_review_deliveries", "handed_at", "INTEGER");
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -5871,10 +5874,14 @@ function queueReviewPendingTurn(
     if (kind.coalesce) {
       const existing = d.prepare(`SELECT * FROM pending_turns
         WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
-      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
-        // A marked row names every answer it carries, in delivery order. One queued before the
-        // marker existed stays unmarked: it has no line to extend, and it renders as it did.
-        const prior = parseReviewEnvelope(existing.text);
+      // A marked row names every answer it carries, in delivery order. One queued before the
+      // marker existed has no line to extend, so a marked answer never folds into it: folding
+      // would drop the new answer's marker, and with it its delivery record and its card. The
+      // legacy row is left exactly as it was, and the new answer is queued as its own row.
+      const prior = existing ? parseReviewEnvelope(existing.text) : null;
+      const carriesMarker = text !== input.text;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null
+        && (prior !== null || !carriesMarker)) {
         const folded = prior && marked
           ? wrapReviewEnvelope(prior.kind, [...prior.reviewIds, input.reviewId], `${prior.rest}\n\n---\n\n${input.text}`)
           : `${existing.text}\n\n---\n\n${input.text}`;
@@ -12630,6 +12637,11 @@ export interface ReviewDeliveryRow {
    * it has none (including when another send of the same words could have written it).
    */
   steerEcho: string | null;
+  /**
+   * When the runtime was handed the text (`stampReviewDeliveryHandoff`), stamped before the write.
+   * Null for a delivery never handed over, which wrote nothing, so it owes no echo to anyone.
+   */
+  handedAt: number | null;
 }
 
 type ReviewDeliverySqlRow = Omit<ReviewDeliveryRow, "contested" | "reviewIds" | "echoOwed" | "envelope"> & {
@@ -12644,12 +12656,18 @@ export function insertReviewDelivery(row: ReviewDeliveryRow): void {
     .prepare(
       `INSERT INTO session_review_deliveries
          (id, note_key, fingerprint, envelope, review_ids, delivered_at, transcript_offset, contested,
-          confirmed_at, message_id, message_ts, echo_owed, echo_turn_generation, echo_eligible_at, steer_echo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          confirmed_at, message_id, message_ts, echo_owed, echo_turn_generation, echo_eligible_at, steer_echo, handed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(row.id, row.noteKey, row.fingerprint, row.envelope, JSON.stringify(row.reviewIds), row.deliveredAt,
       row.transcriptOffset, row.contested ? 1 : 0, row.confirmedAt, row.messageId, row.messageTs,
-      row.echoOwed ? 1 : 0, row.echoTurnGeneration, row.echoEligibleAt, row.steerEcho);
+      row.echoOwed ? 1 : 0, row.echoTurnGeneration, row.echoEligibleAt, row.steerEcho, row.handedAt);
+}
+
+/** Carry every delivery recorded under one conversation key to another, as one statement. */
+export function moveReviewDeliveries(fromKey: string, toKey: string): number {
+  if (fromKey === toKey) return 0;
+  return Number(openDb().prepare(`UPDATE session_review_deliveries SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey).changes);
 }
 
 /** Drop a delivery that provably did not land. */
@@ -12665,7 +12683,7 @@ export function loadReviewDeliveries(noteKey: string): ReviewDeliveryRow[] {
               transcript_offset AS transcriptOffset, contested, confirmed_at AS confirmedAt,
               message_id AS messageId, message_ts AS messageTs, echo_owed AS echoOwed,
               echo_turn_generation AS echoTurnGeneration, echo_eligible_at AS echoEligibleAt,
-              steer_echo AS steerEcho
+              steer_echo AS steerEcho, handed_at AS handedAt
          FROM session_review_deliveries WHERE note_key = ? ORDER BY rowid ASC`,
     )
     .all(noteKey) as unknown as ReviewDeliverySqlRow[];
@@ -12722,6 +12740,11 @@ export function settleReviewDeliverySteerEcho(id: string, echo: string): void {
 /** The runtime accepted it. */
 export function confirmReviewDelivery(id: string, at: number): void {
   openDb().prepare(`UPDATE session_review_deliveries SET confirmed_at = ? WHERE id = ?`).run(at, id);
+}
+
+/** Record, once, that the runtime was handed this delivery's text. */
+export function markReviewDeliveryHanded(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET handed_at = ? WHERE id = ? AND handed_at IS NULL`).run(at, id);
 }
 
 /** Persist a delivery's echo debt as `review-deliveries.ts` settled it. */

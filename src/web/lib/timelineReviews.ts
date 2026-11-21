@@ -120,11 +120,23 @@ export async function loadReviewHistory(
   } = { own: api.resolvedReviews, lineage: api.lineageReviews },
   /** The previous attempt's result: a source that answered there is kept, and not read again. */
   previous: ReviewHistoryRead = NO_HISTORY,
+  /** How long one read may take before it counts as a transient failure. */
+  deadlineMs = HISTORY_READ_DEADLINE_MS,
 ): Promise<ReviewHistoryRead> {
   const skip = (): Promise<null> => Promise.resolve(null);
+  // A read that never answers must not hold the other source's result, or every retry, back for
+  // good: past its deadline it counts as a transient failure and the bounded retry takes over.
+  const bounded = (pending: Promise<JsonRead<ReviewItem[]>>): Promise<JsonRead<ReviewItem[]>> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ ok: false, definite: false }), deadlineMs);
+      pending.then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        () => { clearTimeout(timer); resolve({ ok: false, definite: false }); },
+      );
+    });
   const [own, inherited] = await Promise.allSettled([
-    previous.ownAnswered ? skip() : read.own(sessionId),
-    previous.lineageAnswered ? skip() : read.lineage(sessionId),
+    previous.ownAnswered ? skip() : bounded(read.own(sessionId)),
+    previous.lineageAnswered ? skip() : bounded(read.lineage(sessionId)),
   ]);
   const outcome = (r: PromiseSettledResult<JsonRead<ReviewItem[]> | null>): JsonRead<ReviewItem[]> | null =>
     r.status === "fulfilled" ? r.value : { ok: false, definite: false };
@@ -163,6 +175,9 @@ export interface ReviewHistoryRead {
 
 /** Nothing read yet. */
 export const NO_HISTORY: ReviewHistoryRead = { stored: [], lineage: [], ownAnswered: false, lineageAnswered: false, complete: false, refused: false };
+
+/** How long one review-history read may take before it counts as a transient failure. */
+export const HISTORY_READ_DEADLINE_MS = 15_000;
 
 /** The first retry's wait; each later one doubles, up to `HISTORY_RETRY_MAX_MS`. */
 export const HISTORY_RETRY_MS = 5_000;

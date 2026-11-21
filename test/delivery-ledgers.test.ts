@@ -30,7 +30,7 @@ test("a delegated-turn caller that never imported review-deliveries still sees r
     id: "review-row", noteKey: k, fingerprint: "unused-by-this-check", envelope: "answer",
     reviewIds: ["1b0c9f4e-2a8d-4a43-9d3e-0f6c2b7e5a10"], deliveredAt: now, transcriptOffset: 0, contested: false,
     confirmedAt: now, messageId: turn.id, messageTs: turn.ts, echoOwed: false, echoTurnGeneration: 1,
-    echoEligibleAt: null, steerEcho: null,
+    echoEligibleAt: null, steerEcho: null, handedAt: null,
   });
   // The daemon restarts: every ledger's cache is rebuilt from its table.
   forgetDeliveryBindingState();
@@ -51,7 +51,7 @@ test("a delegated send settles a steered review delivery's echo even where revie
     id: "steered-row", noteKey: k, fingerprint: injectionFingerprint(text), envelope: "answer",
     reviewIds: ["7d1e2f30-4b5c-4d6e-8f90-a1b2c3d4e5f6"], deliveredAt: now, transcriptOffset: 0, contested: false,
     confirmedAt: now, messageId: taken.id, messageTs: taken.ts, echoOwed: false, echoTurnGeneration: 1,
-    echoEligibleAt: null, steerEcho: null,
+    echoEligibleAt: null, steerEcho: null, handedAt: null,
   });
   forgetDeliveryBindingState();
   // A controller is about to send the same words: from here a plain record of them could be its

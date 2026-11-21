@@ -398,7 +398,9 @@ delegated copy does. Bound review rows are never pruned, nor are contested or of
 (they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
 delivery window is pruned on the goal tick only once a binding walk has expired it (the tick
 walks live conversations itself, so a turn nobody read for a day is bound, not dropped), or once
-no live session has held its conversation for the goal table's prune age. A steered delivery's plain echo record (the same words
+no live session holds its conversation and the delivery itself is older than the goal table's prune
+age (the cutoff compares `delivered_at`, not when a session last held the conversation, so an old
+unbound row can go on the first tick after its session exits). A steered delivery's plain echo record (the same words
 right after its mid-turn record, before any agent turn) is found by walking the file from the
 row's offset, so it is answered like its record whichever page holds it. That decision is
 persisted on the row (`steer_echo`), and any other send of the same words - an operator or
@@ -412,9 +414,14 @@ or a missing transcript decides nothing. Each row also persists the one prompt-h
 `captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
 delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
 work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
-operator sends of the same words always yield M Goal revisions. The debt's turn is stamped when
+operator sends of the same words yield M Goal revisions whenever each delivery's own hook echo
+arrives before its debt clears. A delivery whose echo never arrives leaves its debt standing until
+then, and an operator copy of the same words submitted in that time spends it and is not captured. The debt's turn is stamped when
 the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
-terminal write boundary), not at reservation, and no completion or TTL clears it before then;
+terminal write boundary), not at reservation, and no completion or TTL clears it before then.
+That handoff is persisted (`handed_at`) before the write, and only a handed-over delivery's debt
+can be spent, so a reservation a restart interrupted before the handoff never swallows an
+operator prompt;
 the TTL itself restarts at the handoff. Bound rows are kept for good, so a conversation's rows
 grow with its history; the Goal reader and the expiry scan only a per-conversation list of the
 deliveries that still owe an echo, rebuilt from the rows whenever the ledger's caches drop. An arrival that spent the

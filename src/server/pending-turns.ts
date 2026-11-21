@@ -35,6 +35,7 @@ import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { noteOtherSend, withdrawOtherSend, type OtherSendHandle } from "./delegated-turns.ts";
 import {
   confirmReviewDelivery,
+  followNativeConversationKey,
   releaseReviewDelivery,
   reserveReviewDelivery,
   stampReviewDeliveryHandoff,
@@ -194,6 +195,21 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
 function withdrawOutboxSend(send: OutboxSend): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
   else withdrawOtherSend(send.handle);
+}
+
+/**
+ * Record that a review delivery was accepted. The acceptance itself is already a fact the runtime
+ * reported: a failed bookkeeping write must not turn it into a transport failure, which would make
+ * an accepted answer retryable (SDK) or strand a pasted one without its pickup timeout (terminal).
+ * The row stays reserved but unconfirmed, which binding already treats as a delivery that may
+ * have landed.
+ */
+function confirmReviewSend(noteKey: string, id: string, options: Parameters<typeof confirmReviewDelivery>[2]): void {
+  try {
+    confirmReviewDelivery(noteKey, id, options);
+  } catch (err) {
+    console.error(`[pending-turns] could not record review delivery ${id} as confirmed:`, errorMessage(err));
+  }
 }
 
 export class PendingTurnManager {
@@ -563,6 +579,8 @@ export class PendingTurnManager {
     this.knownKeys.set(session.id, key);
     if (previousKey && previousKey !== key) {
       this.registry.moveSteeredTurns(previousKey, key);
+      // Review deliveries follow a session id becoming its native key, never a `/clear`.
+      followNativeConversationKey(session.id, previousKey, key);
       const scan = this.steerScans.get(previousKey);
       if (scan) {
         this.steerScans.delete(previousKey);
@@ -1080,7 +1098,7 @@ export class PendingTurnManager {
           );
         }
         if (outboxSend.kind === "review") {
-          confirmReviewDelivery(outboxSend.noteKey, outboxSend.id, {
+          confirmReviewSend(outboxSend.noteKey, outboxSend.id, {
             queued: accepted === "steered",
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
@@ -1238,7 +1256,7 @@ export class PendingTurnManager {
       }
       candidate.injectionSucceeded = true;
       if (outboxSend.kind === "review") {
-        confirmReviewDelivery(outboxSend.noteKey, outboxSend.id, {
+        confirmReviewSend(outboxSend.noteKey, outboxSend.id, {
           completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
         });
       }

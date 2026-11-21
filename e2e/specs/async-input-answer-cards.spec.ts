@@ -385,11 +385,15 @@ test("a review-history read that keeps failing ends in a read error, never \"no 
   await expect(replyTo(detail, filed.id).first()).toBeVisible({ timeout: 30_000 });
   await expect(detail.getByRole("note", { name: "Answer loading" })).toBeVisible();
   await expect.poll(() => ownReads, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
-  // The first read and six retries.
+  // The first read and six retries. Each retry is scheduled only once the failed response has
+  // been processed, which can be after an advance, so the clock is advanced inside the poll until
+  // the read arrives: every wait is at most 60 s, so each advance fires any retry registered.
   while (ownReads < 7) {
     const reads = ownReads;
-    await page.clock.fastForward(60_000);
-    await expect.poll(() => ownReads, { timeout: 15_000 }).toBeGreaterThan(reads);
+    await expect.poll(async () => {
+      await page.clock.fastForward(60_000);
+      return ownReads;
+    }, { timeout: 15_000 }).toBeGreaterThan(reads);
   }
 
   const card = detail.getByRole("note", { name: "Answer whose question could not be loaded" });

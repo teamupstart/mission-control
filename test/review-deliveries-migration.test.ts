@@ -34,7 +34,7 @@ test("version 40 upgrade creates session_review_deliveries and its indexes, and 
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 41);
   assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 41);
   const columns = new Set((d.prepare("PRAGMA table_info(session_review_deliveries)").all() as Array<{ name: string }>).map((c) => c.name));
-  for (const column of ["note_key", "fingerprint", "envelope", "review_ids", "transcript_offset", "message_id", "echo_owed", "steer_echo"]) {
+  for (const column of ["note_key", "fingerprint", "envelope", "review_ids", "transcript_offset", "message_id", "echo_owed", "steer_echo", "handed_at"]) {
     assert.ok(columns.has(column), column);
   }
   const indexes = new Set((d.prepare("PRAGMA index_list(session_review_deliveries)").all() as Array<{ name: string }>).map((i) => i.name));

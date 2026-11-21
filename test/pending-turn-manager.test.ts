@@ -3069,7 +3069,7 @@ test("a refused marked delivery releases its reservation", async () => {
   assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
   idle(f.registry, f.id);
   await until(() => f.calls.length >= 1, "the refused attempt");
-  await settles(() => deliveriesFor(f.key).length === 0);
+  await until(() => deliveriesFor(f.key).length === 0, "the refused delivery's reservation to be released");
   f.manager.stop(); clearPendingTurns(f.key);
 });
 
@@ -3113,6 +3113,40 @@ for (const mode of ["steer", "interrupt"] as const) test(`a marked answer keeps 
   f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
 });
 
+/** Make every write of a delivery's confirmation fail, as a full disk or a locked file would. */
+function failConfirmationWrites(t: { after: (fn: () => void) => void }): void {
+  openDb().exec(`CREATE TEMP TRIGGER fail_review_confirmation BEFORE UPDATE OF confirmed_at ON session_review_deliveries
+    BEGIN SELECT RAISE(ABORT, 'confirmation write failed'); END;`);
+  t.after(() => openDb().exec("DROP TRIGGER IF EXISTS temp.fail_review_confirmation"));
+}
+
+test("an SDK answer the runtime accepted is retired even when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  const f = sdkFixture("marked-confirm-fails", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  idle(f.registry, f.id);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the accepted answer to leave the outbox");
+  assert.equal(f.calls.length, 1, "accepted once, and never made retryable");
+  assert.equal(deliveriesFor(f.key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a pasted terminal answer still completes pickup when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  let key = "";
+  const f = terminalFixture("marked-terminal-confirm-fails", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  key = noteKeyFor(f.registry.getSession(f.id)!);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the verified paste to complete pickup");
+  assert.equal(f.injected.length, 1, "pasted once");
+  assert.equal(deliveriesFor(key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(key);
+});
+
 test("an operator message that begins with a review marker is the operator's: no delivery is reserved for it", async () => {
   const f = sdkFixture("operator-marker", async () => "started");
   const reviewId = crypto.randomUUID();
@@ -3141,7 +3175,7 @@ for (const refused of [false, true]) test(`a marked answer pasted into a termina
   await until(() => f.injected.length >= 1, "the paste");
   assert.equal(atPaste, 1, "reserved before the text reached the pane");
   assert.equal(parseReviewEnvelope(f.injected[0]!)?.rest, "Answered: eslint");
-  if (refused) await settles(() => deliveriesFor(key).length === 0);
-  else await settles(() => deliveriesFor(key)[0]?.confirmedAt != null);
+  if (refused) await until(() => deliveriesFor(key).length === 0, "the refused paste's reservation to be released");
+  else await until(() => deliveriesFor(key)[0]?.confirmedAt != null, "the pasted delivery to be confirmed");
   f.manager.stop(); clearPendingTurns(key);
 });

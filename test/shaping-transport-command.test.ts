@@ -149,7 +149,11 @@ const bypassesDirectoryPermissions = ((): boolean => {
   }
 })();
 
-/** Kill whatever helper a fixture recorded, whether or not the test reached its own cleanup. */
+/**
+ * Kill whatever helper a fixture recorded, whether or not the test reached its own cleanup. Only
+ * for a helper not yet confirmed gone: once it has exited, the system may give its pid to an
+ * unrelated process, which this must never signal.
+ */
 const killRecorded = (pidFile: string, pid = 0): void => {
   const recorded = pid || (existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0);
   if (recorded > 0) { try { process.kill(recorded, "SIGKILL"); } catch { /* Already gone. */ } }
@@ -669,6 +673,8 @@ test("a helper left in the group after a successful reply is reaped when the cal
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then leaves its pid alone.
+  let gone = false;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "orphan-helper", pidFile]), ctx(30_000));
     assert.equal(reply.kind, "data", "the shaper answered normally");
@@ -677,9 +683,10 @@ test("a helper left in the group after a successful reply is reaped when the cal
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper did not outlive the dry run");
   } finally {
-    killRecorded(pidFile, pid);
+    if (!gone) killRecorded(pidFile, pid);
   }
 });
 
@@ -688,6 +695,8 @@ test("a successful reply is kept when a helper in the group still holds the pipe
   rmSync(pidFile, { force: true });
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
   let pid = 0;
+  // Set once the liveness check has seen the helper exit; cleanup then leaves its pid alone.
+  let gone = false;
   try {
     const started = Date.now();
     // A generous timeout: the reply must come from the shaper's exit, not from the timeout.
@@ -700,9 +709,10 @@ test("a successful reply is kept when a helper in the group still holds the pipe
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the helper holding the pipes was stopped");
   } finally {
-    killRecorded(pidFile, pid);
+    if (!gone) killRecorded(pidFile, pid);
   }
 });
 
@@ -759,6 +769,8 @@ test("stopping a call kills its whole process group, descendants included", asyn
   const controller = new AbortController();
   const pending = callCommand(request(), shaper([FIXTURE, "grandchild", pidFile]), ctx(120_000, { signal: controller.signal }));
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  // Set once the liveness check has seen the descendant exit; cleanup then leaves its pid alone.
+  let gone = false;
   try {
     for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
     const pid = Number(readFileSync(pidFile, "utf8"));
@@ -769,11 +781,12 @@ test("stopping a call kills its whole process group, descendants included", asyn
     for (let attempt = 0; attempt < 200 && alive; attempt++) {
       try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
     }
+    gone = !alive;
     assert.equal(alive, false, "the shaper's own child was killed with it");
   } finally {
     // The liveness check above runs first, so a transport regression still fails the test.
     controller.abort();
-    killRecorded(pidFile);
+    if (!gone) killRecorded(pidFile);
   }
 });
 

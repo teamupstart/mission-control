@@ -97,17 +97,21 @@ test("POST /mcp/reviews negotiates the wait: message only for a capable child, a
   const paneless = mkDiscovered({ terminals: [] });
   registry.applyDiscovery([d, paneless]);
 
-  // Flag off: exactly today's answer, even from a capable child.
-  const off = await created(await post(app, d.cwd, { snoozable: true, asyncCapable: true }));
+  // Flag off: exactly today's answer, even from a capable child, and no meanwhile line kept for
+  // a question its agent waits on inside the call.
+  const off = await created(await post(app, d.cwd, { snoozable: true, asyncCapable: true, meanwhile: "carrying on" }));
   assert.equal(off.wait, "call");
   assert.equal(off.receipt, undefined);
   assert.equal(registry.getReview(off.id)?.waitMode, undefined);
+  assert.equal(registry.getReview(off.id)?.meanwhile, undefined);
+  assert.equal((openDb().prepare("SELECT meanwhile FROM reviews WHERE id = ?").get(off.id) as { meanwhile: string | null }).meanwhile, null);
 
   setFlag(true);
   const oldChild = await created(await post(app, d.cwd, { snoozable: true }));
   assert.equal(oldChild.wait, "call", "a child that never said asyncCapable keeps long-polling");
-  const unreachable = await created(await post(app, paneless.cwd, { snoozable: true, asyncCapable: true }));
+  const unreachable = await created(await post(app, paneless.cwd, { snoozable: true, asyncCapable: true, meanwhile: "carrying on" }));
   assert.equal(unreachable.wait, "call", "an answer message could never reach a session with no pane");
+  assert.equal(registry.getReview(unreachable.id)?.meanwhile, undefined, "a blocked agent is not carrying on");
   const gate = await created(await post(app, d.cwd, { asyncCapable: true }));
   assert.equal(gate.wait, "call", "a confirmation another tool raised is a gate");
 
@@ -399,13 +403,15 @@ async function olderChildReattaches() {
     return turn !== null;
   });
   const ask = { title: "Which linter?", body: "Which linter?", decisions: decisions("Which linter?"), snoozable: true };
-  const filed = await created(await post(app, d.cwd, { ...ask, asyncCapable: true }));
+  const filed = await created(await post(app, d.cwd, { ...ask, asyncCapable: true, meanwhile: "holding the release" }));
   assert.equal(filed.wait, "message");
+  assert.equal(registry.getReview(filed.id)?.meanwhile, "holding the release");
   const again = await created(await post(app, d.cwd, ask));
   assert.equal(again.id, filed.id, "the identical ask re-attaches to the filed row");
   // From here it is the call-mode question the older child is blocked on.
   assert.equal(again.wait, "call");
   assert.equal(registry.getReview(filed.id)?.waitMode, undefined);
+  assert.equal(registry.getReview(filed.id)?.meanwhile, undefined, "its meanwhile line no longer describes the agent");
   assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 });
   const call = app.request(`/mcp/reviews/${filed.id}/wait`, { headers: authed });
   // Until the long-poll is actually attached, nothing is waiting in a call.

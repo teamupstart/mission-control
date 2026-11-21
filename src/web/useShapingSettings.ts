@@ -5,6 +5,7 @@ import {
   previewShapingIntent,
   shapingIntentReflected,
   shapingIntentSuperseded,
+  shapingLockKeys,
   shapingRefusalText,
   shapingUnconfirmedText,
   type ShapingWriteOutcome,
@@ -46,9 +47,11 @@ export function useShapingSettings(
   // applies after a newer switch off, since a switch keeps the revision it was checked against.
   const [locked, setLocked] = useState<ReadonlySet<string>>(new Set());
   const lockedNow = useRef(new Set<string>());
-  const lock = (key: string, held: boolean): void => {
-    if (held) lockedNow.current.add(key);
-    else lockedNow.current.delete(key);
+  const lock = (keys: readonly string[], held: boolean): void => {
+    for (const key of keys) {
+      if (held) lockedNow.current.add(key);
+      else lockedNow.current.delete(key);
+    }
     setLocked(new Set(lockedNow.current));
   };
   const writing = useRef<ShapingIntent | null>(null);
@@ -99,7 +102,8 @@ export function useShapingSettings(
    * same state can come from another write, or have been stored before this one went out.
    */
   const set = async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
-    if (!live || writing.current || lockedNow.current.has(key)) return "not_sent";
+    const keys = shapingLockKeys(intent, key);
+    if (!live || writing.current || keys.some((held) => lockedNow.current.has(held))) return "not_sent";
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
@@ -109,7 +113,7 @@ export function useShapingSettings(
       return "refused";
     }
     const request = parsed.data;
-    lock(key, true);
+    lock(keys, true);
     const number = ++sent.current;
     writing.current = request;
     latest.current = request;
@@ -173,7 +177,7 @@ export function useShapingSettings(
       }
       return "refused";
     } finally {
-      lock(key, false);
+      lock(keys, false);
     }
   };
 

@@ -1590,15 +1590,11 @@ test("a held switch never applies to the same definition imported again after a 
   });
   await pill(page, "Revived notes").click();
   await reached.opened;
-  // Another window replaces it, which releases the panel...
+  // Another window replaces it, which releases the panel, and then imports the original
+  // definition again, stored off. (This window's own import would wait for the held switch.)
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("revived-notes", "Revived notes", { timeoutMs: 20_000 }) });
   await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled({ timeout: 3_000 });
-  // ...and the operator imports the original definition again, stored off.
-  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
-  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
-  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(original));
-  await dialog.getByRole("button", { name: "Save switched off" }).click();
-  await expect(dialog).toHaveCount(0);
+  await putShaping(daemon, { kind: "upsert", shaper: original });
   // The held switch, for the first time that definition was stored, now reaches the daemon.
   goes.open();
   expect((await held!.response())?.status()).toBe(409);
@@ -1697,5 +1693,69 @@ test("a switch whose answer is delayed keeps its control locked, so it never und
   await pill(page, "Delayed notes").click();
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["delayed-notes"]).toBe(false);
   await expect(pill(page, "Delayed notes")).toHaveAccessibleName("Delayed notes: off");
+  await page.unroute("**/api/shaping");
+});
+
+test("a pending import and a write on its shaper's row never overtake each other", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("exclusive-notes", "Exclusive notes");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Exclusive notes")).toHaveAccessibleName("Exclusive notes: off");
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  // This window's import of the shaper is held before it reaches the daemon.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Another window imports the same manifest: its frame frees the panel and the dialog.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  // The shaper's row waits for that import's answer, so no switch on can be undone by it.
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+  await expect(pill(page, "Exclusive notes")).toBeDisabled();
+  goes.open();
+  expect((await held!.response())?.status()).toBe(200);
+  await expect(pill(page, "Exclusive notes")).toBeEnabled();
+  await pill(page, "Exclusive notes").click();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["exclusive-notes"]).toBe(true);
+  await page.unroute("**/api/shaping");
+
+  // The other way round: while a switch on that row awaits its answer, an import of it waits.
+  const switchReached = gate();
+  const switchGoes = gate();
+  let switching: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || switching) return route.fallback();
+    switching = route.request();
+    switchReached.open();
+    await switchGoes.opened;
+    await route.continue();
+  });
+  await pill(page, "Exclusive notes").click();
+  await switchReached.opened;
+  await putShaping(daemon, { kind: "enable", id: "exclusive-notes", enabled: false });
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await expect(dialog.getByRole("status")).toHaveText(
+    "A change to exclusive-notes is still waiting for the daemon's answer. This can be saved once it arrives.",
+  );
+  await expect(dialog.getByRole("button", { name: "Save switched off" })).toBeDisabled();
+  switchGoes.open();
+  expect((await switching!.response())?.status()).toBe(200);
+  await expect(dialog.getByRole("button", { name: "Save switched off" })).toBeEnabled();
+  await expect(dialog.getByRole("status")).toHaveCount(0);
   await page.unroute("**/api/shaping");
 });

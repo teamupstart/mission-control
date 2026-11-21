@@ -31,6 +31,7 @@ import {
   shapingIntentReflected,
   shapingIntentSuperseded,
   shapingList,
+  shapingLockKeys,
   shapingRefusalText,
 } from "../src/web/lib/shaping-settings.ts";
 
@@ -612,4 +613,11 @@ test("a revision-bound switch or removal is superseded once its definition is re
   // An intent bound to no revision is never superseded; the other kinds carry none.
   assert.equal(shapingIntentSuperseded(replaced, { kind: "enable", id: "a", enabled: true }), false);
   assert.equal(shapingIntentSuperseded(replaced, { kind: "move", id: "a", after: null }), false);
+});
+
+test("an import holds its shaper's row as well as the import control; other writes hold their own", () => {
+  const shaper = ShaperSchema.parse(gatherer("held"));
+  assert.deepEqual(shapingLockKeys({ kind: "upsert", shaper }, "import"), ["import", "row:held"]);
+  assert.deepEqual(shapingLockKeys({ kind: "enable", id: "held", enabled: true }, "row:held"), ["row:held"]);
+  assert.deepEqual(shapingLockKeys({ kind: "settings", caller: { user: "x" } }, "settings"), ["settings"]);
 });

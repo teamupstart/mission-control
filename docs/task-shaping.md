@@ -356,7 +356,10 @@ arrives after it is still shown. The control that sent a write stays locked unti
 answer arrives, even once the panel is free: a row's switch, removal and moves, the identity and
 budgets' Save (its fields stay editable), and the import dialog's Save. So no second write on the
 same control can go out first and then be undone by the first, as a delayed switch on could undo
-a newer switch off, since a switch keeps the revision it is checked against. When a write on
+a newer switch off, since a switch keeps the revision it is checked against. An import also holds
+its shaper's row, since it stores that shaper switched off: while it awaits its answer the row's
+switch, removal and moves wait, and while a write on the row awaits its answer an import of that
+shaper waits too, with the dialog saying why. When a write on
 another control went out before a refusal arrived, the refusal names the earlier action, so it
 never reads as the outcome of the change just made. A refusal belongs to its control: a write
 under another control leaves it in place, and acting on the same control again dismisses it. A write whose

@@ -311,7 +311,7 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy || locked.has("import")} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
+        <ShapingImportDialog config={config} busy={busy || locked.has("import")} locked={locked} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
           fresh={(outcomeArrivals.import ?? 0) > importOpenedAt.current}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {

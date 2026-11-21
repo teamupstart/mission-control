@@ -84,10 +84,12 @@ export function EarlierOutcomes({ messages }: { messages: readonly string[] | un
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, saving, error, earlier, fresh = false, onClose, onSave }: {
+export function ShapingImportDialog({ config, busy, locked, saving, error, earlier, fresh = false, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
+  /** Controls whose write still awaits its answer, a shaper's row among them. */
+  locked?: ReadonlySet<string>;
   /** Whether this dialog's own save is in flight. Only that holds the dialog open. */
   saving: boolean;
   /** The daemon's refusal of the last save, if any. */
@@ -119,6 +121,9 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, fres
   /** Numbers each Save in this dialog. */
   const submissions = useRef(0);
   const reading = text.trim() === "" ? null : readShaperManifest(text);
+  // A write on this shaper's row still awaits its answer: importing it now could land first and be
+  // undone by that write, or the other way round, so it waits.
+  const rowLocked = reading?.ok === true && (locked?.has(`row:${reading.shaper.id}`) ?? false);
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
   const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
   const edit = (value: string): void => {
@@ -193,6 +198,11 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, fres
                     : `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be switched off or removed, so this import will be refused.`}
               </p>
             )}
+            {rowLocked && (
+              <p className="shaping-note" role="status">
+                A change to {reading.shaper.id} is still waiting for the daemon&apos;s answer. This can be saved once it arrives.
+              </p>
+            )}
             {reading.ignoredEnabled && (
               <p className="shaping-note">The manifest&apos;s &quot;enabled&quot; does not apply here: an imported shaper is saved switched off.</p>
             )}
@@ -206,7 +216,7 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, fres
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
         </Tooltip>
         <Tooltip label="Store this shaper switched off in every window">
-          <button type="button" className="btn" disabled={!reading?.ok || readingFile !== null || busy}
+          <button type="button" className="btn" disabled={!reading?.ok || readingFile !== null || busy || rowLocked}
             onClick={() => {
               if (!reading?.ok) return;
               setSaved(true);

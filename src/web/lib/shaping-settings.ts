@@ -214,6 +214,18 @@ export function shapingIntentSuperseded(view: ShapingConfigView, intent: Shaping
     && shapingViewRevision(view, intent.id) !== intent.expect;
 }
 
+/**
+ * Every control a write can affect, all locked while it awaits its answer and all required free
+ * before it is sent. An import stores its shaper switched off, so it also holds that shaper's row:
+ * a switch on sent while it waits could otherwise be undone by the import landing after it, and an
+ * import is not sent while a write on that row awaits its own answer.
+ */
+export function shapingLockKeys(intent: ShapingIntent, key: string): string[] {
+  if (intent.kind !== "upsert") return [key];
+  const row = `row:${(intent.shaper as { id?: unknown }).id}`;
+  return row === key ? [key] : [key, row];
+}
+
 export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boolean {
   return canonicalJson(a) === canonicalJson(b);
 }

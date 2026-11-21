@@ -394,6 +394,8 @@ test("workflow hold details identify the next actor without creating a session b
   await expect(holds).toContainText("Review feedback is ready in preview");
   await expect(holds).toContainText("Action needed · Operator");
   await expect(holds.getByRole("link")).toHaveAttribute("href", `#/runs/${runId}`);
+  await holds.getByRole("link").hover();
+  await expect(dashboard.locator(".tooltip").filter({ hasText: "Open this workflow run" })).toBeVisible();
   const session = (await api<Array<{ id: string; blocker: unknown }>>(daemon, "/api/sessions")).find(s => s.id === id)!;
   expect(session.blocker ?? null).toBeNull();
   await shoot(dashboard, "hold-operator");
@@ -448,6 +450,8 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   } });
   await expect(holds).toContainText("Queued behind frontend");
   await expect(holds.getByRole("link", { name: /Open owning run/ })).toHaveAttribute("href", `#/runs/${runId}`);
+  await holds.getByRole("link", { name: /Open owning run/ }).hover();
+  await expect(dashboard.locator(".tooltip").filter({ hasText: "Open the workflow run holding this session" })).toBeVisible();
   await update({ ...summary, id: "healthy-review", repoRoot: "/repos/tools", status: "running", phase: "persona_review", activePersonaNames: ["Test Auditor"] });
   await expect(holds).toContainText("Review in progress: Test Auditor");
   await expect(holds).toContainText("In progress · Workflow");

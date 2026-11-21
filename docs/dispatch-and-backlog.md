@@ -2227,6 +2227,8 @@ and comma-separated Markdown filenames, then choose **Preview revision change**.
 shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
 the input and originating prerequisite together; Cancel revision change leaves them untouched.
 Save any separate dependency edits before using this action.
+Dependency editing stays disabled while the revision editor is open; cancel the revision change
+to edit prerequisites separately.
 
 Only the superseded pin's prerequisites are removed. An origin still required by another pin
 stays, as do unrelated implementation dependencies and recorded merge evidence. A completed

@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -510,7 +510,7 @@ for (const failure of [
   await shoot(dashboard, `revision-change-http-${failure.status}`);
 });
 
-test("Save and dependency edits wait for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {
+test("Save and dependency edits wait for revision editing and its pending preview, including keyboard submission", async ({ dashboard, daemon }) => {
   const prerequisite = await create(daemon, "Retained prerequisite");
   const candidate = await create(daemon, "Another prerequisite");
   const { dialog, read } = await revisionEditor(dashboard, daemon, "same", [prerequisite]);
@@ -518,9 +518,26 @@ test("Save and dependency edits wait for the pending revision preview, including
   const add = dialog.getByRole("combobox", { name: "Add dependency" });
   const remove = dialog.getByRole("button", { name: /^Remove dependency: Retained prerequisite/ });
   const mode = dialog.getByRole("group", { name: /^When to start after Retained prerequisite/ });
+  await expect(add).toBeDisabled();
+  await expect(remove).toBeDisabled();
+  await expect(remove).toHaveAccessibleDescription("Cancel the revision change before editing dependencies.");
+  await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeDisabled();
+  await expect(mode.getByRole("button", { name: "After merge", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Preview revision change" })).toBeEnabled();
+  await add.evaluate((select: HTMLSelectElement, id) => {
+    select.value = `task:${id}`;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }, candidate.id);
+  await expect(dialog.getByRole("button", { name: /^Remove dependency: Another prerequisite/ })).toHaveCount(0);
+  expect(await read()).toEqual(before);
+  await shoot(dashboard, "revision-change-editing-guard");
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
   await expect(add).toBeEnabled();
   await expect(remove).toBeEnabled();
   await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeEnabled();
+  await expect(mode.getByRole("button", { name: "After merge", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await expect(add).toBeDisabled();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let started!: () => void;

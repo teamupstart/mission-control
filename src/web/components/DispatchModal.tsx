@@ -1548,7 +1548,7 @@ function DispatchModal({
   const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
   const pinPreviewRequired = editingPin !== null && pinChange === null;
   const pinPreviewHint = "Preview or cancel the revision change before saving or dispatching";
-  const dependencyEditsBlocked = busy || pinChange !== null;
+  const dependencyEditsBlocked = busy || editingPin !== null || pinChange !== null;
   const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
@@ -1568,7 +1568,7 @@ function DispatchModal({
   function removalReason(key: string): string | null {
     if (pinPreviewPending) return "Wait for the revision preview before editing dependencies.";
     if (busy) return "Wait for the current task action before editing dependencies.";
-    if (pinChange) return "Cancel the revision change before editing dependencies.";
+    if (editingPin !== null || pinChange) return "Cancel the revision change before editing dependencies.";
     if (planRequirementsProblem) return planRequirementsProblem;
     const required = planRequirementsResult?.requirements.filter(requirement =>
       requirement.dependencyKeys.includes(key) && !draft.dependencies.some(candidate =>

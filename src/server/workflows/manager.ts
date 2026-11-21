@@ -8672,7 +8672,9 @@ export class WorkflowManager {
     }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
-    if (unchanged) {
+    // An evidence-only thread reply can settle the findings without changing Git. The
+    // published tree still owes a full review; createRepairSubmission records that boundary.
+    if (unchanged && !workflowInspectorGateNeedsFreshReview(this.gateState(run))) {
       this.recordResumptionWithheld(run, latest, "repository_unchanged", now);
       this.maybeRemindParkedRound(run, binding, latest, now);
       if (run.currentPhase === "pr_handoff") {

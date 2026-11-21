@@ -148,6 +148,7 @@ interface HarnessOptions {
   omitContentTree?: boolean;
   inspector?: boolean;
   inspectorFindingsPolicy?: "restart_workflow" | "inspector_only";
+  resumptionPolicy?: "manual" | "auto";
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
@@ -424,9 +425,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       ? { kind: "inspector", onFindings: options.inspectorFindingsPolicy ?? "restart_workflow", missingPrAction: "wait" }
       : { kind: "none" },
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
-    // The resumption observer is the OTHER way a parked round reopens and would race the
-    // assertions below about which path produced round two.
-    resumptionPolicy: "manual",
+    // Opt into the observer only when the test drives automatic resumption itself.
+    resumptionPolicy: options.resumptionPolicy ?? "manual",
     bindingDefaults: {
       triggerMode: "manual",
       deliveryMode: options.deliveryMode ?? "live",
@@ -1998,9 +1998,10 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
     const { adoptInspectorPr, updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
-    const options = {
+    const options: HarnessOptions = {
       pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
       omitContentTree: parentProof === "missing", inspectorFindingsPolicy: findingsPolicy,
+      resumptionPolicy: findingsPolicy ? "auto" : "manual",
     };
     const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}-${findingsPolicy}`, options);
     try {
@@ -2109,7 +2110,11 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
             replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 4,
           });
           h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
-          await new Promise((resolve) => setTimeout(resolve, 30));
+          // Parked findings do not advance lastObservedAt. Drain the scheduled evaluation
+          // itself so these negative assertions cannot pass before the observation runs.
+          const tasks = (h.manager as unknown as { backgroundTasks: Set<Promise<void>> }).backgroundTasks;
+          assert.ok(tasks.size > 0, "the same-head observation must schedule gate work");
+          while (tasks.size > 0) await Promise.allSettled(tasks);
           assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
           assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
         }
@@ -2173,7 +2178,19 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
               captureAndActivate: (...args: unknown[]) => Promise<{ ok: boolean }>;
             }).captureAndActivate(binding, claimed.run, claimed.submission, claimed.previousFingerprint);
           })()
-          : await h.manager.resubmit(runId, {
+          : findingsPolicy ? await (async () => {
+            // The agent answered and resolved the thread without another edit or push.
+            h.runActionTurn();
+            await h.manager.sweepResumptions(SETTLED());
+            const freshSubmission = h.store.latestSubmission(runId)!;
+            assert.equal(freshSubmission.round, child.round + 1,
+              "an unchanged published tree still needs its outstanding full review");
+            assert.equal(freshSubmission.triggerSource, "session");
+            assert.equal(h.store.submissionRequiresFreshPublishedReview(freshSubmission.id), true);
+            assert.equal(h.store.priorPassedJudge(runId, "upstream", freshSubmission.round), null);
+            assert.equal(h.head.sha, "packaged", "automatic review must not require another push");
+            return { ok: true };
+          })() : await h.manager.resubmit(runId, {
             requestId: `fresh-published-${number}`, resubmitUnchanged: false,
           });
         assert.equal(result.ok, true, JSON.stringify(result));

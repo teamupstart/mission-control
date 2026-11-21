@@ -294,6 +294,39 @@ test("report_status inside a turn that declared while the registry read idle doe
   assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
 });
 
+test("an idle declaration's turn end is judged by which report it is, not by its millisecond", () => {
+  // A Stop stamped in the same millisecond as the declaration is still that turn's end.
+  const registry = new Registry();
+  const stored = (d: DiscoveredSession) =>
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!;
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const at = Date.now() - 60_000;
+  hook(registry, d, "UserPromptSubmit", "go", at - 2_000);
+  hook(registry, d, "Stop", "go", at - 1_000);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
+  // A Stop of the previous turn, stamped before the declaration and arriving after it, is not it.
+  hook(registry, d, "Stop", "go", at - 500);
+  assert.equal(stored(d).settledAt, null, "a report stamped before the declaration settled it");
+  hook(registry, d, "Stop", "go", at);
+  assert.notEqual(stored(d).settledAt, null, "a Stop in the declaration's own millisecond did not end the declaring turn");
+  hook(registry, d, "UserPromptSubmit", "the build finished", at + 120_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the next turn was not judged as the wake");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+
+  // The other edge: the reading the wait was declared against shares the declaration's
+  // millisecond. It is that reading, not a later one, so it never settles the declaring turn,
+  // and the turn's own late tool call is not the wake.
+  const e = mkDiscovered();
+  registry.applyDiscovery([e]);
+  hook(registry, e, "UserPromptSubmit", "go", at - 2_000);
+  hook(registry, e, "Stop", "go", at);
+  assert.equal(registry.reportAwaiting(e.syntheticId, body(at), at).ok, true);
+  assert.equal(stored(e).settledAt, null, "the reading declared against settled the declaring turn");
+  hook(registry, e, "PreToolUse", "go", at + 100);
+  assert.ok(registry.getAwaiting(e.syntheticId), "the declaring turn's own tool call read as the wake");
+});
+
 test("a hookless session that declares while it reads idle still ends its wait on the next turn", () => {
   // A transcript-read session whose declaring turn was too short for any sweep to see working.
   // Its end moves only `lastActivity`; the sweep still emits that, and the fresher reading is

@@ -1084,6 +1084,12 @@ export class Registry extends EventEmitter {
    */
   private awaitingLastState = new Map<string, Session["state"]>();
   /**
+   * The lifecycle report (`lifecycleReport`) each wait was declared against, by wait key: the
+   * exact hook overlay or transcript read the registry held at that moment, or null. In memory
+   * only, like `awaitingLastState`, which a restart resets to a reading that settles anyway.
+   */
+  private awaitingDeclaredReport = new Map<string, object | null>();
+  /**
    * The person deliveries (`notePersonDelivery`) written into each waiting session recently,
    * by wait key, so an automated delivery of the same words claimed just after one is stored as
    * contested by it too. In memory only: the window is a couple of minutes, and what outlives it
@@ -9367,6 +9373,7 @@ export class Registry extends EventEmitter {
     this.awaitings.set(key, record);
     this.awaitingSeenAt.set(key, now);
     this.awaitingLastState.set(key, s.state);
+    this.awaitingDeclaredReport.set(key, this.lifecycleReport(s)?.ref ?? null);
     logEvent(s.id, now, prev ? "session_awaiting_updated" : "session_awaiting_set", {
       actor: "session",
       what: awaiting.what,
@@ -9403,6 +9410,7 @@ export class Registry extends EventEmitter {
     this.awaitings.delete(key);
     this.awaitingSeenAt.delete(key);
     this.awaitingLastState.delete(key);
+    this.awaitingDeclaredReport.delete(key);
     this.awaitingPersonSends.delete(key);
     logEvent(sessionId, now, "session_awaiting_cleared", {
       actor,
@@ -9551,31 +9559,36 @@ export class Registry extends EventEmitter {
    *
    * Ordinarily that is the session leaving its turn for idle. A wait declared while the registry
    * already read idle sees no such transition: the turn was too short for a discovery sweep to
-   * catch, or its hooks lost the race with the MCP call. Its end is then the session's own
-   * lifecycle source reporting idle at a time after the declaration (`idleReportedAt`), which a
-   * Stop hook or a transcript read can only do once the declaring call has returned. Never
-   * `Session.lastActivity`: `report_status` and a driver dialog stamp that mid-turn without the
-   * turn ending. Strictly after, so the reading the wait was declared against never settles it.
+   * catch, or its hooks lost the race with the MCP call. Its end is then a fresh idle report from
+   * the session's own lifecycle source (`lifecycleReport`): any report other than the one the
+   * wait was declared against, stamped no earlier than the declaration, which a Stop hook or a
+   * transcript read can only be once the declaring call has returned. Judged by which report it
+   * is, not by its millisecond, so a Stop stamped in the same millisecond as the declaration
+   * still settles it, and the reading declared against never does. Never `Session.lastActivity`:
+   * `report_status` and a driver dialog stamp that mid-turn without the turn ending.
    */
   private declaringTurnEnded(s: Session, record: SessionAwaitingRecord, last: Session["state"] | undefined): boolean {
     if (s.state !== "idle") return false;
     if (last !== "idle") return true;
-    const idleAt = this.idleReportedAt(s);
-    return idleAt !== null && idleAt > record.awaiting.updatedAt;
+    const report = this.lifecycleReport(s);
+    if (!report || report.state !== "idle") return false;
+    if (report.ref === this.awaitingDeclaredReport.get(noteKeyFor(s))) return false;
+    return report.at >= record.awaiting.updatedAt;
   }
 
   /**
-   * When this session's own lifecycle source last reported it idle, in that source's time, or
-   * null when it reports anything else or nothing fresh. The same precedence discovery applies
-   * (`mergeDiscovered`): a fresh hook overlay, else a fresh transcript read. Only those two:
-   * each changes only when the agent's own lifecycle moves, unlike the session's activity stamp.
+   * This session's current report from its own lifecycle source: what it says, when (in that
+   * source's time), and the report itself, which is a new object for every hook and every
+   * transcript read. The same precedence discovery applies (`mergeDiscovered`): a fresh hook
+   * overlay, else a fresh transcript read, else null. Only those two: each changes only when the
+   * agent's own lifecycle moves, unlike the session's activity stamp.
    */
-  private idleReportedAt(s: Session): number | null {
+  private lifecycleReport(s: Session): { state: Session["state"]; at: number; ref: object } | null {
     const now = Date.now();
     const overlay = this.overlayFor(s);
-    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) return overlay.state === "idle" ? overlay.lastActivity : null;
+    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) return { state: overlay.state, at: overlay.lastActivity, ref: overlay };
     const passive = this.passiveStateFor(s);
-    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) return passive.state === "idle" ? passive.lastActivity : null;
+    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) return { state: passive.state, at: passive.lastActivity, ref: passive };
     return null;
   }
 
@@ -9760,7 +9773,9 @@ export class Registry extends EventEmitter {
     moveSessionAwaiting(fromKey, toKey);
     this.awaitings.delete(fromKey);
     this.awaitings.set(toKey, { ...record, noteKey: toKey });
-    for (const map of [this.awaitingSeenAt, this.awaitingLastState, this.awaitingPersonSends] as Map<string, unknown>[]) {
+    for (const map of [
+      this.awaitingSeenAt, this.awaitingLastState, this.awaitingDeclaredReport, this.awaitingPersonSends,
+    ] as Map<string, unknown>[]) {
       if (!map.has(fromKey)) continue;
       map.set(toKey, map.get(fromKey));
       map.delete(fromKey);

@@ -422,31 +422,61 @@ test(`${trigger} releases unsent feedback for a superseded clean Inspector head`
 });
 }
 
-// Issue #1574: the immutable gate state is seeded because publication and reviews are fake;
+/** Seed the parent review and its changed shipping continuation, so every gate evaluation sees the same hold. */
+function seedPublishedTreeMismatch(daemon: DaemonHandle, runId: string, head: string, tree: string): void {
+  strandAsClosed(daemon, runId);
+  withDaemonDb(daemon, (db) => {
+    const version = db.prepare(`SELECT v.id, v.graph_json FROM workflow_versions v
+      JOIN workflow_runs r ON r.workflow_version_id = v.id WHERE r.id = ?`)
+      .get(runId) as { id: string; graph_json: string };
+    const graph = JSON.parse(version.graph_json);
+    graph.nodes.push({ id: "publish", kind: "session_action", position: { x: 330, y: 0 },
+      action: { sourceSessionActionId: "seeded-publish", sourceRevision: 1, name: "Publish",
+        description: "", promptMarkdown: "Publish the reviewed work", requiredSkillId: null,
+        completion: { kind: "pull_request" } } });
+    Object.assign(graph.edges.find((edge: { id: string }) => edge.id === "pass"),
+      { target: "publish", targetPort: "activate" });
+    graph.edges.push({ id: "published", source: "publish", sourcePort: "complete", target: "end", targetPort: "terminal" });
+    db.prepare("UPDATE workflow_versions SET graph_json = ? WHERE id = ?").run(JSON.stringify(graph), version.id);
+    const parent = db.prepare("SELECT id, context_json FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
+      .get(runId) as { id: string; context_json: string };
+    const context = JSON.parse(parent.context_json);
+    Object.assign(context.evidence, { headSha: FAILED_HEAD, contentTreeOid: "a".repeat(40), workingTreeDirty: false, workingTreeStatus: [] });
+    delete context.evidence.publication;
+    db.prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(context), parent.id);
+    context.evidence.contentTreeOid = tree;
+    context.evidence.headSha = head;
+    db.prepare(`INSERT INTO workflow_submissions
+      (id, run_id, round, segment, parent_submission_id, continuation_node_id, continuation_node_attempt_id, refinement_reason,
+       mode, trigger_source, trigger_key, evidence_fingerprint, context_json, evidence_json, pr_head_sha, status, created_at, updated_at)
+      SELECT id || '-shipping', run_id, round, 1, id, 'publish', 'seeded-publication-action', 'session_action', mode, trigger_source,
+        trigger_key || '-shipping', evidence_fingerprint, ?, ?, ?, 'completed', created_at + 1, updated_at + 1
+      FROM workflow_submissions WHERE id = ?`)
+      .run(JSON.stringify(context), JSON.stringify(context.evidence), head, parent.id);
+    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
+    const gate = JSON.parse(row.gate_state_json);
+    Object.assign(gate, { targetHeadSha: null, failedHeadSha: null, findingFingerprints: [] });
+    db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(JSON.stringify(gate), runId);
+    db.prepare("UPDATE inspector_prs SET head_sha = ?, last_attempt_sha = ? WHERE key = ?").run(head, head, PR_KEY);
+    db.prepare("UPDATE inspector_comments SET github_url = ?, posted_at = ? WHERE pr_key = ?")
+      .run(`${PR_URL}#discussion_r1576`, Date.now(), PR_KEY);
+  });
+}
+
+// Issue #1574: recheck classifies the complete seeded publication through the real gate;
 // the fresh-review click uses the real route, capture, Persona runner and SSE repaint.
 test("a published tree changed after review offers fresh review without another push", async ({ dashboard, daemon }) => {
   const runId = await seedRun(dashboard, daemon, "E2E published tree needs review");
   const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const tree = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
-  strandAsClosed(daemon, runId);
+  await api(daemon, "/api/inspector/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo] }, "PUT");
+  seedPublishedTreeMismatch(daemon, runId, head, tree);
   withDaemonDb(daemon, (db) => {
-    const submission = db.prepare("SELECT id FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
-      .get(runId) as { id: string };
-    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
-    const gate = JSON.parse(row.gate_state_json);
-    Object.assign(gate, {
-      waitReason: "reviewed_tree_changed", targetHeadSha: null, failedHeadSha: null,
-      observedHeadSha: head, findingFingerprints: [],
-      reviewedContent: { submissionId: submission.id, headSha: FAILED_HEAD,
-        treeOid: "a".repeat(40), publishedTreeOid: tree },
-    });
-    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = 'inspector_reviewed_tree_changed', gate_state_json = ? WHERE id = ?")
-      .run(JSON.stringify(gate), runId);
     db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(PR_KEY);
-    db.prepare("UPDATE inspector_prs SET state = 'open', observed_state = 'OPEN', head_sha = ?, observed_head_sha = ? WHERE key = ?")
-      .run(head, head, PR_KEY);
   });
+  scriptGitHub(daemon, "OPEN", head);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await dashboard.locator("header.wf-run-head").getByRole("button", { name: "Check again" }).click();
   const header = dashboard.locator("header.wf-run-head");
   const review = header.getByRole("button", { name: "Review pushed head" });
   await expect(review).toBeVisible();
@@ -479,43 +509,7 @@ test("current-head findings remain visible as a repair packet across the publish
   await api(daemon, "/api/inspector/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo] }, "PUT");
   const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const tree = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
-  strandAsClosed(daemon, runId);
-  withDaemonDb(daemon, (db) => {
-    const version = db.prepare(`SELECT v.id, v.graph_json FROM workflow_versions v
-      JOIN workflow_runs r ON r.workflow_version_id = v.id WHERE r.id = ?`)
-      .get(runId) as { id: string; graph_json: string };
-    const graph = JSON.parse(version.graph_json);
-    graph.nodes.push({ id: "publish", kind: "session_action", position: { x: 330, y: 0 },
-      action: { sourceSessionActionId: "seeded-publish", sourceRevision: 1, name: "Publish",
-        description: "", promptMarkdown: "Publish the reviewed work", requiredSkillId: null,
-        completion: { kind: "pull_request" } } });
-    Object.assign(graph.edges.find((edge: { id: string }) => edge.id === "pass"),
-      { target: "publish", targetPort: "activate" });
-    graph.edges.push({ id: "published", source: "publish", sourcePort: "complete", target: "end", targetPort: "terminal" });
-    db.prepare("UPDATE workflow_versions SET graph_json = ? WHERE id = ?").run(JSON.stringify(graph), version.id);
-    const parent = db.prepare("SELECT id, context_json FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
-      .get(runId) as { id: string; context_json: string };
-    const context = JSON.parse(parent.context_json);
-    Object.assign(context.evidence, { contentTreeOid: "a".repeat(40), workingTreeDirty: false, workingTreeStatus: [] });
-    delete context.evidence.publication;
-    db.prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(context), parent.id);
-    context.evidence.contentTreeOid = tree;
-    context.evidence.headSha = head;
-    db.prepare(`INSERT INTO workflow_submissions
-      (id, run_id, round, segment, parent_submission_id, continuation_node_id, continuation_node_attempt_id, refinement_reason,
-       mode, trigger_source, trigger_key, evidence_fingerprint, context_json, evidence_json, pr_head_sha, status, created_at, updated_at)
-      SELECT id || '-shipping', run_id, round, 1, id, 'publish', 'seeded-publication-action', 'session_action', mode, trigger_source,
-        trigger_key || '-shipping', evidence_fingerprint, ?, ?, ?, 'completed', created_at + 1, updated_at + 1
-      FROM workflow_submissions WHERE id = ?`)
-      .run(JSON.stringify(context), JSON.stringify(context.evidence), head, parent.id);
-    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
-    const gate = JSON.parse(row.gate_state_json);
-    Object.assign(gate, { targetHeadSha: null, failedHeadSha: null, findingFingerprints: [] });
-    db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(JSON.stringify(gate), runId);
-    db.prepare("UPDATE inspector_prs SET head_sha = ?, last_attempt_sha = ? WHERE key = ?").run(head, head, PR_KEY);
-    db.prepare("UPDATE inspector_comments SET github_url = ?, posted_at = ? WHERE pr_key = ?")
-      .run(`${PR_URL}#discussion_r1576`, Date.now(), PR_KEY);
-  });
+  seedPublishedTreeMismatch(daemon, runId, head, tree);
   scriptGitHub(daemon, "OPEN", head);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const checkAgain = dashboard.locator("header.wf-run-head").getByRole("button", { name: "Check again" });

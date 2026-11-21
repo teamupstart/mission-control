@@ -59,8 +59,10 @@ export class GroupStdioTransport implements Transport {
 
   start(): Promise<void> {
     if (this.child) return Promise.reject(new Error("The stdio transport was already started."));
+    // The path the executable locator resolved before this transport was built, never a bare name.
+    const executable = this.params.command;
     return new Promise((resolve, reject) => {
-      const child = spawn(this.params.command, [...this.params.args], {
+      const child = spawn(executable, [...this.params.args], {
         cwd: this.params.cwd,
         env: this.params.env,
         detached: true,

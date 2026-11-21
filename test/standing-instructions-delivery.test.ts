@@ -895,6 +895,53 @@ test("a malformed stored skill record reads back as null without losing the row"
   });
 });
 
+test("a RESUME leaves a stored skill launch record untouched, with or without a standing block", async () => {
+  const record = {
+    included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 9, truncated: false }],
+    skipped: [{ repo: "lib", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", reason: "empty" as const }],
+  };
+  for (const [id, thread, text, mechanism] of [
+    ["sdk:resume-skills-only", "codex-thread-skills-only", "", "none"],
+    ["sdk:resume-skills-block", "codex-thread-skills-block", BLOCK, "codex-developer-instructions"],
+  ] as const) {
+    upsertSdkSession({
+      id,
+      agent: "codex",
+      agentSessionId: thread,
+      cwd: "/wt/" + id,
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    });
+    insertStandingInstructions({ noteKey: thread, text, mechanism, sources: [], createdAt: 1, repoTaskSkills: record });
+  }
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) });
+  const real = HARNESSES.codex.sdk;
+  HARNESSES.codex.sdk = {
+    answersRequests: true,
+    async launch() {
+      // The block's channel is unusable on this connection, which also rewrites the row.
+      return { ...stubHandle(), standingInstructionsMechanism: "prompt-prefix" as const };
+    },
+  };
+  try {
+    await supervisor.restore();
+    for (const [id, thread] of [
+      ["sdk:resume-skills-only", "codex-thread-skills-only"],
+      ["sdk:resume-skills-block", "codex-thread-skills-block"],
+    ] as const) {
+      assert.deepEqual(registry.standingInstructionsFor(id)?.repoTaskSkills, record, id + ": in memory");
+      assert.deepEqual(getStandingInstructions(thread)?.repoTaskSkills, record, id + ": in the table");
+    }
+  } finally {
+    HARNESSES.codex.sdk = real;
+  }
+});
+
 test("a RESUME that falls back to prose corrects the snapshot, so the next assignment replays", async () => {
   // The sequence the snapshot has to survive: a Codex SDK launch installs the block on the
   // durable channel, the daemon restarts, and `config/read` is unusable NOW - so the resumed

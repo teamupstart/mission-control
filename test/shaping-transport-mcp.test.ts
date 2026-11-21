@@ -656,6 +656,20 @@ test("a stdio diagnostic that spells a passed value in JSON escapes is scrubbed 
   assert.equal(reason.includes("\\u006a"), false, "no escaped spelling is left");
 });
 
+test("a named __proto__ variable reaches a stdio MCP server's process", async () => {
+  const saved = Object.getOwnPropertyDescriptor(process.env, "__proto__")?.value as string | undefined;
+  process.env["__proto__"] = "proto-value-91be";
+  try {
+    const seen = echoed(await callMcp(request(), shaper({ type: "stdio", mode: "echo", args: ["env=__proto__"], env: ["__proto__"] }), ctx()));
+    // The echoed value is the passed variable, which the reply scrub removes under its name.
+    assert.equal(seen.env["__proto__"], "[__proto__ redacted]");
+    assert.ok(seen.envKeys.includes("__proto__"), "the server's environment holds it");
+  } finally {
+    if (saved === undefined) delete process.env["__proto__"];
+    else process.env["__proto__"] = saved;
+  }
+});
+
 test("an unset pass-through variable named after an inherited property cannot break reply scrubbing", async () => {
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok", env: ["constructor", "toString"] }), ctx());
   assert.deepEqual(data(reply), { version: "v1.4.0", guidance: [{ id: "guide/billing-api", title: "Guide", body: "guidance for billing-api" }] });

@@ -143,6 +143,20 @@ test("a named variable called __proto__ is an own property of the child's enviro
   assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
 });
 
+test("a named __proto__ variable reaches a command shaper's process", async () => {
+  const saved = Object.getOwnPropertyDescriptor(process.env, "__proto__")?.value as string | undefined;
+  process.env["__proto__"] = "proto-value-77c1";
+  try {
+    const seen = echoed(await callCommand(request(), shaper([FIXTURE, "echo", "env=__proto__"], { env: ["__proto__"] }), ctx()));
+    // The echoed value is the passed variable, which the reply scrub removes under its name.
+    assert.equal(seen.env["__proto__"], "[__proto__ redacted]");
+    assert.ok(seen.envKeys.includes("__proto__"), "the child's environment holds it");
+  } finally {
+    if (saved === undefined) delete process.env["__proto__"];
+    else process.env["__proto__"] = saved;
+  }
+});
+
 test("argv reaches the program verbatim, with no shell in between", async () => {
   const args = [FIXTURE, "echo", "$(echo injected)", "; rm -rf /", "*", "a b"];
   const seen = echoed(await callCommand(request(), shaper(args), ctx()));

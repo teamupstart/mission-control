@@ -231,7 +231,8 @@ agent was started with.**
   launch succeeds, and moved whenever the key changes. A `/clear` or an assign starts a new
   conversation and not a new process, so the record survives both. A successful launch that
   carries none removes it. A launch that fails changes nothing, so the record always
-  describes the agent that is running.
+  describes the agent that is running. It is installed before a launched session's first
+  event is published.
 - Every later reader uses the record and never the flag. A session emits its recorded id
   while its task has that same id. Spans (section 6), the dashboard row (section 3) and
   shaping (section 7) read it.
@@ -329,11 +330,13 @@ unset, like any session outside a work unit.
   span-bearing event that declares `session_id` or `task_id` also declares `work_unit_id`,
   so a new event cannot forget it. And `work_unit_id` is a forbidden metric dimension.
 - The value is the work unit the session emits (section 4), read at capture through one
-  helper: the id the session's agent was started with, while its task has that id. A session
-  with no task gets none, and neither does a resident's, nor a session whose agent was
-  started without the variable. A task event with no session in scope, such as a task
-  outcome, reads the record of the session the task points to, and carries none when it
-  points to no session.
+  helper: the id the session's agent was started with, while its task has that id. The start
+  span takes it from the launch intent, as it takes the task, because a session is announced
+  before its task is bound. A span that reports a launch attempt, dispatch finished, carries
+  that launch's decision whether or not an agent started. A session with no task gets none,
+  and neither does a resident's, nor a session whose agent was started without the variable.
+  A task event with no session in scope, such as a task outcome, reads the record of the
+  session the task points to, and carries none when it points to no session.
 - Only `mission.session.start` is in the session's trace today. Every other session span is
   the root of its own trace. That is why the attribute goes on each span, and why a query on
   it returns all of them.
@@ -356,7 +359,9 @@ unset, like any session outside a work unit.
   field the shaping core already defines. The dispatch seam fills it with the id the task's
   agent carries (section 4): the launch's decision for a new agent, and the session's
   recorded id when the task goes to an agent that is already running. The header and `_meta`
-  always carry that one value.
+  always carry that one value. A shaper call belongs to the launch it was made for: when the
+  agent then fails to start, the call keeps the task's work unit, and no launch record is
+  written.
 - A dry run from Settings has no task, so it sends none. A built-in shaper runs in the
   daemon and needs no carrier. The shaper request body (protocol 1) does not change.
 - Shaper spec 544e584d, section 5, gains a "Work unit" paragraph beside "Trace context".
@@ -453,6 +458,10 @@ flowchart LR
   emits nothing.
 - A launch that fails: the record of the agent that is still running is unchanged, so the
   reuse guard and the span attribute still follow that agent.
+- The first event of a launched session: the launch record is already there, and the
+  session-start span carries the id the agent was started with.
+- Shaping succeeds and the agent then fails to start: the shaper call carried the task's id,
+  and no launch record is written.
 - The OAuth check at the start of Phase 2 records what a local OAuth fixture received, and
   the config guide follows it.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned

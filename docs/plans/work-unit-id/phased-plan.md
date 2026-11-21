@@ -164,10 +164,15 @@ flowchart LR
   phase calls the function again.
 - **The launch record.** Phase 2 records, per session, the work unit its agent was started
   with, and adds `sessionWorkUnitId(session, task)`: the recorded id while the task has that
-  same id, and null otherwise. The record changes only when a launch succeeds, so it always
-  describes the agent that is running. Phases 2, 3 and 4 emit only through these two
-  functions and never read the flag themselves. So a switch of the flag, or a reused agent,
-  cannot make spans, shaper calls and the agent's own MCP calls disagree.
+  same id, and null otherwise. The record is installed before a launched session's first
+  event is published, and it changes only when a launch succeeds, so it always describes the
+  agent that is running. Phases 2, 3 and 4 emit only through these two functions and never
+  read the flag themselves. So a switch of the flag, or a reused agent, cannot make spans,
+  shaper calls and the agent's own MCP calls disagree.
+- **A launch attempt.** What Mission Control sends for a launch before an agent runs, which
+  is the shaper calls and the dispatch-finished span, carries that launch's one decision,
+  whether or not the agent then starts. Everything a session emits afterwards follows the
+  launch record.
 - **What is not gated.** Phase 1's behaviour (minting, inheritance, reads), Phase 2's resident
   catalog rule and Phase 2's reuse guard are the same with the flag on or off. Everything
   Mission Control emits follows the decision made when the agent was started.
@@ -219,6 +224,9 @@ After all four phases, with the flag on:
 - A reused agent: assign refuses an agent that was started for another work unit, and a task
   on an agent started with none emits nothing.
 - A launch that fails leaves the record of the agent that is still running unchanged.
+- The session-start span of a dispatched session carries the id its agent was started with.
+- When shaping succeeds and the agent then fails to start, the shaper call keeps the task's
+  work unit and no launch record is written.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e` pass.
 
@@ -228,8 +236,10 @@ After all four phases, with the flag on:
   Nothing in it is gated, which Phase 2 relies on.
 - After Phase 2: the gate function lives in `src/server/work-unit.ts`, the file Phase 1
   creates. Phase 1 exports only `mintWorkUnitId` from it, so Phase 2 adds without changing.
-- After Phase 3: it reads the id through `sessionWorkUnitId` and touches no launch path. Phase
-  2 touches no telemetry file. They can merge in either order once Phase 2 is in.
+- After Phase 3: it reads the id through `sessionWorkUnitId` and changes nothing a launch
+  does. It only passes the launch's decision to the two telemetry hooks that announce a
+  launch. Phase 2 touches no telemetry file. Phases 3 and 4 can merge in either order once
+  Phase 2 is in.
 - After Phase 4: it changes only shaping files and the dispatch seam. Phase 3 does not
   touch either. The complete set covers R1 to R5 and D1 to D4 once each.
 - Plan validation repair, round 1: D6 touches Phase 1 (no id for a resident run), Phase 2
@@ -262,3 +272,7 @@ After all four phases, with the flag on:
   Phase 4 takes without calling the function again. A local shaper process never inherits
   the daemon's own variable (Phase 4). No answer of the OAuth check blocks Phase 2, and its
   resident criterion names the routing it controls. Phases 1 and 3 are unchanged.
+- Inspector review, round 4: the registry installs the launch record before a launched
+  session's first event (Phase 2). The start span takes the launch's decision from the
+  launch intent (Phase 3). A shaper call belongs to the launch it was made for, also when
+  the agent then fails to start (Phase 4). Phase 1 is unchanged.

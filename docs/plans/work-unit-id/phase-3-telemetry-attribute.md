@@ -21,7 +21,7 @@ lint and stated in the privacy documentation.
 - The privacy contract in the documentation.
 
 Not here: metrics (the id is never a metric dimension), the agents' own spans, a span for
-the shaping run, any launch path, any read of the flag.
+the shaping run, any change to what a launch does, any read of the flag.
 
 ## Repository findings
 
@@ -42,9 +42,12 @@ the shaping run, any launch path, any read of the flag.
   from a `SessionTrack`, which has `taskId`. Effort selected and session operation do not
   declare `task_id`, but their track is in scope. `workflowAuthorContext` and
   `pr-observations.ts` build refs too.
-- The module's host (`SessionTelemetryHost`) offers `subscribe` and `getTask`. The session
-  events it subscribes to carry the session's `TaskSummary`, where Phase 2 puts the work
-  unit the session emits.
+- A session's start is captured when the session is first announced. That is before the
+  dispatcher gets control back and before the task points to the session. So `startTrack`
+  takes the task from the launch intent (`noteDispatchLaunch`, recorded before the spawn)
+  or, for a restore, from the supervisor's association (`restoringSessions`): "Only the
+  durable supervisor association or the launch intent supplies task identity".
+- The module's host (`SessionTelemetryHost`) offers `subscribe` and `getTask`.
 - `telemetryCatalogProblems()` is the lint, run by `test/telemetry-contract.test.ts`.
   `FORBIDDEN_METRIC_DIMENSIONS` lists ids that may not be metric dimensions.
 - `TELEMETRY_LIMITS.maxRefs` is 64. The workflow events declare 19 refs.
@@ -70,18 +73,25 @@ the shaping run, any launch path, any read of the flag.
    `Collector.span`, write `attributes["work_unit_id"]` only when the key is on the list
    and the value passes `isWorkUnitId`. Otherwise drop it. Never write
    `mission.ref.work_unit_id`.
-6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits:
-   `sessionWorkUnitId(session, task)` from Phase 2, which is the id the session's agent was
-   started with while its task has that id. Capture never reads the flag.
-   - The track keeps the value as it keeps `taskId`, from the `TaskSummary` of the session
-     events it already receives. Add a read to the host only for a site that has no session
-     in hand.
+6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits.
+   Capture never reads the flag.
+   - At the start. Add the launch's decision (Phase 2) to the launch intent and to the
+     supervisor's restore association, at the two calls that announce a launch.
+     `startTrack` takes the track's work unit from there, as it takes `taskId`. So the
+     start span carries the id the agent was started with, although the session's task is
+     not bound yet.
+   - After the start. The helper reads the session's launch record through
+     `sessionWorkUnitId(session, task)` from Phase 2, which is the id the session's agent
+     was started with while its task has that id. Add a read of the record to the host for
+     this. A successful resume or transfer replaces the record, so later spans follow the
+     new process. A failed one changes nothing.
    - Add the helper's result to the refs at every site with a track: start, restore,
      segment, turn, end, kill, effort selected, session operation and
      `workflowAuthorContext`.
-   - Dispatch finished uses the id of the session that took the task: the launch's
-     decision for a new agent, and `sessionWorkUnitId` for an agent that was already
-     running.
+   - Dispatch finished reports a launch attempt. It carries that launch's decision whether
+     the launch succeeded or failed, like the shaper calls of the same attempt (Phase 4).
+     When it reports a task that went to an agent that was already running, it carries
+     `sessionWorkUnitId` for that agent.
    - Task outcome and PR observations have no track. They read the record of the session
      the task points to (`Task.sessionId`), and carry no ref when the task points to no
      session.
@@ -129,6 +139,10 @@ the shaping run, any launch path, any read of the flag.
   after the flag is switched off and loses it at its next start; one started with the flag
   off has none after the flag is switched on and gains it at its next start.
 - A reused agent: a task typed into an agent that has no launch record carries no ref.
+- The start span: for a dispatched session, with the task not yet bound when the session
+  is announced, `work_unit_id` on the session-start span equals the `WORK_UNIT_ID` the
+  agent was started with. The same holds for a restored session.
+- Dispatch finished for a launch that failed carries that launch's decision.
 - `test/telemetry-stack.integration.ts`: the exported span has the attribute with the raw
   id.
 - No browser spec: this phase has no dashboard surface.
@@ -142,6 +156,9 @@ the shaping run, any launch path, any read of the flag.
   variable.
 - A span never carries a work unit that the session's agent does not carry in its
   environment, across a switch of the flag and across a reused agent.
+- The session-start span carries the id the agent was started with.
+- A span that reports a launch attempt carries that attempt's decision, whether or not an
+  agent started.
 - Only a well-formed `wu_` id can be exported unhashed. The lint fails a second unscoped
   key that is not on the list.
 - A new span-bearing event with a session or task ref cannot be added without the
@@ -157,11 +174,15 @@ inherits the rule from the lint.
 
 - Phase 1: reads `Task.workUnitId` and `isWorkUnitId`. No change there.
 - Phase 2: reads the launch record through `sessionWorkUnitId`, so capture and the launch
-  environment follow one decision and this phase never reads the flag. This phase touches
-  no launch path.
+  environment follow one decision and this phase never reads the flag. This phase changes
+  nothing a launch does: it passes the launch's decision to the two telemetry hooks that
+  announce a launch.
 - Phase 4: no shared file except `docs/work-units.md`, where the two sections sit apart.
 - Source plan: owns R3 and D4.
 - Plan validation repair, round 1: a resident's session carries no ref (D6).
 - Inspector review of the plan's pull request: capture follows what the agent was started
   with instead of the flag and the task record, so a switch of the flag or a reused agent
   cannot put an id on a span that the agent's MCP calls do not carry.
+- Inspector review, round 4: the start span takes the launch's decision from the launch
+  intent or the restore association, because a session is announced before its task is
+  bound. A span that reports a launch attempt carries that attempt's decision.

@@ -77,6 +77,11 @@ that it can take another work unit's task (decision D7).
 - Flags are live. `docs/feature-flags.md`, "Writes and live gates": `featureEnabled(id)` is
   checked "for each new operation", and "Each feature documents what it does with work
   already in flight".
+- A launched session is announced early. `noteDispatchLaunch`
+  (`src/server/telemetry/sessions.ts`) records a launch intent before the spawn, "because
+  the session appears - and is announced - before the dispatcher gets control back".
+  Anything that has to be known when a launched session is first announced needs the same
+  ordering.
 - `ConsoleDetail.tsx` draws a `dl.detail-sub` of `kv` rows (path, branch), shown when
   `bandHasContent`. `session.task` is a `TaskSummary`, built in `src/server/registry.ts`.
   `useCopyFeedback` in `src/web/lib/clipboard.ts` is the copy helper.
@@ -188,20 +193,27 @@ that it can take another work unit's task (decision D7).
    - Storage: a table of its own, one row per session whose agent carries a work unit,
      keyed by the session's note key (`noteKeyFor`), with the id and the time. Keep it next
      to its upgrade path in `src/server/db.ts`, and take the next free schema number.
-   - Follow `Registry.recordStandingInstructions`. `dispatcher.ts` and `sdk/supervisor.ts`
-     call it once the launched session exists. Write the launch record at those two
-     points, with the value the launch's environment was built from. A resume, a restore
-     and a transfer are launches too. Load the rows at daemon start. Carry a row across
-     every note-key rotation, at the sites that call `moveStandingInstructionsKey`. A
-     `/clear` or an assign starts a new conversation and not a new process, so the row has
-     to survive both.
+   - Follow `Registry.recordStandingInstructions` for the shape of the record, and not for
+     its timing. `dispatcher.ts` and `sdk/supervisor.ts` call it once they have the launched
+     session back, which is after the session was first announced. The launch record has to
+     be there sooner. The launch hands the registry its decision before it starts the
+     agent, and the registry installs the record in the step that registers the launched
+     session, before that step publishes the session's first event. The value is the one
+     the launch's environment was built from.
+   - A resume, a restore and a transfer are launches too. Their record is replaced in the
+     step that adopts the new process, before the next event for that session is published.
+   - Load the rows at daemon start. Carry a row across every note-key rotation, at the
+     sites that call `moveStandingInstructionsKey`. A `/clear` or an assign starts a new
+     conversation and not a new process, so the row has to survive both.
    - The record changes only when the new process has taken over the session. A launch
      that succeeds replaces the row, or removes it when the launch carries no work unit, so
      a resume after the flag is switched off leaves nothing behind. A launch that fails
      changes nothing: the agent that is still running keeps the record it was started with,
-     whatever the failed launch decided. A runtime transfer writes the target's record when
-     the target is adopted, and leaves the source's alone. Prune rows as the standing
-     instructions snapshot is pruned.
+     whatever the failed launch decided. A decision that was handed over for a launch that
+     then fails is discarded, and one whose session never appears is swept by age, as a
+     launch intent is. A runtime transfer writes the target's record when the target is
+     adopted, and leaves the source's alone. Prune rows as the standing instructions
+     snapshot is pruned.
    - Add `sessionWorkUnitId(session, task)` to `src/server/work-unit.ts`: the recorded id
      when the task's `workUnitId` is that same id, otherwise null. Every later reader uses
      it: the dashboard row here, capture in Phase 3, and the shaping seam in Phase 4 when a
@@ -318,6 +330,9 @@ that it can take another work unit's task (decision D7).
   carries none removes it; the row survives a `/clear`, an assign and every note-key
   rotation the standing instructions snapshot survives; rows load at daemon start;
   `sessionWorkUnitId` is the id only while the task has that id.
+- The first event: when a launched session's first event is published, its record is
+  already installed and equals the `WORK_UNIT_ID` the agent was started with. A decision
+  handed over for a launch that fails leaves no record.
 - A launch that fails: a resume, a restore and a transfer that fail after the flag is
   switched off leave the row of the agent that is still running as it was, and `assign`
   still refuses another work unit's task for that agent. A transfer that succeeds writes
@@ -373,6 +388,7 @@ that it can take another work unit's task (decision D7).
   session with no task has none.
 - One launch has one decision. Its agent's environment and its record never differ, also
   when the flag is switched while the launch is in flight.
+- The launch record is installed before a launched session's first event is published.
 - No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
 - Flag off when an agent is started: the launch has no variable and no record. While the
   flag is off the session detail is unchanged. The resident catalog rule in the last
@@ -404,8 +420,9 @@ and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not
 - Phase 1: this phase adds to `src/server/work-unit.ts` and to `TaskSummary`, and changes
   nothing Phase 1 wrote. The reuse guard compares against `Task.workUnitId`, which Phase 1
   sets when a task is assigned as well as when it is dispatched.
-- Phase 3: touches no launch path and no file listed here except `docs/work-units.md`,
-  where it adds its own section. It reads the launch record and never writes it.
+- Phase 3: changes nothing a launch does. It passes the launch's decision to the two
+  telemetry hooks that announce a launch, reads the launch record and never writes it. It
+  shares no file listed here except `docs/work-units.md`, where it adds its own section.
 - Phase 4: takes the launch's one decision at the dispatch seam for a new agent, and
   `sessionWorkUnitId` for an agent that is already running. The shaper transports set their
   own environment for shaper processes; this phase does not touch them.
@@ -432,3 +449,5 @@ and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not
 - Inspector review, round 3: one launch has one decision, computed once and shared by its
   shaping run, its agent's environment and its record. No answer of the OAuth check blocks
   the phase, and the resident exit criterion names the routing this phase controls.
+- Inspector review, round 4: the registry installs the launch record before it publishes a
+  launched session's first event, so no reader of that event finds the session without it.

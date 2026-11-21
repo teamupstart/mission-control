@@ -14,8 +14,8 @@ unit the task's agent carries, in the carrier its transport has:
 | `builtin` | None. It runs in the daemon. |
 
 A `get_guidance` call that Mission Control makes is then found by the same query as the
-worker's own calls. A shaper call carries an id only when the task's agent carries it too
-(Phase 2), so the two never disagree.
+worker's own calls. A shaper call carries the one decision of the launch it was made for
+(Phase 2), so it never disagrees with the agent that launch starts.
 
 ## Entry criteria and dependencies
 
@@ -89,9 +89,13 @@ the transports' own design.
   a `get_guidance` call keeps its arguments, and an `http` shaper, which has no envelope,
   gets the header only.
 - A shaper that ignores the header, `_meta` key or variable is unaffected.
-- When the task's agent carries no work unit, nothing is added to any call. That is the case
-  when the flag was off as the agent started, when the task has no id, and for an agent that
-  was started without the variable.
+- When the launch's decision is none, or a running agent has no launch record, nothing is
+  added to any call. That is the case when the flag was off at the launch's decision, when
+  the task has no id, and for an agent that was started without the variable.
+- Attribution. A shaper call is made before the agent starts, so it belongs to the launch
+  and not to a running agent. If the agent then fails to start, the call stays tagged with
+  the task's work unit: it was made for that task's work, and nothing an agent sends
+  contradicts it.
 
 ## Tests and verification
 
@@ -105,9 +109,10 @@ the transports' own design.
   after the flag is switched off, and the shaper still receives the id; an agent started
   with the flag off takes a task after the flag is switched on, and the shaper receives
   none.
-- A switch while shaping is in flight: the flag is switched after the dispatch's decision
-  and before the agent starts, in each direction. The shaper and the agent hold the same
-  value.
+- A switch while shaping is in flight: the flag is switched after the dispatch's decision and
+  before the agent starts, in each direction. The shaper and the agent hold the same value.
+- Shaping succeeds and the launch then fails: the shaper call carried the task's id, no
+  launch record exists afterwards, and a retry of the dispatch decides again.
 - Transports, one present case and one absent case each, unless the remote transports
   phase already has them: `http` header, with no work unit anywhere in its request body; streamable-HTTP `mcp` header on every request of
   a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
@@ -120,19 +125,21 @@ the transports' own design.
 
 ## Merge and exit criteria
 
-- When the task's agent carries the task's work unit, each transport carries that id as the
-  table under "Outcome" says: a fixture `get_guidance` shaper on an `mcp` server over
-  streamable HTTP receives it in the header and in `_meta`; an `http` shaper in the header
-  only; a local `mcp` server in its environment and in `_meta`; a `command` shaper in its
-  environment. That agent is a new one started with the flag on, or a running one whose
-  launch record holds the task's work unit, whatever the flag says when the task is handed
-  over.
-- When it does not, no call carries one: a new agent started with the flag off, a running
-  agent with no launch record, a task with no id, and a dry run.
+- When the launch's decision is the task's work unit, or a running agent's launch record holds
+  it, each transport carries that id as the table under "Outcome" says: a fixture
+  `get_guidance` shaper on an `mcp` server over streamable HTTP receives it in the header
+  and in `_meta`; an `http` shaper in the header only; a local `mcp` server in its
+  environment and in `_meta`; a `command` shaper in its environment. The flag at the moment
+  a task is handed to a running agent does not matter.
+- Otherwise no call carries one: a launch decided with the flag off, a running agent with no
+  launch record, a task with no id, and a dry run.
 - Only the launch's own value is ever sent, never a configured one, and never one a shaper
   process inherited from the daemon's environment.
 - One dispatch has one decision: the shaper and the agent it starts never differ, also when
   the flag is switched while shaping runs.
+- A shaper call belongs to the launch it was made for. When shaping succeeds and the agent
+  then fails to start, the call keeps the task's work unit, no launch record is written, and
+  a retry decides again.
 
 ## Handoff
 
@@ -157,5 +164,7 @@ carries the work unit with no further change.
 - Inspector review, round 2: the exit criteria follow the agent's launch record, not the flag
   at the moment of dispatch, and the tests cover a switch between an agent's start and its
   next task.
-- Inspector review, round 3: shaping takes the launch's one decision and does not compute
-  its own, and a local shaper process never inherits the daemon's `WORK_UNIT_ID`.
+- Inspector review, round 3: shaping takes the launch's one decision and does not compute its
+  own, and a local shaper process never inherits the daemon's `WORK_UNIT_ID`.
+- Inspector review, round 4: a shaper call is attributed to the launch it was made for, also
+  when the agent then fails to start.

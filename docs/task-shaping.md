@@ -282,10 +282,13 @@ before the body limit, so such a request is refused as forbidden whatever its si
   `expect` is the entry's revision from the view's `revisions`, as the sender showed it. A
   client sends it back as given and never computes one. When it is sent and the stored entry has changed
   since, the intent answers 409 `shaper_changed` and nothing is stored, so a click never removes
-  or switches on a replacement another window wrote in the meantime. Any other refused intent
+  or switches on a replacement another window wrote in the meantime. A dashboard tab loaded
+  before revisions were the daemon's computes its own, which never match; when `expect` is that
+  earlier kind of revision, the answer is 409 `stale_dashboard`, whose reason asks the operator to
+  reload the page, since retrying from that tab cannot succeed. Any other refused intent
   answers 400 with `{ error, reason }`.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
-  is refused with 409 `shaper_changed` as above, and `repository` is
+  is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
   engine, whatever its stored choice. A path that is not inside a checkout, such as a mistyped
   one that names an ordinary folder, answers 400 `unknown_repository` and runs nothing. A

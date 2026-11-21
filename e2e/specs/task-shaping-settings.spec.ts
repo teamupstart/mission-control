@@ -1453,6 +1453,9 @@ test("a reopened import dialog shows an earlier save's refusal that arrives afte
   await expect(save).toBeEnabled();
   await save.click();
   await sent[1]!.opened;
+  // A frame after the second save, from an unrelated write elsewhere, shows the shaper as saved:
+  // that frees the dialog. The config it matched before the save went out never does.
+  await putShaping(daemon, { kind: "settings", caller: { user: "frame-after-save" } });
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toHaveCount(0);
@@ -1497,5 +1500,36 @@ test("an enable whose answer is lost is not credited by a frame for a replacemen
     "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
   );
   expect(refusal, "the daemon refused it, though no answer reached the window").toBe(409);
+  await page.unroute("**/api/shaping");
+});
+
+test("an import matching what is stored is not taken as saved when its answer is lost", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("same-notes", "Same notes");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Same notes")).toHaveAccessibleName("Same notes: off");
+  // The import is held before the daemon; meanwhile another window replaces the shaper; then the
+  // import never arrives.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("same-notes", "Same notes", { timeoutMs: 20_000 }) });
+  goes.open();
+  // The config matched before the write went out, which is no receipt: the dialog stays, and says so.
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
+  );
+  await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
 });

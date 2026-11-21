@@ -341,12 +341,12 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     const finish = (reply: TransportReply): void => {
       if (settled) return;
       settled = true;
+      // The outcome is known now, before any teardown: the engine judges the deadline by this moment.
+      ctx.settled?.();
       for (const timer of timers) clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
       releaseStdio(child as ChildProcess | undefined);
       reapGroup(child as ChildProcess | undefined);
-      // The outcome is known now: the engine judges the deadline by this moment.
-      ctx.settled?.();
       settle(reply);
       cleanup((text) => redactReceived(text, received));
     };

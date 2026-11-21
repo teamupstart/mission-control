@@ -63,10 +63,10 @@ export function useShapingSettings(
     if (!live || pending.observed || (pending.accepted && reflected)) {
       writing.current = null;
       setPending(null);
-    } else if (reflected) {
-      observed.current.add(pending.intent);
-      setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
+    // Never a receipt from the config already confirmed when the write went out: an import that
+    // matches what is stored is "reflected" before any frame. Only a frame that arrives after the
+    // request, through the subscription above, counts as the stream showing it stored.
   }, [pending, reflected, live]);
 
   /**

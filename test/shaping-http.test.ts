@@ -917,3 +917,34 @@ test("a forged shaping write is refused as forbidden whatever its size, before t
     assert.equal(own.status, 413, path);
   }
 });
+
+test("a dashboard from before daemon-held revisions is told to reload, never to retry", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("legacy", "gather", "ok") })).status, 200);
+  const { canonicalJson } = await import("../src/shared/shaping.ts");
+  // What such a tab sends: its own unkeyed FNV-1a 64 over the entry the view shows, computed here
+  // exactly as that dashboard computed it.
+  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
+  let hash = 0xcbf29ce484222325n;
+  for (const char of canonicalJson(shown)) {
+    for (let at = 0; at < char.length; at++) {
+      hash ^= BigInt(char.charCodeAt(at));
+      hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+    }
+  }
+  const earlier = hash.toString(16).padStart(16, "0");
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  for (const answer of [
+    await put({ kind: "enable", id: "legacy", enabled: true, expect: earlier }),
+    await put({ kind: "remove", id: "legacy", expect: earlier }),
+    await dryRun({ id: "legacy", repository, expect: earlier }),
+  ]) {
+    assert.equal(answer.status, 409);
+    const body = (await answer.json()) as { error: string; reason: string };
+    assert.equal(body.error, "stale_dashboard");
+    assert.match(body.reason, /Reload the page/);
+  }
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // Any other wrong revision is the ordinary conflict.
+  const other = await put({ kind: "enable", id: "legacy", enabled: true, expect: "0123456789abcdef" });
+  assert.equal(((await other.json()) as { error: string }).error, "shaper_changed");
+});

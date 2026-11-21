@@ -1026,3 +1026,20 @@ another attempt. GitHub's expected-head guard protects the write. The update hap
 GitHub, without editing the agent's local worktree. Disabling the preview stops new attempts
 and hides its status; an update GitHub already accepted may still finish. The poller follows
 PRs associated with live sessions and their attached repositories.
+
+## Reading CI warnings
+
+The warning beside a pull request opens its reported check results. Each result shows the
+check name and actual conclusion, including cancelled jobs and successful reruns. When GitHub
+supplies a job or status URL, the result links directly there; results without a usable URL
+remain plain text. The pull request overview has its own separate link.
+
+A blocking CI category is not itself evidence that a job failed. Failure wording requires an
+individual `FAILURE` or `ERROR` result. A cancellation-only warning names the cancellations
+and says no failures appear in the reported results. Missing details and possibly truncated
+lists are identified explicitly. The display retains up to 100 results from the current PR
+observation and does not alter review or merge gates, including retry handling.
+
+The workflow run separately shows its recorded wait reason. For example,
+`working_tree_not_pushed` describes publication evidence, even when the same pull request
+also has cancelled checks. The CI warning does not replace that reason.

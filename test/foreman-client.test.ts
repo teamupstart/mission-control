@@ -223,3 +223,18 @@ test("transcript survives a response carrying no window at all", async () => {
   assert.deepEqual(w.messages, []);
   assert.equal(w.unavailable, true);
 });
+
+test("Foreman requests registered evidence rather than the dashboard staging tray", async () => {
+  const real = globalThis.fetch;
+  let requested = "";
+  globalThis.fetch = (async (url) => {
+    requested = String(url);
+    return new Response(JSON.stringify({ generation: 1, images: [], artifacts: [], registrationEligible: true }));
+  }) as typeof fetch;
+  try {
+    await client.workflowEvidence("session");
+    assert.equal(new URL(requested).searchParams.get("view"), "registered");
+  } finally {
+    globalThis.fetch = real;
+  }
+});

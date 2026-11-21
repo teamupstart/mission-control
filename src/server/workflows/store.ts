@@ -6101,15 +6101,31 @@ export class WorkflowStore {
     });
   }
 
-  listWorkflowEvidence(noteKey: string): WorkflowStagedEvidenceList {
+  /** Registration survives capture; the default tray remains staged-only for editing.
+   * Reserved items require a surviving reservation in this conversation's own workflow.
+   * Episode admission remains the completion reader's responsibility.
+   */
+  listWorkflowEvidence(
+    noteKey: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowStagedEvidenceList {
     const owner = this.db.prepare(
       `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
     ).get(noteKey) as { generation: number } | undefined;
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
-        WHERE note_key = ? AND state = 'staged'
+        WHERE note_key = ? AND (
+          state = 'staged' OR (? = 'registered' AND state = 'reserved' AND EXISTS (
+            SELECT 1 FROM workflow_evidence_reservations reservation
+            JOIN workflow_submissions submission ON submission.id = reservation.submission_id
+            JOIN workflow_runs run ON run.id = submission.run_id
+            JOIN workflow_bindings binding ON binding.id = run.binding_id
+            WHERE reservation.staging_id = workflow_evidence_staging.id
+              AND binding.note_key = workflow_evidence_staging.note_key
+          ))
+        )
         ORDER BY created_at ASC, id ASC`,
-    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    ).all(noteKey, view) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ? AND state = 'staged' AND is_current = 1

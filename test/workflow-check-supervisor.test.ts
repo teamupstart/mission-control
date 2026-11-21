@@ -382,8 +382,12 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   assert.ok(stubborn > 1);
   assert.equal(outcome.emptiness, "empty", "the escalation to SIGKILL is what finishes this");
   assert.equal(pidAlive(stubborn), false);
+  // Less a margin for timer granularity: a Node timer may fire a millisecond or so early by
+  // `Date.now()`, so a correct 15,000 + 400 has measured just short of the sum on a loaded
+  // full-suite run. Skipping the grace would fall short by the whole 400 ms, which this still
+  // catches.
   assert.ok(
-    Date.now() - started >= STUBBORN_TIMEOUT_MS + STUBBORN_GRACE_MS,
+    Date.now() - started >= STUBBORN_TIMEOUT_MS + STUBBORN_GRACE_MS - 50,
     "the grace period must actually be waited out before escalating",
   );
 });

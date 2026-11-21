@@ -36,6 +36,7 @@ export interface CodeRabbitResult {
   titles: string[];
   body: Buffer;
   retryAt?: number;
+  retryableConnection?: true;
   expectedDuration?: string;
 }
 
@@ -49,68 +50,83 @@ export class CodeRabbitResultParser {
   private error: string | null = null;
   private finished = false;
   private retryAt: number | undefined;
+  private retryableConnection: true | undefined;
   private expectedDuration: string | undefined;
   /** `paths` is null only when the caller could not resolve the comparison's changed files. */
   constructor(private readonly attemptId: string, private readonly threshold: CodeRabbitSeverity,
     private readonly paths: CodeRabbitChangedPaths | null) {}
 
   push(chunk: Buffer): void {
-    if (this.finished || this.error) return; // The supervisor continues draining both pipes.
+    if (this.finished || this.error && !this.retryableConnection) return; // The supervisor continues draining both pipes.
     try { this.consume(this.decoder.decode(chunk, { stream: true })); }
-    catch { this.error = "CodeRabbit stdout is not valid UTF-8 NDJSON"; }
+    catch { this.fail("CodeRabbit stdout is not valid UTF-8 NDJSON"); }
   }
   private consume(text: string): void {
     this.pending += text;
     let cut: number;
-    while (!this.error && (cut = this.pending.indexOf("\n")) >= 0) {
+    while ((!this.error || this.retryableConnection) && (cut = this.pending.indexOf("\n")) >= 0) {
       const record = this.pending.slice(0, cut);
       this.pending = this.pending.slice(cut + 1);
       if (Buffer.byteLength(record) > CODERABBIT_RESULT_LIMITS.recordBytes) {
-        this.error = "CodeRabbit semantic record exceeds 256 KiB"; break;
+        this.fail("CodeRabbit semantic record exceeds 256 KiB"); break;
       }
       if (record.trim()) this.record(record);
     }
-    if (Buffer.byteLength(this.pending) > CODERABBIT_RESULT_LIMITS.recordBytes) this.error = "CodeRabbit semantic record exceeds 256 KiB";
-    if (this.error) this.pending = "";
+    if (Buffer.byteLength(this.pending) > CODERABBIT_RESULT_LIMITS.recordBytes) this.fail("CodeRabbit semantic record exceeds 256 KiB");
+    if (this.error && !this.retryableConnection) this.pending = "";
+  }
+  private fail(diagnostic: string): void {
+    this.error = diagnostic;
+    this.retryableConnection = undefined;
   }
   private record(line: string): void {
     let event: Record<string, unknown>;
     try { event = JSON.parse(line) as Record<string, unknown>; }
-    catch { this.error = "Malformed CodeRabbit NDJSON"; return; }
-    if (!event || typeof event.type !== "string") { this.error = "Invalid CodeRabbit event"; return; }
-    if (this.terminal && ["finding", "complete"].includes(event.type)) { this.error = "CodeRabbit emitted findings or duplicate completion after terminal completion"; return; }
+    catch { this.fail("Malformed CodeRabbit NDJSON"); return; }
+    if (!event || typeof event.type !== "string") { this.fail("Invalid CodeRabbit event"); return; }
+    const failureEvent = ["error", "action_required", "auth", "usage", "rate_limit"].includes(event.type)
+      || event.type === "status" && /error|failed|action_required|auth|usage|rate.limit|credit/i.test(String(event.status));
+    // A connection failure stays incomplete, but a later auth/credit decision must revoke
+    // recovery. Ignore later findings/completions rather than letting them clear the error.
+    if (this.error && !failureEvent) return;
+    if (this.terminal && ["finding", "complete"].includes(event.type)) { this.fail("CodeRabbit emitted findings or duplicate completion after terminal completion"); return; }
     if (event.type === "finding") {
       const parsed = Finding.safeParse(event);
-      if (!parsed.success) { this.error = "Invalid CodeRabbit finding"; return; }
+      if (!parsed.success) { this.fail("Invalid CodeRabbit finding"); return; }
       const value = parsed.data;
-      if (value.endLine && value.startLine && value.endLine < value.startLine) { this.error = "Invalid CodeRabbit line range"; return; }
+      if (value.endLine && value.startLine && value.endLine < value.startLine) { this.fail("Invalid CodeRabbit line range"); return; }
       const path = value.fileName;
       const displayPath = !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..") && !path.split("").some((character) => character.charCodeAt(0) < 32) ? path : null;
       const finding: CodeRabbitFinding = { ...value, id: `${this.attemptId}:${this.findings.length + 1}`, displayPath };
       const bytes = Buffer.byteLength(JSON.stringify(finding)) + 1;
       if (this.findings.length >= CODERABBIT_RESULT_LIMITS.findings || this.bytes + bytes > CODERABBIT_RESULT_LIMITS.findingsBytes) {
-        this.error = "CodeRabbit normalized findings capacity exceeded"; return;
+        this.fail("CodeRabbit normalized findings capacity exceeded"); return;
       }
       this.bytes += bytes; this.findings.push(finding);
     } else if (event.type === "review_context") {
       if (typeof event.expectedDuration === "string" || typeof event.expectedDuration === "number") this.expectedDuration = String(event.expectedDuration).slice(0, 250);
     } else if (event.type === "complete") {
       const parsed = Complete.safeParse(event);
-      if (!parsed.success) this.error = "Invalid CodeRabbit completion/gate";
+      if (!parsed.success) this.fail("Invalid CodeRabbit completion/gate");
       else this.terminal = parsed.data;
-    } else if (["error", "action_required", "auth", "usage", "rate_limit"].includes(event.type)
-      || event.type === "status" && /error|failed|action_required|auth|usage|rate.limit|credit/i.test(String(event.status))) {
+    } else if (failureEvent) {
       // Never surface arbitrary vendor text that could contain a credential in compact SSE.
       if (typeof event.retryAfterSeconds === "number" && Number.isFinite(event.retryAfterSeconds) && event.retryAfterSeconds > 0) {
-        this.retryAt = Date.now() + Math.min(event.retryAfterSeconds, 24 * 60 * 60) * 1000;
+        // Preserve waits longer than a day; clamp only to the largest representable Date.
+        this.retryAt = Math.max(this.retryAt ?? 0, Math.min(8_640_000_000_000_000, Date.now() + event.retryAfterSeconds * 1000));
       }
-      this.error = CODERABBIT_OPERATOR_ACTION;
+      this.retryableConnection = event.type === "error" && event.errorType === "connection" && event.recoverable === true ? true : undefined;
+      this.error = this.retryableConnection
+        ? event.message === "Connection failed: WebSocket closed"
+          ? "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)"
+          : "CodeRabbit connection failed (provider marked recoverable)"
+        : CODERABBIT_OPERATOR_ACTION;
     }
   }
   finish(exitCode: number, emptyComparison: boolean): CodeRabbitResult {
     if (!this.finished) {
-      try { this.consume(this.decoder.decode()); if (this.pending.trim() && !this.error) this.record(this.pending); }
-      catch { this.error = "CodeRabbit stdout is not valid UTF-8 NDJSON"; }
+      try { this.consume(this.decoder.decode()); if (this.pending.trim() && (!this.error || this.retryableConnection)) this.record(this.pending); }
+      catch { this.fail("CodeRabbit stdout is not valid UTF-8 NDJSON"); }
       this.pending = ""; this.finished = true;
     }
     const counts = Object.fromEntries(severities.map((s) => [s, 0])) as CodeRabbitResult["counts"];
@@ -128,6 +144,7 @@ export class CodeRabbitResultParser {
     const status = diagnostic ? "incomplete" : terminal!.status === "review_skipped" ? "skipped" : blocking ? "failed" : "passed";
     return { status, diagnostic: diagnostic ?? (status === "skipped" ? "Warning: pinned comparison has no changes; review skipped" : `Complete CodeRabbit review: ${blocking} findings at or above ${this.threshold}; all ${this.findings.length} findings retained`),
       counts, titles: this.findings.slice(0, 8).map((f) => `${f.severity}: ${f.title ?? f.comment ?? "Finding"} (${f.displayPath ?? "unsafe path omitted"}:${f.startLine ?? "?"})`.slice(0, 250)),
+      ...(this.retryableConnection ? { retryableConnection: true as const } : {}),
       ...(this.retryAt ? { retryAt: this.retryAt } : {}),
       ...(this.expectedDuration ? { expectedDuration: this.expectedDuration } : {}),
       body: Buffer.from(this.findings.map((f) => JSON.stringify(f)).join("\n") + (this.findings.length ? "\n" : "")), };

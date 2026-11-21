@@ -13,7 +13,8 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { onlineDatabaseBackup } from "./online.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   backupRetentionLimits,
@@ -368,9 +369,7 @@ export class DatabaseBackupService {
     this.root = options.root ?? DATABASE_BACKUPS_DIR;
     this.retention = options.retention;
     this.now = options.now ?? (() => new Date());
-    this.onlineBackup = options.onlineBackup ?? (async (db, destination) => {
-      await sqliteBackup(db, destination);
-    });
+    this.onlineBackup = options.onlineBackup ?? onlineDatabaseBackup;
     this.selfContain = options.selfContain ?? useRollbackJournal;
     this.validate = options.validate ?? validateDatabaseBackupForRestore;
     this.removeFile = options.removeFile ?? safeUnlink;

@@ -5319,7 +5319,7 @@ export class TaskManager {
       ...(live.runtime !== "sdk" && writePane?.kind === "emulator" && pasteTravelsAsArgument(writePane.backend)
         ? { finalCheck: async (section: string) => appleScriptPasteFits(withTaskContext(unshapedTurn, section), process.env, await platformArgMax())
           ? null
-          : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context, so no context was added" }
+          : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
         : {}),
     }, { shapeTask: opts.shapeTask, enabled: shapingOn });
     const after = this.registry.getTask(t.id);

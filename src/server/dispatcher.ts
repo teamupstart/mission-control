@@ -11,7 +11,7 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess } from "./terminal/launch-process.ts";
+import { readLaunchProcess, TURN_ONE_FALLBACK_FILE } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
@@ -107,7 +107,7 @@ import { planSkillsForAgent } from "./plans/skills.ts";
 import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import type { shapeTask } from "./shaping/engine.ts";
-import { shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
+import { launchFellBack, shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
 import { sessionTraceContext } from "./telemetry/index.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { appleScriptPasteFits, pasteTravelsAsArgument, platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
@@ -1008,6 +1008,16 @@ export class Dispatcher {
         ...leadingArgs,
         ...piLaunch.args,
       ];
+      // A shaped Pi turn one travels in the launch argument, and how much room it has is decided
+      // by the pane's environment at exec, which the budget above could only estimate. The
+      // wrapper checks it there and falls back to this: the same launch, the same conversation
+      // id, the original turn one.
+      const piUnshapedText = piText !== null && shaping.section
+        ? withRepoMemoryPointer(wt.path, unshapedTurnOne(standingPrefix), piHasMemory)
+        : null;
+      const piFallbackArgs = piUnshapedText !== null && piLaunch.sessionId
+        ? [...leadingArgs, ...preparePiLaunch(piUnshapedText, piLaunch.sessionId).args]
+        : null;
       // A launch registration is reported by the builders that actually produced it.
       // A machine install rides no argv: reuse the pre-worktree probe's answer.
       const missionMcpRegistered = missionTools?.mechanism === "mcp-client"
@@ -1076,10 +1086,12 @@ export class Dispatcher {
           stateHome,
           terminalBackend,
           advisorEnv,
+          piFallbackArgs,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
-        // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
-        if (this.deps.spawn) cleanupDisposableAgentStateHome(stateHome);
+        // An injected spawn seam starts no wrapper, so its disposable fixture can go now -
+        // unless it ran the real wrapper and says so, which then owns the home as it would.
+        if (this.deps.spawn && home.launchStateHome !== stateHome) cleanupDisposableAgentStateHome(stateHome);
         pendingAgentStateHome = null;
       } catch (err) {
         // Nothing was launched, so the marker describes a turn that will never be written.
@@ -1212,8 +1224,15 @@ export class Dispatcher {
         }
       }
       // Turn one has been handed to the worker: pasted and acknowledged, or for Pi carried by
-      // the launch itself. Only now does this launch's shaping record replace the last one.
-      this.commitShaping(taskId, attempt, shaping, deliverySession.id);
+      // the launch itself. Only now does this launch's shaping record replace the last one -
+      // saying what actually launched, if Pi's wrapper had to fall back to the original prompt.
+      // Its state home is alive while Pi is, which readiness has just shown.
+      let delivered = shaping;
+      if (piFallbackArgs && existsSync(join(stateHome, TURN_ONE_FALLBACK_FILE))) {
+        delivered = launchFellBack(shaping);
+        this.recordLaunchPresentationForKey(piLaunch.sessionId!, piUnshapedText!, task.intent);
+      }
+      this.commitShaping(taskId, attempt, delivered, deliverySession.id);
 
       if (await settled()) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
@@ -2464,7 +2483,7 @@ export class Dispatcher {
             const argMax = await (this.deps.argMax ?? platformArgMax)();
             return variants.every((variant) => appleScriptPasteFits(withTaskContext(variant, section), process.env, argMax))
               ? null
-              : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context, so no context was added";
+              : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context";
           } }
         : {}),
     }, { shapeTask: this.deps.shapeTask, enabled: launch.enabled });
@@ -3435,6 +3454,24 @@ export function deriveTitle(intent: string): string {
 }
 
 /**
+ * The wrapper a dispatched terminal launch runs: `isolatedAgentArgv` around the agent, with the
+ * fallback launch beside it when there is one. Written into `stateHome`.
+ */
+export function dispatchLaunchArgv(
+  cwd: string,
+  agentBin: string,
+  agentArgs: readonly string[],
+  stateHome: string,
+  extraEnv: Readonly<Record<string, string>>,
+  fallbackAgentArgs: readonly string[] | null,
+): string[] {
+  return isolatedAgentArgv([agentBin, ...agentArgs], {
+    cwd, stateHome, extraEnv,
+    fallbackArgv: fallbackAgentArgs ? [agentBin, ...fallbackAgentArgs] : null,
+  });
+}
+
+/**
  * Spawn the agent under a session name, closing the check-then-spawn race: if a concurrent
  * dispatch claimed the bare name between our listing and our spawn, retry once under the
  * always-unique `name-shortId`. Returns the complete home record for the caller to persist.
@@ -3457,10 +3494,12 @@ export async function spawnUniquely(
   terminalBackend: string | null = null,
   /** Capability-rendered launch variables, written into the wrapper beside the isolation. */
   extraEnv: Readonly<Record<string, string>> = {},
+  /** The arguments to launch with instead if `agentArgs` would not fit at exec (a shaped Pi turn one). */
+  fallbackAgentArgs: readonly string[] | null = null,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
-    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome, extraEnv });
+    const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);

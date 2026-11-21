@@ -15,6 +15,12 @@ import { isResumeLeaseId, resumeLeaseRootPath } from "./resume-lease.ts";
 
 export const LAUNCH_SCRIPT_FILE = "launch-and-cleanup.sh";
 export const LAUNCH_PID_FILE = "terminal-launch.pid";
+/**
+ * Written by a launch wrapper that had a fallback argv and used it, because the first argv
+ * would not fit under the platform's argument limit in the pane's own environment. Read by the
+ * dispatcher before it records what the launch delivered.
+ */
+export const TURN_ONE_FALLBACK_FILE = "turn-one-fallback";
 export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
 
 /**

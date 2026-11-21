@@ -56,9 +56,10 @@ export const SECTION_JOIN_MARGIN = 64;
 const SHEBANG_LINE_BYTES = 256;
 /**
  * Room kept for the terminal server's own environment. The agent inherits it, and a reused
- * server can hold variables the daemon never had, which cannot be read before the launch. A
- * server whose extra environment exceeds this leaves too little room for many unshaped launches
- * as well; within it, shaping never turns a working launch into an `E2BIG`.
+ * server can hold variables the daemon never had, which cannot be read before the launch. This
+ * is an estimate that keeps ordinary launches from needing the fallback. The guarantee is the
+ * launch wrapper's check at exec, under the pane's real environment, which runs the original
+ * turn one when the shaped one would not fit (`fittingLaunch` in `agent-subprocess-env.ts`).
  */
 export const TERMINAL_ENV_RESERVE = 64 * 1024;
 /** Room kept for the AppleScript a pane paste wraps its text in: the tell block and its target. */
@@ -120,7 +121,7 @@ export function turnOneAllowance(
   if (launch?.argMax == null) {
     return {
       maxSectionBytes: 0,
-      reason: "turn one travels as a launch argument and the platform's combined argument limit could not be measured, so no context was added",
+      reason: "turn one travels as a launch argument and the platform's combined argument limit could not be measured",
     };
   }
   const others = launch.otherArgs.reduce((sum, arg) => sum + execString(arg), 0);

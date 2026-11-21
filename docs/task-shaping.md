@@ -137,7 +137,9 @@ Each shaper's part of a run ends in one outcome, recorded with its reason and du
 | `unavailable` | The shaper could not be reached: a missing command, no worktree, or a transport this build does not offer yet |
 
 The run is `degraded` when any shaper's outcome is not `ok`. When a shaper is called for
-several repositories, its outcome is the worst of its calls. Truncation is not degradation.
+several repositories, its outcome is the worst of its calls. Truncation is not degradation. A
+launch is also recorded as degraded when Pi's launch wrapper had to drop the section at exec
+(see [Where the section lands](#where-the-section-lands)).
 
 ## Time and context budgets
 
@@ -337,6 +339,21 @@ left. The record's `limit` then says how many bytes the section had and why, and
 is recorded as truncated, never as degraded. When `ARG_MAX` cannot be read, there is no safe room
 to promise, so a launch argument carries no section at all: the worker starts exactly as it would
 without shaping, and the record's `limit` says the combined limit could not be measured.
+
+That budget counts the daemon's environment, what the launch wrapper exports, and a 64 KiB
+reserve. The agent actually runs in the terminal server's environment, though: a reused tmux
+server, a Herdr login shell or an emulator can add variables the daemon never sees. So the
+final check happens at Pi's exec, inside the launch wrapper, under the pane's real environment.
+The shaped turn one is written into the wrapper script, never into the wrapper's own launch
+arguments. Before running Pi, the wrapper execs a no-op shell carrying the same arguments plus
+room for the exec's own overhead. If that exec is refused, the wrapper launches Pi with the
+original turn one instead: the same arguments, the same conversation id, and no section. It
+also leaves a marker in the launch's state home. Dispatch reads the marker before recording the
+launch, and records it as degraded. Nothing reached turn one, the shapers keep their outcomes,
+and `limit` says the terminal's environment left too little room. This is degraded rather than
+truncated because the daemon offered a section that the terminal could not carry, which points
+at that terminal's environment. A launch with no section has no check, and its wrapper is
+unchanged.
 
 A pane paste through Ghostty or iTerm2 travels inside an AppleScript, and its encoded size depends
 on the exact text (iTerm2 turns every newline into an expression of its own). A launch that may

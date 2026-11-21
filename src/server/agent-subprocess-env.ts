@@ -1,4 +1,4 @@
-import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, TURN_ONE_FALLBACK_FILE } from "./terminal/launch-process.ts";
 import {
   existsSync,
   lstatSync,
@@ -221,7 +221,12 @@ export function agentSubprocessEnv(
  *     removed. Running it as an ordinary command also leaves the agent's exit status as the
  *     script's, which is what a backend reports.
  */
-function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[], preserveShellGoCache: boolean): string {
+function launchAndCleanupScript(
+  env: Record<string, string>,
+  argv: readonly string[],
+  preserveShellGoCache: boolean,
+  fallbackArgv: readonly string[] | null = null,
+): string {
   return [
     "#!/bin/sh",
     `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
@@ -234,9 +239,42 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
     }),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
     `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
-    shellCommand(argv),
+    ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv) : [shellCommand(argv)]),
     "",
   ].join("\n");
+}
+
+/**
+ * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
+ * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
+ * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
+ * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them.
+ */
+function probePadding(program: string): string {
+  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
+  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8));
+}
+
+/**
+ * Run `argv` only if it fits under the platform's argument limit in THIS shell's environment -
+ * the pane's, which the daemon cannot see before the launch - and otherwise run `fallbackArgv`,
+ * leaving `TURN_ONE_FALLBACK_FILE` behind to say so.
+ *
+ * The check is an exec of `/bin/sh -c :` carrying every word of `argv` plus padding for the real
+ * exec's image overhead, under the same environment: it fails with `E2BIG` exactly when the
+ * agent's own exec would, and costs one fork of a shell that does nothing. The agent's exit
+ * status after a launch is never read as an exec failure, so the task is never run twice.
+ */
+function fittingLaunch(argv: readonly string[], fallbackArgv: readonly string[]): string[] {
+  const probe = shellCommand([FIXED_OS_EXECUTABLES.sh, "-c", ":", "mission-turn-one-probe", probePadding(argv[0] ?? ""), ...argv]);
+  return [
+    `if ${probe} 2>/dev/null; then`,
+    `  ${shellCommand(argv)}`,
+    "else",
+    `  : > "$MISSION_HOME/${TURN_ONE_FALLBACK_FILE}"`,
+    `  ${shellCommand(fallbackArgv)}`,
+    "fi",
+  ];
 }
 
 /**
@@ -262,13 +300,21 @@ export function isolatedAgentEnvironment(
  */
 export function isolatedAgentArgv(
   argv: readonly string[],
-  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> & {
+    /**
+     * The launch to run instead when `argv` would not fit under the platform's argument limit
+     * in the pane's environment (see `fittingLaunch`). Only a launch whose argv carries
+     * optional text - a shaped turn one - has one; every other launch's script is unchanged.
+     */
+    fallbackArgv?: readonly string[] | null;
+  } = {},
 ): string[] {
-  const env = isolatedAgentEnvironment(options);
+  const { fallbackArgv = null, ...envOptions } = options;
+  const env = isolatedAgentEnvironment(envOptions);
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {
-    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE), { mode: 0o700 });
+    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE, fallbackArgv), { mode: 0o700 });
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;

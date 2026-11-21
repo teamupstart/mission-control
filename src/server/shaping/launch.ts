@@ -198,20 +198,7 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
     const shaped = recordLimit(run, allowance, config.limits.totalBytes);
     const unfit = shaped.section && input.finalCheck ? await input.finalCheck(shaped.section) : null;
     if (!unfit || !shaped.summary) return shaped;
-    // Nothing reached turn one, so nothing is counted as delivered: each shaper keeps its
-    // outcome, and an answer that had entries reads as truncated, as the record does.
-    return {
-      summary: {
-        ...shaped.summary,
-        entries: 0,
-        bytes: 0,
-        truncated: true,
-        limit: { bytes: 0, reason: unfit.slice(0, SHAPING_LIMITS.reasonChars) },
-        shapers: shaped.summary.shapers.map((shaper) =>
-          shaper.entries || shaper.bytes ? { ...shaper, entries: 0, bytes: 0, truncated: true } : shaper),
-      },
-      section: "",
-    };
+    return { summary: withoutDeliveredSection(shaped.summary, unfit), section: "" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn("[shaping] the shaping step failed; launching without its context:", message);
@@ -227,6 +214,38 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
 }
 
 /** Note on the record that this launch's path, not the configured total, set the section's room. */
+/**
+ * A record for a launch whose section did not reach turn one after all. Nothing is counted as
+ * delivered: each shaper keeps its outcome, and an answer that had entries reads as truncated,
+ * as the record does. `state` is the record's own unless the caller says otherwise.
+ */
+function withoutDeliveredSection(summary: TaskShaping, reason: string, state: TaskShaping["state"] = summary.state): TaskShaping {
+  return {
+    ...summary,
+    state,
+    entries: 0,
+    bytes: 0,
+    truncated: true,
+    limit: { bytes: 0, reason: reason.slice(0, SHAPING_LIMITS.reasonChars) },
+    shapers: summary.shapers.map((shaper) =>
+      shaper.entries || shaper.bytes ? { ...shaper, entries: 0, bytes: 0, truncated: true } : shaper),
+  };
+}
+
+/** Why a launch wrapper ran the original turn one: see `fittingLaunch` in `agent-subprocess-env.ts`. */
+export const TURN_ONE_FALLBACK_REASON =
+  "the terminal's environment left too little room under this platform's argument limit for the context, and the agent launched with its original prompt";
+
+/**
+ * The record for a launch whose wrapper fell back to the original turn one at exec. Unlike a cut
+ * the daemon made before the launch, this is recorded as degraded: the daemon offered a section
+ * the terminal could not carry, which says something is wrong with that terminal's environment.
+ */
+export function launchFellBack(shaping: LaunchShaping): LaunchShaping {
+  if (!shaping.summary) return { summary: null, section: "" };
+  return { summary: withoutDeliveredSection(shaping.summary, TURN_ONE_FALLBACK_REASON, "degraded"), section: "" };
+}
+
 function recordLimit(run: ShapingRun, allowance: ReturnType<typeof turnOneAllowance>, totalBytes: number): LaunchShaping {
   if (!run.summary || !allowance || allowance.maxSectionBytes >= totalBytes) return { summary: run.summary, section: run.section };
   return {

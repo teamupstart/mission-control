@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn as spawnChild, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,8 @@ process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
 writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { Dispatcher, dispatchLaunchArgv } = await import("../src/server/dispatcher.ts");
+const { TURN_ONE_FALLBACK_REASON } = await import("../src/server/shaping/launch.ts");
 const { openDb, getTaskShapingText, getTask: getDurableTask } = await import("../src/server/db.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
@@ -707,6 +708,92 @@ test("Pi's launch argument: when ARG_MAX cannot be measured near the limit, the 
   }
 });
 
+test("Pi's launch argument: a terminal whose own environment leaves too little room launches the original prompt, recorded as degraded", async () => {
+  registerLargeShaper();
+  const repo = seedRepo("pi-pane-env");
+  const dir = join(home, "pi-pane-env");
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, "launched");
+  const release = join(dir, "release");
+  // A stand-in Pi that records the turn one it was launched with and whether its wrapper fell
+  // back, then stays alive, as a real agent does, until the test releases it.
+  const piScript = join(dir, "pi");
+  writeFileSync(piScript, [
+    "#!/bin/sh",
+    `for last in "$@"; do :; done`,
+    `printf '%s' "$last" > '${out}.tmp'`,
+    `if [ -e "$MISSION_HOME/turn-one-fallback" ]; then : > '${out}.fallback'; fi`,
+    `mv '${out}.tmp' '${out}'`,
+    `while [ ! -e '${release}' ]; do sleep 0.1; done`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const previousPi = process.env.MISSION_PI_BIN;
+  process.env.MISSION_PI_BIN = piScript;
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // The terminal server's environment: the daemon's, plus variables of its own the daemon never
+  // sees, filling all but about 40 KiB of the limit. The daemon's budget, which sees only its
+  // own environment and its reserve, admits a 64 KiB section.
+  const count = (value: string) => Buffer.byteLength(value) + 1 + 8;
+  const pane: Record<string, string> = { ...(process.env as Record<string, string>) };
+  let used = Object.entries(pane).reduce((sum, [name, value]) => sum + count(`${name}=${value}`), 0) + 16 * 1024;
+  for (let n = 0; argMax - used > 40 * 1024 + 4096; n++) {
+    const name = `TERMINAL_SERVER_PAD_${n}`;
+    pane[name] = "p".repeat(4000);
+    used += count(`${name}=${pane[name]}`);
+  }
+  let child: ChildProcess | null = null;
+  let launched: string[] = [];
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "pi-pane-env", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "short request", agent: "pi" }));
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      resolveRuntime: () => "terminal",
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async () => ({ ok: true }),
+      piExtensionInstalled: () => true,
+      // The real wrapper, run by a shell under the pane's environment, as a terminal server runs it.
+      spawn: async (_label, _short, cwd, bin, args, stateHome, _backend, extraEnv, fallback) => {
+        launched = [bin, ...(args ?? [])];
+        const argv = dispatchLaunchArgv(cwd, bin, args ?? [], stateHome!, extraEnv ?? {}, fallback ?? null);
+        child = spawnChild(argv[0]!, argv.slice(1), { env: pane, stdio: "ignore" });
+        for (let waited = 0; !existsSync(out) && waited < 15_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+        const discovered = mkDiscovered({ agent: "pi", cwd, syntheticId: `sid-pi-pane-env-${++seq}` });
+        registry.applyDiscovery([discovered]);
+        registry.applyHook({ agent: "pi", event: "SessionStart", sessionId: `native-pi-pane-env-${seq}`, cwd, transcriptPath: null,
+          env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
+        return { homeName: `home-pi-pane-env-${seq}`, homeBackend: "tmux", terminalResourceId: null, launchStateHome: stateHome! };
+      },
+      inject: async () => { throw new Error("Pi's turn one travels in its launch argument"); },
+    }).dispatch("pi-pane-env");
+    const task = registry.getTask("pi-pane-env")!;
+    assertRunning(task);
+    // The failure this guards against, through the same launch: the shaped exec is refused in
+    // that environment.
+    assert.ok(launched.at(-1)!.includes("## Task context"), "the daemon's budget admitted a section");
+    assert.throws(() => execFileSync(launched[0]!, launched.slice(1), { env: pane, stdio: "ignore" }),
+      (error: NodeJS.ErrnoException) => error.code === "E2BIG");
+    // What ran instead: the original turn one, in the same conversation.
+    assert.equal(readFileSync(out, "utf8"), await unshapedExpectation(task, "short request"));
+    assert.ok(existsSync(`${out}.fallback`), "the wrapper said it fell back");
+    // And the record says so, rather than claiming context that never arrived.
+    const record = currentShaping(task);
+    assert.equal(record?.state, "degraded");
+    assert.equal(record?.entries, 0);
+    assert.equal(record?.bytes, 0);
+    assert.equal(record?.truncated, true);
+    assert.deepEqual(record?.limit, { bytes: 0, reason: TURN_ONE_FALLBACK_REASON });
+    assert.equal(record?.shapers[0]?.outcome, "ok", "the shaper itself answered");
+    assert.equal(getTaskShapingText("pi-pane-env"), null, "no delivered text is kept");
+  } finally {
+    writeFileSync(release, "");
+    if (child) {
+      const exited = child as ChildProcess;
+      if (exited.exitCode === null) await new Promise((resolve) => exited.once("exit", resolve));
+    }
+    process.env.MISSION_PI_BIN = previousPi;
+  }
+});
+
 // ---- superseded and cancelled launches, and the step's own failures ----
 
 /** A supervisor whose `start` waits until the test releases it. */
@@ -981,14 +1068,14 @@ test("a section the final check drops counts nothing as delivered, and keeps eac
   const shaped = await shapeLaunch({
     task, runtime: "terminal", workflowName: () => null, trace: null, delivery: HARNESSES.claude.turnOne.terminal,
     turnOnes: ["do it"], launch: null, stillDispatching: () => true, onShaping: () => {},
-    finalCheck: async () => "the pane paste would not fit, so no context was added",
+    finalCheck: async () => "the pane paste would not fit",
   }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
   assert.equal(shaped.section, "");
   assert.equal(shaped.summary?.state, "ok");
   assert.equal(shaped.summary?.entries, 0, "the chip counts what reached turn one");
   assert.equal(shaped.summary?.bytes, 0);
   assert.equal(shaped.summary?.truncated, true);
-  assert.deepEqual(shaped.summary?.limit, { bytes: 0, reason: "the pane paste would not fit, so no context was added" });
+  assert.deepEqual(shaped.summary?.limit, { bytes: 0, reason: "the pane paste would not fit" });
   assert.equal(shaped.summary?.shapers[0]?.outcome, "ok", "the shaper still answered");
   assert.equal(shaped.summary?.shapers[0]?.entries, 0);
   assert.equal(shaped.summary?.shapers[0]?.truncated, true);

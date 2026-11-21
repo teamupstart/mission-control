@@ -219,3 +219,75 @@ test("a workflow-style environment gets disposable state without daemon credenti
   assert.equal(env[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV], undefined);
   cleanupAgentSubprocessEnv(env);
 });
+
+/**
+ * A stand-in agent that records how many arguments it got, the length of its last one, and
+ * whether its wrapper left the fallback marker - read while it runs, since the wrapper's EXIT
+ * trap removes the state home afterwards.
+ */
+function recordingAgent(name: string): { agent: string; out: string } {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, "launched");
+  const agent = join(dir, "agent");
+  writeFileSync(agent, [
+    "#!/bin/sh",
+    `for last in "$@"; do :; done`,
+    `printf '%s:%s' "$#" "\${#last}" > ${shellCommand([out])}`,
+    `if [ -e "$MISSION_HOME/turn-one-fallback" ]; then printf ':fallback' >> ${shellCommand([out])}; fi`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return { agent, out };
+}
+
+test("a launch with a fallback runs its own argv when it fits in the pane's environment", () => {
+  const { agent, out } = recordingAgent("fits");
+  const shaped = [agent, "--session-id", "s1", "x".repeat(20_000)];
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: [agent, "--session-id", "s1", "short"] });
+  execFileSync(argv[0]!, argv.slice(1), { env: process.env });
+  assert.equal(readFileSync(out, "utf8"), "3:20000", "the shaped turn one launched, with no marker");
+});
+
+test("a launch whose argv would not fit in the pane's inherited environment runs the fallback and says so", () => {
+  const { agent, out } = recordingAgent("falls-back");
+  const big = "x".repeat(100_000);
+  const shaped = [agent, "--session-id", "s1", big];
+  const fallback = [agent, "--session-id", "s1", "the original prompt"];
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // The pane's environment: what the daemon would see, plus a terminal server's own variables
+  // filling all but about 40 KiB of the limit - room for the original prompt, not the shaped one.
+  const count = (value: string) => Buffer.byteLength(value) + 1 + 8;
+  const pane: Record<string, string> = { ...(process.env as Record<string, string>) };
+  let used = Object.entries(pane).reduce((sum, [k, v]) => sum + count(`${k}=${v}`), 0) + 16 * 1024;
+  for (let n = 0; argMax - used > 40 * 1024 + 4096; n++) {
+    const name = `TERMINAL_SERVER_PAD_${n}`;
+    const value = "p".repeat(4000);
+    pane[name] = value;
+    used += count(`${name}=${value}`);
+  }
+  // The failure this guards against, reproduced: the shaped exec itself is refused under that
+  // environment, while the original one runs.
+  assert.throws(() => execFileSync(agent, shaped.slice(1), { env: pane }), (error: NodeJS.ErrnoException) => error.code === "E2BIG");
+  execFileSync(agent, fallback.slice(1), { env: pane });
+
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
+  execFileSync(argv[0]!, argv.slice(1), { env: pane });
+  assert.equal(readFileSync(out, "utf8"), `3:${"the original prompt".length}:fallback`,
+    "the wrapper launched the original turn one and left the marker for the dispatcher");
+});
+
+test("a launch with no fallback keeps its one-line agent command", () => {
+  const argv = isolatedAgentArgv(["/agents/pi", "--session-id", "s1", "turn one"]);
+  const script = readFileSync(argv[1]!, "utf8");
+  assert.equal(script.includes("mission-turn-one-probe"), false);
+  assert.equal(script.trimEnd().split("\n").at(-1), "'/agents/pi' '--session-id' 's1' 'turn one'");
+  rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("a launch read back through the wrapper is the primary launch, fallback or not", async () => {
+  const { launchedArgv } = await import("./helpers/isolated-launch.ts");
+  const shaped = ["/agents/pi", "--session-id", "s1", "shaped turn one"];
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: ["/agents/pi", "--session-id", "s1", "original"] });
+  assert.deepEqual(launchedArgv(argv), shaped);
+  rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});

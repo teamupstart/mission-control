@@ -1906,3 +1906,28 @@ test("a handover tells shapers the branch and commit the checkout is on, not the
     setShaping(false);
   }
 });
+
+test("with nothing shaped, a turn taken while the handover prepared still stops it", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-empty-turn-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset,
+      // No shaper applies, but a whole turn happens while the handover prepared.
+      shapeTask: async () => {
+        r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+        r.applyHook({ agent: "claude", event: "Stop", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {} });
+        return { summary: null, section: "", entries: [] };
+      },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /took a turn while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

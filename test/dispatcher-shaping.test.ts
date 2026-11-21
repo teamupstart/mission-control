@@ -869,6 +869,16 @@ test("a launch measurement or a final check that never settles cannot hold the l
   assert.equal(checked.section, "");
   assert.equal(checked.summary?.entries, 0);
   assert.match(checked.summary?.limit?.reason ?? "", /final check of turn one .* did not finish in time/);
+  assert.equal(checked.summary?.state, "degraded", "a check that never answered is a failure, not a size limit");
+  // One that throws is degraded too; one that answers "does not fit" keeps the record's own state.
+  const threw = await shapeLaunch({ ...base, task: claude, runtime: "terminal", delivery: HARNESSES.claude.turnOne.terminal,
+    launch: null, finalCheck: async () => { throw new Error("osascript is missing"); } }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
+  assert.equal(threw.summary?.state, "degraded");
+  assert.match(threw.summary?.limit?.reason ?? "", /final check of turn one failed \(osascript is missing\)/);
+  const unfit = await shapeLaunch({ ...base, task: claude, runtime: "terminal", delivery: HARNESSES.claude.turnOne.terminal,
+    launch: null, finalCheck: async () => "it would not fit" }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
+  assert.equal(unfit.summary?.state, "ok", "a size limit is truncation, not degradation");
+  assert.equal(unfit.summary?.truncated, true);
 });
 
 test("a dispatch that ended while its launch was being measured starts no shaper", async () => {

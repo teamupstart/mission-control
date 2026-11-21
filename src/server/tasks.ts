@@ -5340,8 +5340,9 @@ export class TaskManager {
             : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
           : {}),
       }, { shapeTask: opts.shapeTask, enabled: shapingOn });
-      // Whether a shaper actually ran. With none that applies, the handover goes on exactly as one
-      // with the flag off: no further session checks, and no new reason to refuse.
+      // Whether a shaper actually ran. The session and task checks below are cheap and run whenever
+      // the handover waited on shaping at all; the extra pane probe runs only when a shaper did, so a
+      // handover nothing applied to gains no new probe that could time out.
       const shaped = shapingOn && shaping.summary !== null;
       const after = this.registry.getTask(t.id);
       if (after?.status !== "backlog") {
@@ -5359,7 +5360,7 @@ export class TaskManager {
       // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
       // probe below is itself an await a turn could start during.
       const sessionChanged = (): string | null => {
-        if (!shaped) return null;
+        if (!shapingOn) return null;
         // The task too: still in the backlog, with the inputs its context was chosen for.
         const current = this.registry.getTask(t.id);
         if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
@@ -5372,9 +5373,11 @@ export class TaskManager {
           : null;
         return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
       };
-      if (shaped) {
+      if (shapingOn) {
         const changed = sessionChanged();
         if (changed) return { ok: false, error: changed, scope: "session" };
+      }
+      if (shaped) {
         const stillReady = await paneReady(this.registry.getSession(s.id)!);
         if (!stillReady.ok) {
           return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };

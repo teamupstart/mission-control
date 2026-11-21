@@ -219,12 +219,19 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
     const shaped = recordLimit(run, allowance, config.limits.totalBytes);
     // Its own short bound past the step's deadline, so an engine that answered just in time still
     // gets its check, and a check that never settles drops the section rather than hold the launch.
+    // A check that answers "does not fit" is a size limit, recorded as truncation like any other cut.
+    // One that throws or never answers is a failure of the step, recorded as degraded.
+    let checkFailed = false;
     const unfit = shaped.section && input.finalCheck
       ? await settleWithin(input.finalCheck(shaped.section), remaining() + BACKSTOP_GRACE_MS, FINAL_CHECK_TIMED_OUT)
-        .catch((error: unknown) => `the final check of turn one failed (${error instanceof Error ? error.message : String(error)})`)
+        .then((reason) => { if (reason === FINAL_CHECK_TIMED_OUT) checkFailed = true; return reason; })
+        .catch((error: unknown) => {
+          checkFailed = true;
+          return `the final check of turn one failed (${error instanceof Error ? error.message : String(error)})`;
+        })
       : null;
     if (!unfit || !shaped.summary) return shaped;
-    return { summary: withoutDeliveredSection(shaped.summary, unfit), section: "" };
+    return { summary: withoutDeliveredSection(shaped.summary, unfit, checkFailed ? "degraded" : shaped.summary.state), section: "" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn("[shaping] the shaping step failed; launching without its context:", message);

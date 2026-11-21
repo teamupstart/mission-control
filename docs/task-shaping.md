@@ -388,7 +388,9 @@ A task cancelled during the step stops there. The step's own deadline bounds all
 launch measurement, the shapers and the final paste check. A measurement that does not finish in
 time withholds the section, as an unmeasured one does. A step that does not finish within the
 deadline and two more seconds is recorded as `timed_out`. A final check that does not answer
-within two seconds after that drops the section, and its `limit` says so. In each case the
+within two seconds after that, or that fails, drops the section and records the launch as
+degraded, and its `limit` says why. A check that answers that the section does not fit is a size
+limit, recorded as truncated. In each case the
 worker launches without a section.
 
 A Pi launch with a section records exactly what its wrapper reports. `shaped` means the context

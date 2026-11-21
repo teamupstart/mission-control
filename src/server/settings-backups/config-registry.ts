@@ -13,6 +13,7 @@ import { getAwayConfig } from "../away/config.ts";
 import { getAppConfig } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { getHarnessesConfig } from "../harnesses.ts";
+import { getInspectorConfig } from "../inspector/config.ts";
 import { standingInstructionsConfig } from "../instructions/config.ts";
 import { getUiConfig } from "../ui-config.ts";
 
@@ -31,6 +32,7 @@ export function logicalConfigValue(entry: AppConfigEntry): unknown {
     case "away": return getAwayConfig();
     case "harnesses": return getHarnessesConfig();
     case "foreman": return getForemanConfig();
+    case "inspector": return getInspectorConfig();
     case "ui": return getUiConfig(false);
     case "standing": return standingInstructionsConfig();
     case "generic": {

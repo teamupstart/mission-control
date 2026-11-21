@@ -31,6 +31,9 @@ const MATRIX = {
   done: { active: false, overlap: false, terminal: true, merge: false },
   cancelled: { active: false, overlap: false, terminal: true, merge: true },
   failed: { active: false, overlap: false, terminal: true, merge: true },
+  // Parked by the operator: no agent runs and the run is not over. Only the operator's Resume
+  // moves it on, so not even a merged pull request settles it while it sleeps.
+  hibernated: { active: false, overlap: true, terminal: false, merge: false },
 } satisfies Record<TaskStatus, { active: boolean; overlap: boolean; terminal: boolean; merge: boolean }>;
 
 const cfg: BacklogConfig = {

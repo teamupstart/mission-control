@@ -166,7 +166,15 @@ function foldBacklog(input: LineFoldInput): LineStageSummary {
   const waiting = backlogTasks(input.tasks);
   const count = waiting.length;
   if (count === 0) {
-    return { stage: "backlog", count: 0, sentence: "nothing waiting", tone: "neutral" };
+    // Hibernated tasks wait in the Backlog drawer too, for the operator's Resume rather than
+    // for capacity, so they are named here without being counted as queued work.
+    const sleeping = input.tasks.filter((t) => t.status === "hibernated").length;
+    return {
+      stage: "backlog",
+      count: 0,
+      sentence: sleeping > 0 ? `${sleeping} hibernated` : "nothing waiting",
+      tone: "neutral",
+    };
   }
 
   const ready = readyBacklog(input.tasks, input.backlogPlan);

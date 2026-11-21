@@ -7,10 +7,26 @@ import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integrati
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_GROUPS,
-  VISIBLE_SETTINGS_CATEGORIES,
   SETTINGS_SCOPES,
+  visibleSettingsCategories,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
+import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
+import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
+import { SHAPING_CONFIG_DEFAULTS, shapingConfigView, type ShapingConfigView } from "../src/shared/shaping.ts";
+import type { ShapingSettings } from "../src/web/useShapingSettings.ts";
+
+/**
+ * Every preview on, so a category behind a flag is proved reachable like any other. The flag-off
+ * rail is pinned by its own tests below.
+ */
+const FLAGS_ON: FeatureFlagsConfig = { enableAll: true, overrides: {} };
+const FLAGS_OFF: FeatureFlagsConfig = { enableAll: false, overrides: {} };
+const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
+
+function shapingSettings(config: ShapingConfigView | null = shapingConfigView(SHAPING_CONFIG_DEFAULTS)): ShapingSettings {
+  return { config, confirmed: config, pending: null, pendingKey: null, errors: {}, ready: true, set: async () => true };
+}
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
@@ -78,11 +94,14 @@ function render(
     settingsStatus?: SettingsStatus | null;
     foreman?: ForemanState;
     onStartTour?: (tourId: TourId) => void;
+    flags?: FeatureFlagsConfig;
+    shaping?: ShapingSettings;
   } = {},
 ): string {
   return renderToStaticMarkup(
-    createElement(SettingsPage, {
+    createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPage, {
       category,
+      shapingSettings: opts.shaping ?? shapingSettings(),
       onNavigate: () => {},
       onLeave: () => {},
       foreman: opts.foreman ?? FOREMAN,
@@ -94,7 +113,7 @@ function render(
       settingsStatus: opts.settingsStatus ?? null,
       onStartTour: opts.onStartTour ?? (() => {}),
       onBrowseTours: () => {},
-    }),
+    })),
   );
 }
 
@@ -138,6 +157,31 @@ test("the rail lists every category exactly once", () => {
   const items = html.match(/class="settings-nav-item/g) ?? [];
   assert.equal(items.length, VISIBLE_SETTINGS_CATEGORIES.length);
   for (const c of VISIBLE_SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
+});
+
+// Task shaping follows its preview flag, live: the rail, the walk and the page all read the
+// flags the event stream holds, so the category is absent while the flag is off and naming it
+// renders the default panel.
+test("with its flag off, Task shaping is not drawn and naming it renders Display", () => {
+  const html = render("task-shaping", { settingsStatus: status(), flags: FLAGS_OFF });
+  assert.doesNotMatch(railMarkup(html), />Task shaping</, "no rail row");
+  assert.doesNotMatch(html, /aria-label="Task shaping"/, "no panel");
+  assert.match(html, LAYOUT_ONLY, "the default panel instead");
+  assert.equal((railMarkup(html).match(/role="tab"/g) ?? []).length, visibleSettingsCategories(FLAGS_OFF).length);
+  assert.ok(!visibleSettingsCategories(FLAGS_OFF).some((c) => c.id === "task-shaping"));
+});
+
+test("with its flag on, Task shaping is a Sessions category whose panel renders", () => {
+  const flags = { enableAll: false, overrides: { "task-shaping": true } };
+  const html = render("task-shaping", { settingsStatus: status(), flags });
+  assert.match(railMarkup(html), /settings-nav-item is-active"[^>]*><span[^>]*>⧈<\/span>Task shaping/);
+  assert.match(html, /<section class="settings-section task-shaping" aria-label="Task shaping">/);
+  for (const anchor of ["task-shaping/identity", "task-shaping/limits", "task-shaping/shapers", "task-shaping/import"]) {
+    assert.ok(html.includes(`data-anchor="${anchor}"`), `missing ${anchor}`);
+  }
+  assert.match(html, /No shapers registered\. Import a manifest to add one\./);
+  const sessions = visibleSettingsCategories(flags).filter((c) => c.group === "sessions").map((c) => c.id);
+  assert.ok(sessions.indexOf("task-shaping") === sessions.indexOf("tasks") + 1, "right after Tasks");
 });
 
 // The ai-conductor integration is hidden behind one build-time switch. While it is, Conductor
@@ -584,27 +628,24 @@ test("GitHub Inspector is a category of its own: its panel shows, the others don
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌕<\/span>GitHub Inspector/);
 });
 
-// Ships off, and ships not-live. A static render runs no effects, so this is the
-// pre-poll state - which is exactly the state a first-run user sees, and it must not
-// show a mode that would post anything.
-test("the GitHub Inspector panel's defaults are the off position", () => {
+// A static render runs no effects, so the controls are waiting for the daemon's config.
+test("the GitHub Inspector panel keeps its master switch disabled before the daemon answers", () => {
   const html = render("inspector");
-  // No checked master toggle, and no live-mode warning banner.
+  const toggle = html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0];
+  assert.ok(toggle, "the GitHub Inspector panel has a master switch");
+  assert.match(toggle, /disabled/);
   assert.doesNotMatch(html, /inspector-live-warn/);
-  assert.match(html, /Dry run - review and record findings, post nothing/);
 });
 
-// The same pre-poll render, from the other direction. Those defaults are the SAFE
-// posture, and presenting them as the daemon's answer is how an operator reads "off, dry
-// run, no repos" as fact while the stored config is enabled and live and the daemon is
-// merely restarting. Disabled inputs are not a statement about what is running.
+// During startup or a restart, the stored status and repository grants are unknown.
 test("with no answer from the daemon, the GitHub Inspector panel says so rather than showing defaults as fact", () => {
   const html = render("inspector");
   assert.match(html, /inspector-unknown/);
-  assert.match(html, /is unknown/);
+  assert.match(html, /Unknown - the daemon has not answered/);
+  assert.match(html, /GitHub Inspector settings are unavailable until the daemon responds/);
   assert.doesNotMatch(
     html,
-    /No repos yet - GitHub Inspector won't post anywhere/,
+    /GitHub Inspector may post reviews in no repositories yet/,
     "an unanswered panel must not assert an empty allowlist",
   );
 });

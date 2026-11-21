@@ -556,6 +556,8 @@ test("exactly the in-flight statuses block a run; the terminal ones let it throu
     // A mission whose last run failed still runs tomorrow - the alternative parks it for
     // good on one bad night, which is the opposite of what a recurring mission is for.
     failed: false,
+    // Parked by the operator with its conversation kept: the run is not over.
+    hibernated: true,
   };
 
   for (const [status, blocks] of Object.entries(cases) as [TaskStatus, boolean][]) {

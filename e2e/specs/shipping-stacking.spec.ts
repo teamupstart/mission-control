@@ -24,7 +24,11 @@ import type { ShippingConfig } from "../../src/shared/protocol.ts";
 // nothing reaches GitHub.
 
 // The Inspector polls every second here (90s by default) so its merge gate runs inside the
-// test; it is switched off by default, so the other cases never reach it.
+// test. A fresh install starts it Live, so each case switches it off first and only the
+// stacked-release case turns it back on, at the point it means the merge gate to run. Left on
+// from the start, it reviews the child pull request before its repository is allowlisted,
+// records that review as incomplete, and parks it on the fixture's empty diff - after which
+// the merge gate never runs again and keeps reporting `inspector-not-allowlisted`.
 test.use({ daemonEnv: { MISSION_PR_POLL_MS: "500", MISSION_INSPECTOR_POLL_MS: "1000" } });
 const EVIDENCE = artifactsDir("shipping-stacking");
 
@@ -37,6 +41,10 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return await res.json() as T;
 }
+
+test.beforeEach(async ({ daemon }) => {
+  await api(daemon, "/api/inspector/config", { enabled: false }, "PUT");
+});
 
 async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -700,7 +708,15 @@ test("a stack breaks, follows a replacement parent, and offers its restack promp
 test("a cancelled parent task holds its stack with a Reschedule, then a Start, that restarts its work", async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);
   const { parent, row } = await openStack(daemon, 81, 82);
-  expect((await api<{ ok: boolean }>(daemon, `/api/tasks/${parent.id}/cancel`, {})).ok).toBe(true);
+  // A cancel that cannot yet release the worktree - a PR poll's `gh` still has it as its working
+  // directory, which is ordinary on a loaded machine - still cancels the task and says so; only
+  // the cleanup is left tracked. The task's status is the fact this case depends on.
+  const cancel = await fetch(`${daemon.baseURL}/api/tasks/${parent.id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  const cancelled = await cancel.json() as { ok: boolean; error?: string };
+  if (!cancelled.ok) expect(cancelled.error).toMatch(/^task cancelled, but its resources remain tracked/);
+  expect((await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status).toBe("cancelled");
   await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe("Stack broken: #81's task was cancelled");
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
@@ -709,9 +725,12 @@ test("a cancelled parent task holds its stack with a Reschedule, then a Start, t
   const reschedule = queued.getByRole("button", { name: "Reschedule #81's task" });
   await expect(reschedule).toBeEnabled();
   await shoot(queued, "merge-queue-parent-task-cancelled");
-  await reschedule.click();
-  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status, { timeout: 15_000 })
-    .toBe("backlog");
+  // While the cancel's worktree cleanup is still running, Reschedule answers "try again in a
+  // moment". Retry the click as an operator would, until the task is re-filed.
+  await expect(async () => {
+    if (await reschedule.isEnabled({ timeout: 500 }).catch(() => false)) await reschedule.click({ timeout: 2_000 }).catch(() => {});
+    expect((await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status).toBe("backlog");
+  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000] });
 
   await expect(queued).toContainText("Stack broken: #81's task was rescheduled", { timeout: 30_000 });
   await expect(queued.getByRole("button", { name: "Reschedule #81's task" })).toHaveCount(0);

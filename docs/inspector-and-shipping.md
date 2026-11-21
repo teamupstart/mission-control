@@ -2,7 +2,7 @@
 
 # GitHub Inspector (automated PR review)
 
-GitHub Inspector is the optional remote reviewer. It is separate from the local Personas
+GitHub Inspector is the remote reviewer. It is separate from the local Personas
 in [No-Mistakes Review](workflows.md#built-in-personas). No-Mistakes versions 9 through 17
 completed after verified PR publication; versions 18 and 19 include the final Inspector gate.
 A published workflow keeps its own completion policy. Installing that gate does not enable
@@ -44,11 +44,12 @@ not itself certify CI or authorize a merge.
 If Inspector's reply was posted but resolving its thread failed, that resolution is retried without
 another reply. An operator resolving local ledger findings does not authorize closing GitHub threads.
 
-It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
-separate acts in Settings → GitHub Inspector, and the first two are reversible without anyone
-else seeing anything. Enabling and mode live on the GitHub Inspector panel; which repos it may post
-in is a column of **Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** now (the
-panel shows the count and links there), the same list `mode` is checked against below.
+Fresh installations start with the GitHub Inspector **enabled** in **Live** mode and with
+**no repository grants**. It can publish only in repositories granted access in
+**Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)**. The
+**Settings → GitHub Inspector** panel shows the grant count and lets you switch the reviewer off
+or select Dry run. Saved settings carry forward on upgrade. Existing installations that never
+saved Inspector settings keep the prior defaults: off and Dry run.
 
 ### Only our pull requests
 
@@ -403,8 +404,9 @@ It ships **off**, trusting **no repositories**, with a **10 minute** soak.
 
 ### CodeRabbit follow-up
 
-**Follow up on CodeRabbit comments** is a separate Shipping setting, off by default and
-included in settings snapshots. It works while Inspector reviews and YOLO are off. The existing
+**Follow up on CodeRabbit comments** is a separate Shipping setting, on by default and
+included in settings snapshots. Upgrading turns it on once for an install that had it off; an
+operator who turns it off afterwards keeps that choice. It works while Inspector reviews and YOLO are off. The existing
 daemon poll observes only adopted PRs, including attached repositories, normally every 90 seconds.
 It reads GitHub but neither calls a review model nor replies to or resolves threads itself.
 
@@ -1005,3 +1007,22 @@ agents without task-owned worktrees:
 Provider or archive failures preserve the unreturned resource records. See
 [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
 manual reconciliation, quarantine, and the unchanged 30-day fallback.
+
+## Automatic PR branch updates (preview)
+
+Enable **Automatic PR branch updates** in Settings > Feature flags. The daemon's PR
+poller then updates an open, non-draft PR only when GitHub reports `BEHIND` and its checks
+and required reviews are ready. This works with Inspector and automatic shipping disabled,
+including PRs you intend to merge by hand. Enabling it never grants merge permission.
+
+The PR link shows **Updating branch** until GitHub reports a new head, then **Waiting for
+checks** or **Waiting for review** as that commit is evaluated. A refusal shows GitHub's
+reason. Conflicts offer **Send to session to resolve** when the owning session can receive
+messages; that action asks the agent to resolve and push, explicitly without merging the PR.
+
+Each PR/head/target-commit pair is attempted at most once, including across daemon restarts
+and lost responses. A changed head or target commit is read again before
+another attempt. GitHub's expected-head guard protects the write. The update happens on
+GitHub, without editing the agent's local worktree. Disabling the preview stops new attempts
+and hides its status; an update GitHub already accepted may still finish. The poller follows
+PRs associated with live sessions and their attached repositories.

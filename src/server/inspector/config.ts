@@ -16,9 +16,10 @@ import { llmRunnerChoice } from "../llm/config.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.inspector;
 
-/** The current config, with schema defaults applied over whatever was stored. */
+/** Read saved settings, including the defaults written when a new installation starts. */
 export function getInspectorConfig(): InspectorConfig {
-  return InspectorConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+  const parsed = InspectorConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY) ?? {});
+  return parsed.success ? parsed.data : InspectorConfigSchema.parse({});
 }
 
 /** Merge a patch over the current config, persist, and return the result. */

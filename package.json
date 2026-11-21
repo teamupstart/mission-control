@@ -18,7 +18,8 @@
     "node": ">=24"
   },
   "bin": {
-    "mission-control": "src/server/index.ts"
+    "mission-control": "src/server/index.ts",
+    "mctl": "dist/cli/mctl.mjs"
   },
   "main": "dist/main/index.cjs",
   "scripts": {
@@ -29,7 +30,7 @@
     "dev:foreman": "tsx watch src/server/foreman/worker.ts",
     "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:start": "concurrently -n server,web,shell,foreman -c blue,magenta,green,cyan \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\" \"npm:dev:foreman\"",
-    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard && npm run build:resident-mcp-launcher",
+    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:cli && npm run build:mod && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard && npm run build:resident-mcp-launcher",
     "build:installer": "node scripts/render-install-bootstrap.mjs",
     "build:pi-extension": "node --import tsx scripts/build-pi-extension.ts",
     "build:native": "node scripts/build-native.mjs",
@@ -40,6 +41,9 @@
     "build:foreman": "esbuild src/server/foreman/worker.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/foreman-worker.mjs",
     "build:main": "esbuild src/main/index.ts src/main/update-binary-worker.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
+    "build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli/mctl.mjs",
+    "build:mod": "node --import tsx scripts/build-mod.ts",
+    "mctl": "tsx src/cli/main.ts",
     "smoke": "node scripts/smoke-bundles.mjs",
     "verify:keep-awake-native": "node scripts/probe-keep-awake-native.mjs",
     "verify:database-backup": "tsx scripts/verify-database-backup.ts",

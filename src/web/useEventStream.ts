@@ -1,4 +1,5 @@
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -183,6 +184,14 @@ export interface MissionState {
   /** Observe each confirmed config before React can batch successive stream updates. */
   subscribeFeatureFlags: (listener: (config: FeatureFlagsConfig) => void) => () => void;
   /**
+   * Task shaping's config view from SSE. Null before the first snapshot and whenever the
+   * `task-shaping` flag is off: the daemon sends it only while the flag is on, and clears it
+   * with a `null` frame when the flag turns off.
+   */
+  shaping: ShapingConfigView | null;
+  /** Observe each confirmed shaping config, as `subscribeFeatureFlags` does for flags. */
+  subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
+  /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
    * surface re-polls for them. Null until the first snapshot lands, which is "unknown",
@@ -300,6 +309,12 @@ export function useEventStream(): MissionState {
   const subscribeFeatureFlags = useCallback((listener: (config: FeatureFlagsConfig) => void) => {
     featureFlagsListeners.current.add(listener);
     return () => { featureFlagsListeners.current.delete(listener); };
+  }, []);
+  const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
+  const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
+    shapingListeners.current.add(listener);
+    return () => { shapingListeners.current.delete(listener); };
   }, []);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
@@ -437,6 +452,9 @@ export function useEventStream(): MissionState {
           setLineSummary(msg.lineSummary);
           setFeatureFlags(msg.featureFlags ?? FEATURE_FLAGS_DEFAULTS);
           for (const listener of featureFlagsListeners.current) listener(msg.featureFlags ?? FEATURE_FLAGS_DEFAULTS);
+          // Absent while the flag is off, which is the same answer as a cleared frame.
+          setShaping(msg.shaping ?? null);
+          for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -684,6 +702,10 @@ export function useEventStream(): MissionState {
           setFeatureFlags(msg.config);
           for (const listener of featureFlagsListeners.current) listener(msg.config);
           break;
+        case "shaping_config":
+          setShaping(msg.config);
+          for (const listener of shapingListeners.current) listener(msg.config);
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -844,6 +866,8 @@ export function useEventStream(): MissionState {
     lineSummary,
     featureFlags,
     subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

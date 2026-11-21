@@ -404,8 +404,12 @@ See [Binary installation and manual recovery](desktop-and-packaging.md#binary-in
 for installer options, recovery behavior, and qualification limits.
 
 
-Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existing config blob.
-Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
+Shipping stores `codeRabbitAutoResolve` as a default-true boolean in its existing config blob.
+Upgrading an install to database schema 38 switches it on once, even if it had stored the old
+default-off value, and every other Shipping setting is kept. Turning it off afterwards is an
+ordinary stored choice that survives restarts and later upgrades. Settings snapshots include it;
+restoring a snapshot applies the value it recorded, and one taken before the setting existed
+restores it on. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
 

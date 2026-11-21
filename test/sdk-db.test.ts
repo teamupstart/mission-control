@@ -267,7 +267,7 @@ test("the status vocabulary is what the live check is built from", () => {
   // rather than something that slipped in.
   assert.deepEqual(
     [...SDK_SESSION_STATUSES],
-    ["starting", "running", "exited", "failed", "suspended"],
+    ["starting", "running", "exited", "failed", "suspended", "hibernated"],
   );
   for (const status of SDK_SESSION_STATUSES) {
     upsertSdkSession(
@@ -290,6 +290,7 @@ test("the status vocabulary is what the live check is built from", () => {
       // `suspended` is live for the reason it exists: WE stopped it on the way down, and a
       // restart owes it a resume. Reading it as settled is how a clean restart reclaims the
       // worktree of work that was merely interrupted.
+      // `hibernated` is NOT: only the operator's Resume brings it back (`SdkSupervisor.wake`).
       status === "starting" || status === "running" || status === "suspended",
       `${status} liveness`,
     );

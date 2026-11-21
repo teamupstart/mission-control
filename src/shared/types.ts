@@ -1,4 +1,5 @@
 import type { FeatureFlagsConfig } from "./feature-flags.ts";
+import type { ShapingConfigView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -13,6 +14,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -930,6 +932,8 @@ export interface Session {
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   prChecks: PrChecks | null;
   /**
    * The Inspector's state for this session's pull request, or null when there is no PR
@@ -2118,6 +2122,9 @@ export const TASK_STATUSES = [
   "done",
   "cancelled",
   "failed",
+  // The operator stopped the agent to free its memory and will resume the same conversation
+  // in the same worktree later (`@shared/hibernation.ts`). Neither active nor terminal.
+  "hibernated",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -2695,6 +2702,12 @@ export interface Task {
    */
   launchFailure?: TaskLaunchFailure | null;
   /**
+   * Present exactly while the task is `hibernated`: the embedded session that resumes, the
+   * conversation it reopens, the blocker it carried, and why the last Resume failed, if it
+   * did. Absent or null on every other task. See `@shared/hibernation.ts`.
+   */
+  hibernation?: TaskHibernation | null;
+  /**
    * Set on a Report bug session: the failed task it was started to report. The session's own
    * identity, persisted on it, so a report session that itself fails to start never offers a
    * Report bug of its own - whatever has happened to the failure that started it since.
@@ -2960,8 +2973,20 @@ export interface ReviewSnooze {
  * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
  * operator's behalf, because they ticked "approve all future bundles for this task" on an
  * earlier one. It is logged in the conversation as what it is, never as the human's answer.
+ *
+ * The headless-mode actors (spec 7.8, 7.9) are set by the daemon, never read from a request
+ * body: `home:{sessionId}` is an answer given from a registered home session,
+ * `home-approval:{sessionId}` is an accepted plan or review approval from one (the only home
+ * actor that counts as human approval for plan publication), and `mctl` is the command line.
  */
-export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
+export type ReviewActor =
+  | "human"
+  | "foreman"
+  | "standing-approval"
+  | `session:${string}`
+  | `home:${string}`
+  | `home-approval:${string}`
+  | "mctl";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3817,6 +3842,12 @@ export type ServerEvent =
       /** Bounded to 512 overrides with ids of at most 64 characters. */
       featureFlags: FeatureFlagsConfig;
       /**
+       * Task shaping's config view at connect time. Present only while the `task-shaping` flag
+       * is on, so a window never holds the shaping config while the feature is off. Bounded by
+       * `SHAPING_LIMITS`: at most 32 shapers of 16 KiB each, and 128 choices.
+       */
+      shaping?: ShapingConfigView;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -3971,6 +4002,15 @@ export type ServerEvent =
   | { type: "settings_status"; status: SettingsStatus }
   /** Content travels with the event so all windows resolve gates without a second fetch. */
   | { type: "feature_flags"; config: FeatureFlagsConfig }
+  /**
+   * Task shaping's config view (`shapingConfigView`), sent only while the `task-shaping` flag is
+   * on: after every committed write or settings restore, and when the flag turns on. Turning the
+   * flag off sends `config: null`, which clears it in every window. An entry this build cannot
+   * run travels only as its id, label and reason, never as its raw stored envelope. Content
+   * travels with the event for `feature_flags`' reason: every window shows the change with no
+   * second fetch.
+   */
+  | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

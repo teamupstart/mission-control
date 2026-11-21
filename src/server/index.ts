@@ -4,6 +4,7 @@
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
 import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -224,6 +225,8 @@ try {
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
 const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// Task shaping's config reaches open windows the same way, behind its flag.
+const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
@@ -1046,6 +1049,7 @@ async function shutdown(): Promise<void> {
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
   stopFeatureFlags();
+  stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();

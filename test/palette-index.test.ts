@@ -20,8 +20,13 @@ import {
   type PaletteRow,
   type PaletteStores,
 } from "../src/web/lib/palette-index.ts";
-import { SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
-import { VISIBLE_SETTINGS_CATEGORIES } from "../src/web/lib/settings-registry.ts";
+import { settingsControls } from "../src/web/lib/settings-search.ts";
+import { visibleSettingsCategories } from "../src/web/lib/settings-registry.ts";
+import { FEATURE_FLAGS_DEFAULTS } from "../src/shared/feature-flags.ts";
+
+// The stores' default flags are the suite's: previews off.
+const SETTINGS_CONTROLS = settingsControls(FEATURE_FLAGS_DEFAULTS);
+const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FEATURE_FLAGS_DEFAULTS);
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 
@@ -193,6 +198,7 @@ function stores(over: Partial<PaletteStores> = {}): PaletteStores {
     sessionNames: new Map(),
     residents: [],
     settingsBindings: new Map(),
+    featureFlags: FEATURE_FLAGS_DEFAULTS,
     ...over,
   };
 }
@@ -619,6 +625,23 @@ test("searching a specific shortcut's name lands on that action's own binding", 
     hits.some((row) => row.id === "setting:keyboard-dispatch"),
     `"${dispatch.label}" did not surface its own keyboard binding`,
   );
+});
+
+test("a settings panel behind a feature flag, and its controls, are offered exactly while the flag is on", () => {
+  const offered = (flags: PaletteStores["featureFlags"]) => paletteRows(stores({ featureFlags: flags }))
+    .filter((row) => row.id === "panel:task-shaping" || row.id.startsWith("setting:task-shaping-"))
+    .map((row) => row.id);
+  assert.deepEqual(offered(FEATURE_FLAGS_DEFAULTS), []);
+  assert.deepEqual(offered({ enableAll: false, overrides: { "task-shaping": true } }), [
+    "setting:task-shaping-shapers",
+    "setting:task-shaping-import",
+    "setting:task-shaping-identity",
+    "setting:task-shaping-limits",
+    "panel:task-shaping",
+  ].sort((a, b) => (a.startsWith("panel:") ? 1 : 0) - (b.startsWith("panel:") ? 1 : 0)));
+  const on = stores({ featureFlags: { enableAll: false, overrides: { "task-shaping": true } } });
+  assert.ok(searchPalette("shaper", on).rows.some((row) => row.id === "panel:task-shaping"));
+  assert.ok(!searchPalette("shaper", stores()).rows.some((row) => row.id === "panel:task-shaping"));
 });
 
 test("a settings panel is reachable by name and by its registry keywords", () => {

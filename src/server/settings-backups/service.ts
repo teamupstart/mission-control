@@ -1,4 +1,5 @@
 import { reloadFeatureFlags } from "../feature-flags/index.ts";
+import { reloadShaping } from "../shaping/index.ts";
 import { syncWindowBackground } from "../ui-config.ts";
 import { randomBytes } from "node:crypto";
 import type { CostConfig, SkillsConfig } from "@shared/protocol.ts";
@@ -316,6 +317,7 @@ export class SettingsBackupService {
     };
     const registry = this.runtime.registry;
     attempt("Feature flags reconciliation failed", reloadFeatureFlags);
+    attempt("Task shaping reconciliation failed", reloadShaping);
     if (registry) {
       attempt("Library catalog reconciliation failed", () => registry.replaceSettingsCatalogs({
         personas: this.workflowStore.personaCatalog().map((row) => personaView(row)),

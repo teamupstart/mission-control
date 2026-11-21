@@ -45,7 +45,7 @@ const { BACKGROUND_AGENTS_STYLES, UI_CONFIG_DEFAULTS, UiConfigPatchSchema, UiCon
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { settingPayloadForEntry } = await import("../src/server/settings-backups/config-registry.ts");
 const { DISPLAY_CHOICES } = await import("../src/web/lib/board-card.ts");
-const { SETTINGS_CONTROLS } = await import("../src/web/lib/settings-search.ts");
+const { ALL_SETTINGS_CONTROLS: SETTINGS_CONTROLS } = await import("../src/web/lib/settings-search.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { previewSession, PREVIEW_RESIDENT } = await import("../src/web/lib/board-card-preview.ts");
 const { ResidentVisitorCard } = await import("../src/web/residents/ResidentVisitorCard.tsx");

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
@@ -32,7 +33,9 @@ const EVIDENCE = artifactsDir("workflow-closed-pr-recheck");
  * Everything from the click on is production: the route, the GitHub read, the ledger write, the
  * gate evaluation, the server event and the repaint.
  */
-test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "3600000" } });
+// The daemon fixture disables session discovery polling. Also keep PR polling from
+// publishing a session update that could own the explicit recheck's recovery read.
+test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "3600000", MISSION_PR_POLL_MS: "3600000" } });
 
 const PR_NUMBER = 1494;
 const PR_KEY = `owner/repo#${PR_NUMBER}`;
@@ -105,14 +108,14 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
 }
 
 /** One single-reviewer run that passes, built through the routes the dashboard itself uses. */
-async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
+async function seedRun(page: Page, daemon: DaemonHandle, name = "E2E closed pull request"): Promise<string> {
   const sessionId = await dispatch(page, daemon);
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "Closed PR reviewer",
     guidanceMarkdown: "# Closed PR reviewer\n\nE2E_PASS_VERDICT",
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E closed pull request",
+    name,
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -218,14 +221,14 @@ function strandAsClosed(daemon: DaemonHandle, runId: string): void {
 }
 
 /** Script what GitHub answers when the daemon reads this pull request. */
-function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED"): void {
+function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED", head = FAILED_HEAD): void {
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo,
     url: PR_URL,
     number: PR_NUMBER,
     state,
     headRefName: "feat/closed-pr",
-    headRefOid: FAILED_HEAD,
+    headRefOid: head,
     createdAt: new Date(Date.now() - 60_000).toISOString(),
     mergedAt: null,
   }]);
@@ -311,3 +314,109 @@ test("a run blocked as closed offers Check again, which lifts the block only for
   }
   await shoot(dashboard, header, "02-open-pull-request-restores-the-repair-wait");
 });
+
+
+// Issue #1549: seed the historical unsent delivery block, then let a real session
+// resume event reconcile the current Inspector ledger and repaint the open run page.
+for (const trigger of ["session return", "Check again"] as const) {
+test(`${trigger} releases unsent feedback for a superseded clean Inspector head`, async ({ dashboard, daemon }) => {
+  const runId = await seedRun(dashboard, daemon, "E2E Inspector feedback recovery");
+  const sessionId = (await api<Array<{ id: string }>>(daemon, "/api/sessions"))[0]!.id;
+  await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/pause`, { mode: "now" });
+  await api(daemon, "/api/inspector/config", {
+    enabled: true, mode: "live", repoAllowlist: [daemon.repo],
+  }, "PUT");
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true, repoAllowlist: [daemon.repo],
+  }, "PUT");
+  strandAsClosed(daemon, runId);
+  const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare("SELECT binding_id, gate_state_json FROM workflow_runs WHERE id = ?")
+      .get(runId) as { binding_id: string; gate_state_json: string };
+    const gate = JSON.parse(run.gate_state_json);
+    gate.waitReason = "findings";
+    db.prepare("UPDATE workflow_runs SET current_phase = 'delivery_blocked', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify(gate), runId);
+    db.prepare("UPDATE workflow_bindings SET delivery_mode = 'live' WHERE id = ?").run(run.binding_id);
+    db.prepare(`INSERT INTO workflow_deliveries
+      (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at)
+      SELECT 'unsent-inspector', ?, s.id, 'inspector_feedback', b.session_id, b.note_key,
+        'Old head feedback never sent', 'frozen-packet', 'prepared', ?, ?
+      FROM workflow_submissions s JOIN workflow_bindings b ON b.id = ?
+      WHERE s.run_id = ? ORDER BY s.round DESC LIMIT 1`)
+      .run(runId, Date.now(), Date.now(), run.binding_id, runId);
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(PR_KEY);
+    db.prepare(`UPDATE inspector_prs SET state = 'open', observed_state = 'OPEN',
+      observed_head_sha = ?, head_sha = ?, clean_review_head_sha = ?, observed_at = ? WHERE key = ?`)
+      .run(head, head, head, Date.now(), PR_KEY);
+  });
+  // A carried Inspector gate must not offer its action for another packet's block.
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE workflow_deliveries SET kind = 'evidence_capture_repair' WHERE id = 'unsent-inspector'",
+  ).run());
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  await expect(header.getByRole("button", { name: "Check again" })).toHaveCount(0);
+  const refused = await fetch(`${daemon.baseURL}/api/workflow-runs/${runId}/recheck-inspector`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ requestId: "not-inspector-feedback" }),
+  });
+  expect(refused.status).toBe(409);
+  expect(await eventCount(daemon, runId, "inspector_recheck_requested")).toBe(0);
+  await shoot(dashboard, header, "05-evidence-repair-no-inspector-recheck");
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE workflow_deliveries SET kind = 'inspector_feedback' WHERE id = 'unsent-inspector'",
+  ).run());
+  await dashboard.reload();
+  const checkAgain = header.getByRole("button", { name: "Check again" });
+  await expect(checkAgain).toBeVisible();
+  scriptGitHub(daemon, "CLOSED");
+  await checkAgain.click();
+  await expect.poll(() => eventCount(daemon, runId, "inspector_recheck_requested")).toBe(1);
+  await expect.poll(() => ledgerRow(daemon).observed_state).toBe("CLOSED");
+  // An explicit recheck also respects the operator's pause and never pretends to send.
+  expect((await probe(daemon, runId)).run.status).toBe("blocked");
+  await checkAgain.hover();
+  await dashboard.mouse.move(800, 600);
+  await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+  await shoot(dashboard, header, trigger === "session return"
+    ? "03-unsent-feedback-blocked" : "06-explicit-recheck-blocked");
+  // The earlier read is no longer fresh enough for this gate. The Inspector poll is an
+  // hour away, so each recovery entry point must request its own current observation.
+  withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
+    observed_state = 'OPEN', observed_head_sha = ?, observed_at = 0 WHERE key = ?`)
+    .run(FAILED_HEAD, PR_KEY));
+  scriptGitHub(daemon, trigger === "session return" ? "OPEN" : "CLOSED", head);
+  await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {});
+  if (trigger === "Check again") {
+    // Session return cannot recover a remotely closed PR. Once reachable, a cached A
+    // observation must not let Check again send before its own read discovers B.
+    await expect.poll(() => ledgerRow(daemon).observed_state).toBe("CLOSED");
+    await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .find(session => session.id === sessionId)?.state).toBe("idle");
+    withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
+      observed_state = 'OPEN', observed_head_sha = ?, observed_at = ? WHERE key = ?`)
+      .run(FAILED_HEAD, Date.now(), PR_KEY));
+    scriptGitHub(daemon, "OPEN", head);
+    await checkAgain.click();
+  }
+  await expect.poll(async () => (await probe(daemon, runId)).run.status).toBe("completed");
+  expect(await eventCount(daemon, runId, "inspector_recheck_requested"))
+    .toBe(trigger === "session return" ? 1 : 2);
+  expect(ledgerRow(daemon).observed_at).toBeGreaterThan(0);
+  await expect(header.getByText("Completed", { exact: true })).toBeVisible();
+  const packet = withDaemonDb(daemon, (db) => db.prepare(
+    "SELECT state, delivered_at FROM workflow_deliveries WHERE id = 'unsent-inspector'",
+  ).get());
+  expect(packet).toEqual({ state: "cancelled", delivered_at: null });
+  expect(await eventCount(daemon, runId, "inspector_feedback_recovered")).toBe(1);
+  expect(await eventCount(daemon, runId, "inspector_persona_bypass_used")).toBe(1);
+  await header.getByRole("button", { name: "Run this review again" }).hover();
+  await dashboard.mouse.move(800, 600);
+  await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+  await shoot(dashboard, header, trigger === "session return"
+    ? "04-unsent-feedback-recovered" : "07-explicit-recheck-recovered");
+});
+}

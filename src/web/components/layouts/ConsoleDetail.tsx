@@ -57,6 +57,7 @@ import {
   StateBadge,
   TaskClaimWarnings,
   TaskRepoPrs,
+  PrBranchUpdateDetails,
   WorkflowChips,
   EnsembleChip,
   PipelineChip,
@@ -706,6 +707,7 @@ export function ConsoleDetail({
         <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
+      <PrBranchUpdateDetails session={session} />
 
       {/* Paused, or the priority session: a band of its own under the header, the way the
           resident and blocker bands sit, with the way back in it. Part of the State badge
@@ -795,7 +797,7 @@ export function ConsoleDetail({
           )}
           {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
-          <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          <TaskRepoPrs repoPrs={session.task.repoPrs} session={session} />
           <TaskClaimWarnings warnings={session.task.claimWarnings} />
           </>
         )}

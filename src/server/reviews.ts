@@ -8,7 +8,7 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import { isHumanResolvedReview, isConversationResolvedReview, isHomeDispatchResolvedReview, reviewToolResult } from "@shared/review-item.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -751,7 +751,9 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
-    if (isConversationResolvedReview(updated)) {
+    // A late answer from a home session or mctl must also reach a detached wait. Only the delivery
+    // gate is widened: the conversation and timeline still read `isConversationResolvedReview`.
+    if (isConversationResolvedReview(updated) || isHomeDispatchResolvedReview(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }

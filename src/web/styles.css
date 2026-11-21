@@ -74,6 +74,13 @@
      only cue - every paused surface also prints the two-bar glyph and the word. */
   --paused: #9aaecb;
 
+  /* A hibernated task (`Task.hibernation`): its agent stopped on purpose, its conversation kept.
+     Periwinkle, a step bluer than `--paused` slate - the two are the same family of "the
+     operator stopped this", and distinguishable because only this one has no process at all.
+     Kept off `--working` blue and `--held` purple for `--paused`'s reasons. Never the only cue:
+     every hibernated surface prints the moon and the word. */
+  --hibernated: #8f9be0;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -11632,6 +11639,9 @@ span.task-outcome:hover {
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
    merged. A merged chip lingers until the session leaves the PR's branch. */
+.detail-pr-update { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 22px; border-bottom: 1px solid var(--border); }
+.pr-branch-update { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.pr-branch-update-reason { max-width: 28em; overflow-wrap: anywhere; }
 .pr-chip {
   flex: none;
   display: inline-flex;
@@ -17922,6 +17932,24 @@ select.ensemble-judge-persona {
   .resident-loop .resident-loop-limits {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  /* Active hours is a preview section: it takes its full-width band under the loop only while
+     its flag draws it, so a profile without it keeps the original grid and no empty row. */
+  .resident-cards:has(> .resident-editor-card-schedule) {
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "schedule schedule"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-schedule { grid-area: schedule; }
+  .resident-schedule .resident-schedule-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
 }
 /* The board card's label and pin each take a line: its three-column row is the runtime card's. */
 .resident-editor-card-board .resident-fields-row {
@@ -18004,6 +18032,105 @@ select.ensemble-judge-persona {
 }
 .resident-loop-spend {
   grid-column: 1 / -1;
+}
+
+/* Active hours: the controls on the left, a week strip of the awake spans on the right. With
+   the toggle off the controls read as dormant, and the strip shows what turning it on would do. */
+.resident-schedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+.resident-schedule-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.resident-schedule-day {
+  min-width: 46px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.resident-schedule-day.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--idle) 16%, var(--bg));
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border));
+}
+.resident-schedule-day:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.resident-schedule-day:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.resident-schedule-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.resident-schedule-hours {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.resident-schedule-week {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-self: start;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-schedule.is-off .resident-schedule-week {
+  opacity: 0.55;
+}
+.resident-schedule-week-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.resident-schedule-week-day {
+  font-size: 11px;
+  color: var(--dim);
+}
+.resident-schedule-week-track {
+  position: relative;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.resident-schedule-week-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in oklab, var(--idle) 70%, transparent);
+}
+.resident-schedule-week-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.resident-schedule-now {
+  margin: 0;
+  color: var(--fg);
 }
 
 /* Authority widens what the resident can reach, so the granted state reads as a warning. */
@@ -28146,6 +28273,12 @@ button.sc-row:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* The Backlog drawer's Hibernated section, inset to the drawer's own 14px gutter. */
+.line-drawer-body > .bl-hib {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
 /* A failed remedy, said between the header and the rows rather than inside them. Outside the
    capped body because the body scrolls: an alert in there is scrolled away by the same list
    the action was taken from. */
@@ -32739,6 +32872,165 @@ span.line-run-prov {
   line-height: 1.5;
   color: var(--dim);
   font-style: italic;
+}
+
+/* The Backlog's Hibernated section (issue #1547): tasks whose agent the operator stopped to
+   free its memory. Above the queued cards, compact, dashed - "no process" - and in the
+   hibernated tone, with Resume on every row. Not a `.bl-card`: it is neither dragged, selected
+   nor reordered, and nothing that orders the backlog may see it. */
+.bl-hib {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+.bl-hib-head,
+.bl-queued-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 2px 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bl-hib-head {
+  color: var(--hibernated);
+}
+.bl-hib-n {
+  color: var(--dim);
+  font-weight: 600;
+}
+.bl-queued-head {
+  margin-top: 6px;
+}
+.bl-hib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bl-hib-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 7px 12px;
+  background: color-mix(in oklab, var(--hibernated) 6%, var(--panel));
+  border: 1px dashed color-mix(in oklab, var(--hibernated) 36%, var(--border));
+  border-radius: 9px;
+}
+.bl-hib-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 9px 0 0 9px;
+  background: repeating-linear-gradient(180deg, var(--hibernated) 0 4px, transparent 4px 7px);
+}
+.bl-hib-card.is-failed {
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.bl-hib-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+.bl-hib-row > .agent-dot {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 5px;
+}
+/* Wraps, up to two lines: a narrow Backlog column must still say which task this is. */
+.bl-hib-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.bl-hib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.bl-hib-resume {
+  flex: none;
+  padding: 1px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--fg);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--hibernated) 24%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--hibernated) 58%, var(--border));
+  border-radius: 999px;
+}
+.bl-hib-resume:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--hibernated) 34%, var(--panel));
+}
+.bl-hib-resume:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.bl-hib-blocker {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.bl-hib-blocker-kind {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.bl-hib-blocker-reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.bl-hib-meta > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta > .moon-glyph {
+  flex: none;
+  color: var(--hibernated);
+}
+.bl-hib-failure {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 /* The way OUT of a dead prerequisite - a dependency that was cancelled or failed and
@@ -41327,6 +41619,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
 .resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-tag.is-asleep { color: var(--purple); border-color: color-mix(in oklab, var(--purple) 40%, var(--border)); }
 .resident-loop-tag.is-queued { color: var(--working); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
 .resident-loop-reason { color: var(--muted); }
 .resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }
@@ -41606,3 +41899,68 @@ body.foreman-sidecar-open .modal-backdrop {
 .feature-flag-empty { padding: 12px; margin: 0; }
 .feature-flag-row .settings-grant { flex: none; }
 .feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
+
+/* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
+   add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
+.task-shaping { display: flex; flex-direction: column; gap: 16px; }
+.task-shaping > .settings-hint { margin: 0; }
+.shaping-settings { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--bg); }
+.shaping-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.shaping-field > label, .shaping-field > span { font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-field .settings-hint { margin: 0; }
+.shaping-field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 14px; }
+.shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
+.shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
+.shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
+.shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
+.shaping-stage-head p { margin: 0; font-size: 11.5px; color: var(--dim); }
+.shaping-stage .feature-flag-empty { padding: 4px 12px 12px; }
+.shaping-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px; border-top: 1px solid var(--border-soft); }
+.shaping-stage-head + .shaping-row { border-top: 0; }
+.shaping-row-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 4px; }
+.shaping-row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.shaping-row-title strong { font-size: 13px; font-weight: 600; }
+.shaping-row-id { font-size: 11.5px; color: var(--dim); }
+.shaping-chip { font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 999px; border: 1px solid var(--border-soft); color: var(--dim); background: var(--panel-2); }
+/* pre-wrap: an argument with two spaces must not look like one with one. */
+.shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+.shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
+.shaping-env li.is-set span { color: var(--idle); }
+.shaping-env li.is-unset span { color: var(--attention); }
+.shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
+.shaping-move { min-width: 30px; }
+.shaping-dialog { width: min(720px, 100%); }
+.shaping-dialog .modal-head h3 { margin: 0; font-size: 14px; }
+.shaping-dialog .modal-body { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+.shaping-dialog-lede { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--dim); }
+.shaping-manifest { font-family: var(--mono); font-size: 12px; }
+.shaping-file { align-self: flex-start; cursor: pointer; }
+.shaping-refusal { margin: 0; font-size: 12px; color: var(--attention); overflow-wrap: anywhere; }
+.shaping-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-review { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg); }
+.shaping-review dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.shaping-review-line { display: contents; }
+.shaping-review dt { font-size: 11.5px; color: var(--dim); }
+.shaping-review dd { margin: 0; font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-review dd code { white-space: pre-wrap; }
+.shaping-receives h4 { margin: 0 0 4px; font-size: 12px; font-weight: 640; }
+.shaping-receives ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.shaping-receives p { margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+.shaping-result { display: flex; flex-direction: column; gap: 8px; }
+.shaping-result h4 { margin: 4px 0 0; font-size: 12.5px; font-weight: 640; }
+.shaping-outcome { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-outcome strong { color: var(--fg); }
+.shaping-outcome.is-ok strong { color: var(--idle); }
+.shaping-outcome:not(.is-ok) strong { color: var(--attention); }
+.shaping-reason { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.shaping-entry { border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; }
+.shaping-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 10px; background: var(--panel-2); font-size: 12px; }
+.shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
+.shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

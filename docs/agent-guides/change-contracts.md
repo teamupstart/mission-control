@@ -183,6 +183,15 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
+  transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
+  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
+  recorded with launches. A stored shaper whose stage or transport this build does not know is
+  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
+  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -1246,11 +1255,15 @@ Extend existing registries instead of adding parallel lists:
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
   falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
   runtime probe for installed software. A feature flag must feed one shared availability gate
-  for all readers, updated live rather than frozen at module load. The existing build-time gate is:
-  `settingsCategoryAvailable` in `src/web/lib/settings-registry.ts` withholds Conductor while
-  `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off, and every
-  reader (rail, walk, router, palette, settings search, `SettingsPage`) goes through it or
-  `VISIBLE_SETTINGS_CATEGORIES`, so none of them can disagree. Setup applies the same switch to
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
   its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
   stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
@@ -1404,7 +1417,7 @@ profile is authoring state, and a launched resident reaches the Line as its task
 The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
 with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
 session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
-revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority` and `loop`), not the whole
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority`, `loop` and `schedule`), not the whole
 revision: the profile instructions, Persona id, execution and workspace choices stay on the
 daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
 shows its own pinned section in the browser appends that section id to the list, in one line,

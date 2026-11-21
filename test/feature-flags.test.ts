@@ -68,18 +68,36 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
-  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "RETIRED_FEATURE_FLAG_IDS"]);
-  // A new user-facing feature lands here as `preview` and stays off until the operator opts in.
-  assert.deepEqual(registry.FEATURE_FLAGS.map((flag) => [flag.id, flag.stage]), [["session-control-requests", "preview"]]);
+  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
+    "resident active hours ships as a preview");
+  assert.equal(registry.HEADLESS_MODE_FLAG_ID, "headless-mode");
+  assert.deepEqual(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.HEADLESS_MODE_FLAG_ID), {
+    id: "headless-mode",
+    label: "Headless mode",
+    description: "Dispatch work to Mission Control from a Claude Code terminal session.",
+    stage: "preview",
+    keywords: ["headless", "terminal", "cli", "dispatch"],
+  });
+  // Session control requests ships off until the operator opts in.
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "session-control-requests")?.stage, "preview");
   assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);
+  assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
   assert.equal(new Set(ids).size, ids.length);
   for (const flag of flags) {
     assert.match(flag.id, /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
     assert.ok(flag.id.length <= 64 && flag.label.trim() && flag.description.trim());
+    assert.ok(flag.stage === "preview" || flag.stage === "default-on");
+    assert.ok(flag.keywords.every((keyword) => keyword.trim() === keyword && keyword.length > 0));
     assert.ok(!(registry.RETIRED_FEATURE_FLAG_IDS as readonly string[]).includes(flag.id));
+    assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "flag", id: flag.id, enabled: true }).success, true);
   }
+  assert.equal(new Set(registry.RETIRED_FEATURE_FLAG_IDS).size, registry.RETIRED_FEATURE_FLAG_IDS.length);
+  // Off by default: the suite's default is every preview off.
+  assert.equal(resolveFeatureFlag("task-shaping", FEATURE_FLAGS_DEFAULTS), false);
   const files = ["src/shared/feature-flags.ts", "src/shared/feature-flag-registry.ts",
     ...readdirSync("src/server/feature-flags").map((name) => `src/server/feature-flags/${name}`)];
   for (const file of files) {

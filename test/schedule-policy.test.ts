@@ -167,7 +167,7 @@ test("skip-active blocks on a task in flight; allow ignores it entirely", () => 
   });
 });
 
-test("exactly the three in-flight statuses block, and the three terminal ones do not", () => {
+test("exactly the in-flight statuses block, and the three terminal ones do not", () => {
   const expected: Record<TaskStatus, boolean> = {
     backlog: true,
     dispatching: true,
@@ -177,6 +177,8 @@ test("exactly the three in-flight statuses block, and the three terminal ones do
     failed: false,
     done: false,
     cancelled: false,
+    // Hibernated work still owns its conversation, so a new run would overlap it.
+    hibernated: true,
   };
   for (const [status, blocks] of Object.entries(expected)) {
     assert.equal(statusBlocksOverlap(status as TaskStatus), blocks, status);

@@ -798,8 +798,9 @@ export class ReviewManager {
 
   /**
    * The merge closure in two halves, so a caller can commit it inside its own transaction.
-   * `persist` writes every outstanding question's `orphaned`/`merged` settle and nothing else;
-   * it must run inside a transaction, and throws `MergeClosureDeferred` mid runtime transfer.
+   * `persist` writes every outstanding question's `orphaned`/`merged` settle and cancels its
+   * unclaimed snooze instruction. It must run inside a transaction, and throws
+   * `MergeClosureDeferred` mid runtime transfer.
    * `publish` broadcasts what `persist` wrote and releases waiting calls; run it only after
    * the commit. Merge-driven completion persists this with the task's own status write
    * (`TaskManager` `joinCompletion`), so the two land together or not at all.
@@ -807,8 +808,10 @@ export class ReviewManager {
   mergeClosure(sessionId: string, flagOn: boolean): { persist: () => void; publish: () => ReviewItem[] } {
     let closing: ReviewItem[] = [];
     let resolvedAt = 0;
+    const noteKeys = new Set<string>();
     return {
       persist: () => {
+        noteKeys.clear();
         closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
         if (closing.length === 0) return;
         // Mid runtime transfer the questions are moving to the successor session, so they cannot
@@ -819,11 +822,18 @@ export class ReviewManager {
           throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
         }
         resolvedAt = Date.now();
-        for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+        for (const review of closing) {
+          updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+          const noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+          if (noteKey !== null) noteKeys.add(noteKey);
+        }
       },
-      publish: () => closing.map((review) => this.publishSettled({
-        ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
-      })),
+      publish: () => {
+        for (const noteKey of noteKeys) this.registry.refreshPendingTurns(noteKey);
+        return closing.map((review) => this.publishSettled({
+          ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
+        }));
+      },
     };
   }
 

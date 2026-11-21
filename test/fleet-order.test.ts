@@ -736,10 +736,14 @@ test("a pinned resident inside a wait keeps its pinned place but counts as await
   assert.equal(idle.awaitingCount, 2);
   assert.deepEqual(idleHeadCounts(idle), { awaiting: 2, free: 1, held: 1 });
 
-  // With nothing held there is no free/held split, and the awaiting count still includes the pin.
+  // With nothing held the rest are still counted as free beside the awaiting count, which still
+  // includes the pin: the total would not say how many can take work.
   const unheld = orderSessions(
     fleet, new Set(), false, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
     awaitingSessionIds(fleet, true, AT),
   ).groups.find((g) => g.tone === "idle")!;
-  assert.deepEqual(idleHeadCounts(unheld), { awaiting: 2, free: null, held: null });
+  assert.deepEqual(idleHeadCounts(unheld), { awaiting: 2, free: 2, held: null });
+  // Neither awaiting nor held: one kind of thing, one number.
+  const plainIdle = orderSessions(fleet, new Set(), false).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(idleHeadCounts(plainIdle), { awaiting: 0, free: null, held: null });
 });

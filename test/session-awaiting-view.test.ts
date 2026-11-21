@@ -117,6 +117,11 @@ test("the Board's Idle head counts a pinned resident inside a wait as awaiting, 
   const idleColumn = html.slice(html.indexOf('class="board-col tone-idle'));
   // Both waiting sessions are counted; the pin only decides where the resident's card sits.
   assert.match(idleColumn, /class="board-col-n n-awaiting"[^>]*>2 awaiting</);
+  // Nothing is held, and the head still says how many can take work rather than the total.
+  const headHtml = idleColumn.slice(0, idleColumn.indexOf("</header>"));
+  assert.match(headHtml, /class="board-col-n n-free"[^>]*>1 free</);
+  assert.doesNotMatch(headHtml, /class="board-col-n">3</, "the head drew the column total beside the awaiting count");
+  assert.doesNotMatch(headHtml, /n-held/);
   assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("awaiting background work"),
     "the pinned resident left its pinned place for the Awaiting section");
   assert.match(idleColumn, /fleet-section-awaiting[\s\S]*?fleet-section-n">1</, "the section rule counts only the cards under it");

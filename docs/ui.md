@@ -1219,7 +1219,8 @@ available:
   monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
   due first, after pinned residents and before free and held agents. The section keeps that
   order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
-  (**1 awaiting**) and the rest are labelled free. A pinned resident that is waiting keeps its
+  (**1 awaiting**) and counts the rest as free (**2 free**) rather than drawing the column total,
+  whether or not a workflow holds any, in the **Console** rail's head as well. A pinned resident that is waiting keeps its
   pinned place above the rule but is still counted as awaiting, never as free. Its card draws a deadline track: what it waits
   for, the due time, and a bar from when it declared the wait to when it is due. Once the
   deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it

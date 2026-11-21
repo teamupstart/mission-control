@@ -114,15 +114,22 @@ export interface FleetToneGroup extends ToneGroup {
 
 /**
  * The Idle head's split, for the Board column head and the console rail head alike: how many are
- * awaiting (pinned residents included), and, when anything is held, how many are free and how
- * many held. Free never counts an awaiting session, wherever its card sits.
+ * awaiting (pinned residents included), how many are free whenever anything is awaiting or held,
+ * and how many are held when anything is. Free never counts an awaiting session, wherever its
+ * card sits. `free` null means the group is one kind of thing and the head draws one number.
  */
 export function idleHeadCounts(group: FleetToneGroup): {
   awaiting: number;
   free: number | null;
   held: number | null;
 } {
-  if (group.heldFrom === null) return { awaiting: group.awaitingCount, free: null, held: null };
+  if (group.heldFrom === null) {
+    // Nothing held, but some awaiting: the total beside "N awaiting" would not say how many
+    // can take work, so the rest are counted as free.
+    return group.awaitingCount > 0
+      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount, held: null }
+      : { awaiting: 0, free: null, held: null };
+  }
   // Pinned and awaiting sessions all sit before `heldFrom`, never in the held partition.
   return {
     awaiting: group.awaitingCount,

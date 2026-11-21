@@ -164,6 +164,10 @@ test("a declared wait draws a deadline track under Idle's Awaiting rule, survive
  * repository grouping on (the default): repository A waits on deadlines 20 and 5 minutes out and
  * repository B on one 10 minutes out, and framing A's two together would put its 20-minute wait
  * ahead of B's 10-minute one. None of the three cards sits inside a repository frame.
+ *
+ * A fourth agent declares nothing, and nothing is held by a workflow: both the Board column head
+ * and the Console rail head say how many can take work ("1 free") beside "3 awaiting", never the
+ * column total, which would leave the number free for work unclear.
  */
 test("with repositories grouped, the Awaiting section keeps soonest-due order across repositories", async ({
   dashboard: page,
@@ -187,10 +191,15 @@ test("with repositories grouped, the Awaiting section keeps soonest-due order ac
       await client.close();
     }
   }
+  await dispatch(daemon, "Delta free", daemon.repo);
   await useBoard(page, daemon);
 
   const idle = page.locator("main.board section.board-col.tone-idle");
-  await expect(idle.locator(".board-col-head").getByText("3 awaiting", { exact: true })).toBeVisible();
+  const head = idle.locator(".board-col-head");
+  await expect(head.getByText("3 awaiting", { exact: true })).toBeVisible();
+  await expect(head.getByText("1 free", { exact: true })).toBeVisible();
+  await expect(head.getByText("4", { exact: true })).toHaveCount(0);
+  await expect(head.getByText(/held$/)).toHaveCount(0);
   const waiting = idle.locator(".tile").filter({ has: page.getByRole("progressbar", { name: "Time until its deadline" }) });
   await expect(waiting.locator(".tile-name")).toHaveText([/Alpha soonest/, /Bravo middle/, /Alpha later/]);
   await expect(idle.locator(".board-repo .tile").filter({
@@ -198,6 +207,16 @@ test("with repositories grouped, the Awaiting section keeps soonest-due order ac
   })).toHaveCount(0);
   await settled(idle);
   await shoot(page, "06-board-awaiting-across-repos");
+
+  // The Console rail's Idle head draws the same split.
+  await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+  await page.reload();
+  const railIdle = page.getByRole("navigation", { name: "Sessions" }).locator(".rail-group.tone-idle");
+  await expect(railIdle.getByText("3 awaiting", { exact: true })).toBeVisible();
+  await expect(railIdle.getByText("1 free", { exact: true })).toBeVisible();
+  await expect(railIdle.getByText("4", { exact: true })).toHaveCount(0);
+  await settled(railIdle);
+  await shoot(page, "07-rail-awaiting-free");
 });
 
 /**

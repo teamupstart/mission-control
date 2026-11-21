@@ -705,7 +705,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     <span className="board-col-n n-awaiting">{head.awaiting} awaiting</span>
                   </Tooltip>
                 )}
-                {g === null || g.heldFrom === null ? (
+                {g === null || head!.free === null ? (
                   <span className="board-col-n">{count}</span>
                 ) : (
                   <>
@@ -724,11 +724,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         <span className="board-col-n n-free">{head!.free} free</span>
                       </Tooltip>
                     )}
-                    <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-                      <span className="board-col-n n-held">
-                        {head!.held} held
-                      </span>
-                    </Tooltip>
+                    {/* Split by a wait alone, with nothing held, there is no held side. */}
+                    {head!.held !== null && (
+                      <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                        <span className="board-col-n n-held">
+                          {head!.held} held
+                        </span>
+                      </Tooltip>
+                    )}
                   </>
                 )}
                 {/* The rail's own fold, where the width control would be: drilled in, the

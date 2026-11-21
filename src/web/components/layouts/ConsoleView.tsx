@@ -227,7 +227,7 @@ export function ConsoleView(props: SessionViewProps & {
             </span>
           </Tooltip>
         )}
-        {g.heldFrom === null ? (
+        {head.free === null ? (
           <span className="rail-group-n">
             {groupTotal(g)}
           </span>
@@ -238,9 +238,12 @@ export function ConsoleView(props: SessionViewProps & {
                 <span className="n-free">{head.free} free</span>
               </Tooltip>
             )}
-            <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-              <span className="n-held">{head.held} held</span>
-            </Tooltip>
+            {/* Split by a wait alone, with nothing held, there is no held side. */}
+            {head.held !== null && (
+              <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                <span className="n-held">{head.held} held</span>
+              </Tooltip>
+            )}
           </span>
         )}
       </div>

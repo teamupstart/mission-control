@@ -1812,3 +1812,26 @@ test("a turn the operator starts and finishes while shapers run stops the handov
     setShaping(false);
   }
 });
+
+test("a pane probe that throws after shaping still releases the handover's turn watch", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-probe-throws-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const listeners = r.listenerCount("event");
+    let probes = 0;
+    await assert.rejects(tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      paneReady: async () => {
+        if (++probes === 2) throw new Error("the pane probe failed");
+        return { ok: true };
+      },
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    }), /the pane probe failed/);
+    assert.equal(probes, 2);
+    assert.equal(r.listenerCount("event"), listeners, "no listener outlives the handover");
+  } finally {
+    setShaping(false);
+  }
+});

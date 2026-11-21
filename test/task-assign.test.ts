@@ -2120,3 +2120,33 @@ test("the branch probe tells a detached checkout from one it could not read", as
     rmSync(notARepo, { recursive: true, force: true });
   }
 });
+
+test("a session that reports another checkout while the handover is shaped is not handed context chosen for the first", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-cwd-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    // From the moment shapers run, the same session reports a different working directory.
+    let moved = false;
+    const read = r.getSession.bind(r);
+    r.getSession = (id: string) => {
+      const session = read(id);
+      return session && moved && id === sessionId ? { ...session, cwd: `${clone}/elsewhere` } : session;
+    };
+    const shapeTask: ShapeTask = async (input) => {
+      moved = true;
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /moved to another checkout while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

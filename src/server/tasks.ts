@@ -5376,6 +5376,8 @@ export class TaskManager {
         if (inputs(current) !== shapedFrom) return "the task was edited while its context was being shaped, so it was not typed - hand it over again";
         const receiving = this.registry.getSession(s.id);
         const changed = !receiving ? "went away"
+          // The context, its baseline and the checkout checks were all taken for this directory.
+          : receiving.cwd !== live.cwd ? "moved to another checkout"
           : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
           : leftIdle ? "took a turn"
           : receiving.pendingReviews > 0 ? "got a review waiting on you"

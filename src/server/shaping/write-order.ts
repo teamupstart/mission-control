@@ -11,27 +11,23 @@ export const DAEMON_SHAPING_INSTANCE = randomUUID();
 
 /**
  * Write ordering for one dashboard tab's shaping writes. A write can wait inside the daemon,
- * for shaper discovery, after the page that sent it has stopped waiting for its answer and sent
- * a newer one, or after its tab has reloaded. Each write carries its page's id, its sequence and
- * the controls it affects (`SHAPING_WRITE_ORDER_HEADER`), and is refused, as it is about to apply,
- * when a later write from the same page has already been applied to any of those controls. Each
- * page load takes a new id and names the ids its tab wrote under before, its lineage, and a write
- * applied is recorded against those too. So a delayed write never overwrites a newer edit made in
- * the same tab after its answer was lost, a reload of the tab included.
+ * for shaper discovery, after the tab that sent it has stopped waiting for its answer and sent
+ * a newer one, or has reloaded. Each write carries its tab's id, its sequence and the controls it
+ * affects (`SHAPING_WRITE_ORDER_HEADER`), and is refused, as it is about to apply, when a later
+ * write from the same tab has already been applied to any of those controls. A tab keeps its id
+ * across any number of reloads, so a delayed write never overwrites a newer edit made in the same
+ * tab after its answer was lost.
  *
- * A duplicated tab inherits that lineage, so its writes are recorded against the original tab's
- * id as well: an earlier write of the original's, delayed past a later one of the duplicate's on
- * the same control, is refused too. That is the safe side: the newer edit stands either way. The
- * duplicate's own writes are only ever checked against its own id, never refused for the original's.
+ * A duplicated tab copies that id, so a tab and its duplicates are ordered together: a delayed older
+ * write from any of them is refused once a newer one from any of them applied. The newer edit
+ * stands either way, and the refusal says the newer change may have come from a duplicate.
  */
 export interface ShapingWriteOrder {
   window: string;
   sequence: number;
   controls: string[];
-  /** The daemon instance whose view the page last read, when it named one. */
+  /** The daemon instance whose view the tab last read, when it named one. */
   instance: string | null;
-  /** The ids the same tab wrote under before this page loaded. */
-  lineage: string[];
 }
 
 /**
@@ -45,8 +41,6 @@ export interface ShapingWriteOrder {
 export { SHAPING_WRITE_WINDOW_MS };
 
 const ID = /^[A-Za-z0-9-]{1,64}$/;
-/** The most earlier ids one write may name. */
-const LINEAGE_ACCEPTED = 16;
 
 /** The newest sequence applied per window and control, and when on the monotonic clock, oldest first. */
 const applied = new Map<string, { sequence: number; at: number }>();
@@ -58,17 +52,15 @@ const slot = (window: string, control: string): string => `${window}\n${control}
 /** The order a request declares, or null for one that declares none or an unreadable one: the route refuses the latter. */
 export function readShapingWriteOrder(header: string | undefined): ShapingWriteOrder | null {
   if (!header) return null;
-  const [window, sequence, controls, instance, lineage, ...rest] = header.trim().split(" ");
+  const [window, sequence, controls, instance, ...rest] = header.trim().split(" ");
   if (rest.length > 0 || !window || !sequence || !controls) return null;
   if (instance !== undefined && !ID.test(instance)) return null;
   if (!ID.test(window)) return null;
-  const earlier = lineage === undefined ? [] : lineage.split(",");
-  if (earlier.length > LINEAGE_ACCEPTED || earlier.some((id) => !ID.test(id))) return null;
   const number = Number(sequence);
   if (!Number.isSafeInteger(number) || number < 1) return null;
   const list = controls.split(",");
   if (list.length > 8 || list.some((control) => !/^[A-Za-z0-9:._-]{1,96}$/.test(control))) return null;
-  return { window, sequence: number, controls: list, instance: instance ?? null, lineage: earlier };
+  return { window, sequence: number, controls: list, instance: instance ?? null };
 }
 
 /** Whether a write from the same window, sent after this one, has already been applied to one of its controls. */
@@ -89,18 +81,13 @@ export function shapingWriteFloor(): number {
   return floor;
 }
 
-/**
- * Record that this write was applied, for the writes from the same page, and from the earlier
- * pages of its tab, sent before it.
- */
+/** Record that this write was applied, for the writes from the same tab sent before it. */
 export function noteShapingWriteApplied(order: ShapingWriteOrder, now = performance.now()): void {
-  for (const window of [order.window, ...order.lineage]) {
-    for (const control of order.controls) {
-      const key = slot(window, control);
-      const sequence = Math.max(applied.get(key)?.sequence ?? 0, order.sequence);
-      applied.delete(key);
-      applied.set(key, { sequence, at: now });
-    }
+  for (const control of order.controls) {
+    const key = slot(order.window, control);
+    const sequence = Math.max(applied.get(key)?.sequence ?? 0, order.sequence);
+    applied.delete(key);
+    applied.set(key, { sequence, at: now });
   }
   // Oldest first, so the records to drop are the leading ones.
   for (const [key, record] of applied) {

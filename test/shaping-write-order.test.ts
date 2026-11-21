@@ -26,13 +26,9 @@ let monotonic = 1_000;
 const after = (ms: number): number => (monotonic += ms);
 
 test("a write order is read from its header, and an unreadable one declares none", () => {
-  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-1", 3, ["import", "row:a"])), { window: "w-1", sequence: 3, controls: ["import", "row:a"], instance: null, lineage: [] });
-  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-1", 3, ["settings"], "daemon-1")), { window: "w-1", sequence: 3, controls: ["settings"], instance: "daemon-1", lineage: [] });
-  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-2", 3, ["settings"], "daemon-1", ["w-0", "w-1"])), { window: "w-2", sequence: 3, controls: ["settings"], instance: "daemon-1", lineage: ["w-0", "w-1"] });
-  // A lineage with no instance known names none: `-`, which no daemon process is.
-  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-2", 3, ["settings"], undefined, ["w-1"]))?.instance, "-");
-  const tooLong = Array.from({ length: 17 }, (_, index) => `w-${index}`).join(",");
-  for (const header of [undefined, "", "w-1 3", "w-1 0 settings", "w-1 x settings", "w 1 settings d w-0 extra", "w 1 settings bad/instance", "bad/window 1 settings", "w-1 1 bad/control", "w 1 settings d bad/earlier", `w 1 settings d ${tooLong}`]) {
+  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-1", 3, ["import", "row:a"])), { window: "w-1", sequence: 3, controls: ["import", "row:a"], instance: null });
+  assert.deepEqual(readShapingWriteOrder(shapingWriteOrder("w-1", 3, ["settings"], "daemon-1")), { window: "w-1", sequence: 3, controls: ["settings"], instance: "daemon-1" });
+  for (const header of [undefined, "", "w-1 3", "w-1 0 settings", "w-1 x settings", "w 1 settings d extra", "w 1 settings bad/instance", "bad/window 1 settings", "w-1 1 bad/control"]) {
     assert.equal(readShapingWriteOrder(header), null, String(header));
   }
 });
@@ -101,24 +97,4 @@ test("once a record is dropped, no wall clock change makes a write it refused el
   const raised = readShapingWriteOrder(shapingWriteOrder(window, shapingWriteFloor() + 1, ["settings"]))!;
   assert.equal(shapingWriteExpired(raised), false);
   assert.equal(shapingWriteSuperseded(raised), false);
-});
-
-test("a write a page applied is recorded against the earlier pages of its tab, and only its own refuse it", () => {
-  // Above every sequence an earlier test left behind, so no floor refuses these.
-  const now = Date.now() + 7_200_000;
-  const before = "w-before-reload";
-  const reloaded = "w-after-reload";
-  const order = (window: string, step: number, lineage: string[] = []) =>
-    readShapingWriteOrder(shapingWriteOrder(window, sentAt(now, 0, step), ["settings"], DAEMON_SHAPING_INSTANCE, lineage))!;
-  // The reloaded page saves, naming the page it replaced.
-  noteShapingWriteApplied(order(reloaded, 5, [before]), after(1));
-  // A save the page before the reload sent earlier, delayed past that one, is refused.
-  assert.equal(shapingWriteSuperseded(order(before, 3)), true, "the earlier page's delayed save");
-  // One the earlier page sent later is not: it is the newer edit.
-  assert.equal(shapingWriteSuperseded(order(before, 7)), false);
-  // A page is never refused for what an earlier page of its tab, or a duplicate of it, applied:
-  // the duplicate's own id has no record but its own.
-  noteShapingWriteApplied(order(before, 9), after(1));
-  assert.equal(shapingWriteSuperseded(order(reloaded, 6, [before])), false, "the reloaded page's own save");
-  assert.equal(shapingWriteSuperseded(order(reloaded, 4, [before])), true, "though its own later save still refuses an earlier one");
 });

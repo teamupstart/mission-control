@@ -1972,35 +1972,20 @@ export const ShapingTestRequestSchema = z.object({
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
 
 /**
- * The header a dashboard window sends with each shaping write:
- * `<window> <sequence> <controls> [<instance> [<lineage>]]`. The page's id, the write's number, the
- * comma-separated controls it affects, the daemon instance whose view the page last read, and the
- * comma-separated ids the same tab wrote under before this page loaded. The sequence is the time
- * the write was sent, in microseconds since the epoch, raised past the last one the tab sent. The
- * daemon refuses a write, as it is about to apply, once a later write from the same page, or from
- * a page that names it in its lineage, was applied to one of those controls, or once it was sent
- * longer than `SHAPING_WRITE_WINDOW_MS` ago (`src/server/shaping/write-order.ts`).
+ * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.
+ * The tab's id, kept across its reloads and copied by its duplicates, the write's number, the
+ * comma-separated controls it affects, and the daemon instance whose view the tab last read. The
+ * sequence is the time the write was sent, in microseconds since the epoch, raised past the last
+ * one the tab sent. The daemon refuses a write, as it is about to apply, once a later write from the
+ * same tab was applied to one of those controls, or once a record it dropped held a later sequence
+ * (`src/server/shaping/write-order.ts`).
  */
 export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
 
-/**
- * How long a shaping write stays able to apply after it was sent. The daemon keeps its record of
- * each applied write for this long, and a dashboard keeps an identity in a tab's lineage for this
- * long after a reload replaced it.
- */
+/** How long the daemon keeps its record of each applied shaping write, after it last applied. */
 export const SHAPING_WRITE_WINDOW_MS = 10 * 60_000;
 
-/**
- * The value of `SHAPING_WRITE_ORDER_HEADER` for one write. An unknown instance is sent as `-`, which
- * names no daemon process, when a lineage follows it.
- */
-export function shapingWriteOrder(
-  window: string,
-  sequence: number,
-  controls: readonly string[],
-  instance?: string,
-  lineage: readonly string[] = [],
-): string {
-  const named = instance || lineage.length > 0 ? ` ${instance || "-"}` : "";
-  return `${window} ${sequence} ${controls.join(",")}${named}${lineage.length > 0 ? ` ${lineage.join(",")}` : ""}`;
+/** The value of `SHAPING_WRITE_ORDER_HEADER` for one write. */
+export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[], instance?: string): string {
+  return `${window} ${sequence} ${controls.join(",")}${instance ? ` ${instance}` : ""}`;
 }

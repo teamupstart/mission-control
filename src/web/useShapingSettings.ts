@@ -64,7 +64,7 @@ export function useShapingSettings(
       return ids.length === Object.keys(current).length ? current : Object.fromEntries(ids.map((id) => [id, current[id]!]));
     });
   }, [confirmed]);
-  // Take this page's write identity as it mounts, before any write needs it.
+  // Take this tab's write identity as it mounts, before any write needs it.
   useEffect(() => { shapingWriteIdentity(); }, []);
   // The controls with a request still awaiting its HTTP answer. A frame can free the panel before
   // that answer, but the same control stays locked until it arrives: a second write on it could
@@ -161,8 +161,7 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const identity = shapingWriteIdentity();
-      const order = shapingWriteOrder(identity.window, nextShapingWriteSequence(), keys, viewInstance(confirmed), identity.lineage);
+      const order = shapingWriteOrder(shapingWriteIdentity(), nextShapingWriteSequence(), keys, viewInstance(confirmed));
       const result = await api.setShaping(request, { signal: timeout, order });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon

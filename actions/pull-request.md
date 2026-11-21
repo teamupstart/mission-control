@@ -36,6 +36,10 @@ published description or comment renders the attachments before treating the evi
 complete. `## For Agents` carries the design decisions and the implementation detail. Follow that
 contract exactly rather than inventing a shape here.
 
+When the work comes from a GitHub issue, the body carries the closing line the skill's
+"Closing the issue the work came from" rule gives: `Closes #<n>`, or `Part of #<n>` with what
+remains left under the known gaps. A title's `(#<n>)` closes nothing.
+
 Every claim in the evidence subsection is something that was run and reported, not something
 assumed. A list of changed files is not a description. Neither is a restatement of the diff.
 

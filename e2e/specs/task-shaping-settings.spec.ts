@@ -1498,7 +1498,11 @@ test("an enable whose answer is lost is not credited by a frame for a replacemen
   await reached.opened;
   // A peer replaces the definition and switches the replacement on: the switch matches, the definition does not.
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("credit-notes", "Credit notes", { timeoutMs: 20_000 }) });
+  // The page has read the replacement (stored off), then the replacement switched on, before the
+  // held answer is dropped: the receipt logic sees the enabled frame it must not credit.
+  await expect(pill(page, "Credit notes")).toHaveAccessibleName("Credit notes: off");
   await putShaping(daemon, { kind: "enable", id: "credit-notes", enabled: true });
+  await expect(pill(page, "Credit notes")).toHaveAccessibleName("Credit notes: on");
   goes.open();
   const alert = row(page, "Credit notes").getByRole("alert");
   await expect(alert).toHaveText(

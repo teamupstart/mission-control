@@ -13,7 +13,7 @@ import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
-import { daemonShapingView, EARLIER_DASHBOARD_REFUSAL, sentByEarlierDashboard, shapingReviser } from "./revisions.ts";
+import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import { referenceStatus } from "./references.ts";
 
 /**
@@ -98,7 +98,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     if ("expect" in intent && intent.expect !== undefined) {
       const config = getShapingConfig();
       if (registeredShaperRevision(config, intent.id, shapingReviser) !== intent.expect
-        && sentByEarlierDashboard(config, intent.id, intent.expect)) return c.json(EARLIER_DASHBOARD_REFUSAL, 409);
+        && !issuedByThisDaemon(intent.expect)) return c.json(UNISSUED_REVISION_REFUSAL, 409);
     }
     try {
       const result = applyShapingIntent(parsed.data, await discoverShapers());
@@ -124,7 +124,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     // Bound to the definition the sender showed: a replacement written meanwhile is never run
     // under the name of the shaper the operator chose.
     if (expect !== undefined && registeredShaperRevision(config, id, shapingReviser) !== expect) {
-      if (sentByEarlierDashboard(config, id, expect)) return c.json(EARLIER_DASHBOARD_REFUSAL, 409);
+      if (!issuedByThisDaemon(expect)) return c.json(UNISSUED_REVISION_REFUSAL, 409);
       return c.json({
         error: "shaper_changed",
         reason: `"${id}" changed in another window since it was shown here, so it was not run. Review it again first.`,

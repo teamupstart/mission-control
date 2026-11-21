@@ -944,9 +944,39 @@ test("a dashboard from before daemon-held revisions is told to reload, never to 
     assert.match(body.reason, /Reload the page/);
   }
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
-  // Any other wrong revision is the ordinary conflict.
+  // Any revision this daemon never issued gets the same guidance, whatever it is a hash of.
   const other = await put({ kind: "enable", id: "legacy", enabled: true, expect: "0123456789abcdef" });
-  assert.equal(((await other.json()) as { error: string }).error, "shaper_changed");
+  assert.equal(((await other.json()) as { error: string }).error, "stale_dashboard");
+});
+
+test("a revision this daemon issued is an ordinary conflict once stale, and one it never issued is told to reload", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("issued", "gather", "ok") })).status, 200);
+  const { canonicalJson } = await import("../src/shared/shaping.ts");
+  const read = async () => ((await (await get()).json()) as { config: { shapers: unknown[]; revisions: Record<string, string> } }).config;
+  const before = await read();
+  // What a pre-upgrade tab computed for the definition it showed: an unkeyed FNV-1a 64 over it.
+  let hash = 0xcbf29ce484222325n;
+  const text = canonicalJson(before.shapers[0]);
+  for (let at = 0; at < text.length; at++) {
+    hash ^= BigInt(text.charCodeAt(at));
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  const earlierTab = hash.toString(16).padStart(16, "0");
+  // Another window replaces the definition, so both revisions now name one that is gone.
+  assert.equal((await put({ kind: "upsert", shaper: fixture("issued", "gather", "degraded") })).status, 200);
+  const stale = await put({ kind: "enable", id: "issued", enabled: true, expect: before.revisions.issued });
+  assert.equal(stale.status, 409);
+  assert.equal(((await stale.json()) as { error: string }).error, "shaper_changed", "this daemon's own revision: review and retry");
+  for (const answer of [
+    await put({ kind: "enable", id: "issued", enabled: true, expect: earlierTab }),
+    await put({ kind: "remove", id: "issued", expect: earlierTab }),
+    await dryRun({ id: "issued", repository, expect: earlierTab }),
+  ]) {
+    assert.equal(answer.status, 409);
+    const body = (await answer.json()) as { error: string; reason: string };
+    assert.equal(body.error, "stale_dashboard", "a hash of the replaced definition, which this daemon never issued");
+    assert.match(body.reason, /Reload the page/);
+  }
 });
 
 test("an earlier dashboard's revision of a replaceable entry, hashed without the newer field, is told to reload", async () => {

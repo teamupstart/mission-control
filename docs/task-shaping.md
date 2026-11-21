@@ -285,12 +285,12 @@ before the body limit, so such a request is refused as forbidden whatever its si
   `expect` is the entry's revision from the view's `revisions`, as the sender showed it. A
   client sends it back as given and never computes one. When it is sent and the stored entry has changed
   since, the intent answers 409 `shaper_changed` and nothing is stored, so a click never removes
-  or switches on a replacement another window wrote in the meantime. A dashboard tab loaded
-  before revisions were the daemon's computes its own, which never match; when `expect` is that
-  earlier kind of revision, the answer is 409 `stale_dashboard`, whose reason asks the operator to
-  reload the page, since retrying from that tab cannot succeed. Such a tab hashed an entry as the
-  view showed it when the tab loaded, so the check also tries an unsupported entry without the
-  later `replaceable` field. The other way round, a dashboard that receives a view with no
+  or switches on a replacement another window wrote in the meantime. The daemon remembers the
+  revisions it has issued, the last few thousand: an `expect` it never issued, from a tab loaded
+  before revisions were the daemon's (which computes its own, of whatever definition it showed)
+  or from a request sent across a daemon restart, answers 409 `stale_dashboard` instead, whose
+  reason asks the operator to reload the page, since retrying from that tab cannot succeed.
+  The other way round, a dashboard that receives a view with no
   `revisions`, from a daemon rolled back to an older build, draws its rows with switching,
   removal and dry runs off and asks the operator to reload. Any other refused intent
   answers 400 with `{ error, reason }`.

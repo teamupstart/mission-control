@@ -5,7 +5,8 @@ import { canonicalJson, shapingConfigView, type ShapingConfig, type ShapingConfi
  * The key revisions are derived with. Random per daemon process and never written anywhere, so
  * a revision can be compared but never recomputed outside the daemon: it cannot confirm a guess
  * at a field the view hides, such as one an unsupported entry restored from a snapshot still
- * holds. A restart changes every revision, which only refuses an intent sent across the restart;
+ * holds. A restart changes every revision, which only refuses an intent sent across the restart,
+ * as `stale_dashboard` since the restarted daemon never issued it;
  * the reconnecting dashboard receives the new ones with its snapshot.
  */
 const KEY = randomBytes(32);

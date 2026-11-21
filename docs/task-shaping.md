@@ -258,7 +258,8 @@ before the body limit, so such a request is refused as forbidden whatever its si
   A revision is an HMAC-SHA256 under a random key the daemon process holds and never writes
   (`src/server/shaping/revisions.ts`), cut to 16 hex digits. It can be compared but not
   recomputed, so it cannot confirm a guess at a field the view hides, and a daemon restart
-  changes every revision: an intent sent across a restart is refused with `shaper_changed`.
+  changes every revision: an intent sent across a restart carries one the restarted daemon never
+  issued, and is refused with `stale_dashboard`, whose reason asks the operator to reload the page.
   An id has one revision, over every entry stored under it, so a remove, which deletes them all,
   is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to

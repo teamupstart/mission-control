@@ -582,7 +582,8 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   engine scrubs a shaper's notes and errors before and after collapsing them the same way. A
   value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
   for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
-  whitespace and would turn that spelling back into the value. A value spelled with any JSON
+  whitespace and would turn that spelling back into the value. Overlapping spellings, such as the
+  two `ab  ab` in `ab  ab  ab` for `ab ab`, are each found and removed together. A value spelled with any JSON
   escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
   is replaced. That holds up to three levels of JSON text nested inside JSON strings, such as a
   serialized diagnostic inside a serialized log line, where a value is escaped once per level,
@@ -608,7 +609,9 @@ is passed as unset and the server receives exactly what the diagnostics are reda
 Its stderr is kept and scrubbed exactly as a `command` shaper's is, with the same escape-wide
 margin, so a value cut at the front leaves no fragment in a reason. It is one
 process per shaping run, closed when the run ends, or at once after a message over the cap. A
-run that ends while its command is still being located starts no server. The SDK starts it
+run that ends while its command is still being located starts no server, and a call already
+cancelled when it is made opens no connection at all, stdio or streamable HTTP, so no server is
+started and no resolved header is sent. The SDK starts it
 outside a process group of its own, so a helper the server starts can outlive it.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling

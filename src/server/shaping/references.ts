@@ -286,6 +286,22 @@ function spacingPattern(value: string): RegExp | null {
  */
 export const JSON_ESCAPE_LEVELS = 3;
 
+/**
+ * Every match of a `spacingPattern` in `text`, overlapping ones included. `matchAll` resumes after
+ * each match's end, so in `ab  ab  ab` it finds `ab  ab` and never the `ab  ab` that shares its
+ * last word: replacing only the first would leave the rest of the second behind. The search
+ * resumes one character past each match's start instead, and the spans merge where they meet.
+ * A pattern's first word must match at a start, so this stays linear in the text for any value
+ * whose words do not themselves repeat a run of whitespace.
+ */
+function forEachSpacingMatch(text: string, pattern: RegExp, visit: (index: number, length: number) => void): void {
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    visit(match.index, match[0].length);
+    pattern.lastIndex = match.index + 1;
+  }
+}
+
 const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /**
@@ -330,9 +346,9 @@ export function variantSpans(text: string, resolved: readonly ResolvedValue[]): 
   for (const entry of resolved) {
     const pattern = spacingPattern(entry.value);
     if (!pattern) continue;
-    for (const match of text.matchAll(pattern)) {
-      if (match[0] !== entry.value) out.push({ start: match.index, end: match.index + match[0].length, label: entry.name });
-    }
+    forEachSpacingMatch(text, pattern, (index, length) => {
+      if (text.slice(index, index + length) !== entry.value) out.push({ start: index, end: index + length, label: entry.name });
+    });
   }
   // Each level is decoded from the one before, and each of its characters keeps the span of the
   // original text it came from, so a value found at any level is removed there as written.
@@ -346,7 +362,7 @@ export function variantSpans(text: string, resolved: readonly ResolvedValue[]): 
       if (entry.value.length === 0) continue;
       forEachOccurrence(decoded, entry.value, false, (start) => take(entry.name, start, entry.value.length));
       const pattern = spacingPattern(entry.value);
-      if (pattern) for (const match of decoded.matchAll(pattern)) take(entry.name, match.index, match[0].length);
+      if (pattern) forEachSpacingMatch(decoded, pattern, (index, length) => take(entry.name, index, length));
     }
     const next = level + 1 < JSON_ESCAPE_LEVELS ? decodeEscapes(decoded) : null;
     map = next && { decoded: next.decoded, starts: next.starts.map((at) => starts[at]!), ends: next.ends.map((at) => ends[at - 1]!) };

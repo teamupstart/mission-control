@@ -596,6 +596,18 @@ test("a value cut at the front of the retained stderr leaves no fragment in the 
   assert.equal(reason.includes(value.slice(-6)), false);
 });
 
+test("a call whose signal is already aborted opens no connection and sends nothing", async () => {
+  const raw = await startRawMcpServer((res, id) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT })));
+  try {
+    const reply = await withEnv({ [KEY_ENV]: "abort-key-41xz" }, () => callMcp(request(false),
+      shaper({ type: "http", url: raw.url, headers: { "x-api-key": `{env:${KEY_ENV}}` } }), ctx({ signal: AbortSignal.abort() })));
+    assert.deepEqual(reply, { kind: "timed_out", reason: "Timed out after 30 s." });
+    // Long enough for a handshake started in the background to have reached the server.
+    await new Promise((done) => setTimeout(done, 300));
+    assert.equal(raw.initializes(), 0, "no handshake, so no resolved header left the daemon");
+  } finally { await raw.close(); }
+});
+
 test("the handshake budget reads no wall clock: a deadline in the past does not cut it short", async () => {
   // A deadline already in the past, as a wall-clock jump during the run would leave it.
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }), ctx({ deadline: Date.now() - 60_000 }));

@@ -174,6 +174,16 @@ test("the status leaves out a variable named only in a header the transport repl
   assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
 });
 
+test("overlapping spacing variants of a value are all found, as written and inside escaped text", () => {
+  const resolved = [{ name: "KEY", value: "ab ab" }];
+  // `ab  ab` at 0 and at 4 share the middle `ab`: both are removed, and nothing of either is left.
+  assert.equal(redactResolved("note ab  ab  ab end", resolved), "note [KEY redacted] end");
+  assert.equal(redactResolved("note ab\\u0020\\u0020ab\\u0020\\u0020ab end", resolved), "note [KEY redacted] end");
+  const scrubbed = scrubResolved({ guidance: [{ id: "g", body: "use ab  ab  ab here" }] }, resolved);
+  assert.equal(scrubbed.redacted, true);
+  assert.equal((scrubbed.data as { guidance: Array<{ body: string }> }).guidance[0]!.body, "use [KEY redacted] here");
+});
+
 test("a caller value of only spaces and tabs is unresolved, as a blank environment value is", () => {
   for (const blank of [" ", "\t", " \t  "]) {
     assert.deepEqual(resolveReferences("{caller.user}", { ...ctx, caller: { ...caller, user: blank } }), { ok: false, missing: ["{caller.user}"] });

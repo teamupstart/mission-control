@@ -612,6 +612,9 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   }
   const signal = callSignal(ctx);
   const timedOut = () => ({ kind: "timed_out" as const, reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
+  // A call already cancelled opens nothing: `connectionFor` starts a server or sends a handshake
+  // with the resolved headers as soon as it is called, and `untilAborted` only stops the wait.
+  if (signal.aborted) return timedOut();
   let connection: Connection;
   try {
     connection = await untilAborted(connectionFor(shaper, ctx, http), signal);

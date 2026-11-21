@@ -104,12 +104,33 @@ test("withheld resumption holds distinguish operator, session and delivery progr
 
 
 test("an independent blocker names its owner without assigning the action to the session", () => {
-  const held = { ...run, resumptionPolicy: "auto" as const, deliveryMode: "live" as const,
-    resumption: { reason: "session_blocked", round: 1, resumesItself: true } };
   const blocker = { waitingOn: "Platform team" };
-  assert.deepEqual(workflowHold(held, blocker), {
-    ...workflowHold(held), actor: "Blocker owner", actorLabel: "Platform team", inProgress: false,
-  });
-  assert.equal(workflowHold(held)?.actor, "Blocker owner", "missing blocker details must not blame the session");
+  for (const deliveryMode of ["live", "preview"] as const) {
+    const held = { ...run, resumptionPolicy: "auto" as const, deliveryMode,
+      resumption: { reason: "session_blocked", round: 1, resumesItself: deliveryMode === "live" } };
+    assert.deepEqual(workflowHold(held, blocker), {
+      actor: "Blocker owner", actorLabel: "Platform team", inProgress: false, runId: run.id,
+      reason: "The session is blocked on someone other than you, so it has not been handed another round. The next round opens once its blocker is cleared.",
+    }, deliveryMode);
+    assert.equal(workflowHold(held)?.actor, "Blocker owner", `${deliveryMode}: missing blocker details must not blame the session`);
+  }
   assert.deepEqual(blocker, { waitingOn: "Platform team" }, "display does not mutate the independent blocker");
+});
+
+test("only unsent Preview session actions require operator delivery", () => {
+  for (const deliveryMode of ["live", "preview"] as const) {
+    const waiting = { ...run, status: "waiting_for_action" as const, deliveryMode };
+    assert.deepEqual(workflowHold({ ...waiting, actionWait: "awaiting_send" }), {
+      actor: deliveryMode === "preview" ? "Operator" : "Session",
+      reason: deliveryMode === "preview"
+        ? "The instruction is ready in preview; send it to the session from the run."
+        : "The instruction is ready and has not been sent to the session yet.",
+      inProgress: deliveryMode === "live", runId: run.id,
+    }, deliveryMode);
+    for (const actionWait of ["awaiting_pickup", "working"] as const) {
+      const hold = workflowHold({ ...waiting, actionWait })!;
+      assert.equal(hold.actor, "Session", `${deliveryMode}: ${actionWait}`);
+      assert.equal(hold.inProgress, true, `${deliveryMode}: ${actionWait}`);
+    }
+  }
 });

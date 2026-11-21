@@ -81,6 +81,31 @@ function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string,
   return binding;
 }
 
+test("summary hold lookups skip inactive, Preview and terminal runs", (t) => {
+  const cases = [
+    { state: "active", mode: "live", status: "running", reads: 3 },
+    { state: "active", mode: "preview", status: "running", reads: 0 },
+    ...["paused", "orphaned", "archived"].map(state => ({ state, mode: "live", status: "running", reads: 0 })),
+    ...["completed", "cancelled", "failed"].map(status => ({ state: "active", mode: "live", status, reads: 0 })),
+  ];
+  for (const { state, mode, status, reads } of cases) {
+    clearWorkflowTables(db);
+    seedVersion();
+    const store = new WorkflowStore(db);
+    seedRun(store, "Queue lookup eligibility");
+    db.prepare("UPDATE workflow_bindings SET state = ?, delivery_mode = ? WHERE id = 'b'").run(state, mode);
+    db.prepare("UPDATE workflow_runs SET status = ? WHERE id = 'run'").run(status);
+    const latest = t.mock.method(store, "latestSubmission");
+    const deliveries = t.mock.method(store, "listDeliveries");
+    const summaries = [store.runSummary("run"), ...store.listRunSummaries(),
+      ...store.listRunSummaryPage({ limit: 50, cursor: null }).items];
+    assert.equal(summaries.length, 3);
+    assert.ok(summaries.every(summary => summary?.deliveryHold === null));
+    assert.equal(latest.mock.callCount(), reads, `${state}/${mode}/${status}: latest submission reads`);
+    assert.equal(deliveries.mock.callCount(), reads, `${state}/${mode}/${status}: delivery reads`);
+  }
+});
+
 test("a run summary carries the binding's captured session title, and it survives the session", () => {
   clearWorkflowTables(db);
   seedVersion();

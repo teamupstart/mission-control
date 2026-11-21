@@ -480,6 +480,11 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds).toContainText("Waiting · Platform team");
   await expect(holds).not.toContainText("Waiting · Session");
   await shoot(dashboard, "hold-blocker-owner");
+  await update({ ...summary, deliveryMode: "preview", resumptionPolicy: "auto",
+    resumption: { reason: "session_blocked", round: summary.round, resumesItself: false } });
+  await expect(holds).toContainText("Waiting · Platform team");
+  await expect(holds).not.toContainText("Action needed · Operator");
+  await shoot(dashboard, "hold-preview-blocker-owner");
   await dashboard.evaluate(session => {
     (window as Window & { holdStream: EventSource }).holdStream.dispatchEvent(
       new MessageEvent("message", { data: JSON.stringify({ type: "session_upsert", session: { ...session, blocker: null } }) }));
@@ -487,6 +492,15 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds).toContainText("Waiting · Blocker owner");
   expect((await api<import("../../src/shared/types.ts").Session[]>(daemon, "/api/sessions")).find(s => s.id === id)?.blocker)
     .toEqual(blocked.blocker);
+
+  await update({ ...summary, status: "waiting_for_action", deliveryMode: "preview", actionWait: "awaiting_send" });
+  await expect(holds).toContainText("The instruction is ready in preview; send it to the session from the run.");
+  await expect(holds).toContainText("Action needed · Operator");
+  await shoot(dashboard, "hold-preview-action");
+  await update({ ...summary, status: "waiting_for_action", deliveryMode: "preview", actionWait: "awaiting_pickup" });
+  await expect(holds).toContainText("Sent. Waiting for the session to pick the instruction up.");
+  await expect(holds).not.toContainText("Action needed · Operator");
+  await expect(holds).toContainText("In progress · Session");
 
   // A reconnect snapshot restores daemon truth; the same explanation appears in the Console rail.
   await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");

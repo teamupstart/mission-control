@@ -23,21 +23,20 @@ export function workflowHold(run: WorkflowRunSummary, blocker?: Pick<SessionBloc
   }
   if (run.status === "blocked") return describe("Operator", blockedPhaseClause(run.phase));
   if (run.status === "waiting_for_session") {
+    const reason = run.resumption
+      ? workflowResumptionWithheldSentence(run.resumption.reason, run.resumption.round ?? run.round) : null;
+    if (run.resumption?.reason === "session_blocked" && reason) {
+      return { ...describe("Blocker owner", reason), ...(blocker?.waitingOn ? { actorLabel: blocker.waitingOn } : {}) };
+    }
     if (!workflowRunResumesItself(run)) {
       return describe("Operator", run.deliveryMode === "preview"
         ? "Review feedback is ready in preview; start the next round."
         : "Review is waiting for you to start the next round.");
     }
-    if (run.resumption) {
-      const reason = workflowResumptionWithheldSentence(run.resumption.reason, run.resumption.round ?? run.round);
-      if (reason) {
-        if (run.resumption.reason === "session_blocked") {
-          return { ...describe("Blocker owner", reason), ...(blocker?.waitingOn ? { actorLabel: blocker.waitingOn } : {}) };
-        }
-        const actor = run.resumption.reason === "session_needs_you" || run.resumption.reason === "session_unavailable"
-          ? "Operator" : run.resumption.reason === "packet_undelivered" ? "Workflow" : "Session";
-        return describe(actor, reason, ["session_busy", "packet_undelivered"].includes(run.resumption.reason));
-      }
+    if (run.resumption && reason) {
+      const actor = run.resumption.reason === "session_needs_you" || run.resumption.reason === "session_unavailable"
+        ? "Operator" : run.resumption.reason === "packet_undelivered" ? "Workflow" : "Session";
+      return describe(actor, reason, ["session_busy", "packet_undelivered"].includes(run.resumption.reason));
     }
     if (["unchanged_repository", "unchanged_evidence", "reattached_resubmit_required"].includes(run.phase)) {
       return describe("Operator", `${blockedPhaseClause(run.phase)}; review the run before continuing.`);
@@ -45,6 +44,9 @@ export function workflowHold(run: WorkflowRunSummary, blocker?: Pick<SessionBloc
     return describe("Session", "Repairing review feedback; the workflow resumes after the session settles.", true);
   }
   if (run.status === "waiting_for_action") {
+    if (run.deliveryMode === "preview" && run.actionWait === "awaiting_send") {
+      return describe("Operator", "The instruction is ready in preview; send it to the session from the run.");
+    }
     return describe(run.actionWait && sessionActionWaitsOnOperator(run.actionWait) ? "Operator" : "Session",
       run.actionWait ? actionWaitSentence(run.actionWait) : "Session action in progress.",
       !run.actionWait || !sessionActionWaitsOnOperator(run.actionWait));

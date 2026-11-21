@@ -15,7 +15,7 @@ import {
   type Shaper, type ShapingRequest,
 } from "../src/shared/shaping.ts";
 import {
-  callRepositoryFiles, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
+  callRepositoryFiles, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
   type RepositoryFilesFs,
 } from "../src/server/shaping/builtin/repository-files.ts";
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
@@ -207,6 +207,33 @@ test("the limits: at most 16 includes of at most 16 KiB each, and notes stay wit
   // Short sentences past the cap share notes in order.
   const many = Array.from({ length: 18 }, (_, i) => `Skipped "f${i}" (missing).`);
   assert.deepEqual(skipNotes(many), [many.join(" ")]);
+});
+
+test("a skipped path of control characters is quoted within its bound, so the reply and its read entries stay valid", async () => {
+  // Every \u0001 escapes to six characters: a raw 200-character clip would quote 1,200.
+  const control = "\u0001".repeat(100);
+  const path = (tag: string) => `${tag}/${control}/${control}/${control}`;
+  const { root } = fixture({ "AGENTS.md": "read this\n" });
+  const paths = [...Array.from({ length: 15 }, (_, i) => path(`absent-${i}`)), path("summary"), path("facts")];
+  const result = await gatherRepositoryFiles(root, options({
+    include: [{ path: "AGENTS.md" }, ...paths.slice(0, 15).map((entry) => ({ path: entry }))], summary: paths[15], facts: paths[16],
+  }), never);
+  assert.ok(ShapingResultSchema.safeParse(result).success, "the reply is valid");
+  assert.deepEqual(result?.guidance.map((entry) => entry.id), ["AGENTS.md"], "the file that was read keeps its entry");
+  assert.ok(result!.notes!.length <= SHAPING_LIMITS.replyNotes);
+  assert.ok(result!.notes!.every((note) => note.length <= SHAPING_LIMITS.replyNoteChars));
+  assert.equal(result!.notes!.join(" ").match(/Skipped /g)?.length, 17, "every skip is still named");
+
+  // The escaped form is what is bounded, and the cut never splits an escape or a surrogate pair.
+  const quoted = quotedPath(control.repeat(3));
+  assert.equal(quoted, `"${"\\u0001".repeat(33)}..."`);
+  assert.equal(quotedPath("😀".repeat(150)), `"${"😀".repeat(100)}..."`);
+  assert.equal(quotedPath('a "b" \\ c'), JSON.stringify('a "b" \\ c'), "a short path is quoted whole, as JSON");
+  // Both caps are enforced even for sentences no gatherer writes: none longer than a note, never more than the count.
+  const huge = Array.from({ length: 40 }, (_, i) => `${i}`.padEnd(1500, "x"));
+  const packed = skipNotes(huge);
+  assert.equal(packed.length, SHAPING_LIMITS.replyNotes);
+  assert.ok(packed.every((note) => note.length <= SHAPING_LIMITS.replyNoteChars));
 });
 
 /** The real filesystem, with a hook before or after chosen calls. */

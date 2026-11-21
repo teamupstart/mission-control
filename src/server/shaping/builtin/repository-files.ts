@@ -205,10 +205,23 @@ export interface RepositoryFilesOptions {
   facts?: string | undefined;
 }
 
-/** A configured path as a note quotes it: bounded, so every note stays within its own limit. */
-function quoted(configured: string): string {
-  const shown = configured.length > 200 ? `${configured.slice(0, 200)}...` : configured;
-  return JSON.stringify(shown);
+/** The most of a path's escaped form one note quotes. */
+const QUOTED_PATH_CHARS = 200;
+
+/**
+ * A configured path as a note quotes it: JSON-escaped, with the escaped form held to
+ * `QUOTED_PATH_CHARS`. The bound is applied after escaping, because one control character
+ * escapes to six (`\u0001`), so a raw clip could still quote more than a note can carry. The
+ * cut is made between characters, never inside an escape or a surrogate pair.
+ */
+export function quotedPath(configured: string): string {
+  let shown = "";
+  for (const char of configured) {
+    const escaped = JSON.stringify(char).slice(1, -1);
+    if (shown.length + escaped.length > QUOTED_PATH_CHARS) return `"${shown}..."`;
+    shown += escaped;
+  }
+  return `"${shown}"`;
 }
 
 /**
@@ -218,7 +231,7 @@ function quoted(configured: string): string {
  */
 function skipNote(role: "file" | "summary" | "facts", configured: string, reason: string): string {
   const what = role === "file" ? "" : role === "summary" ? "the summary " : "the facts file ";
-  return `Skipped ${what}${quoted(configured)} (${reason}).`;
+  return `Skipped ${what}${quotedPath(configured)} (${reason}).`;
 }
 
 /** A facts file's text as `repo.facts`: one JSON object of strings or lists of strings, at most 64 names. */
@@ -285,20 +298,27 @@ export async function gatherRepositoryFiles(
 }
 
 /**
- * Every skip, each with its path and reason, within the reply's caps on notes. One note per skip
- * while they fit; past the cap, consecutive sentences share a note up to its length. A sentence
- * quotes at most 200 characters of path, so even 32 includes, a summary and a facts file pack into
- * fewer notes than the cap allows and no skip is ever dropped or reduced to a count.
+ * Every skip, each with its path and reason, within both of the reply's caps on notes: how many,
+ * and how long each one is. One note per skip while they fit; past the count, consecutive
+ * sentences share a note up to its length.
+ *
+ * A sentence quotes at most 200 characters of escaped path and a fixed reason, so it is about a
+ * third of a note, and even 32 includes, a summary and a facts file pack well inside the count:
+ * no skip is dropped or reduced to a count. Both caps are still enforced here rather than
+ * assumed, because a reply over either is invalid and would lose the entries that were read.
  */
 export function skipNotes(skips: readonly string[]): string[] {
-  if (skips.length <= SHAPING_LIMITS.replyNotes) return [...skips];
+  const { replyNotes, replyNoteChars } = SHAPING_LIMITS;
+  const fit = (text: string) => (text.length <= replyNoteChars ? text : `${text.slice(0, replyNoteChars - 3)}...`);
+  const sentences = skips.map(fit);
+  if (sentences.length <= replyNotes) return sentences;
   const notes: string[] = [];
-  for (const sentence of skips) {
+  for (const sentence of sentences) {
     const last = notes.at(-1);
-    if (last !== undefined && last.length + 1 + sentence.length <= SHAPING_LIMITS.replyNoteChars) notes[notes.length - 1] = `${last} ${sentence}`;
+    if (last !== undefined && last.length + 1 + sentence.length <= replyNoteChars) notes[notes.length - 1] = `${last} ${sentence}`;
     else notes.push(sentence);
   }
-  return notes;
+  return notes.length <= replyNotes ? notes : [...notes.slice(0, replyNotes - 1), fit(notes.slice(replyNotes - 1).join(" "))];
 }
 
 /** The `builtin` transport's entry for `repository-files`. */

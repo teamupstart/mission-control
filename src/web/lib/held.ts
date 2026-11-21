@@ -268,9 +268,7 @@ export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<str
 /** Preview explanations retain every open run, even beside a newer completed run of the same repo. */
 export function fleetHoldRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
   return new Map([...groupRunsBySessionAndRepo(runs)].map(([sessionId, repos]) => [sessionId,
-    [...repos].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, entries]) => {
-      const open = entries.filter(run => workflowRunIsOpen(run.status));
-      return open.length ? open.sort((a, b) => a.id.localeCompare(b.id)) : [newestSessionRun(entries)!];
-    }),
+    [...repos].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, entries]) =>
+      entries.filter(run => workflowRunIsOpen(run.status)).sort((a, b) => a.id.localeCompare(b.id))),
   ]));
 }

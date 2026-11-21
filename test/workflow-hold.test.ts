@@ -130,7 +130,7 @@ test("a newer completed run cannot hide an open wait from the same repository", 
   const runs = fleetHoldRunsBySession([run, { ...run, id: "finished", status: "completed", updatedAt: 2 }]);
   assert.deepEqual(runs.get("session")?.map(r => r.id), ["run"]);
   assert.deepEqual(fleetHoldRunsBySession([{ ...run, status: "completed" },
-    { ...run, id: "finished", status: "completed", updatedAt: 2 }]).get("session")?.map(r => r.id), ["finished"]);
+    { ...run, id: "finished", status: "completed", updatedAt: 2 }]).get("session"), []);
 });
 
 test("existing Fleet chips retain only the newest run per repository", () => {

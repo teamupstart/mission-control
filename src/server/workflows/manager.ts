@@ -114,6 +114,7 @@ import {
   workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -2352,7 +2353,10 @@ export class WorkflowManager {
      * one click away. `resubmitUnchanged` is that click, which is why it skips this
      * entirely rather than getting a flag of its own to keep in step.
      */
-    if (!input.resubmitUnchanged) {
+    // The latest snapshot is packaging evidence, not a semantic review of this tree.
+    // An explicit fresh-review request must not demand another code change first.
+    const needsFreshReview = workflowInspectorGateNeedsFreshReview(activeGate);
+    if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
@@ -2402,7 +2406,7 @@ export class WorkflowManager {
       created.run,
       created.submission,
       latest.evidenceFingerprint,
-      input.resubmitUnchanged,
+      input.resubmitUnchanged || needsFreshReview,
     );
   }
 
@@ -4626,7 +4630,8 @@ export class WorkflowManager {
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
-      && run.currentPhase === "inspector_head_mismatch";
+      && ["inspector_head_mismatch", "inspector_working_tree_not_pushed",
+        "inspector_reviewed_tree_changed"].includes(run.currentPhase);
     if (
       !run
       || !state
@@ -4989,6 +4994,21 @@ export class WorkflowManager {
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
       const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
+        && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
+        && publishedTree !== acceptedTree) {
+        this.transitionInspectorGate(run, state, {
+          ...state,
+          waitReason: "reviewed_tree_changed",
+          reviewedContent: {
+            submissionId: parent.id,
+            headSha: accepted.data.evidence.headSha,
+            treeOid: acceptedTree,
+            publishedTreeOid: publishedTree,
+          },
+        }, "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        return;
+      }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
         || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
@@ -6997,6 +7017,8 @@ export class WorkflowManager {
     // actually holds before it can say whether the capture is the one the adapter proved.
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    // The root's durable boundary also covers Foreman capture and interrupted retries.
+    allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling

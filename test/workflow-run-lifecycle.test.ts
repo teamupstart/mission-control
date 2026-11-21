@@ -144,6 +144,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   inspector_review_backoff: { detail: asJson(gate), kind: "none" },
   inspector_review_error: { detail: asJson(gate), kind: "none" },
   inspector_unadopted_pr: { detail: asJson(gate), kind: "none" },
+  inspector_reviewed_tree_changed: { detail: asJson({ ...gate, waitReason: "reviewed_tree_changed" }), kind: "none" },
   inspector_working_tree_not_pushed: { detail: asJson(gate), kind: "none" },
   pr_handoff: { detail: asJson(gate), kind: "none" },
 

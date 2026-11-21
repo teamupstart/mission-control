@@ -1134,3 +1134,26 @@ test("a placement is bound to the revision shown, and a kind this daemon does no
   assert.equal(unknown.status, 400);
   assert.deepEqual((await read()).order.filter((id) => id.startsWith("place-")).slice(0, 1), ["place-b"]);
 });
+
+test("a write from a window is refused once a later one of its on the same control was applied", async () => {
+  const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
+  const ordered = (intent: unknown, sequence: number, controls: string[], window = "http-order-window") => app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder(window, sequence, controls) }, body: JSON.stringify(intent),
+  });
+  // The newer save lands first: its earlier one waited, say for discovery, after its window gave up on it.
+  assert.equal((await ordered({ kind: "settings", caller: { user: "newer" } }, 2, ["settings"])).status, 200);
+  const older = await ordered({ kind: "settings", caller: { user: "older" } }, 1, ["settings"]);
+  assert.equal(older.status, 409);
+  assert.equal(((await older.json()) as { error: string }).error, "superseded");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).caller.user, "newer", "the newer edit stands");
+  // Another window's writes, and writes with no order at all, are not held to this one.
+  assert.equal((await ordered({ kind: "settings", caller: { user: "other-window" } }, 1, ["settings"], "another-window")).status, 200);
+  assert.equal((await put({ kind: "settings", caller: { user: "unordered" } })).status, 200);
+  // An import holds its shaper's row too: an older import never undoes a newer switch on that row.
+  const shaper = fixture("ordered-row", "gather", "ok");
+  assert.equal((await ordered({ kind: "upsert", shaper }, 3, ["import", "row:ordered-row"])).status, 200);
+  assert.equal((await ordered({ kind: "enable", id: "ordered-row", enabled: true }, 5, ["row:ordered-row"])).status, 200);
+  const staleImport = await ordered({ kind: "upsert", shaper }, 4, ["import", "row:ordered-row"]);
+  assert.equal(((await staleImport.json()) as { error: string }).error, "superseded");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["ordered-row"], true, "the switch stands");
+});

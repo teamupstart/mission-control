@@ -1954,3 +1954,16 @@ export const ShapingTestRequestSchema = z.object({
   kind: z.string().min(1).max(64).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
+
+/**
+ * The header a dashboard window sends with each shaping write: `<window> <sequence> <controls>`,
+ * its id, the write's number in that window, and the comma-separated controls it affects. The
+ * daemon refuses a write, as it is about to apply, once a later write from the same window was
+ * applied to one of those controls (`src/server/shaping/write-order.ts`).
+ */
+export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
+
+/** The value of `SHAPING_WRITE_ORDER_HEADER` for one write. */
+export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[]): string {
+  return `${window} ${sequence} ${controls.join(",")}`;
+}

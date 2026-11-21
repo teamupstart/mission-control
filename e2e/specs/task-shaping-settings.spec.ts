@@ -1872,3 +1872,37 @@ test("a late import outcome beside an edited draft of the same shaper names the 
   await expect(dialog.getByText("The save of edited-notes answered:")).toBeVisible();
   await page.unroute("**/api/shaping");
 });
+
+test("a save that timed out never overwrites a newer save made after it in the same window", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The first save is held on its way to the daemon past the panel's 15 s wait, and arrives late.
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  let late: number | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    await goes.opened;
+    // Delivered to the daemon as it was sent, though the page stopped waiting for it.
+    const response = await route.fetch();
+    late = response.status();
+    await route.abort("connectionreset").catch(() => {});
+  });
+  await identity.fill("first-save");
+  await save.click();
+  await expect(form.getByRole("alert")).toContainText("did not answer within 15 seconds", { timeout: 25_000 });
+  // Unlocked, the operator saves a newer identity, which lands.
+  await identity.fill("second-save");
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("second-save");
+  // The first save now reaches the daemon, and is refused rather than undoing the second.
+  goes.open();
+  await expect.poll(() => late).toBe(409);
+  expect((await shapingConfig(daemon)).caller.user).toBe("second-save");
+  await page.unroute("**/api/shaping");
+});

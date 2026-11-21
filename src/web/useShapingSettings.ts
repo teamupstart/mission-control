@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ShapingIntentSchema, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
+import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
 import {
   previewShapingIntent,
@@ -59,6 +59,8 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
+  /** This window's id for the daemon's write ordering: a newer write from it is never overwritten. */
+  const windowId = useRef(newWindowId());
   /** Numbers each outcome in the order it arrived, whichever request it answers. */
   const arrivals = useRef(0);
   /**
@@ -125,7 +127,7 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout });
+      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, number, keys) });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
@@ -210,6 +212,13 @@ export function useShapingSettings(
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;
+
+/** A random id for one window's hook, as the write-order header accepts it. */
+function newWindowId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `w-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 interface Refusal {
   /** The request it answers, in the order requests were sent. */

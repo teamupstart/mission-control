@@ -1,5 +1,5 @@
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
+import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -1226,12 +1226,12 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
-      headers: body ? { "content-type": "application/json" } : {},
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: options.signal,
     });
@@ -1249,7 +1249,7 @@ async function request<T extends ActionResult = ActionResult>(
 
 const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
   request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
@@ -2365,8 +2365,11 @@ export const api = {
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
-  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal }) =>
-    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, options),
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, {
+      signal: options?.signal,
+      ...(options?.order ? { headers: { [SHAPING_WRITE_ORDER_HEADER]: options.order } } : {}),
+    }),
   /**
    * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
    * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.

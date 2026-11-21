@@ -22,6 +22,15 @@ Inspector finding to be resolved. Captured short commit IDs are resolved in the 
 before comparison with GitHub's full ID. A genuinely different PR head requires a fresh workflow
 submission; the gate shows both expected and observed commits instead of implying a review is
 still running. Existing waiting gates use the same normalization after restart.
+When a PR action publishes repairs made after review, the gate reports `reviewed_tree_changed`
+if the published tree matches the captured shipping result but differs from the reviewed tree.
+It shows the reviewed and published commits and trees. **Review pushed head** captures the
+current checkout and starts a fresh full review, spending one repair round. It does not require
+another edit or push, and passes earned before this review cannot be reused. Missing publication
+proof, unpublished deliverables, and missing retained artifact evidence still hold publication.
+The fresh-review requirement survives disabling Inspector or exhausting the repair budget.
+The earlier review never approves the changed tree.
+
 If an older binding lacks a repository root, normalization uses the pinned adopted PR's
 repository provenance. Missing provenance still blocks the gate.
 
@@ -1026,3 +1035,20 @@ another attempt. GitHub's expected-head guard protects the write. The update hap
 GitHub, without editing the agent's local worktree. Disabling the preview stops new attempts
 and hides its status; an update GitHub already accepted may still finish. The poller follows
 PRs associated with live sessions and their attached repositories.
+
+## Reading CI warnings
+
+The warning beside a pull request opens its reported check results. Each result shows the
+check name and actual conclusion, including cancelled jobs and successful reruns. When GitHub
+supplies a job or status URL, the result links directly there; results without a usable URL
+remain plain text. The pull request overview has its own separate link.
+
+A blocking CI category is not itself evidence that a job failed. Failure wording requires an
+individual `FAILURE` or `ERROR` result. A cancellation-only warning names the cancellations
+and says no failures appear in the reported results. Missing details and possibly truncated
+lists are identified explicitly. The display retains up to 100 results from the current PR
+observation and does not alter review or merge gates, including retry handling.
+
+The workflow run separately shows its recorded wait reason. For example,
+`working_tree_not_pushed` describes publication evidence, even when the same pull request
+also has cancelled checks. The CI warning does not replace that reason.

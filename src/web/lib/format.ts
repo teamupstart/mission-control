@@ -1,4 +1,5 @@
 import { activePaneDialog } from "@shared/session.ts";
+import { WAITING_ON_ANSWER_REASON, waitingOnOpenQuestion } from "@shared/async-input.ts";
 import type { AgentType, PermissionMode, Session, SessionState } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canRename, type PaneHandles } from "@shared/pane.ts";
@@ -318,6 +319,12 @@ function unpausedStateDisplay(session: Session, interrupting: boolean): StateDis
   // definitively blocked session on the board. Mirrors `reportBucket`.
   if (activePaneDialog(session)) {
     return { label: "needs an answer", tone: "attention" };
+  }
+  // `reportBucket`'s idle clause, mirrored: a stopped agent with a message-mode question still
+  // pending is waiting on your answer, however its state reads. A confirmed `awaiting_*` reading
+  // keeps its own, more specific label below; both are the same `needs-you` bucket.
+  if (waitingOnOpenQuestion(session) && !(session.stateConfirmed && (session.state === "awaiting_input" || session.state === "awaiting_review"))) {
+    return { label: WAITING_ON_ANSWER_REASON, tone: "attention" };
   }
   // The one label here that is not a reading: the operator's own stop, in flight. Held
   // client-side (`lib/interrupting.ts`) and retired by the next real reading or by its own

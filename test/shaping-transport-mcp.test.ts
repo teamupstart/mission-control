@@ -756,16 +756,18 @@ test("a stdio server's process group is signalled once, however the connection e
   }) as typeof process.kill;
   const scope = runScope();
   scopes.push(scope);
+  let serverGroup = 0;
   try {
     // The run ends with the server still up: closing ends its stdin, it exits on its own, and that
     // exit stops its group. Nothing may signal the same group id again afterwards.
-    const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }), ctx({ scope }));
-    assert.equal(reply.kind, "data", JSON.stringify(reply));
+    const reply = await callMcp(request(), shaper({ type: "stdio", mode: "echo" }), ctx({ scope }));
+    // The server's pid is its group's id; other tests' groups may be signalled meanwhile.
+    serverGroup = -echoed(reply).pid;
     scope.close();
     await new Promise((done) => setTimeout(done, 1_500));
   } finally { process.kill = kill; }
-  assert.equal(new Set(signalled.map(([pid]) => pid)).size, 1, JSON.stringify(signalled));
-  assert.deepEqual(signalled.filter(([, signal]) => signal === "SIGKILL").length, 1, JSON.stringify(signalled));
+  const ours = signalled.filter(([pid]) => pid === serverGroup);
+  assert.equal(ours.filter(([, signal]) => signal === "SIGKILL").length, 1, JSON.stringify(ours));
 });
 
 test("a helper a stdio server started stops with it when the run ends", async () => {

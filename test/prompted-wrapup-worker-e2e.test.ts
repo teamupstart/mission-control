@@ -209,7 +209,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
       completedAt: now - 120_000,
       updatedAt: now - 120_000,
     },
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -1913,6 +1913,7 @@ function registeredCommandEvidence(
 async function runShipEvidenceScenario(input: {
   verdict: { complete: boolean; summary: string; gaps: FixedGap[]; resolved?: string[] };
   evidence?: WorkflowStagedEvidenceList;
+  evidenceAfterVerification?: WorkflowStagedEvidenceList;
   evidenceStatus?: number;
   evidenceReadsBeforeStop?: number;
   claimReason?: "no_binding" | "manual_trigger";
@@ -1980,7 +1981,8 @@ async function runShipEvidenceScenario(input: {
       return input.evidenceStatus && input.evidenceStatus !== 200
         ? { status: input.evidenceStatus, json: { error: "evidence unavailable" } }
         : { status: 200, json: {
-          ...(input.evidence ?? { generation: 0, images: [], artifacts: [] }),
+          ...((verificationFinished ? input.evidenceAfterVerification : undefined)
+            ?? input.evidence ?? { generation: 0, images: [], artifacts: [] }),
           ...(input.registrationEligible === null ? {} : {
             registrationEligible: verificationFinished && input.eligibilityAfterVerification !== undefined
               ? input.eligibilityAfterVerification
@@ -2053,7 +2055,9 @@ async function runShipEvidenceScenario(input: {
       ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
       : input.stopOn === "consume"
         ? () => stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length > 0
-        : (output) => input.eligibilityAfterVerification !== undefined
+        : (output) => input.evidenceAfterVerification !== undefined
+          ? output.includes("workflow evidence changed during verification")
+          : input.eligibilityAfterVerification !== undefined
           // Receiving the request is not proof that the worker processed its response.
           ? output.includes("workflow evidence eligibility changed or is unavailable")
           : evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250
@@ -2725,6 +2729,41 @@ process.stdin.on("end", () => {
   );
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+});
+
+
+test("capture timestamps and unrelated episodes do not invalidate registered proof", async () => {
+  const original = registeredCommandEvidence();
+  const after = structuredClone(original);
+  after.artifacts[0]!.updatedAt += 100;
+  after.artifacts.push(...registeredCommandEvidence("intent:0:1", "older-check").artifacts,
+    ...registeredCommandEvidence(null, "legacy-check").artifacts);
+  const result = await runShipEvidenceScenario({
+    verdict: { complete: true, summary: "implementation complete", gaps: [] },
+    evidence: original, evidenceAfterVerification: after, stopOn: "claim",
+  });
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 1, result.out);
+  assert.doesNotMatch(result.out, /workflow evidence changed during verification/);
+});
+
+test("evidence arriving or changing during verification leaves the generation unconsumed", async () => {
+  const original = registeredCommandEvidence();
+  const replaced = structuredClone(original);
+  replaced.artifacts[0]!.sha256 = "b".repeat(64);
+  for (const [before, after] of [
+    [{ generation: 0, images: [], artifacts: [] }, original],
+    [original, replaced],
+    [original, { generation: 5, images: [], artifacts: [] }],
+  ] satisfies Array<[WorkflowStagedEvidenceList, WorkflowStagedEvidenceList]>) {
+    const result = await runShipEvidenceScenario({
+      verdict: { complete: true, summary: "implementation complete", gaps: [] },
+      evidence: before, evidenceAfterVerification: after, respectEvidencePolicy: true, stopOn: "none",
+    });
+    assert.match(result.out, /workflow evidence changed during verification/);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim").length, 0);
+  }
 });
 
 });

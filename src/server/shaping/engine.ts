@@ -394,10 +394,15 @@ async function runShaping(
     if (result.version != null && holdsNamed(result.version)) redacted = true;
     const version = result.version == null ? null
       : redact(result.version, { identifier: true }).slice(0, SHAPING_LIMITS.versionChars);
+    // What redaction dropped leads the reason: a reason is held to `reasonChars`, and the shaper's
+    // own notes can fill it, so a diagnostic placed after them could be cut while the record
+    // still says `redacted`.
     return {
       record: result.degraded
-        ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)
-        : record("ok", dropped || null, version, redacted),
+        ? record("degraded", [dropped, notes || "The shaper reported that it is degraded."].filter(Boolean).join(" "), version, redacted)
+        // A reply that is not degraded keeps its notes too, such as the files a gatherer skipped,
+        // so the record says what the shaper left out without marking the run degraded.
+        : record("ok", [dropped, notes].filter(Boolean).join(" ") || null, version, redacted),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,

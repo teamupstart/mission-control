@@ -1,5 +1,6 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -24,7 +25,7 @@ import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
-import { paneToken } from "@shared/pane.ts";
+import { canMessage, paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
@@ -3086,7 +3087,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    const staged = manager.stagedEvidenceForSession(
+      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
+    );
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(
@@ -5216,8 +5219,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null, { snoozable });
-      return c.json({ id: review.id, sessionId: session.id });
+      // How this ask waits, decided here and said in the response (`async-input`). Read per ask
+      // so the flag takes effect without a restart. `call` is today's long poll; `message`
+      // returns the receipt for the MCP child to hand the agent at once.
+      const wait = decideWaitMode({
+        flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+        kind,
+        snoozable: snoozable === true,
+        asyncCapable: parsed.data.asyncCapable === true,
+        messageable: canMessage(session),
+      });
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
+        snoozable,
+        ...(wait === "message" ? { waitMode: "message" as const } : {}),
+        meanwhile: parsed.data.meanwhile || null,
+        callerPolls: parsed.data.asyncCapable !== true,
+      });
+      // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+      // answer names the row's own mode rather than the one this ask would have had.
+      return review.waitMode === "message"
+        ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
+        : c.json({ id: review.id, sessionId: session.id, wait: "call" });
     } catch (error) { return planFailure(c, error); }
   }
   app.post("/mcp/reviews", (c) => createMcpReview(c, false));

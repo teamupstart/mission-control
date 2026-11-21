@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { Persona } from "../src/shared/workflow.ts";
@@ -287,13 +287,7 @@ test("a Persona archived while the task waited refuses the dispatch on the click
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return realpathSync(repo);
 }
 

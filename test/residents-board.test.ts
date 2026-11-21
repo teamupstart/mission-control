@@ -416,6 +416,7 @@ test("in Drawer placement the Residents button keeps its name and opens the draw
 const { ResidentDrawerCardBody, ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } = await import("../src/web/residents/ResidentsDrawer.tsx");
 const { residentShortcutIndex } = await import("../src/web/lib/keybindings.ts");
 const { useResidentLaunches } = await import("../src/web/residents/useResidentLaunches.ts");
+const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
 
 /** Ten live residents, oldest launch first, each with its own session. */
 function tenResidents(): { runs: ResidentRunSummary[]; sessions: Session[] } {
@@ -429,9 +430,9 @@ function tenResidents(): { runs: ResidentRunSummary[]; sessions: Session[] } {
 }
 
 /** The drawer, pinned so it renders without an overlay host, with a stub launcher. */
-function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[]): string {
+function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[], overrides: Record<string, boolean> = {}): string {
   const launcher: ReturnType<typeof useResidentLaunches> = { launches: {}, launch: async () => {} };
-  return renderToStaticMarkup(createElement(ResidentsDrawer, {
+  return renderToStaticMarkup(createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides } }, createElement(ResidentsDrawer, {
     entries: residentDrawerEntries(runs, [profile()], sessions),
     profiles: [profile()],
     pinned: true,
@@ -445,7 +446,7 @@ function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[]): string {
     onManage: () => {},
     reviews: [],
     onOpenReview: () => {},
-  }));
+  })));
 }
 
 test("resident nine is ⌥9 and resident ten has no shortcut, in the order ⌥N opens", () => {
@@ -655,7 +656,7 @@ test("with neither an activity line nor a goal, the card draws no empty latest-m
 
 // ---- compressing a card: a click on its title folds it to the status line and controls ----
 
-const { toggleResidentCardCollapsed } = await import("../src/web/residents/card-fold.ts");
+const { toggleResidentCardCollapsed, toggleResidentProfilesCollapsed } = await import("../src/web/residents/card-fold.ts");
 const { stateDisplay } = await import("../src/web/lib/format.ts");
 
 /** Two live residents, both with a session that can take a message and an activity line. */
@@ -779,6 +780,41 @@ test("Manage residents is drawn under the title, before the cards and the profil
   assert.ok(manage < html.indexOf('aria-label="Live residents"'));
   assert.ok(manage < html.indexOf("residents-drawer-foot"));
   assert.equal(html.split(">Manage residents ").length, 2, "drawn once");
+});
+
+test("with the Profiles fold preview off, the heading is plain text and a stored fold never hides the list", () => {
+  const { runs, sessions } = twoResidents();
+  toggleResidentProfilesCollapsed();
+  try {
+    const html = drawerMarkup(runs, sessions);
+    assert.match(html, /<h3 class="residents-drawer-sec" id="residents-drawer-profiles">Profiles<\/h3>/);
+    assert.doesNotMatch(html, /residents-drawer-sec-toggle/);
+    assert.match(html, /<footer class="residents-drawer-foot">/);
+    assert.match(html, /<div id="residents-drawer-profiles-list" class="residents-drawer-profiles">/);
+    assert.match(html, /aria-label="Launch /);
+  } finally {
+    toggleResidentProfilesCollapsed();
+  }
+});
+
+test("the Profiles heading folds the launch list away and opens it again", () => {
+  const { runs, sessions } = twoResidents();
+  const fold = { "resident-profiles-fold": true };
+  const open = drawerMarkup(runs, sessions, fold);
+  assert.match(open, /<button type="button" class="residents-drawer-sec-toggle" aria-expanded="true" aria-controls="residents-drawer-profiles-list"[^>]*>Profiles<svg class="brh-chevron"/);
+  assert.match(open, /<div id="residents-drawer-profiles-list" class="residents-drawer-profiles">/);
+  assert.match(open, /aria-label="Launch /);
+
+  toggleResidentProfilesCollapsed();
+  try {
+    const folded = drawerMarkup(runs, sessions, fold);
+    assert.match(folded, /class="residents-drawer-foot is-collapsed"/);
+    assert.match(folded, /aria-expanded="false" aria-controls="residents-drawer-profiles-list"[^>]*>Profiles<svg class="brh-chevron"/);
+    assert.match(folded, /<div id="residents-drawer-profiles-list" class="residents-drawer-profiles" hidden="">/);
+  } finally {
+    toggleResidentProfilesCollapsed();
+  }
+  assert.match(drawerMarkup(runs, sessions, fold), /class="residents-drawer-foot">/);
 });
 
 test("a card carries the Board column it sits in: working, needs you, or neither", () => {

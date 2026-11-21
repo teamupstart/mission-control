@@ -1,6 +1,6 @@
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
-import { resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -982,10 +982,11 @@ export class WorkflowEngine {
       const next = this.store.listAttemptsDueAfter(schedulingNow);
       if (next !== null && !this.stopped) {
         if (this.wakeTimer) clearTimeout(this.wakeTimer);
+        // Long vendor waits must not overflow Node timers into a one-millisecond loop.
         this.wakeTimer = setTimeout(() => {
           this.wakeTimer = null;
           this.wake();
-        }, Math.max(1, next - this.now()));
+        }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
       }
     } finally {
       this.pumping = false;
@@ -1427,6 +1428,19 @@ export class WorkflowEngine {
     checkLimitHeld: boolean,
     scheduledSlot?: CheckSlot,
   ): Promise<void> {
+    // A sibling may extend the vendor wait after this retry was scheduled or while it
+    // waited for a check slot. Re-read before claiming, probing or reserving an execution.
+    const pending = node.slot === "coderabbit" ? this.store.getAttempt(initial.id) : null;
+    if (pending?.state === "retry_wait" && run.status === "running" && submission.status === "running") {
+      const retryAt = Math.max(pending.retryAt ?? 0, this.codeRabbitRetryAt(submission.id));
+      if (retryAt > this.now()) {
+        this.store.finishAttempt(pending.id, {
+          state: "retry_wait", retryAt, error: pending.error, output: pending.output, verdict: pending.verdict,
+        }, this.now());
+        this.onRunChanged(run.id);
+        return;
+      }
+    }
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
@@ -1449,6 +1463,15 @@ export class WorkflowEngine {
     } finally {
       if (this.checkAttemptAborts.get(claimed.id) === abort) this.checkAttemptAborts.delete(claimed.id);
     }
+  }
+
+  private codeRabbitRetryAt(submissionId: string): number {
+    return this.store.listAttempts(submissionId).reduce((latest, attempt) => {
+      const output = attempt.output;
+      if (!output || typeof output !== "object" || Array.isArray(output)) return latest;
+      const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+      return parsed.success ? Math.max(latest, parsed.data.retryAt ?? 0) : latest;
+    }, 0);
   }
 
   /**
@@ -1537,13 +1560,14 @@ export class WorkflowEngine {
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
-          retryAt: this.store.listAttempts(submission.id)
-            .map((attempt) => {
-              const output = attempt.output;
-              if (!output || typeof output !== "object" || Array.isArray(output)) return 0;
-              const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
-              return parsed.success ? parsed.data.retryAt ?? 0 : 0;
-            }).reduce((a, b) => Math.max(a, b), 0),
+          // Carry an unresolved review across submissions. A later complete review clears
+          // it; a skip cannot. The store orders attempts from oldest to newest.
+          incompleteReview: this.store.listAttemptsForRun(submission.runId).reduce((incomplete, attempt) => {
+            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return incomplete;
+            const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
+            return parsed.success && parsed.data.status !== "skipped" ? parsed.data.status === "incomplete" : incomplete;
+          }, false),
+          retryAt: this.codeRabbitRetryAt(submission.id),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
               repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
@@ -1590,6 +1614,10 @@ export class WorkflowEngine {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (result.kind === "retryable_connection") {
+      this.store.transact(() => this.handleCodeRabbitConnectionFailure(claimed, run.id, result));
       return;
     }
     if (result.kind === "action_required") {
@@ -1794,6 +1822,46 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     this.onRunChanged(runId);
+  }
+
+  /** A provider-confirmed disconnect is not a review verdict or permission to spend more. */
+  private handleCodeRabbitConnectionFailure(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    result: Extract<Awaited<ReturnType<typeof runCheck>>, { kind: "retryable_connection" }>,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: result.reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
+    const allowanceSpent = result.review.remainingRuns === 0;
+    if (exhausted || allowanceSpent) {
+      this.handleCheckActionRequired(attempt, runId,
+        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. ${allowanceSpent ? CODERABBIT_ALLOWANCE_REMEDY : "Inspect retained output and retry after connectivity recovers"}. No additional credits were authorized.`, result);
+      return;
+    }
+    const now = this.now();
+    // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
+    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
+    this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
+      output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
+    if (this.blockedByUnresolvedLease(attempt, runId, result.reason)) return;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, inputFingerprint: attempt.inputFingerprint,
+      retryAt, error: `Automatic retry scheduled: ${result.reason}`, now,
+    });
+    this.store.appendEvent(runId, "command_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt, error: result.reason,
+    }, now);
+    this.onRunChanged(runId);
+    this.wake();
   }
 
   /** Configuration or consent needs a human correction, never an automatic retry or code fix. */

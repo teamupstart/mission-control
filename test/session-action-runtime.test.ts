@@ -39,9 +39,9 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
-const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
-const { WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
+const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -149,6 +149,8 @@ interface HarnessOptions {
   inspector?: boolean;
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
+  maxRepairRounds?: number;
+  probeEvidence?: boolean;
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
   /** Exercise the published fresh-evidence preflight on every evaluator-bound submission. */
@@ -204,6 +206,15 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    ...(options.probeEvidence ? { readEvidenceProbe: async () => ({
+      headSha: captureHead.sha ?? head.sha,
+      workingTreeStatus: [],
+      diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
+      localArtifactHashes: options.localReport ? [{
+        path: "docs/reports/result/report.html",
+        sha256: createHash("sha256").update("report").digest("hex"),
+      }] : [],
+    }) } : {}),
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -418,7 +429,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     bindingDefaults: {
       triggerMode: "manual",
       deliveryMode: options.deliveryMode ?? "live",
-      maxRepairRounds: 8,
+      maxRepairRounds: options.maxRepairRounds ?? 8,
     },
   });
   assert.equal(created.ok, true, "the workflow was refused");
@@ -717,6 +728,80 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
     }
   }
 });
+
+// Publication is performed by the instructed session, not a daemon GitHub writer. As in
+// the draft-policy integration above, exercise that session with a deterministic script.
+for (const mode of ["create", "update"] as const) {
+  test(`scripted Pull Request action ${mode} reads back published content and comment notes`, { timeout: 90_000 }, async (t) => {
+    const title = "fix: review drafts before publication";
+    const body = "Validate draft content before the Pull Request action.";
+    const note = "Deviation: publication proof is checked by the Pull Request action.";
+    const h = await harness(`publication-readback-${mode}`, {
+      actions: [{ id: "act", prompt: `# Pull Request\n\nTitle: ${title}\nBody: ${body}\nRequired note: ${note}\n`, skillId: "pull-request" }],
+      pullRequest: true,
+      deliveryMode: "live",
+    });
+    let fixture: Awaited<ReturnType<typeof prCreationFixture>> | null = null;
+    try {
+      fixture = await prCreationFixture(h.registry, home);
+      const existingUrl = mode === "update"
+        ? await fixture.gh(["pr", "create", "--title", "Old title", "--body", "Old body", "--draft"])
+        : null;
+      const runId = await runToAction(h);
+      await waitFor(() => h.injected.length === 1, "the publication action packet was not delivered");
+      const packet = h.injected[0]!;
+      assert.match(packet, /After creating or updating the PR, read back its URL, published title and body from GitHub/);
+      assert.match(packet, /Verify required notes posted in a comment by reading back that comment/);
+      assert.match(packet, /repair mismatches before reporting this action complete/);
+      assert.equal(waitingAttempt(h, runId)!.sessionAction?.completion.kind, "pull_request");
+      h.reportWorking();
+      t.diagnostic("Boundary: real workflow delivery, settings/MCP and CLI subprocesses; scripted session and stateful fake GitHub. No model calls or live GitHub writes. Checks below execute the instructed session's read-back procedure, not a daemon-enforced title/notes gate.");
+
+      let url: string;
+      if (existingUrl) {
+        await fixture.gh(["pr", "edit", existingUrl, "--title", title, "--body", body]);
+        url = existingUrl;
+      } else {
+        const policy = await fixture.readPolicy();
+        url = await fixture.gh(["pr", "create", "--title", title, "--body", body,
+          ...(policy.alwaysDraftPr ? ["--draft"] : [])]);
+      }
+      type Published = { number: number; url: string; title: string; body: string;
+        isDraft: boolean; comments: Array<{ url: string; body: string }> };
+      const readBack = async (): Promise<Published> => JSON.parse(await fixture!.gh([
+        "pr", "view", url, "--json", "number,url,title,body,isDraft,comments",
+      ]));
+      const check = (published: Published) => ({
+        url: published.url === url,
+        title: published.title === title,
+        body: published.body === body,
+        requiredNote: published.comments.some(comment => comment.body === note && comment.url.startsWith(`${url}#`)),
+      });
+      // The fake CLI persists only command arguments, independently of the expected content.
+      // A successful create/edit is insufficient: the first read must detect the absent note.
+      const before = await readBack();
+      assert.deepEqual(check(before), { url: true, title: true, body: true, requiredNote: false });
+      t.diagnostic(JSON.stringify({ mode, readBack: before, checks: check(before), outcome: "required comment note missing; repair before completing" }));
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      await fixture.gh(["pr", "comment", url, "--body", note]);
+      const published = await readBack();
+      assert.deepEqual(check(published), { url: true, title: true, body: true, requiredNote: true });
+      if (existingUrl) assert.equal(published.isDraft, true, "editing and commenting must preserve draft status");
+      assert.equal(fixture.commands.filter(args => args[1] === "create").length, 1,
+        "updating an existing PR must not create a duplicate");
+      t.diagnostic(JSON.stringify({ mode, commands: fixture.commands, readBack: published,
+        checks: check(published), verifiedPrUrl: published.url }));
+      h.adoptPr({ number: published.number, key: `fixture/repo#${published.number}`, url: published.url });
+      h.reportIdle();
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "verified publication did not finish the action");
+      assert.equal(h.store.listSubmissions(runId).length, 2, "action completion captures its continuation");
+      t.diagnostic(`${mode}: publication checks passed; Pull Request action and workflow completed`);
+    } finally {
+      try { await fixture?.close(); } finally { await h.stop(); }
+    }
+  });
+}
 
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
   const h = await harness("ci-policy-default", {
@@ -1893,7 +1978,7 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, childProof, changed, number } of [
+for (const { parentProof, childProof, changed, number, disableInspector = false } of [
   { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
   { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
@@ -1903,16 +1988,17 @@ for (const { parentProof, childProof, changed, number } of [
   { parentProof: "legacy", childProof: "legacy", changed: true, number: 77 },
   { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
   { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
+  { parentProof: "publication", childProof: "publication", changed: true, number: 80, disableInspector: true },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}`, async () => {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}`, async (t) => {
     const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
     const options = {
-      pullRequest: true, localReport: parentProof === "publication", inspector: true,
+      pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
       omitContentTree: parentProof === "missing",
     };
-    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -1932,7 +2018,7 @@ for (const { parentProof, childProof, changed, number } of [
       h.adoptPr({ atHead: h.head.sha, key, url, number });
       await h.manager.sweepSessionActions(SETTLED());
       await waitFor(() => h.store.getRun(runId)?.gateState != null, "the Inspector gate never started");
-      const child = h.store.latestSubmission(runId)!;
+      let child = h.store.latestSubmission(runId)!;
       assert.equal(child.parentSubmissionId, parent.id);
       const childEvidence = WorkflowContextSnapshotSchema.parse(child.context).evidence;
       assert.equal(childEvidence.publication !== undefined, childProof === "publication");
@@ -1957,8 +2043,105 @@ for (const { parentProof, childProof, changed, number } of [
         mustWait ? "shipping escaped the accepted parent proof" : "matching accepted content prevented completion");
       if (mustWait) assert.equal(
         WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
-        "working_tree_not_pushed",
+        changed ? "reviewed_tree_changed" : "working_tree_not_pushed",
       );
+      if (changed) {
+        const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+        assert.deepEqual(gate.reviewedContent, {
+          submissionId: parent.id,
+          headSha: parentEvidence.headSha,
+          treeOid: parentEvidence.publication?.treeOid ?? parentEvidence.contentTreeOid,
+          publishedTreeOid: h.contentTree.oid,
+        });
+        h.registry.inspectionUpdated(key, head, "OPEN", now + 1);
+        await waitFor(() => WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState)
+          .lastObservedAt === now + 1, "a second observation must update the persisted reviewed-tree gate");
+        // A persisted hold from an older build is reclassified on the next observation.
+        h.store.setRunState(runId, "waiting_for_session", "inspector_working_tree_not_pushed",
+          { ...gate, waitReason: "working_tree_not_pushed" }, now);
+        // Another observation of the same pushed head cannot spend or bypass review.
+        h.registry.inspectionUpdated(key, head, "OPEN", now + 2);
+        await waitFor(() => WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState)
+          .waitReason === "reviewed_tree_changed", "the historical publication hold must be reclassified");
+        assert.equal(h.store.latestSubmission(runId)?.id, child.id);
+        assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
+        assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
+          "reviewed_tree_changed");
+        // Make reuse eligibility explicit rather than relying on the machine default.
+        const previousPolicy = getWorkflowPolicy();
+        t.after(() => setWorkflowPolicy(previousPolicy));
+        setWorkflowPolicy({ ...previousPolicy, skipPassedJudges: true });
+        assert.equal(getWorkflowPolicy().skipPassedJudges, true);
+        const earned = h.store.listAttempts(parent.id).find((attempt) => attempt.nodeId === "upstream");
+        assert.ok(earned);
+        assert.equal(earned.state, "completed");
+        assert.notEqual(earned.runner, null, "the earlier pass must come from an executed reviewer");
+        assert.equal(PersonaVerdictSchema.parse(earned.verdict).verdict, "pass");
+        assert.equal(h.store.priorPassedJudge(runId, "upstream", child.round + 1)?.id, earned.id,
+          "the earlier pass must be eligible before the fresh published-head review boundary");
+        if (disableInspector) {
+          setInspectorConfig({ enabled: false });
+          t.after(() => setInspectorConfig({ enabled: true }));
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          await waitFor(() => h.store.getRun(runId)?.currentPhase === "inspector_disabled",
+            "disabling Inspector must replace the visible hold reason");
+          assert.deepEqual(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).reviewedContent,
+            gate.reviewedContent, "disabling Inspector must retain the outstanding review obligation");
+        }
+        if (parentProof === "legacy" && childProof === "publication") {
+          // Preview grants retain round_limit, with the review obligation carried in its gate.
+          h.store.updateBinding(h.store.getRun(runId)!.bindingId, { deliveryMode: "preview" }, now);
+          // Place the same captured publication at the exhausted budget boundary.
+          h.store.setRunState(runId, "running", "persona_review", null, now);
+          const exhausted = h.store.createRepairSubmission({
+            id: `exhausted-${number}`, runId, round: 4, triggerSource: "manual",
+            triggerKey: `exhausted-${number}`, context: {}, evidence: {}, now,
+          });
+          child = h.store.updateSubmissionCapture(exhausted.submission.id, {
+            context: child.context, evidence: child.evidence, fingerprint: child.evidenceFingerprint,
+            repositoryFingerprint: child.repositoryFingerprint ?? undefined, status: "running",
+          }, now);
+          h.store.setRunState(runId, "waiting_for_session", "inspector_reviewed_tree_changed", { ...gate }, now);
+          h.store.blockForRoundLimit(h.store.getRun(runId)!, now);
+          const granted = h.manager.grantRepairRounds(runId, { requestId: "review-budget", rounds: 1 });
+          assert.equal(granted.ok, true, JSON.stringify(granted));
+          assert.equal(h.store.getRun(runId)?.currentPhase, "round_limit");
+        }
+        const result = parentProof === "legacy" && childProof === "legacy"
+          ? await (async () => {
+            const run = h.store.getRun(runId)!;
+            const binding = h.store.getBinding(run.bindingId)!;
+            const claimed = h.store.claimForemanCompletion({
+              binding, completionKind: "drain", marker: "published-head-review",
+              expectedWorkCycle: null, expectedIntent: null, retireGuard: false,
+              summary: "Review the published head", evidenceFingerprint: "published-head",
+              runId, submissionId: `foreman-published-${number}`, intent: run.intent!, now: now + 3,
+            });
+            assert.equal(claimed.result.claimed, true);
+            assert.equal(claimed.created, true);
+            assert.equal(h.store.priorPassedJudge(runId, "upstream", child.round + 1), null,
+              "Foreman must record the same pass-reuse boundary as manual review");
+            // Exercise the capture method used by manager.claimCompletion, including its
+            // unchanged check; no manual allowUnchanged flag reaches this path.
+            return (h.manager as unknown as {
+              captureAndActivate: (...args: unknown[]) => Promise<{ ok: boolean }>;
+            }).captureAndActivate(binding, claimed.run, claimed.submission, claimed.previousFingerprint);
+          })()
+          : await h.manager.resubmit(runId, {
+            requestId: `fresh-published-${number}`, resubmitUnchanged: false,
+          });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        await waitFor(() => h.store.listSubmissions(runId).some((submission) =>
+          submission.round === child.round + 1
+          && h.store.listAttemptsForRun(runId).some((attempt) => attempt.submissionId === submission.id
+            && attempt.nodeId === "upstream" && attempt.state === "completed")),
+        "fresh published-head review must finish the Persona without another edit or push");
+        const fresh = h.store.listAttemptsForRun(runId).find((attempt) =>
+          attempt.nodeId === "upstream" && attempt.id !== earned.id && attempt.state === "completed");
+        assert.ok(fresh);
+        assert.notEqual(fresh.runner, null,
+          "reuse is enabled, but the fresh published-head review must execute instead of reusing the earlier pass");
+      }
     } finally {
       await h.stop();
     }

@@ -111,11 +111,15 @@ test("a resident can opt out of claude.ai connectors without disabling native pl
   const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
   await expectContentClearsBorder(confirm);
   await confirm.getByRole("button", { name: "Import all sources" }).click();
+  // Dismissal restores the opener, whose focus tooltip can coexist with hover help.
+  await expect(section.getByRole("radio", { name: "All native sources (not pinned)" })).toBeFocused();
   const optOut = section.getByRole("checkbox", { name: "Disable claude.ai connectors" });
   await optOut.hover();
-  await expect(page.locator(".tooltip")).toHaveText("Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident");
-  await expect(page.locator(".tooltip")).toBeVisible();
-  await expect(optOut).toHaveAccessibleDescription("Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident");
+  const description = "Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident";
+  const tooltip = page.locator(".tooltip").filter({ hasText: description });
+  await expect(tooltip).toHaveText(description);
+  await expect(tooltip).toBeVisible();
+  await expect(optOut).toHaveAccessibleDescription(description);
   await capture(page.locator("body"), "plugin-connectors-tooltip-repair");
   await expect(optOut).not.toBeChecked();
   await expect(section).toContainText("including Claude Docs");

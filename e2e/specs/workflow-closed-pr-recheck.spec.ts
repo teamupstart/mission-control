@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
@@ -420,3 +421,53 @@ test(`${trigger} releases unsent feedback for a superseded clean Inspector head`
     ? "04-unsent-feedback-recovered" : "07-explicit-recheck-recovered");
 });
 }
+
+// Issue #1574: the immutable gate state is seeded because publication and reviews are fake;
+// the fresh-review click uses the real route, capture, Persona runner and SSE repaint.
+test("a published tree changed after review offers fresh review without another push", async ({ dashboard, daemon }) => {
+  const runId = await seedRun(dashboard, daemon, "E2E published tree needs review");
+  const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+  strandAsClosed(daemon, runId);
+  withDaemonDb(daemon, (db) => {
+    const submission = db.prepare("SELECT id FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
+      .get(runId) as { id: string };
+    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
+    const gate = JSON.parse(row.gate_state_json);
+    Object.assign(gate, {
+      waitReason: "reviewed_tree_changed", targetHeadSha: null, failedHeadSha: null,
+      observedHeadSha: head, findingFingerprints: [],
+      reviewedContent: { submissionId: submission.id, headSha: FAILED_HEAD,
+        treeOid: "a".repeat(40), publishedTreeOid: tree },
+    });
+    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = 'inspector_reviewed_tree_changed', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify(gate), runId);
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(PR_KEY);
+    db.prepare("UPDATE inspector_prs SET state = 'open', observed_state = 'OPEN', head_sha = ?, observed_head_sha = ? WHERE key = ?")
+      .run(head, head, PR_KEY);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  const review = header.getByRole("button", { name: "Review pushed head" });
+  await expect(review).toBeVisible();
+  await dashboard.getByRole("tab", { name: /^Completion/ }).click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await expect(pane).toContainText("Pushing again will not resolve this hold");
+  await expect(pane).toContainText(`reviewed ${FAILED_HEAD.slice(0, 8)}`);
+  await expect(pane).toContainText(`published ${head.slice(0, 8)}`);
+  await expect(pane).toContainText(`tree ${tree.slice(0, 8)}`);
+  await shoot(dashboard, dashboard, "08-published-tree-needs-review");
+  await shoot(dashboard, header, "09-review-pushed-head-action");
+  await review.click();
+  const confirm = dashboard.getByRole("dialog", { name: "Review pushed head" });
+  await expect(confirm).toBeVisible();
+  await expectContentClearsBorder(confirm);
+  await expect(confirm).toContainText("even though the checkout has not changed since publication");
+  await confirm.getByRole("button", { name: /Start round 2|Preview fresh evidence/ }).click();
+  await expect(confirm).toBeHidden();
+  await expect.poll(() => withDaemonDb(daemon, (db) => db.prepare(`
+    SELECT COUNT(*) AS count FROM workflow_node_attempts a JOIN workflow_submissions s ON s.id = a.submission_id
+    WHERE s.run_id = ? AND s.round = 2 AND a.node_id = 'reviewer' AND a.state = 'completed' AND a.runner_id IS NOT NULL
+  `).get(runId) as { count: number }).count).toBe(1);
+  expect(execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(head);
+});

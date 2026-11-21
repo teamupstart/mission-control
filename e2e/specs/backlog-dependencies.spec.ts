@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard", "revision-change-ready-dispatch", "revision-change-missing-merge-proof"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard", "revision-change-ready-dispatch", "revision-change-missing-merge-proof", "revision-change-timeout"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -509,6 +509,74 @@ test("Revert discards a staged pin and its preview before a later Save", async (
   await dialog.getByRole("button", { name: "Cancel revision change" }).click();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();
+  expect(await read()).toEqual(before);
+});
+
+test("typing during a successful pin save retains the new draft with the saved dependencies", async ({ dashboard, daemon }) => {
+  const { dialog, task, read } = await revisionEditor(dashboard, daemon);
+  const replacement = await savedPlan(daemon, false, "replacement-plan");
+  await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
+  await dialog.getByLabel("Revision", { exact: true }).fill("1");
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  const saves: Record<string, unknown>[] = [];
+  await dashboard.route(`**/api/tasks/${task.id}/update`, async route => {
+    const patch = route.request().postDataJSON();
+    if (!patch.previewOnly) {
+      saves.push(patch);
+      if (saves.length === 1) { started(); await held; }
+    }
+    await route.continue();
+  });
+  try {
+    await dialog.getByRole("button", { name: "Save", exact: true }).click();
+    await requested;
+    await dialog.getByRole("textbox", { name: /^Title/ }).fill("Newer title typed during save");
+    await dialog.getByPlaceholder("What should this agent do?").fill("Newer intent typed during save");
+  } finally { release(); }
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Change pinned revision" })).toBeEnabled();
+  await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue("Newer title typed during save");
+  const savedPin = await read();
+  expect(savedPin.planInputs).toEqual([replacement.input]);
+  expect(savedPin.dependencies.map(edge => edge.type === "task" ? edge.taskId : null)).toEqual([replacement.source.id]);
+  expect(savedPin.title).toBe(task.title);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(saves).toHaveLength(2);
+  expect(saves[1]).not.toHaveProperty("dependencies");
+  expect(saves[1]).not.toHaveProperty("planInputChange");
+  const saved = await read();
+  expect(saved.title).toBe("Newer title typed during save");
+  expect(saved.intent).toBe("Newer intent typed during save");
+  expect(saved.planInputs).toEqual(savedPin.planInputs);
+  expect(saved.dependencies).toEqual(savedPin.dependencies);
+});
+
+test("a stalled revision preview times out and releases Cancel without saving", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  await dashboard.route(`**/api/tasks/${before.id}/update`, route => {
+    if (!route.request().postDataJSON().previewOnly) return route.continue();
+    // No response: exercise the real browser deadline and fetch cancellation.
+  });
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("button", { name: "Cancel revision change" })).toBeDisabled();
+  await expect(dialog.getByRole("alert")).toHaveText("Mission Control did not answer the preview within 15 seconds. Try again or cancel the revision change.", { timeout: 25_000 });
+  await expect(dialog.getByRole("button", { name: "Cancel revision change" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Preview revision change" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Dispatch now", exact: true })).toBeDisabled();
+  expect(await read()).toEqual(before);
+  await dialog.getByRole("textbox", { name: /^Title/ }).focus();
+  await shoot(dashboard, "revision-change-timeout");
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Dispatch now", exact: true })).toBeEnabled();
   expect(await read()).toEqual(before);
 });
 

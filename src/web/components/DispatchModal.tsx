@@ -933,9 +933,17 @@ export function DispatchLayer({
   // is what makes the next open re-read the row we just wrote, rather than re-showing
   // a working copy that is now merely a duplicate of it.
   const onEditSubmitted = useCallback(
-    (submitted: DispatchDraft) => {
+    (submitted: DispatchDraft, savedPinTask?: Task) => {
       const cur = editRef.current;
-      if (!cur || !draftsEqual(cur.draft, submitted)) return;
+      if (!cur) return;
+      if (!draftsEqual(cur.draft, submitted)) {
+        // Reconcile first: rebasing before this comparison would keep an otherwise
+        // consumed draft open. Newer typing keeps the dependencies just saved with the pin.
+        if (savedPinTask?.id === cur.id) setEdit({ ...cur, draft: {
+          ...cur.draft, dependencies: savedPinTask.dependencies.map(dependencyInputOf),
+        } });
+        return;
+      }
       revokeAttachments(cur.draft.attachments);
       setEdit(null);
       onClose();
@@ -1261,7 +1269,7 @@ function DispatchModal({
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
   onRevert: () => void;
   onClose: () => void;
-  onSubmitted: (submitted: DispatchDraft) => void;
+  onSubmitted: (submitted: DispatchDraft, savedPinTask?: Task) => void;
   /** Open the settings screen that grants what a refused launch named as missing. */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
   /** Open the Setup row that repairs what an environment warning reports. */
@@ -2826,7 +2834,7 @@ function DispatchModal({
       if (pinChange && r.task) update({ dependencies: r.task.dependencies.map(dependencyInputOf) });
       fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
     }
-    else onSubmitted(submitted);
+    else onSubmitted(submitted, pinChange ? r.task : undefined);
   }
 
   const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {

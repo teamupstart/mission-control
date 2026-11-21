@@ -42,19 +42,23 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
         files: files.split(",").map(file => file.trim()).filter(Boolean) },
       expectedUpdatedAt: task.updatedAt,
     };
+    const timeout = AbortSignal.timeout(15_000);
+    const connectionError = () => timeout.aborted
+      ? "Mission Control did not answer the preview within 15 seconds. Try again or cancel the revision change."
+      : "Could not reach Mission Control";
     try {
-      const result = await api.previewPlanChange(task.id, change);
+      const result = await api.previewPlanChange(task.id, change, timeout);
       const inputIndex = result.before?.planInputs?.findIndex(pin => pin.repoKey === change.from.repoKey
         && pin.planId === change.from.planId && pin.revision === change.from.revision
         && JSON.stringify(pin.files) === JSON.stringify(change.from.files)) ?? -1;
       const replacement = result.task?.planInputs?.[inputIndex];
-      if (!result.ok && result.status === undefined) setError("Could not reach Mission Control");
+      if (!result.ok && result.status === undefined) setError(connectionError());
       else if (!result.ok || !result.task || !result.before || !replacement) setError(result.error ?? "Could not preview revision");
       else {
         setPreview({ before: result.before, after: result.task, replacement });
         onChange({ change, dependencies: result.task.dependencies });
       }
-    } catch { setError("Could not reach Mission Control"); }
+    } catch { setError(connectionError()); }
     finally { setPending(false); onPending(false); }
   }
   if (!open) return <Tooltip label="Choose an exact replacement plan revision and preview its prerequisites"><button type="button" className="btn btn-ghost" disabled={disabled}

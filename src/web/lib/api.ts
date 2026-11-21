@@ -1248,8 +1248,8 @@ async function request<T extends ActionResult = ActionResult>(
   }
 }
 
-const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("POST", path, body, options);
 const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
@@ -2182,8 +2182,8 @@ export const api = {
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
   /** Validate a pinned revision change and return both task snapshots without saving. */
-  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange) =>
-    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }),
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange, signal?: AbortSignal) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }, { signal }),
   taskPlanDependencies: (id: string) =>
     fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**

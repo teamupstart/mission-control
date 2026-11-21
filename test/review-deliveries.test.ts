@@ -386,6 +386,22 @@ test("a bound row survives the prune tick for good; an unbound one past the wind
   assert.equal(old!.presentation?.kind, "review-message", "the old conversation still draws its card");
 });
 
+test("a delivery nobody read for a day is not pruned before its turn binds, across a restart", () => {
+  const t = fakeTranscript(); const k = conversationKey(); const now = Date.now();
+  const review = storeReview("s1");
+  const text = answerText([review]);
+  reserveReviewDelivery(t.conversation(k), text, undefined, now);
+  // The agent takes the answer and finishes; nobody opens the conversation or sends into it.
+  t.append("delivered", text, now + 1);
+  t.turns.push({ id: "reply", role: "assistant", text: "Mock reply", tools: [], ts: now + 2 });
+  // The goal tick runs a day and more later; then the daemon restarts.
+  assert.equal(pruneReviewDeliveries(now + 2 * LAG), 0, "no walk has expired it, so it is kept");
+  restart();
+  const [turn] = attribute("s1", t, k);
+  assert.equal(turn!.origin, "harness", "not 'you' when the operator finally opens it");
+  assert.deepEqual(turn!.presentation, { kind: "review-message", envelope: "answer", reviewIds: [review] });
+});
+
 test("contested and offset-less deliveries outlive the prune tick, so their turns never read as the operator's", () => {
   for (const kind of ["contested", "no offset"] as const) {
     restart();

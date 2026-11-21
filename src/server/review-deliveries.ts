@@ -7,7 +7,8 @@ import {
   deleteReviewDelivery,
   insertReviewDelivery,
   loadReviewDeliveries,
-  pruneUnboundReviewDeliveries,
+  deleteUnboundReviewDeliveries,
+  loadPrunableReviewDeliveries,
   settleReviewDeliverySteerEcho,
   updateReviewDeliveryEcho,
   type ReviewDeliveryRow,
@@ -372,12 +373,16 @@ const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
 const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
 
 /**
- * Drop ordinary unbound deliveries past the delivery window: they can no longer bind anything.
- * Bound rows are kept, so an old conversation reopened later still draws its cards, and so are
+ * Drop ordinary unbound deliveries past the delivery window that a binding walk has expired:
+ * they can no longer bind anything. Bound rows are kept, so an old conversation reopened later still draws its cards, and so are
  * contested and offset-less rows, which keep a turn with their words from reading as "you".
  */
 export function pruneReviewDeliveries(now = Date.now()): number {
-  const removed = pruneUnboundReviewDeliveries(now - DELIVERY_LAG_MS);
+  // Only rows a binding walk has expired: a row nobody has walked since it was sent may hold a
+  // turn already in the file, waiting for the first read to bind it, however old the row is.
+  // Such a row stays until a read or a send walks it, which binds it or expires it.
+  const expired = loadPrunableReviewDeliveries(now - DELIVERY_LAG_MS).filter((id) => ledger.isExpired(id));
+  const removed = deleteUnboundReviewDeliveries(expired);
   if (removed) ledger.forgetCaches();
   return removed;
 }

@@ -939,8 +939,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- bound row names is drawn as an answer card; a pasted marker never is. Bound rows are never
     -- pruned, so an old conversation keeps its cards. Contested rows and rows with no offset are
     -- never pruned either: they can never bind, and they are the record that a turn with their
-    -- words could be Mission Control's. Only an ordinary unbound row past the delivery window,
-    -- which the binding walk has expired, is pruned. No message text, only its fingerprint.
+    -- words could be Mission Control's. Only an ordinary unbound row past the delivery window
+    -- that a binding walk has actually expired is pruned; one no walk has reached is kept. No message text, only its fingerprint.
     --
     -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
     -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it
@@ -12682,18 +12682,26 @@ export function updateReviewDeliveryEcho(
 }
 
 /**
- * Delete ordinary unbound deliveries older than `olderThan`, live conversation or not: past the
- * delivery window the binding walk has expired them, and they say nothing about any turn. A
+ * Ordinary unbound deliveries older than `olderThan`: the only rows that may ever be pruned. A
  * bound row is never pruned, so an old conversation keeps its answer cards; nor is a contested
  * or offset-less row, which can never bind and is what keeps a turn with its words from being
- * read as the operator's (`DeliveryLedger.bound`).
+ * read as the operator's (`DeliveryLedger.bound`). Age alone does not make one of these
+ * prunable: the caller deletes only those a binding walk has actually expired.
  */
-export function pruneUnboundReviewDeliveries(olderThan: number): number {
+export function loadPrunableReviewDeliveries(olderThan: number): string[] {
+  return (openDb()
+    .prepare(`SELECT id FROM session_review_deliveries
+       WHERE message_id IS NULL AND contested = 0 AND transcript_offset IS NOT NULL AND delivered_at < ?`)
+    .all(olderThan) as unknown as Array<{ id: string }>).map((row) => row.id);
+}
+
+/** Delete these deliveries, each only if it is still unbound. */
+export function deleteUnboundReviewDeliveries(ids: readonly string[]): number {
+  if (!ids.length) return 0;
   return Number(
     openDb()
-      .prepare(`DELETE FROM session_review_deliveries
-         WHERE message_id IS NULL AND contested = 0 AND transcript_offset IS NOT NULL AND delivered_at < ?`)
-      .run(olderThan).changes,
+      .prepare(`DELETE FROM session_review_deliveries WHERE message_id IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+      .run(...ids).changes,
   );
 }
 

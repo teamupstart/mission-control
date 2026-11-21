@@ -392,8 +392,9 @@ that id prefix, so an operator message that starts with the marker is noted like
 `mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available"),
 never as the raw turn. A delivery's words on a turn no delivery claims drop the live label, as a
 delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
-(they keep a turn's "could be Mission Control" doubt); ordinary unbound rows past the delivery
-window are pruned on the goal tick. A steered delivery's plain echo record (the same words
+(they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
+delivery window is pruned on the goal tick only once a binding walk has expired it, so a turn
+nobody read for a day still binds when the conversation is opened. A steered delivery's plain echo record (the same words
 right after its mid-turn record, before any agent turn) is found by walking the file from the
 row's offset, so it is answered like its record whichever page holds it. That decision is
 persisted on the row (`steer_echo`), and any other send of the same words - an operator or

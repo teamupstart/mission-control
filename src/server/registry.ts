@@ -8877,8 +8877,9 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Drop ordinary review-message deliveries that never bound and are past the delivery window.
-   * Liveness does not matter: such a row can bind nothing and says nothing about any turn. Bound
+   * Drop ordinary review-message deliveries that never bound, are past the delivery window, and
+   * that a binding walk has expired. Liveness does not matter: such a row can bind nothing and
+   * says nothing about any turn. One no walk has reached yet is kept until one does. Bound
    * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
    * and offset-less rows, which keep a turn with their words from reading as the operator's.
    */

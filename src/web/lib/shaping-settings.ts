@@ -258,11 +258,13 @@ export function shapingLaterCommit(held: ShapingCommit | undefined, made: Shapin
 
 /**
  * What a frame is measured against before it counts as an import's receipt: whether the view
- * already showed the import stored when it was sent, and the shaper's revision then.
+ * already showed the import stored when it was sent, the shaper's revision then, and the daemon
+ * process that issued that revision.
  */
 export interface ShapingReceiptBaseline {
   shown: boolean;
   revision: string | null;
+  instance: string | null;
 }
 
 /** The baseline for `request`, an import, as `view` stood when it was sent. */
@@ -271,20 +273,24 @@ export function shapingReceiptBaseline(view: ShapingConfigView | null, request: 
   return {
     shown: view !== null && shapingIntentReflected(view, request),
     revision: view !== null && id !== null ? shapingViewRevision(view, id) : null,
+    instance: view !== null ? shapingViewCommit(view)?.instance ?? null : null,
   };
 }
 
 /**
  * Whether `config`, a frame that shows the import stored, is evidence of the import itself. When
  * the view already showed it stored as it was sent, as an identical reimport is, any frame would
- * show it: only one where the shaper's revision has moved on from the one it had then counts. With
- * no revision to compare, before or now, as from a daemon that sends none, no frame counts, and
- * only the daemon's answer can settle the outcome.
+ * show it: only one where the shaper's revision has moved on from the one it had then counts, and
+ * only when the same daemon process issued both, since a restarted daemon issues every revision
+ * anew. With no revision or process to compare, as from a daemon that sends none, no frame counts,
+ * and only the daemon's answer can settle the outcome.
  */
 export function shapingFrameIsReceipt(baseline: ShapingReceiptBaseline, config: ShapingConfigView, id: string): boolean {
   if (!baseline.shown) return true;
   const now = shapingViewRevision(config, id);
-  return baseline.revision !== null && now !== null && now !== baseline.revision;
+  const instance = shapingViewCommit(config)?.instance ?? null;
+  return baseline.revision !== null && now !== null && now !== baseline.revision
+    && baseline.instance !== null && instance === baseline.instance;
 }
 
 /**

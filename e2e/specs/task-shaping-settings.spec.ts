@@ -1990,10 +1990,16 @@ test("a save delayed past a reload of its tab never overwrites a newer save made
 async function holdShapingFrames(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const Native = window.EventSource;
-    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: (count?: number) => void; shapingFramesDelivered: number };
+    const hooks = window as unknown as {
+      holdShapingFrames: boolean;
+      releaseShapingFrames: (count?: number) => void;
+      shapingFramesDelivered: number;
+      shapingFramesQueued: () => number;
+    };
     const queued: Array<() => void> = [];
     hooks.holdShapingFrames = false;
     hooks.shapingFramesDelivered = 0;
+    hooks.shapingFramesQueued = () => queued.length;
     // With a count, delivers that many of the held frames, oldest first, and keeps holding the rest.
     hooks.releaseShapingFrames = (count) => {
       if (count === undefined) hooks.holdShapingFrames = false;
@@ -2213,6 +2219,9 @@ test("a late answer for another row's write never lowers the commit an imported 
   expect((await bAnswered).status()).toBe(200);
   await page.unroute("**/api/shaping");
   // The stream reaches B's commit but not the import's: A still shows a revision the daemon moved past.
+  // B's answer can come before its frames do, so the three are waited for before they are released.
+  const queued = () => page.evaluate(() => (window as unknown as { shapingFramesQueued: () => number }).shapingFramesQueued());
+  await expect.poll(queued).toBeGreaterThanOrEqual(3);
   await release(3);
   await expect.poll(delivered).toBe(held + 3);
   await expect(pill(page, "Waits B")).toHaveAccessibleName("Waits B: on");
@@ -2287,5 +2296,60 @@ test("after a save is refused as waiting too long, the tab's next save is number
   const sequence = Number(((await sent).headers()["x-mission-shaping-order"] ?? "").split(" ")[1]);
   expect(sequence).toBeGreaterThan(floor);
   await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("refused-as-expired");
+  await page.unroute("**/api/shaping");
+});
+
+test("a restarted daemon's snapshot never stands in for a lost identical import", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setFlag(daemon, true);
+  const shaper = commandShaper("restarted-notes", "Restarted notes");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  // Counts the snapshots the page's event stream delivers, one per connection.
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    const counter = window as unknown as { shapingSnapshots: number };
+    counter.shapingSnapshots = 0;
+    class CountingSnapshots extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = handler && ((event: MessageEvent) => {
+          handler(event);
+          try {
+            if ((JSON.parse(event.data as string) as { type?: string }).type === "snapshot") counter.shapingSnapshots += 1;
+          } catch { /* Not JSON: not a snapshot. */ }
+        });
+      }
+      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
+    }
+    window.EventSource = CountingSnapshots;
+  });
+  await page.reload();
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Restarted notes")).toHaveAccessibleName("Restarted notes: off");
+  const snapshots = () => page.evaluate(() => (window as unknown as { shapingSnapshots: number }).shapingSnapshots);
+  // The same manifest saved again is held before the daemon, then never arrives.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // The daemon restarts, and the page reconnects: the new process's snapshot shows the manifest
+  // stored under a revision of its own, which is no evidence of this import.
+  const before = await snapshots();
+  await daemon.crash();
+  await daemon.restart();
+  await expect.poll(snapshots, { timeout: 30_000 }).toBeGreaterThan(before);
+  goes.open();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
+  );
+  await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
 });

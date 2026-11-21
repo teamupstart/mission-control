@@ -736,19 +736,22 @@ test("a frame counts as an identical reimport's receipt only once its revision h
   // Stored as an import stores it: switched off.
   const stored = view({ shapers: [shaper], overrides: { same: false } });
   const request = { kind: "upsert", shaper } as ShapingIntent;
-  const withRevision = (revision: string | undefined): ShapingConfigView => {
+  const withRevision = (revision: string | undefined, instance = "daemon-a"): ShapingConfigView => {
     const { revisions: _revisions, ...rest } = stored;
-    return (revision === undefined ? rest : { ...rest, revisions: { same: revision } }) as ShapingConfigView;
+    const named = { ...rest, instance, commit: 3 };
+    return (revision === undefined ? named : { ...named, revisions: { same: revision } }) as ShapingConfigView;
   };
   // Already stored as it was sent, so only a moved revision is evidence.
   const known = shapingReceiptBaseline(withRevision("r1"), request);
-  assert.deepEqual(known, { shown: true, revision: "r1" });
+  assert.deepEqual(known, { shown: true, revision: "r1", instance: "daemon-a" });
+  // A restarted daemon's snapshot issues every revision anew: a different one is no evidence.
+  assert.equal(shapingFrameIsReceipt(known, withRevision("r9", "daemon-b"), "same"), false, "a restarted daemon's snapshot");
   assert.equal(shapingFrameIsReceipt(known, withRevision("r1"), "same"), false, "an unrelated write's frame");
   assert.equal(shapingFrameIsReceipt(known, withRevision("r2"), "same"), true);
   assert.equal(shapingFrameIsReceipt(known, withRevision(undefined), "same"), false, "a rolled-back daemon's frame");
   // A daemon that sends no revisions: nothing to compare, so no frame counts, an unrelated one included.
   const unknown = shapingReceiptBaseline(withRevision(undefined), request);
-  assert.deepEqual(unknown, { shown: true, revision: null });
+  assert.deepEqual(unknown, { shown: true, revision: null, instance: "daemon-a" });
   assert.equal(shapingFrameIsReceipt(unknown, withRevision(undefined), "same"), false);
   // Not stored when it was sent: a frame that shows it stored is evidence, as before.
   const fresh = shapingReceiptBaseline(view({}), request);

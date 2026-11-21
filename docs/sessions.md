@@ -2627,8 +2627,9 @@ with the note key whenever that rotates, as a blocker does. It ends on the
 session's own next turn: the turn that declared it is seen to end first, and a turn that starts
 after that is the wake, so the label drops with nobody clearing it. When Mission Control already
 read the session as idle at the moment it declared (a turn too short for a discovery sweep to
-catch, or hooks that arrived after the call), the declaring turn ends at the first idle reading
-that carries agent activity newer than the declaration, so the next turn is still the wake.
+catch, or hooks that arrived after the call), the declaring turn ends the first time its hooks
+or its transcript report it idle after the declaration, so the next turn is still the wake. A
+`report_status` made during that turn does not end it.
 Your own message to the session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
 past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
 that follows one of their deliveries leaves the wait standing until the next turn that nobody in

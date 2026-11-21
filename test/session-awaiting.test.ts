@@ -270,6 +270,30 @@ test("a late hook from a turn that declared while the registry read idle is not 
   assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
 });
 
+test("report_status inside a turn that declared while the registry read idle does not end that turn", () => {
+  // `report_status` stamps the session's activity mid-turn and leaves its state alone, so the
+  // registry still reads idle with a fresher stamp. That is not the turn ending: only the
+  // session's own lifecycle source reporting idle after the declaration is.
+  const registry = new Registry();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const at = Date.now() - 60_000;
+  hook(registry, d, "UserPromptSubmit", "go", at - 2_000);
+  hook(registry, d, "Stop", "go", at - 1_000);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
+
+  registry.applyStatus({ tmuxPane: (d.terminals[0] as { paneId: string }).paneId }, `agent-${d.syntheticId}`, "watching CI");
+  assert.equal(registry.getSession(d.syntheticId)?.state, "idle");
+  hook(registry, d, "PreToolUse", "go", at + 500);
+  assert.ok(registry.getAwaiting(d.syntheticId), "a report_status mid-turn settled the wait, so the turn's next tool call read as the wake");
+  hook(registry, d, "Stop", "go", at + 1_000);
+  assert.ok(registry.getAwaiting(d.syntheticId));
+
+  hook(registry, d, "UserPromptSubmit", "the build finished", at + 120_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null);
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
 test("a hookless session that declares while it reads idle still ends its wait on the next turn", () => {
   // A transcript-read session whose declaring turn was too short for any sweep to see working.
   // Its end moves only `lastActivity`; the sweep still emits that, and the fresher reading is

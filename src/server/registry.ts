@@ -9510,7 +9510,7 @@ export class Registry extends EventEmitter {
       this.awaitings.set(key, undecided);
       return;
     }
-    if (record.settledAt === null && declaringTurnEnded(s, record, last)) {
+    if (record.settledAt === null && this.declaringTurnEnded(s, record, last)) {
       if (record.undecidedTurn) {
         // The turn ended with no prompt ever reported. On a hook-instrumented session every
         // delivery Mission Control types reports its prompt, so a turn without one is the
@@ -9530,6 +9530,40 @@ export class Registry extends EventEmitter {
       upsertSessionAwaiting(next);
       this.awaitings.set(key, next);
     }
+  }
+
+  /**
+   * Has the turn that declared (or re-declared) this wait ended, as `s` reads now? `last` is
+   * the last confirmed state the watch saw.
+   *
+   * Ordinarily that is the session leaving its turn for idle. A wait declared while the registry
+   * already read idle sees no such transition: the turn was too short for a discovery sweep to
+   * catch, or its hooks lost the race with the MCP call. Its end is then the session's own
+   * lifecycle source reporting idle at a time after the declaration (`idleReportedAt`), which a
+   * Stop hook or a transcript read can only do once the declaring call has returned. Never
+   * `Session.lastActivity`: `report_status` and a driver dialog stamp that mid-turn without the
+   * turn ending. Strictly after, so the reading the wait was declared against never settles it.
+   */
+  private declaringTurnEnded(s: Session, record: SessionAwaitingRecord, last: Session["state"] | undefined): boolean {
+    if (s.state !== "idle") return false;
+    if (last !== "idle") return true;
+    const idleAt = this.idleReportedAt(s);
+    return idleAt !== null && idleAt > record.awaiting.updatedAt;
+  }
+
+  /**
+   * When this session's own lifecycle source last reported it idle, in that source's time, or
+   * null when it reports anything else or nothing fresh. The same precedence discovery applies
+   * (`mergeDiscovered`): a fresh hook overlay, else a fresh transcript read. Only those two:
+   * each changes only when the agent's own lifecycle moves, unlike the session's activity stamp.
+   */
+  private idleReportedAt(s: Session): number | null {
+    const now = Date.now();
+    const overlay = this.overlayFor(s);
+    if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) return overlay.state === "idle" ? overlay.lastActivity : null;
+    const passive = this.passiveStateFor(s);
+    if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) return passive.state === "idle" ? passive.lastActivity : null;
+    return null;
   }
 
   /**
@@ -11649,23 +11683,6 @@ const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
  * this only has to outlast a slow hook; past it, the person's turn has long since been judged.
  */
 const AWAITING_CONTEST_WINDOW_MS = 2 * 60_000;
-
-/**
- * Has the turn that declared (or re-declared) this wait ended, as `s` reads now? `last` is
- * the last confirmed state the watch saw.
- *
- * Ordinarily that is the session leaving its turn for idle. A wait declared while the registry
- * already read idle sees no such transition: the turn was too short for a discovery sweep to
- * catch, or its hooks lost the race with the MCP call. Its end is then an idle reading carrying
- * agent activity newer than the declaration, which a hook, a driver event or the transcript
- * can only produce after the declaring call returned. Strictly newer, so the declaration's own
- * emit, made on the reading it was declared against, never settles it.
- */
-function declaringTurnEnded(s: Session, record: SessionAwaitingRecord, last: Session["state"] | undefined): boolean {
-  if (s.state !== "idle") return false;
-  if (last !== "idle") return true;
-  return s.lastActivity !== null && s.lastActivity > record.awaiting.updatedAt;
-}
 
 /** Receipts kept per conversation: enough for a burst of steers, never an unbounded log. */
 const STEER_RECEIPTS_KEPT = 5;

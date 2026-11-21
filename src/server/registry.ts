@@ -9448,6 +9448,8 @@ export class Registry extends EventEmitter {
       // agent has just said it is still waiting: that turn can no longer be the wake.
       undecidedTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
       redeclaredInTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
+      // Turns already judged stay judged across a re-declaration.
+      judgedTurnAt: this.awaitings.get(key)?.judgedTurnAt ?? null,
     };
     upsertSessionAwaiting(record);
     this.awaitings.set(key, record);

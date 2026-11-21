@@ -18,6 +18,7 @@ process.env.MISSION_HOME = home;
 
 const {
   openDb, loadSessionAwaitings, markWorkCycleActive, completeWorkCycle, workCycleFor, getQueueRow,
+  upsertSessionAwaiting, deleteSessionAwaiting,
 } = await import("../src/server/db.ts");
 const { resolvedSessionIntent } = await import("../src/shared/goal.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
@@ -1587,4 +1588,23 @@ test("the daemon refuses the wrap-up ask while a wait stands, keeps the reset op
   assert.equal(registry.reportAwaiting(d.syntheticId, body(past, 10), past).ok, true);
   assert.ok(registry.getAwaiting(d.syntheticId), "the overdue wait still stands on the card");
   assert.equal((await ask({})).status, 200, "an overdue wait still held the wrap-up ask");
+});
+
+test("the last judged transcript turn is stored with the wait, so a restart does not judge that turn again", () => {
+  const record = {
+    noteKey: "judged-turn-roundtrip", taskId: null, sessionId: "s-judged",
+    awaiting: {
+      id: "aw-judged", what: "CI checks", wakeSource: "command" as const, expectedBy: Date.now() + 600_000,
+      referenceUrl: null, details: null, startedAt: 1_000, updatedAt: 1_000,
+    },
+    settledAt: 2_000, pendingNudges: [], undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt: 2_500,
+  };
+  upsertSessionAwaiting(record);
+  try {
+    assert.equal(loadSessionAwaitings().find((row) => row.noteKey === record.noteKey)?.judgedTurnAt, 2_500);
+    upsertSessionAwaiting({ ...record, judgedTurnAt: null });
+    assert.equal(loadSessionAwaitings().find((row) => row.noteKey === record.noteKey)?.judgedTurnAt, null);
+  } finally {
+    deleteSessionAwaiting(record.noteKey);
+  }
 });

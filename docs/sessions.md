@@ -2648,7 +2648,9 @@ arrives after it starts is decided when it arrives, even across a restart; a tur
 reports one is the session's own wake on a session whose hooks report prompts, and uses up the
 oldest delivery on one that never does (a harness without hooks, or an SDK launch with no prompt
 hook). A turn a session without hooks starts and finishes between two discovery sweeps is
-still judged, from the turn marker its transcript records. Only confirmed readings of the
+still judged, from the turn marker its transcript records, compared with the last turn already
+judged in the transcript's own time, so a sweep that reads a nudge's turn late does not hide a
+real wake that began before that sweep. Only confirmed readings of the
 session's state count:
 rediscovering a session after a restart is never itself read as a wake, and a turn already
 under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made

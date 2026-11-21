@@ -1275,7 +1275,9 @@ server.registerTool(
   async ({ resolution }) => {
     try {
       const res = await http("/mcp/awaiting/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution }, true);
-      const body = (await res.json()) as { cleared?: boolean; error?: string };
+      // A non-JSON reply (an empty body, an HTML error page) still reached Mission Control: report
+      // its real status rather than "could not reach".
+      const body = (await res.json().catch(() => ({}))) as { cleared?: boolean; error?: string };
       if (!res.ok) {
         return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
       }

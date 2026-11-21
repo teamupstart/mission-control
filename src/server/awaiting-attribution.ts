@@ -74,7 +74,7 @@ export function nudgeContested(nudge: PendingNudge): boolean {
 export function useUpNudge(
   record: SessionAwaitingRecord,
   prompt: readonly string[],
-  patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn" | "redeclaredInTurn">>,
+  patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn" | "redeclaredInTurn" | "judgedTurnAt">>,
 ): SessionAwaitingRecord | null {
   const i = record.pendingNudges.findIndex((nudge) => prompt.includes(nudge.key));
   if (i < 0 || nudgeContested(record.pendingNudges[i]!)) return null;
@@ -106,6 +106,10 @@ export function declaringTurnEnded(record: SessionAwaitingRecord, obs: TurnObser
  * sweeps, or the declaring (or an undecided) turn ending.
  */
 export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): Judgement {
+  // The transcript time of the latest turn start this reading accounts for, kept as
+  // `judgedTurnAt` whenever a turn is judged or settled. Turn markers are compared with it, in the
+  // transcript's own time, never with `settledAt`, which is when the daemon happened to look.
+  const judgedTurnAt = obs.passiveTurnStartedAt ?? record.judgedTurnAt;
   // A turn STARTING, as seen: the last confirmed state was not a turn and this one is. With none
   // seen yet in this process (a restart, or a wait reloaded at startup), a session confirmed in a
   // turn while its wait stood settled started that turn unobserved, and it is judged as a turn
@@ -116,24 +120,27 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
     if (record.pendingNudges.length === 0) return { next: record, wake: true };
     // Settled by the turn's prompt when it is already known (a prompt hook started the turn).
     if (obs.prompt) {
-      const used = useUpNudge(record, obs.prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false });
+      const used = useUpNudge(record, obs.prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt });
       return used ? { next: used, wake: false } : { next: record, wake: true };
     }
     // Otherwise decided when its prompt arrives, or when it ends without one. Stored, so a
     // restart before the prompt arrives can still decide this turn.
-    return { next: { ...record, settledAt: null, undecidedTurn: true, redeclaredInTurn: false }, wake: false };
+    return { next: { ...record, settledAt: null, undecidedTurn: true, redeclaredInTurn: false, judgedTurnAt }, wake: false };
   }
   // A turn a session without hooks started and finished between two discovery sweeps: the
-  // transcript read is idle again, but its turn marker has moved past the wait's settle. Judged
-  // as a turn that has already ended, the way an undecided turn's end is.
+  // transcript read is idle again, but its turn marker has moved past the last turn judged.
+  // Judged as a turn that has already ended, the way an undecided turn's end is. Compared in
+  // transcript time (`judgedTurnAt`, or the settle before any marker was judged): a sweep that
+  // reaches an earlier turn's idle report late must not push the baseline past a later turn's
+  // start, and an unchanged read cannot spend a second delivery.
   if (
-    record.settledAt !== null && !turnStarted && obs.state === "idle"
-    && obs.passiveTurnStartedAt !== null && obs.passiveTurnStartedAt > record.settledAt
+    record.settledAt !== null && !turnStarted && obs.state === "idle" && obs.passiveTurnStartedAt !== null
+    && obs.passiveTurnStartedAt > (record.judgedTurnAt ?? record.settledAt)
   ) {
     const oldest = record.pendingNudges[0];
     if (!oldest || nudgeContested(oldest)) return { next: record, wake: true };
     return {
-      next: { ...record, settledAt: Math.max(obs.now, obs.passiveTurnStartedAt), pendingNudges: record.pendingNudges.slice(1) },
+      next: { ...record, judgedTurnAt: obs.passiveTurnStartedAt, pendingNudges: record.pendingNudges.slice(1) },
       wake: false,
     };
   }
@@ -154,13 +161,13 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
       if (ownTurn && !record.redeclaredInTurn) return { next: record, wake: true };
       return {
         next: {
-          ...record, settledAt: obs.now, undecidedTurn: false, redeclaredInTurn: false,
+          ...record, settledAt: obs.now, undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt,
           pendingNudges: ownTurn ? record.pendingNudges : record.pendingNudges.slice(1),
         },
         wake: false,
       };
     }
-    return { next: { ...record, settledAt: obs.now }, wake: false };
+    return { next: { ...record, settledAt: obs.now, judgedTurnAt }, wake: false };
   }
   return { next: record, wake: false };
 }

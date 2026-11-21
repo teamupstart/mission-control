@@ -18,7 +18,7 @@ function wait(over: Partial<SessionAwaitingRecord> = {}): SessionAwaitingRecord 
       id: "aw-1", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 600_000,
       referenceUrl: null, details: null, startedAt: 1_000, updatedAt: 1_000,
     },
-    settledAt: 2_000, pendingNudges: [], undecidedTurn: false, redeclaredInTurn: false,
+    settledAt: 2_000, pendingNudges: [], undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt: null,
     ...over,
   };
 }
@@ -131,8 +131,40 @@ test("a turn a session without hooks starts and ends between sweeps is judged fr
   const used = judgeTurn(pending, reading({ passiveTurnStartedAt: 3_000 }));
   assert.equal(used.wake, false);
   assert.deepEqual(used.next.pendingNudges, []);
-  assert.equal(used.next.settledAt, 5_000, "settled past the marker, so the same marker is never judged twice");
+  assert.equal(used.next.judgedTurnAt, 3_000, "the marker is kept as judged, so the same marker is never judged twice");
+  assert.equal(used.next.settledAt, 2_000, "the settle is not moved to the sweep's own time");
   assert.equal(judgeTurn(pending, reading({ passiveTurnStartedAt: 1_500 })).next, pending, "a marker from before the settle");
+});
+
+test("passive turns are compared in transcript time: a late sweep of an automated turn does not hide the real wake after it", () => {
+  // An automated delivery's turn ends at 3,000 and the session's real wake starts at 4,000, also
+  // finishing before the next look. The sweep at 5,000 is still reading the automated turn's idle
+  // report, whose marker is that turn's start.
+  const pending = wait({ pendingNudges: [{ at: 2_400, key: "wrap-up" }] });
+  const automated = judgeTurn(pending, reading({ now: 5_000, passiveTurnStartedAt: 2_500, reportsPrompts: false }));
+  assert.equal(automated.wake, false);
+  assert.deepEqual(automated.next.pendingNudges, []);
+  assert.equal(automated.next.judgedTurnAt, 2_500, "the judged turn is kept in transcript time, not as the sweep's 5,000");
+  const again = judgeTurn(automated.next, reading({ now: 5_500, passiveTurnStartedAt: 2_500, reportsPrompts: false }));
+  assert.equal(again.next, automated.next, "the same transcript read again changes nothing");
+  const real = judgeTurn(automated.next, reading({ now: 6_000, passiveTurnStartedAt: 4_000, reportsPrompts: false }));
+  assert.equal(real.wake, true, "the real wake's 4,000 start is past the judged turn, though before the 5,000 sweep");
+});
+
+test("an unchanged transcript read never spends a second delivery", () => {
+  const two = wait({ pendingNudges: [nudge("first"), nudge("second")] });
+  const once = judgeTurn(two, reading({ passiveTurnStartedAt: 3_000 })).next;
+  assert.deepEqual(once.pendingNudges.map((n) => n.key), ["second"]);
+  assert.equal(judgeTurn(once, reading({ now: 9_000, passiveTurnStartedAt: 3_000 })).next, once);
+});
+
+test("the declaring turn's end keeps that turn's transcript marker, so a later turn is judged against it, not the sweep", () => {
+  const declared = wait({ settledAt: null });
+  const settled = judgeTurn(declared, reading({ ...turnEnd, now: 5_000, passiveTurnStartedAt: 1_500 })).next;
+  assert.equal(settled.settledAt, 5_000);
+  assert.equal(settled.judgedTurnAt, 1_500);
+  assert.equal(judgeTurn(settled, reading({ now: 6_000, passiveTurnStartedAt: 1_500 })).next, settled, "the declaring turn is not judged again");
+  assert.equal(judgeTurn(settled, reading({ now: 6_000, passiveTurnStartedAt: 4_000 })).wake, true, "a turn that began before the sweep settled");
 });
 
 test("automated deliveries: one entry each, a release removes only its own, and one just after a person's same words starts contested", () => {

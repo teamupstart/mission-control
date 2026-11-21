@@ -60,6 +60,9 @@ is still decided, so a delivery that started it is used up, but it no longer end
 `session_id` is the last session seen holding the wait, so a clear with no live holder (a prune
 after a restart, the preview switched off) still files its `session_awaiting_cleared` row under a
 session.
+`judged_turn_at` is the transcript time of the latest turn start the wait has already judged,
+so a transcript turn marker is compared in the transcript's own time rather than against when a
+sweep happened to look, and a turn already judged is not judged again after a restart.
 
 ## Full-database recovery points
 

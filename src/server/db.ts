@@ -4568,6 +4568,9 @@ function migrate(d: DatabaseSync): void {
   // `session_id`: the last session seen holding the wait, so a clear with no live holder (a
   // prune after a restart, the preview switched off) still logs its audit row under a session.
   addColumn(d, "session_awaitings", "session_id", "TEXT");
+  // `judged_turn_at`: the transcript time of the latest turn start the wait has judged, so a turn
+  // marker is compared in transcript time rather than against when a sweep happened to look.
+  addColumn(d, "session_awaitings", "judged_turn_at", "INTEGER");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -12817,6 +12820,12 @@ export interface SessionAwaitingRecord {
    * just said it is still waiting. False whenever `undecidedTurn` is.
    */
   redeclaredInTurn: boolean;
+  /**
+   * The transcript time of the latest turn start the wait has judged or settled, or null before
+   * any was read. A transcript's turn marker counts as a new turn only past this, in the
+   * transcript's own time.
+   */
+  judgedTurnAt: number | null;
 }
 
 interface SessionAwaitingRow {
@@ -12835,10 +12844,11 @@ interface SessionAwaitingRow {
   undecided_turn: number | null;
   redeclared_in_turn: number | null;
   session_id: string | null;
+  judged_turn_at: number | null;
 }
 
 const SESSION_AWAITING_COLUMNS = `note_key, task_id, awaiting_id, what, wake_source, expected_by,
-  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn, session_id`;
+  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn, session_id, judged_turn_at`;
 
 /** One automated delivery a waiting session has not yet started a turn for. */
 export interface PendingNudge {
@@ -12898,6 +12908,7 @@ function rowToSessionAwaiting(r: SessionAwaitingRow): SessionAwaitingRecord {
     pendingNudges: parsePendingNudges(r.pending_nudges),
     undecidedTurn: r.undecided_turn === 1,
     redeclaredInTurn: r.undecided_turn === 1 && r.redeclared_in_turn === 1,
+    judgedTurnAt: r.judged_turn_at,
   };
 }
 
@@ -12915,14 +12926,15 @@ export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
   openDb()
     .prepare(
       `INSERT INTO session_awaitings (${SESSION_AWAITING_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          task_id=excluded.task_id, awaiting_id=excluded.awaiting_id, what=excluded.what,
          wake_source=excluded.wake_source, expected_by=excluded.expected_by,
          reference_url=excluded.reference_url, details=excluded.details,
          started_at=excluded.started_at, updated_at=excluded.updated_at, settled_at=excluded.settled_at,
          pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn,
-         redeclared_in_turn=excluded.redeclared_in_turn, session_id=excluded.session_id`,
+         redeclared_in_turn=excluded.redeclared_in_turn, session_id=excluded.session_id,
+         judged_turn_at=excluded.judged_turn_at`,
     )
     .run(
       record.noteKey, record.taskId, a.id, a.what, a.wakeSource, a.expectedBy, a.referenceUrl,
@@ -12931,6 +12943,7 @@ export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
       record.undecidedTurn ? 1 : 0,
       record.undecidedTurn && record.redeclaredInTurn ? 1 : 0,
       record.sessionId,
+      record.judgedTurnAt,
     );
 }
 

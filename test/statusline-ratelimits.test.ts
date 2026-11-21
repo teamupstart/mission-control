@@ -83,17 +83,72 @@ test("the registry holds the last reading, and a payload without windows never c
   registry.applyStatusLine({ ...ingest({ session_id: "sess-apikey" }), env });
   assert.equal(registry.snapshot().fleetCost?.rateLimits?.fiveHour?.usedPercentage, 42.5);
 
-  // A payload carrying only the seven-day window keeps the five-hour one we already know.
+  // A payload carrying only the five-hour window keeps the seven-day one we already know.
   registry.applyStatusLine({
     ...ingest({
       session_id: "sess-rl",
-      rate_limits: { seven_day: { used_percentage: 91, resets_at: nowSec + 6 * 86400 } },
+      rate_limits: { five_hour: { used_percentage: 50, resets_at: FIVE_HOUR.resets_at } },
     }),
     env,
   });
   const rl = registry.snapshot().fleetCost?.rateLimits;
-  assert.equal(rl?.fiveHour?.usedPercentage, 42.5, "held from the earlier reading");
-  assert.equal(rl?.sevenDay?.usedPercentage, 91, "refreshed by this one");
+  assert.equal(rl?.fiveHour?.usedPercentage, 50, "refreshed by this one");
+  assert.equal(rl?.sevenDay?.usedPercentage, 83, "held from the earlier reading");
+});
+
+test("a seven-day-only reading drops the five-hour window, even one that has not reset", () => {
+  // Ultra (formerly Max 20x) has no five-hour limit, so Claude reports only the seven-day
+  // window for it. A five-hour reading saved before the account changed plan must go on
+  // the first such report, not linger as a bar until its old reset time passes.
+  const registry = new Registry();
+  const env = { tmuxPane: "%1", weztermPane: undefined, termProgram: "WezTerm" };
+  registry.applyStatusLine({
+    ...ingest({ session_id: "sess-ultra", rate_limits: { five_hour: FIVE_HOUR, seven_day: SEVEN_DAY } }),
+    env,
+  });
+  assert.equal(registry.snapshot().fleetCost?.rateLimits?.fiveHour?.usedPercentage, 42.5);
+
+  registry.applyStatusLine({
+    ...ingest({
+      session_id: "sess-ultra",
+      rate_limits: { seven_day: { used_percentage: 84, resets_at: SEVEN_DAY.resets_at } },
+    }),
+    env,
+  });
+  const fleet = registry.snapshot().fleetCost;
+  assert.equal(fleet?.lastKnownRateLimits?.fiveHour, null, "the unexpired five-hour reading is gone");
+  assert.equal(fleet?.rateLimits?.fiveHour, null);
+  assert.equal(fleet?.rateLimits?.sevenDay?.usedPercentage, 84);
+
+  // A payload with no windows at all is still not a clearing signal for anything.
+  registry.applyStatusLine({ ...ingest({ session_id: "sess-apikey" }), env });
+  assert.equal(registry.snapshot().fleetCost?.rateLimits?.sevenDay?.usedPercentage, 84);
+});
+
+test("a five-hour-only reading holds an expired seven-day window as last reported", () => {
+  // Every plan has a weekly limit, so a reading without one is not evidence the window is
+  // gone. An expired seven-day value stays as the last report (rendered "awaiting update")
+  // while the fresh five-hour window replaces the old one.
+  const registry = new Registry();
+  const env = { tmuxPane: "%1", weztermPane: undefined, termProgram: "WezTerm" };
+  registry.applyStatusLine({
+    ...ingest({
+      session_id: "sess-weekly",
+      rate_limits: { five_hour: FIVE_HOUR, seven_day: { used_percentage: 97, resets_at: nowSec - 60 } },
+    }),
+    env,
+  });
+  registry.applyStatusLine({
+    ...ingest({
+      session_id: "sess-weekly",
+      rate_limits: { five_hour: { used_percentage: 12, resets_at: FIVE_HOUR.resets_at } },
+    }),
+    env,
+  });
+  const fleet = registry.snapshot().fleetCost;
+  assert.equal(fleet?.lastKnownRateLimits?.sevenDay?.usedPercentage, 97, "held as the last report");
+  assert.equal(fleet?.rateLimits?.sevenDay, null, "but not live: its reset has passed");
+  assert.equal(fleet?.rateLimits?.fiveHour?.usedPercentage, 12, "the five-hour window refreshed");
 });
 
 test("a window whose reset has passed is dropped rather than shown as stale", () => {

@@ -14,6 +14,7 @@ import {
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { stateDisplay } from "./format.ts";
+import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
 /**
  * The one display rule for a session correlated with a Pipeline commission.
@@ -259,7 +260,7 @@ export interface AttentionInput {
 export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalKey[] {
   switch (item.kind) {
     case "session_reviews":
-      return item.reviews.map((review) => ({ itemId: reviewDismissalId(review.id), occurrence: QUESTION_OCCURRENCE }));
+      return item.reviews.map((review) => ({ itemId: reviewDismissalId(review.id), occurrence: questionOccurrence(review) }));
     case "ensemble_decision":
       return [{ itemId: item.id, occurrence: "" }];
     case "session_dialog": {
@@ -296,6 +297,16 @@ function reviewDismissalId(reviewId: string): string {
 const QUESTION_OCCURRENCE = "";
 
 /**
+ * A question's occurrence: its id alone, until a "Remind me later" brings it back. The operator
+ * asked for that reminder, so a question they had hidden from the inbox shows again when it
+ * returns - and again on each later return, which is a new reminder each time.
+ */
+function questionOccurrence(review: ReviewItem): string {
+  const reminded = review.snooze?.remindedAt;
+  return reminded == null ? QUESTION_OCCURRENCE : occurrenceOf("reminder", String(reminded));
+}
+
+/**
  * A short, stable fingerprint of the parts that make a row the row it is.
  *
  * 32-bit FNV-1a over the parts joined with a NUL separator (so `["ab", "c"]` and `["a", "bc"]`
@@ -327,6 +338,8 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  *
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
+ *     Sessions stopped on their questions lead it; one still working past message-mode
+ *     questions follows (`stoppedOnQuestions`).
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
  *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
  *  5. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
@@ -381,7 +394,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   for (const review of input.reviews) {
     const session = sessionById.get(review.sessionId);
     if (!session || isSettling(session)) continue;
-    if (dismissed.get(reviewDismissalId(review.id)) === QUESTION_OCCURRENCE) {
+    if (dismissed.get(reviewDismissalId(review.id)) === questionOccurrence(review)) {
       represented.add(session.id);
       continue;
     }
@@ -389,12 +402,23 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     if (group) group.push(review);
     else bySession.set(review.sessionId, [review]);
   }
-  const groups = [...bySession.entries()].map(([sessionId, reviews]) => ({
-    session: sessionById.get(sessionId)!,
-    reviews: [...reviews].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
-  }));
+  // Sessions that have stopped on their questions lead, then oldest question first. A row of
+  // message-mode questions (`async-input`) whose agent is still working past them waits below
+  // every stopped one: it is owed an answer, but nothing has stopped for it yet. With the flag off
+  // every review is one its agent waits on inside a call, so every row is stopped and the order
+  // is oldest first, exactly as before.
+  const pausedResidents = pausedResidentSessionIds(input.residentRuns, input.sessions);
+  const groups = [...bySession.entries()].map(([sessionId, reviews]) => {
+    const session = sessionById.get(sessionId)!;
+    return {
+      session,
+      stopped: stoppedOnQuestions(asQuestionAgent(session, pausedResidents), reviews),
+      reviews: [...reviews].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
+    };
+  });
   groups.sort(
     (a, b) =>
+      Number(b.stopped) - Number(a.stopped) ||
       (a.reviews[0]?.createdAt ?? 0) - (b.reviews[0]?.createdAt ?? 0) ||
       (a.session.id < b.session.id ? -1 : 1),
   );

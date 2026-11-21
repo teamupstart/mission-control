@@ -5,13 +5,15 @@ import type { Task } from "../src/shared/types.ts";
 import { Registry } from "../src/server/registry.ts";
 import { buildApp } from "../src/server/routes.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
-import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
+import { resolveGrillFirstPin, type CreateTaskInput, type TaskManager } from "../src/server/tasks.ts";
+import { applySkillsConfig } from "../src/server/skills/config.ts";
 import { SERVER_TOURS, serverTour, tourRecipeFor } from "../src/server/tours.ts";
 import { enableExperience, experienceFacts } from "./helpers/experience-assertions.ts";
 
 function tourTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "tour-task",
+    workUnitId: null,
     title: "Tour demo",
     intent: "[Mission Control See the work tour demo]\n\nWait and ask.",
     kind: "ship",
@@ -92,6 +94,8 @@ test("the tour route fixes Sol, the harmless prompt, and request_input at the se
   assert.match(String(captured.created?.intent), /request_input/);
   assert.deepEqual(captured.options, {
     overrideDisabled: true,
+    // The operator started this tour, so a Pause all or a priority session does not hold it.
+    overridePauseHold: true,
     missionMcp: { tools: ["request_input"] },
   });
   const actions = experienceFacts("mission.action.result").filter((e) => e.facts.action === "help.tour_dispatch");
@@ -372,6 +376,23 @@ test("the See the work recipes stay byte-for-byte what they were", () => {
   assert.equal(tour.operations.preview?.dispatch, undefined);
   assert.equal(serverTour("nope"), null);
   assert.equal(serverTour(undefined), null);
+});
+
+test("no tour recipe takes its kind's Grill me first default", () => {
+  applySkillsConfig({ grillFirstKinds: ["ship", "chat"] });
+  try {
+    for (const tour of Object.values(SERVER_TOURS)) {
+      for (const [operation, recipe] of Object.entries(tour.operations)) {
+        assert.equal(
+          resolveGrillFirstPin(recipe.create.kind, recipe.create.grillFirst),
+          false,
+          `${tour.id} ${operation}`,
+        );
+      }
+    }
+  } finally {
+    applySkillsConfig({ grillFirstKinds: [] });
+  }
 });
 
 test("identity is matched per recipe, so cleanup names one outcome and only one", () => {

@@ -59,6 +59,7 @@ export function InProgressRow({
   startedAt,
   pinned = false,
   now,
+  frozenAt = null,
 }: {
   agentLabel: string;
   activity: string;
@@ -72,9 +73,30 @@ export function InProgressRow({
    * row in Settings must not tick. Omitted, the row reads the wall clock every second.
    */
   now?: number;
+  /**
+   * When the operator's pause froze this turn, or null while it runs. A frozen turn is not
+   * happening, so the row stops spinning, its clock stops at the freeze, and it says so.
+   */
+  frozenAt?: number | null;
 }): React.JSX.Element {
-  const live = useNow(startedAt !== null && now === undefined);
-  const elapsed = startedAt === null ? null : duration((now ?? live) - startedAt);
+  const frozen = frozenAt != null;
+  const live = useNow(startedAt !== null && now === undefined && !frozen);
+  const elapsed = startedAt === null ? null : duration((frozen ? frozenAt : (now ?? live)) - startedAt);
+  if (frozen) {
+    const when = new Date(frozenAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return (
+      <Tooltip label={`Paused by the operator at ${when}, in the middle of: ${activity}. Nothing is sent or received until it resumes.`}>
+        <p className={`turn-progress is-frozen${terminal ? " pty-entry" : ""}${pinned ? " is-pinned" : ""}`}>
+          <span className="turn-role turn-progress-who">{agentLabel}</span>
+          <span className="turn-progress-glyph" aria-hidden>
+            ❚❚
+          </span>
+          <span className="turn-progress-text">Paused at {when} · was {activity}</span>
+          {elapsed !== null && <span className="turn-progress-clock">{elapsed}</span>}
+        </p>
+      </Tooltip>
+    );
+  }
   return (
     <Tooltip
       label={`What ${agentLabel} reports it is doing right now: ${activity}. A live report from the session, not a turn the transcript recorded - the next real turn replaces it. The clock counts from the prompt that started this turn.`}

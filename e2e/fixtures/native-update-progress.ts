@@ -29,6 +29,27 @@ print(String(data: try! JSONSerialization.data(withJSONObject: windows), encodin
   return (pid: number) => JSON.parse(execFileSync(executable, [String(pid)], {encoding: 'utf8'})) as Array<Record<string, unknown>>;
 }
 
+/**
+ * Whether this Mac's console session is behind the lock screen right now.
+ *
+ * While it is, the window server keeps an app's own alert off screen: Electron's startup error
+ * box is created and its text recorded, but CoreGraphics never reports it on screen, so a spec
+ * that proves visibility can only time out. That is a fact about the machine, not about the
+ * product - an unattended run overnight is exactly when it is true - so a caller asks this and
+ * says what it could not observe instead of failing. `osascript` dialogs are not affected.
+ */
+export function consoleScreenLocked(directory: string): boolean {
+  const source = join(directory, 'screen-locked.swift');
+  const executable = join(directory, 'screen-locked');
+  writeFileSync(source, `import Foundation
+import CoreGraphics
+let session = CGSessionCopyCurrentDictionary() as? [String: Any] ?? [:]
+print((session["CGSSessionScreenIsLocked"] as? Bool) == true ? "locked" : "unlocked")
+`);
+  execFileSync('/usr/bin/swiftc', [source, '-o', executable]);
+  return execFileSync(executable, [], {encoding: 'utf8'}).trim() === 'locked';
+}
+
 export function nativeUpdateProgress(directory: string) {
   const dialogWindows = nativeDialogWindows(directory);
   return (helperPid: number) => {

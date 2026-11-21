@@ -423,10 +423,10 @@ test("the add pane says what an add grants, with YOLO merges off", () => {
   const html = render(foreman(), inspector(), shipping());
   assert.match(html, /New repositories get/);
   const legend = html.slice(html.indexOf("New repositories get"));
-  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Foreman</);
-  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Workflows</);
-  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>GitHub Inspector</);
-  assert.match(legend, /trust-default is-off[^>]*><span class="trust-grant-dot"[^>]*><\/span>YOLO merges off</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="settings-grant-dot"[^>]*><\/span>Foreman</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="settings-grant-dot"[^>]*><\/span>Workflows</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="settings-grant-dot"[^>]*><\/span>GitHub Inspector</);
+  assert.match(legend, /trust-default is-off[^>]*><span class="settings-grant-dot"[^>]*><\/span>YOLO merges off</);
   // The old consent line described the behaviour this change removes.
   assert.doesNotMatch(html, /grants nothing yet/);
 });
@@ -468,7 +468,7 @@ test("a merge-without-review, armed, flies the dagger footnote with both fixes",
   assert.match(html, /Grant the review/);
   assert.match(html, /revoke the merge/);
   // The trapped merge pill is marked, and its repo is named compactly in the footnote.
-  assert.match(html, /trust-grant is-on is-trapped/);
+  assert.match(html, /settings-grant is-on is-trapped/);
   assert.match(html, /YOLO may merge in <span[^>]*>repo<\/span>/);
 });
 
@@ -513,7 +513,7 @@ test("a workflow grant with checks armed flies the double dagger and names the r
   assert.match(html, /It is not a sandbox/);
   assert.match(html, /Turn Commands off/);
   // The pill carries the marker, and stays a GRANTED pill - amber, not revoked.
-  assert.match(html, /trust-grant is-on is-armed/);
+  assert.match(html, /settings-grant is-on is-armed/);
   assert.match(html, /in <span[^>]*>repo<\/span>/);
   assert.match(html, /class="tt-desc">\/repo<\/span>/);
 });
@@ -527,7 +527,7 @@ test("the same grant with checks off is silent - an inert grant must not train a
   );
   assert.doesNotMatch(html, /trust-arm-note/);
   assert.doesNotMatch(html, /is-armed/);
-  assert.match(html, /trust-grant is-on/, "the grant is still shown as granted");
+  assert.match(html, /settings-grant is-on/, "the grant is still shown as granted");
 });
 
 // Both footnotes at once, on one repo. They are different columns and different claims, so
@@ -542,8 +542,8 @@ test("a repo that is both trapped and armed flies both footnotes, each on its ow
   );
   assert.match(html, /trust-trap-note/);
   assert.match(html, /trust-arm-note/);
-  assert.match(html, /trust-grant is-on is-trapped/);
-  assert.match(html, /trust-grant is-on is-armed/);
+  assert.match(html, /settings-grant is-on is-trapped/);
+  assert.match(html, /settings-grant is-on is-armed/);
   assert.doesNotMatch(html, /is-trapped is-armed/, "one pill never claims both");
 });
 

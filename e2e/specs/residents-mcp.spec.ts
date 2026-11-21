@@ -24,6 +24,149 @@ async function capture(target: Locator, name: string): Promise<void> {
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
 }
 
+test.describe("Codex OAuth servers", () => {
+  test.use({ daemonEnv: { MC_E2E_CODEX_OAUTH_MCP: "1" } });
+
+  test("a Codex resident can switch from pinned inheritance to native MCP sources", async ({ dashboard: page, daemon }) => {
+    const codexHome = join(daemon.home, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [
+      { slug: "gpt-5.4", context_window: 272_000, effective_context_window_percent: 95 },
+    ] }));
+    const configPath = join(codexHome, "config.toml");
+    const nativeConfig = '[mcp_servers.glean]\nurl = "https://glean.example.test/mcp"\n';
+    writeFileSync(configPath, nativeConfig);
+
+    await page.goto(`${daemon.baseURL}/#/residents`);
+    await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+    const profile = page.getByRole("region", { name: "New resident profile" });
+    await profile.getByLabel("Name").fill("Codex OAuth Resident");
+    await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
+    await profile.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+    await profile.getByRole("combobox", { name: "Model", exact: true }).selectOption("gpt-5.4");
+    await profile.getByRole("button", { name: "Save" }).click();
+
+    const saved = page.getByRole("region", { name: "Resident profile Codex OAuth Resident" });
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await saved.getByRole("button", { name: "Launch" }).click();
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toContainText("global MCP server glean is inherited but residents cannot use it: it uses an OAuth login held by Codex");
+    await capture(dialog, "codex-pinned-oauth-refusal");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+
+    const section = saved.getByRole("region", { name: "MCP servers" });
+    const all = section.getByRole("radio", { name: "All native sources (not pinned)" });
+    await expect(all).toHaveCount(0);
+    await expect(section).toContainText("Enable Codex resident native MCP in Settings > Feature flags");
+    await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+    await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
+    await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+
+    const created = await fetch(`${daemon.baseURL}/api/residents/mcp-servers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "notes.custom", harnesses: ["codex"], transport: {
+          type: "stdio", command: process.execPath, env: [{ name: "API_KEY", secret: true, value: SECRET }],
+        },
+      }),
+    });
+    expect(created.status).toBe(201);
+    await page.goto(`${daemon.baseURL}/#/residents`);
+    await page.getByRole("button", { name: /Codex OAuth Resident/ }).click();
+    await all.click();
+    const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
+    await expectContentClearsBorder(confirm);
+    await capture(confirm, "codex-all-sources-confirm");
+    await confirm.getByRole("button", { name: "Import all sources" }).click();
+    await expect(section.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toHaveCount(0);
+    await section.getByRole("combobox", { name: "Add an MCP server" }).selectOption({ label: "notes.custom" });
+    await section.getByRole("button", { name: "Add", exact: true }).click();
+    await saved.getByRole("button", { name: "Save" }).click();
+    await expect(saved).toContainText("Revision 2");
+    await saved.getByRole("button", { name: "Launch" }).click();
+    await expect(dialog).toContainText("MCP: all native sources (not pinned) + notes.custom");
+    await capture(dialog, "codex-native-dispatch");
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+    await page.getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+    const live = page.getByRole("dialog", { name: "Residents" }).getByRole("region", { name: "Live" })
+      .getByRole("listitem").filter({ hasText: "Codex OAuth Resident" });
+    await expect(live).toContainText("idle", { timeout: 60_000 });
+    await capture(live, "codex-native-live");
+    const records = recordsIn<{ file?: string; names?: string[] }>(join(daemon.recordDir, "codex"));
+    expect(records).toContainEqual({ file: configPath, names: ["glean", "mission-control", "notes.custom"] });
+    expect(readFileSync(configPath, "utf8")).toBe(nativeConfig);
+  });
+});
+
+test("a resident can opt out of claude.ai connectors without disabling native plugin sources", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const profile = page.getByRole("region", { name: "New resident profile" });
+  await profile.getByLabel("Name").fill("Plugin Resident");
+  await profile.getByLabel("Profile instructions").fill("Summarize available plugin tools.");
+  const section = profile.getByRole("region", { name: "MCP servers" });
+  await section.getByRole("radio", { name: "All native sources (not pinned)" }).click();
+  const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
+  await expectContentClearsBorder(confirm);
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  // Dismissal restores the opener, whose focus tooltip can coexist with hover help.
+  await expect(section.getByRole("radio", { name: "All native sources (not pinned)" })).toBeFocused();
+  const optOut = section.getByRole("checkbox", { name: "Disable claude.ai connectors" });
+  await optOut.hover();
+  const description = "Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident";
+  const tooltip = page.locator(".tooltip").filter({ hasText: description });
+  await expect(tooltip).toHaveText(description);
+  await expect(tooltip).toBeVisible();
+  await expect(optOut).toHaveAccessibleDescription(description);
+  await capture(page.locator("body"), "plugin-connectors-tooltip-repair");
+  await expect(optOut).not.toBeChecked();
+  await expect(section).toContainText("including Claude Docs");
+  await optOut.check();
+  await profile.getByRole("button", { name: "Save" }).click();
+  const saved = page.getByRole("region", { name: "Resident profile Plugin Resident" });
+  await expect(saved).toContainText("Revision 1");
+
+  // The persisted revision survives a fresh page load, and is visible in Dispatch.
+  await page.reload();
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Plugin Resident/ }).click();
+  const savedSection = saved.getByRole("region", { name: "MCP servers" });
+  await expect(savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toBeChecked();
+  await expect(savedSection.getByRole("combobox", { name: "Add an MCP server" })).not.toContainText("Loading…");
+  await savedSection.scrollIntoViewIfNeeded();
+  await capture(savedSection, "plugin-connectors-opt-out-repair");
+  await saved.getByRole("button", { name: "Launch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toContainText("claude.ai connectors off");
+  await expectContentClearsBorder(dialog);
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+  // Inspect the real SDK's child-process launch, using the no-token Claude fake.
+  // This proves transport of the workaround, not live third-party MCP connectivity.
+  let argv: string[] = [];
+  await expect.poll(() => {
+    const record = recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+      .find((entry) => (argvValue(entry.argv, "--settings") ?? "").includes("ENABLE_CLAUDEAI_MCP_SERVERS"));
+    argv = record?.argv ?? [];
+    return argv.length > 0;
+  }, { timeout: 60_000 }).toBe(true);
+  expect(argv).not.toContain("--strict-mcp-config");
+  expect(JSON.parse(argvValue(argv, "--settings")!)).toMatchObject({
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+  });
+
+  // An edit can undo the workaround without changing the server source mode.
+  await savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" }).uncheck();
+  await saved.getByRole("button", { name: "Save" }).click();
+  await expect(saved).toContainText("Revision 2");
+  await page.reload();
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Plugin Resident/ }).click();
+  await expect(savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" })).not.toBeChecked();
+  await expect(savedSection.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
+});
+
 test("a custom MCP server's secret is write-only, its selection reaches the launch summary and the launch, and no payload carries a secret", async ({
   dashboard: page,
   daemon,
@@ -397,14 +540,16 @@ test("a profile that imports all native sources is confirmed first, says it is n
   await expect(all).toBeChecked();
   await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toHaveCount(0);
   await expect(section).toContainText("The set is not pinned");
-  // A harness that cannot make the choice keeps it visible, disabled and explained, so it can be
-  // undone rather than silently dropped.
+  // An unavailable destination uses pinned sources. Consent from the previous harness is gone.
   await harnessSelect.selectOption({ label: "Codex" });
-  await expect(section.getByText("Codex cannot start a resident on all of its native MCP sources")).toBeVisible();
-  await expect(all).toBeDisabled();
-  await expect(all).toBeChecked();
+  await expect(confirm).toBeHidden();
+  await expect(all).toHaveCount(0);
+  await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
   await harnessSelect.selectOption({ label: "Claude Code" });
-  await expect(all).toBeEnabled();
+  await expect(pinned).toBeChecked();
+  await all.click();
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
   await expect(all).toBeChecked();
   const add = section.getByRole("combobox", { name: "Add an MCP server" });
   await expect(add.locator("option", { hasText: "github-global" })).toHaveCount(0);
@@ -522,4 +667,58 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toContainText("MCP: all native sources (not pinned) · control: off · revision 2");
   await capture(dialog, "all-sources-edited-dispatch-summary");
+});
+
+test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, context, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
+  await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const draft = page.getByRole("region", { name: "New resident profile" });
+  await draft.getByLabel("Name").fill("Harness Consent Resident");
+  await draft.getByLabel("Profile instructions").fill("Summarize the fleet.");
+  await draft.getByLabel("Spend per 24 hours (USD)").fill("");
+  const allSources = { name: "All native sources (not pinned)" };
+  const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
+  await draft.getByRole("radio", allSources).click();
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  await draft.getByRole("button", { name: "Save" }).click();
+
+  const saved = page.getByRole("region", { name: "Resident profile Harness Consent Resident" });
+  await expect(saved).toContainText("Revision 1");
+  const harness = saved.getByRole("combobox", { name: "Harness" });
+  await harness.selectOption("codex");
+  await expect(confirm).toContainText("everything Codex loads", { timeout: 5_000 });
+  await expectContentClearsBorder(confirm);
+  await capture(confirm, "codex-harness-change-preview-on");
+  const settings = await context.newPage();
+  await settings.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  await settings.getByRole("button", { name: "Codex resident native MCP: on" }).click();
+  await expect(confirm.getByRole("button", { name: "Import all sources" })).toBeDisabled({ timeout: 5_000 });
+  await expect(confirm.getByRole("alert")).toContainText("The Codex resident native MCP preview is off.");
+  await capture(confirm, "codex-harness-change-preview-off");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(harness).toHaveValue("claude");
+  await expect(saved.getByRole("radio", allSources)).toBeChecked();
+  await expect(saved).not.toContainText("unsaved changes");
+
+  await settings.getByRole("button", { name: "Codex resident native MCP: off" }).click();
+  await expect(settings.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+  await settings.close();
+  await harness.selectOption("codex");
+  await expect(confirm).toContainText("everything Codex loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  await expect(harness).toHaveValue("codex");
+  await expect(saved.getByRole("radio", allSources)).toBeChecked();
+  await expect(saved.getByRole("button", { name: "Save" })).toBeEnabled();
+  await saved.getByRole("button", { name: "Save" }).click();
+  await expect(saved).toContainText("Revision 2");
+
+  await harness.selectOption("claude");
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(harness).toHaveValue("codex");
+  await expect(saved).not.toContainText("unsaved changes");
 });

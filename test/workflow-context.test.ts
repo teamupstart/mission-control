@@ -7,10 +7,17 @@ import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
+
+// A checkout of its own for the cases that only need a session to stand somewhere. Reading
+// workflow context diffs the session's tree, and `process.cwd()` is the developer's checkout:
+// one git process per file it happens to have untracked, and a diff of whatever branch it is on.
+const checkout = join(home, "checkout");
+seedGitRepo(checkout, { branch: "main" });
 
 const {
   boundedWorkflowTranscript,
@@ -33,7 +40,7 @@ const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
-const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
+const { evaluateWorkflowEvidenceReadiness, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -133,10 +140,10 @@ test("workflow context excludes a delivered workflow packet after live attributi
     agent: "claude",
     name: "workflow attribution",
     nameSource: "process",
-    cwd: process.cwd(),
+    cwd: checkout,
     gitBranch: "feature",
-    gitRoot: process.cwd(),
-    repoRoot: process.cwd(),
+    gitRoot: checkout,
+    repoRoot: checkout,
     pid: 7,
     tty: "ttys-workflow-attribution",
     terminals: [],
@@ -179,7 +186,7 @@ test("bounded feedback keeps recent entries in chronological order and marks the
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: "feedback-order", agent: "claude", name: "feedback", nameSource: "process",
-    cwd: process.cwd(), gitBranch: "feature", gitRoot: process.cwd(), repoRoot: process.cwd(),
+    cwd: checkout, gitBranch: "feature", gitRoot: checkout, repoRoot: checkout,
     pid: 8, tty: "ttys-feedback", terminals: [], startedAt: 1,
   } as DiscoveredSession]);
   const session = registry.getSession("feedback-order")!;
@@ -559,6 +566,24 @@ test("only the pinned CodeRabbit graph captures ignored YAML and includes it in 
   const refreshedOld = await readWorkflowContextRaw(registry, binding, [], [], null, oldGraph);
   assert.equal(refreshedOld.boundary.repositoryFingerprint, old.boundary.repositoryFingerprint);
   assert.equal(refreshedOld.context.evidence.contentTreeOid, enabled.context.evidence.contentTreeOid);
+
+  // The pinned graph and reserved retention budget are independent capture inputs.
+  const report = "docs/reports/combined-capture/report.html";
+  mkdirSync(join(repo, "docs/reports/combined-capture"), { recursive: true });
+  writeFileSync(join(repo, report), "<!doctype html><title>Proof</title><p>Retained locally.</p>");
+  const available = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  const reserved = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph,
+    [{ bytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes }]);
+  assert.equal(available.context.evidence.publication!.localArtifacts.length, 1);
+  assert.equal(reserved.context.evidence.publication!.localArtifacts.length, 0);
+  assert.ok(reserved.context.evidence.publication!.unpublishedPaths.includes(report));
+  assert.deepEqual(reserved.context.evidence.coderabbit, available.context.evidence.coderabbit);
+  assert.equal(git("rev-parse", `${available.context.evidence.reviewCommit}^{tree}`).trim(),
+    available.context.evidence.publication!.treeOid);
+  assert.equal(git("rev-parse", `${reserved.context.evidence.reviewCommit}^{tree}`).trim(),
+    reserved.context.evidence.publication!.treeOid);
+  assert.equal(git("show", `${reserved.context.evidence.reviewCommit}:${report}`).trim(),
+    "<!doctype html><title>Proof</title><p>Retained locally.</p>");
 });
 
 test("an uncommitted submission with Commands pins them to a review snapshot of exactly that content", async () => {
@@ -583,6 +608,14 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
   const clean = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
   assert.equal(clean.context.evidence.reviewCommit, head);
 
+  const report = "docs/reports/review-snapshot/report.html";
+  mkdirSync(join(repo, "docs/reports/review-snapshot"), { recursive: true });
+  writeFileSync(join(repo, report), "<!doctype html><title>Proof</title><p>Local evidence.</p>");
+  const reportOnly = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  assert.equal(reportOnly.context.evidence.reviewCommit, head);
+  assert.equal(reportOnly.context.evidence.publication!.localArtifacts.length, 1);
+  assert.notEqual(reportOnly.context.evidence.contentTreeOid, reportOnly.context.evidence.publication!.treeOid);
+
   writeFileSync(join(repo, "app.txt"), "the task's work\n");
   writeFileSync(join(repo, "new.txt"), "untracked\n");
   writeFileSync(join(repo, ".coderabbit.yaml"), "reviews: {auto_review: {enabled: true}}\n");
@@ -592,7 +625,9 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
   assert.match(snapshot, /^[0-9a-f]{40}$/);
   assert.notEqual(snapshot, head);
   assert.equal(git("rev-parse", `${snapshot}^`), head);
-  assert.equal(git("rev-parse", `${snapshot}^{tree}`), dirty.context.evidence.contentTreeOid);
+  assert.equal(git("rev-parse", `${snapshot}^{tree}`), dirty.context.evidence.publication!.treeOid);
+  assert.notEqual(dirty.context.evidence.contentTreeOid, dirty.context.evidence.publication!.treeOid);
+  assert.equal(git("ls-tree", "-r", "--name-only", snapshot, "--", report), "");
   assert.equal(git("show", `${snapshot}:app.txt`), "the task's work");
   assert.equal(git("show", `${snapshot}:new.txt`), "untracked");
   assert.equal(git("rev-parse", `refs/mission-control/workflow-reviews/${snapshot}`), snapshot);
@@ -601,7 +636,8 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
   // The checkout is untouched and the boundary re-read, which writes no snapshot, agrees.
   assert.equal(git("rev-parse", "HEAD"), head);
   assert.equal(git("diff", "--cached", "--name-only"), "");
-  assert.deepEqual(git("status", "--porcelain").split("\n").map(line => line.trim()).sort(), ["?? .coderabbit.yaml", "?? new.txt", "M app.txt"]);
+  assert.deepEqual(git("status", "--porcelain").split("\n").map(line => line.trim()).sort(),
+    ["?? .coderabbit.yaml", "?? docs/", "?? new.txt", "M app.txt"]);
   assert.equal(await captureBoundaryChanged(registry, binding, dirty.boundary), false);
 
   // A graph with no Command has nothing to pin and writes no snapshot.
@@ -611,7 +647,7 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
   assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);
 });
 
-test("repository capture fails closed and detects worktree evidence changes", async () => {
+test("repository capture fails closed and detects worktree evidence changes", async (t) => {
   const repo = join(home, "evidence-repo");
   mkdirSync(repo);
   const git = (...args: string[]): void => {
@@ -665,6 +701,84 @@ test("repository capture fails closed and detects worktree evidence changes", as
   assert.equal(repairedProbe.headSha, dirtyProbe.headSha);
   assert.notEqual(repairedProbe.diffFingerprint, dirtyProbe.diffFingerprint);
   assert.equal(probeMatchesEvidence(repairedProbe, dirtyCapture.context.evidence), false);
+
+  await t.test("edits beyond the bounded untracked diff still wake review", async () => {
+    const directory = join(repo, "untracked-probe");
+    mkdirSync(directory);
+    try {
+      for (let index = 0; index < 101; index++) {
+        writeFileSync(join(directory, `${String(index).padStart(3, "0")}.txt`), "first\n");
+      }
+      const before = (await readWorkflowContextRaw(registry, binding)).context.evidence;
+      assert.equal(before.diffTruncated, true);
+      writeFileSync(join(directory, "100.txt"), "other\n");
+      const after = await readWorkflowEvidenceProbe(registry, binding);
+      assert.equal(after.headSha, before.headSha);
+      assert.deepEqual(after.workingTreeStatus, before.workingTreeStatus);
+      assert.equal(after.diffFingerprint, before.diffFingerprint);
+      assert.notEqual(after.contentTreeOid, before.contentTreeOid);
+      assert.equal(probeMatchesEvidence(after, before), false,
+        "status and the bounded diff alone must not suppress a real repair");
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  const reportPath = join(repo, "docs/reports/probe/report.html");
+  mkdirSync(join(repo, "docs/reports/probe"), { recursive: true });
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>First proof.</p>");
+  const reportCapture = await readWorkflowContextRaw(registry, binding);
+  const reportProbe = await readWorkflowEvidenceProbe(registry, binding, reportCapture.context.evidence.publication?.localArtifacts);
+  assert.equal(probeMatchesEvidence(reportProbe, reportCapture.context.evidence), true);
+  assert.equal(reportProbe.publicationVersion, 1);
+  assert.notEqual(reportProbe.contentTreeOid, reportCapture.context.evidence.publication?.treeOid,
+    "the probe must include reports in full content identity");
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>Other proof.</p>");
+  assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), reportCapture.context.evidence), false);
+  for (const filter of ["CRLF normalization", "clean filter"]) {
+    await t.test(`raw retained report edits remain visible through ${filter}`, async () => {
+      git("config", "core.autocrlf", filter === "CRLF normalization" ? "true" : "false");
+      git("config", "filter.report.clean", "sed -e s/First/Normalized/g -e s/Other/Normalized/g");
+      writeFileSync(join(repo, ".gitattributes"), filter === "CRLF normalization"
+        ? "*.html text\n" : "*.html filter=report\n");
+      git("add", ".gitattributes");
+      git("commit", "-m", filter);
+      const original = "<!doctype html><title>Probe</title><p>First proof.</p>\r\n";
+      writeFileSync(reportPath, original);
+      const baseline = (await readWorkflowContextRaw(registry, binding)).context.evidence;
+      const receipts = baseline.publication!.localArtifacts;
+      assert.equal(receipts.length, 1);
+      const unchanged = await readWorkflowEvidenceProbe(registry, binding, receipts);
+      assert.equal(probeMatchesEvidence(unchanged, baseline), true, filter);
+      assert.equal(probeMatchesEvidence({ ...unchanged, localArtifactHashes: undefined }, baseline), false,
+        "retained reports cannot be declared unchanged without reading their raw bytes");
+      writeFileSync(reportPath, filter === "CRLF normalization"
+        ? original.replace(/\r\n/g, "\n") : original.replace("First", "Other"));
+      const changed = await readWorkflowEvidenceProbe(registry, binding, receipts);
+      assert.equal(changed.contentTreeOid, unchanged.contentTreeOid, filter);
+      assert.equal(changed.diffFingerprint, unchanged.diffFingerprint, filter);
+      assert.deepEqual(changed.workingTreeStatus, unchanged.workingTreeStatus, filter);
+      assert.equal(probeMatchesEvidence(changed, baseline), false,
+        `${filter} must not hide changes to retained report bytes`);
+      rmSync(reportPath);
+      assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding, receipts), baseline), false,
+        "a missing receipt source must count as changed rather than aborting the probe");
+      writeFileSync(reportPath, original);
+    });
+  }
+  for (const extension of ["txt", "log", "csv", "json"]) {
+    const companion = `docs/reports/probe/empty.${extension}`;
+    writeFileSync(join(repo, companion), "");
+    const emptyCompanion = await readWorkflowContextRaw(registry, binding);
+    // Empty text is rejected before selecting the report group for retention. The entire
+    // group stays required, and the real snapshot still parses rather than failing capture.
+    const parsed = WorkflowContextSnapshotSchema.parse(emptyCompanion.context);
+    assert.equal(parsed.evidence.publication?.localArtifacts.length, 0);
+    assert.equal(parsed.evidence.artifacts?.length, 0);
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes(companion));
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes("docs/reports/probe/report.html"));
+    assert.match(parsed.evidence.publication?.artifactProblems.join("\n") ?? "", /between 1 and/);
+    rmSync(join(repo, companion));
+  }
+  rmSync(join(repo, "docs"), { recursive: true });
 
   writeFileSync(join(repo, "file.txt"), "one\n");
   for (let index = 0; index <= 500; index++) {

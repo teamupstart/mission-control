@@ -50,6 +50,28 @@ async function listening(handler: Parameters<typeof createHttpServer>[1]): Promi
   return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
+/**
+ * Resolves once the server's handler has run for each of `urls`.
+ *
+ * A fixed delay before closing is a race on a loaded machine: a connection the server has
+ * accepted but whose request it has not yet parsed counts as idle, `server.close()` closes it,
+ * and the client sees ECONNRESET for a request the test meant to be in flight.
+ */
+function arrivals(urls: readonly string[]): { seen: (url: string | undefined) => void; all: Promise<void> } {
+  const waiting = new Set(urls);
+  let done!: () => void;
+  const all = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  return {
+    seen: (url) => {
+      if (url !== undefined) waiting.delete(url);
+      if (waiting.size === 0) done();
+    },
+    all,
+  };
+}
+
 async function bodyOf(res: Promise<IncomingMessage>): Promise<string> {
   let body = "";
   for await (const chunk of await res) body += String(chunk);
@@ -58,7 +80,9 @@ async function bodyOf(res: Promise<IncomingMessage>): Promise<string> {
 
 test("closeHttpServer ends registered streams at once and gives a slower request the grace", async () => {
   const openEnded = new OpenEndedRequests();
+  const arrived = arrivals(["/stream", "/slow"]);
   const { server, base } = await listening((req, res) => {
+    arrived.seen(req.url);
     if (req.url === "/stream") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(": open\n\n");
@@ -73,7 +97,8 @@ test("closeHttpServer ends registered streams at once and gives a slower request
 
   const stream = bodyOf(openResponse(`${base}/stream`));
   const slow = bodyOf(openResponse(`${base}/slow`));
-  await delay(50);
+  // Both requests are in the server's hands before shutdown starts, not merely sent.
+  await arrived.all;
 
   const started = Date.now();
   const result = await closeHttpServer(server, { graceMs: 5_000, openEnded });
@@ -86,7 +111,9 @@ test("closeHttpServer ends registered streams at once and gives a slower request
 });
 
 test("closeHttpServer cuts an unregistered never-ending stream after the grace and lets a short request finish", async () => {
+  const arrived = arrivals(["/stream", "/short"]);
   const { server, base } = await listening((req, res) => {
+    arrived.seen(req.url);
     if (req.url === "/stream") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(": open\n\n");
@@ -98,7 +125,7 @@ test("closeHttpServer cuts an unregistered never-ending stream after the grace a
   const stream = await openResponse(`${base}/stream`);
   stream.on("error", () => {});
   const shortRequest = bodyOf(openResponse(`${base}/short`));
-  await delay(20);
+  await arrived.all;
 
   const started = Date.now();
   const result = await closeHttpServer(server, { graceMs: 300, openEnded: new OpenEndedRequests() });

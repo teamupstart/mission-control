@@ -11,11 +11,13 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
-| `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for **Settings → Repositories**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
+| `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for the **Repositories** family in **Settings → Setup**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
-| `MISSION_POLL_MS` | `1500` | discovery interval |
+| `MISSION_REPOS_CACHE_MS` | `30000` | age at which a repository-index read starts a rescan behind the answer it gives. Ordinary reads never wait on it. Settings → Repositories after a change or **Rescan now** waits for a scan inside it, and the Dispatch form's second read on each open waits for a scan started after the request whatever its value. `0` turns the cache off, so every read waits for a current scan. A value that is not a number, or is negative, falls back to the default |
+| `MISSION_REPOS_SCAN_TIMEOUT_MS` | `60000` | how long one repository-index walk may run. Walks of the same directories never overlap, so past this bound a stuck walk (a stalled network mount, a wedged FUSE directory under an indexed root) is abandoned and logged, and the queue moves on; every read then answers from the last completed scan of those directories, and only when there is none is it told the scan is unavailable - **Settings → Setup → Repositories** still opens, with the count marked unknown, so the stalled directory can be removed. Its blocked read cannot be cancelled, so no new walk of the same directories starts until it returns - a stalled mount pins one pool thread, not one per Dispatch open - and removing the stalled directory from the index recovers at once. A value that is not a number, or is negative or zero, falls back to the default |
+| `MISSION_POLL_MS` | `1500` | discovery interval. `0` turns terminal discovery off entirely, including the sweep that finds Mission Control's own terminal launches, so it is not a way to hide sessions started outside Mission Control: that is the **Show sessions started outside Mission Control** setting under **Settings > Setup > Terminals**, off by default |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the 30-day rule runs on its own fixed internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
+| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the configurable retention window runs on its own fixed six-hour internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
@@ -102,6 +104,34 @@ desktop launchers, and the bounded process utilities Mission Control invokes. Ex
 resolved in the shared executable environment. **Settings > Setup** shows the selected absolute
 path and its source. See [Harnesses and terminal backends](harnesses-and-terminals.md) for the
 complete deterministic resolution order and refresh behavior.
+
+**Go build cache for agent processes.** Mission Control supplies a default `GOCACHE` in its
+shared child-process environment,
+including terminal dispatch, Codex app-server, Claude SDK sessions and workflow checks.
+It uses `<temporary directory>/mission-control-go-build-<user id>`, where the temporary
+directory is Node's `os.tmpdir()` (normally `$TMPDIR` on macOS and `/tmp` on Linux).
+Creation requests mode `0700` (owner-only permissions). Existing directories are checked
+for directory type and, where UID ownership is available, matching user ownership; their
+permission bits are neither checked nor changed. The cache is shared across tasks and
+worktrees for that user.
+It lives outside disposable session state, so finishing a task does not delete another
+task's cache. Go handles concurrent use and trims old entries as the cache is reused.
+
+Sandbox writability was verified on 2026-11-13 with `codex-cli 0.166.0` on macOS
+(Apple Silicon). A token-free `codex sandbox` probe in `workspace-write` mode used the
+production SDK and terminal launch environment builders to write Node-created files into
+the cache, reuse them after session cleanup, and write with a multi-repository
+`writable_roots` override. Go was unavailable, so this probe did not run `go build` or
+`go test`. These results do not establish writability on other platforms or Codex versions.
+
+A nonempty `GOCACHE` in the child environment takes precedence, including `off`. Terminal
+launch wrappers also preserve a nonempty value inherited from the terminal's shell unless
+an explicit launch override was supplied. Codex's own `shell_environment_policy` and
+Claude's settings still apply after launch; Mission Control does not rewrite those settings.
+If you exclude temporary directories from Codex's sandbox or filter `GOCACHE` out of its
+shell environment, configure a cache location and write access consistent with that policy.
+This default does not change multi-repository writable-root overrides or remove historical
+task-created cache folders. Existing sessions pick it up on relaunch.
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, and message formatting all live in the
@@ -206,6 +236,41 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Task shaping references
+
+A [remote shaper](task-shaping.md#remote-shapers)'s header values hold references, never
+secrets. Each is resolved when the call is made and never stored, logged or sent to the
+dashboard, and every resolved value, caller values included, is redacted from what the shaper
+sends back.
+
+| Reference | Resolves to |
+| --- | --- |
+| `{caller.user}` | The identity declared in `app_config.shaping.caller.user`. Free text, unverified, not a secret |
+| `{caller.agent}` | The task's harness: `claude`, `codex` or `pi` |
+| `{caller.conversation}` | The task id |
+| `{env:NAME}` | The daemon's own environment variable `NAME`, read at call time |
+
+A reference that resolves to nothing, an empty value included, fails closed: the shaper is not
+called and its outcome is `unavailable`, naming the reference. `{env:NAME}` never resolves
+Mission Control's own API token, its token file, its scout credentials, or its state directory
+under any name, and never a value that carries the daemon's token. `GET /api/shaping` reports
+every referenced name as `set` or `unset`, never its value, and so it does for each variable a
+`command` shaper or a locally started MCP server passes through in its `env` list.
+
+**Where the daemon's environment comes from.** `{env:NAME}` reads the daemon process's
+environment and nothing else: not your login shell, and not a file. What that environment holds
+depends on how the daemon was started:
+
+- From a terminal (`npm run dev`, `make start`, or `npm start`), it inherits that shell's
+  exports. Export the variable before starting the daemon.
+- The desktop app and the `npm run install-service` LaunchAgent are started by `launchd`,
+  which does not read your shell's profile, so an `export` in `~/.zshrc` never reaches them.
+  Set the variable for your login session with `launchctl setenv NAME value`, then quit and
+  reopen the app, or restart the service.
+
+The daemon reads its environment once, when it starts, so a variable set or changed afterwards
+reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` until then.
+
 ## Desktop update channel
 
 **Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
@@ -251,6 +316,9 @@ derived reload generations, credentials, tokens, and environment secrets.
 
 Skills snapshots include the catalog-wide default and explicit row choices. Restoring an older
 snapshot with no catalog default keeps its previous opt-in meaning, so absent row choices stay off.
+
+Database backup counts and interval (the `database-backups` domain) were added after format v1
+shipped. Restoring a snapshot taken before them leaves the current backup settings unchanged.
 
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
@@ -371,8 +439,12 @@ See [Binary installation and manual recovery](desktop-and-packaging.md#binary-in
 for installer options, recovery behavior, and qualification limits.
 
 
-Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existing config blob.
-Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
+Shipping stores `codeRabbitAutoResolve` as a default-true boolean in its existing config blob.
+Upgrading an install to database schema 38 switches it on once, even if it had stored the old
+default-off value, and every other Shipping setting is kept. Turning it off afterwards is an
+ordinary stored choice that survives restarts and later upgrades. Settings snapshots include it;
+restoring a snapshot applies the value it recorded, and one taken before the setting existed
+restores it on. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
 
@@ -382,7 +454,7 @@ pull request), and it has **no stored default**: an absent key means the shipped
 which is `stack`, so an install that never chose stacks eligible same-repository dependencies.
 An explicit `merge` is kept. Only an explicit choice on the
 Shipping card writes it, and saving another Shipping card leaves it absent. `maxStackDepth` is
-an integer from 1 to 5, default 3. Settings snapshots include both, and a snapshot taken before
+an integer from 1 to 10, default 3. Settings snapshots include both, and a snapshot taken before
 an explicit choice restores with `stacking` still absent. A dependency edge's own `mode`
 (`merge` or `stack`, absent meaning inherit) overrides `stacking` for that edge.
 
@@ -430,3 +502,13 @@ manually in the server table.
 
 The settings follow the upstream [Claude MCP permission syntax](https://code.claude.com/docs/en/permissions#mcp)
 and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Task worktree retention
+
+**Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
+daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
+with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
+and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
+recomputation, grace periods, and the destructive cleanup boundary.

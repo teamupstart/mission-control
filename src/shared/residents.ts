@@ -21,6 +21,8 @@ import { z } from "zod";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { ModelIdSchema } from "./model-id.ts";
 import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
+import { MAX_TASK_EXTRA_REPOS } from "./task.ts";
+import { ResidentScheduleSectionSchema } from "./resident-schedule.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
@@ -115,10 +117,51 @@ export const ResidentExecutionSectionSchema = z
     }
   });
 
-/** The repository Dispatch pre-fills; null launches in a Mission-owned workspace. */
-export const ResidentWorkspaceSectionSchema = z.object({
-  defaultRepoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
-});
+/** One repository path as a resident profile or launch request spells it. */
+const ResidentRepoPathSchema = z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength);
+
+/**
+ * Secondary repositories attached beside a primary one, in the order the launch manifest lists
+ * them. Bounded like a task dispatch's, and refused when a path is named twice: only the daemon
+ * resolves two spellings to one checkout, so this is the string-equality half of that rule.
+ */
+const ResidentAdditionalReposSchema = z
+  .array(ResidentRepoPathSchema)
+  .max(MAX_TASK_EXTRA_REPOS)
+  .superRefine((paths, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, path] of paths.entries()) {
+      if (seen.has(path)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index], message: `${path} is attached twice` });
+      seen.add(path);
+    }
+  });
+
+/**
+ * Why a primary repository and its attached repositories cannot launch together, or null.
+ * Attached repositories need a primary: a repository-free resident runs in a private working
+ * directory with no worktree for a manifest to sit beside.
+ */
+export function residentRepoSetProblem(primary: string | null, additional: readonly string[]): string | null {
+  if (additional.length === 0) return null;
+  if (!primary?.trim()) return "attached repositories need a primary repository; choose one or detach them";
+  if (additional.includes(primary.trim())) return `${primary.trim()} is already the primary repository`;
+  return null;
+}
+
+/**
+ * The repositories Dispatch pre-fills; a null primary launches in a Mission-owned workspace.
+ * `additionalRepoRoots` attaches secondary repositories to a launch with a primary, exactly as
+ * **+ Add another repo** does for a dispatched task.
+ */
+export const ResidentWorkspaceSectionSchema = z
+  .object({
+    defaultRepoRoot: ResidentRepoPathSchema.nullable().default(null),
+    additionalRepoRoots: ResidentAdditionalReposSchema.default([]),
+  })
+  .superRefine((value, ctx) => {
+    const problem = residentRepoSetProblem(value.defaultRepoRoot, value.additionalRepoRoots);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["additionalRepoRoots"], message: problem });
+  });
 
 /**
  * The marker palette: the colors a resident's border glow may take, in swatch order.
@@ -219,8 +262,7 @@ export function residentMcpRefKey(ref: ResidentMcpServerRef): string {
  * carries.
  *
  * - `pinned`: the exact set a launch resolves and snapshots, which every start and resume reads.
- * - `all`: everything the harness loads natively - on Claude Code its user, local, project and
- *   plugin servers and claude.ai connectors - read afresh at every start, plus Mission Control's
+ * - `all`: everything the harness loads natively, read afresh at every start, plus Mission Control's
  *   server and the profile's custom servers. Not pinned, and offered only where
  *   `HARNESS_CAPABILITIES[agent].mcpSelection.allNativeSources` is set.
  */
@@ -240,6 +282,8 @@ export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[numb
 export const ResidentMcpSectionSchema = z
   .object({
     nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
+    /** Opt-in workaround for Claude's plugin/connector double suppression. Only applies to all native sources. */
+    disableClaudeAiConnectors: z.boolean().optional(),
     inheritDefaults: z.boolean().default(true),
     selected: z
       .array(ResidentMcpServerRefSchema)
@@ -300,7 +344,21 @@ export function residentMarker(settings: Pick<ResidentProfileRevision, "identity
  * revision schema below picks it up. Never rename a key: it is the JSON key every stored
  * revision carries.
  */
-export const RESIDENT_LOOP_PROMPT = "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.";
+export const RESIDENT_LOOP_PROMPT = "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Before asking the operator anything, check whether your earlier questions were answered, and do not ask again a question that is still open. Call `schedule_next_iteration` if you need to wake sooner or later than usual.";
+
+/**
+ * Sent with every resident `/compact`, ahead of the profile's own focus.
+ *
+ * Without it the summarizer's generic template names "Begin your standing task." as the
+ * primary request and the last item in flight as the next step, so the resident resumes that
+ * item rather than its mandate. One line, because it rides on the command's argument line.
+ */
+export const RESIDENT_COMPACTION_FOCUS = "This is a long-running resident whose standing task is defined in its standing instructions. Under the primary request, restate that standing task and every instruction, correction or decision the operator gave in this conversation verbatim, not paraphrased. Report the most recent item only as current work, never as the primary request.";
+
+/** The focus a resident's compaction is sent with: the built-in focus, then the profile's own. */
+export function residentCompactionFocus(profileFocus: string): string {
+  return [RESIDENT_COMPACTION_FOCUS, profileFocus.trim()].filter(Boolean).join(" ");
+}
 
 export const ResidentLoopSectionSchema = z.object({
   prompt: z.string().trim().min(1).max(8_000).default(RESIDENT_LOOP_PROMPT),
@@ -339,6 +397,8 @@ export interface ResidentLoopStatus {
   consumedGeneration: number | null;
   pauseReason: string | null;
   wakeReason: string | null;
+  /** When Run now was pressed while the resident was busy; it runs once the session is idle. */
+  runRequestedAt: number | null;
 }
 
 export const RESIDENT_PROFILE_SECTIONS = {
@@ -351,6 +411,8 @@ export const RESIDENT_PROFILE_SECTIONS = {
   authority: ResidentAuthoritySectionSchema.prefault({}),
   loop: ResidentLoopSectionSchema.prefault({}),
   mcp: ResidentMcpSectionSchema.prefault({}),
+  /** Active hours: when the loop may wake the resident. Off by default: always awake. */
+  schedule: ResidentScheduleSectionSchema.prefault({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -525,7 +587,7 @@ export interface ResidentRun extends ResidentLoopStatus {
  * and workspace choices, and every section a later phase adds for the daemon alone (skills, MCP
  * servers) off this event, which is re-sent on every launch-state change of every live run.
  */
-export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "authority", "loop"] as const satisfies readonly ResidentProfileSectionId[];
+export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "authority", "loop", "schedule"] as const satisfies readonly ResidentProfileSectionId[];
 export type ResidentRunSummarySectionId = (typeof RESIDENT_RUN_SUMMARY_SECTIONS)[number];
 
 /** The pinned revision as a run summary carries it: only `RESIDENT_RUN_SUMMARY_SECTIONS`. */
@@ -561,9 +623,21 @@ export function residentRestartRequestId(runId: string): string {
 
 /** Project a pinned revision to the sections a run summary carries. */
 export function residentRunSummarySettings(settings: ResidentProfileRevision): ResidentRunSummarySettings {
-  return Object.fromEntries(
+  const projected = Object.fromEntries(
     RESIDENT_RUN_SUMMARY_SECTIONS.map((id) => [id, settings[id]]),
   ) as ResidentRunSummarySettings;
+  // A null zone means the daemon's own clock. Summaries are built on the daemon, so name that
+  // zone here: a browser in another zone then evaluates the schedule on the clock that governs it.
+  if (projected.schedule.timeZone === null) {
+    const zone = runtimeTimeZone();
+    if (zone) projected.schedule = { ...projected.schedule, timeZone: zone };
+  }
+  return projected;
+}
+
+/** The IANA zone this runtime's local clock follows, or null when the runtime cannot say. */
+function runtimeTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
 
 /** The wire summary of a run, or null when the run is not live and leaves the collection. */
@@ -579,7 +653,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     compaction: HARNESS_CAPABILITIES[run.settings.execution.agent].residentCompaction!,
     loopState: run.loopState, iteration: run.iteration, lastSeq: run.lastSeq,
     nextWakeAt: run.nextWakeAt, consumedGeneration: run.consumedGeneration,
-    pauseReason: run.pauseReason, wakeReason: run.wakeReason,
+    pauseReason: run.pauseReason, wakeReason: run.wakeReason, runRequestedAt: run.runRequestedAt,
     settings: residentRunSummarySettings(run.settings),
     createdAt: run.createdAt,
   };
@@ -591,7 +665,9 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
  */
 export const LaunchResidentSchema = z
   .object({
-    repoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
+    repoRoot: ResidentRepoPathSchema.nullable().default(null),
+    /** Secondary repositories for this run; each gets its own worktree beside the primary's. */
+    additionalRepoRoots: ResidentAdditionalReposSchema.optional(),
     instructions: z.string().max(RESIDENT_LIMITS.runInstructionsLength).optional(),
     requestId: z
       .string()
@@ -607,7 +683,11 @@ export const LaunchResidentSchema = z
      */
     answerWhen: z.enum(["accepted", "settled"]).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const problem = residentRepoSetProblem(value.repoRoot, value.additionalRepoRoots ?? []);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["additionalRepoRoots"], message: problem });
+  });
 export type LaunchResident = z.infer<typeof LaunchResidentSchema>;
 
 /**
@@ -615,7 +695,7 @@ export type LaunchResident = z.infer<typeof LaunchResidentSchema>;
  * launch field bumps this and gives the field a default in `ResidentLaunchInputSchema`, so a
  * run recorded at an older version still compares correctly.
  */
-export const RESIDENT_LAUNCH_INPUT_VERSION = 2;
+export const RESIDENT_LAUNCH_INPUT_VERSION = 3;
 
 /**
  * The normalized launch input, as stored in `resident_runs.launch_input`: the parsed request
@@ -625,6 +705,8 @@ export const RESIDENT_LAUNCH_INPUT_VERSION = 2;
 export const ResidentLaunchInputSchema = z.object({
   version: z.number().int().positive(),
   repoRoot: z.string().nullable(),
+  /** Version 3: the attached repositories, each resolved to its real path, in request order. */
+  additionalRepoRoots: z.array(z.string()).default([]),
   instructions: z.string().default(""),
 });
 export type ResidentLaunchInput = z.infer<typeof ResidentLaunchInputSchema>;
@@ -635,10 +717,15 @@ export function normalizeRunInstructions(instructions: string | undefined): stri
 }
 
 /** Build the current-version normalized input from a request whose repository is resolved. */
-export function residentLaunchInput(resolvedRepoRoot: string | null, instructions: string | undefined): ResidentLaunchInput {
+export function residentLaunchInput(
+  resolvedRepoRoot: string | null,
+  instructions: string | undefined,
+  resolvedAdditionalRepoRoots: readonly string[] = [],
+): ResidentLaunchInput {
   return {
     version: RESIDENT_LAUNCH_INPUT_VERSION,
     repoRoot: resolvedRepoRoot,
+    additionalRepoRoots: [...resolvedAdditionalRepoRoots],
     instructions: normalizeRunInstructions(instructions),
   };
 }
@@ -704,10 +791,10 @@ export type ResidentLaunchResult =
  * otherwise it is counted. Importing all native sources says plainly that the set is not pinned,
  * and names only the custom servers, because a selected global server loads natively anyway.
  */
-export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
+export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[], agent?: ResidentAgent): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
-    const base = "MCP: all native sources (not pinned)";
+    const base = `MCP: all native sources (not pinned)${agent === "claude" && mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;
     return `${base} + ${resolved ? custom.map((at) => resolved[at]).join(", ") : `${custom.length} custom`}`;
@@ -734,7 +821,7 @@ export function residentLaunchSummary(
     agentLabel,
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
-    residentMcpSummary(settings.mcp, mcpLabels),
+    residentMcpSummary(settings.mcp, mcpLabels, settings.execution.agent),
     settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");

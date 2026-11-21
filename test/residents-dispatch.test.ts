@@ -2,10 +2,10 @@ import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { Session } from "../src/shared/types.ts";
@@ -22,7 +22,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), ["schedule_next_iteration", "request_input"]);
+process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), ["schedule_next_iteration", "get_resident_instructions", "propose_resident_instruction_changes", "request_input"]);
 
 const { Registry } = await import("../src/server/registry.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
@@ -72,13 +72,7 @@ const PERSONA: Persona = {
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return realpathSync(repo);
 }
 

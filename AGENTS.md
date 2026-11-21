@@ -147,13 +147,16 @@ block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer 
 
 ## Working rules
 
+New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the three-release lifecycle.
+
+
 1. Inspect `git status` before editing. Preserve unrelated changes.
 2. Follow existing module ownership and registry patterns. Do not create parallel sources of truth.
 3. Add focused tests for behavior changes and regressions.
 4. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
 5. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
 6. Commit only task-related files on a feature branch.
-7. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
+7. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; non-chat tasks finish when all of them have merged. Chat tasks remain open after all their pull requests merge and end when the operator completes them. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository) and [chat merge behavior](docs/inspector-and-shipping.md#when-a-tasks-pull-request-merges).
 
 When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor that pull request and its CI until green - per pull request, so a session holding one in each of several repositories follows through on each.
 

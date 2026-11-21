@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
@@ -33,7 +33,13 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 // `heldHomeNames` about sibling worktrees' live agents. Pointed at a path rather than
 // unset, because a built checkout HAS the bundle and the test would otherwise pass or fail
 // depending on whether `npm run build` had been run.
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -44,6 +50,10 @@ const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
+const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
+const { GRILL_FIRST_HEADING } = await import("../src/server/grill-first.ts");
 const { HARNESS_CAPABILITIES, resolveSessionRuntime } = await import(
   "../src/shared/harness-capabilities.ts"
 );
@@ -67,13 +77,7 @@ beforeEach(() => {
 /** A repo a worktree can actually be cut from. */
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return repo;
 }
 
@@ -193,7 +197,8 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     supervisor,
     // The bundle is not built in a test run, and a dispatch that passes no `missionMcp`
     // requirement is unaffected by its absence.
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     // A pane write here would be the defect, not a fixture detail: reaching `injectPrompt`
     // at all means the branch did not take.
     inject: async () => {
@@ -274,7 +279,8 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
   });
   const dispatcher = new Dispatcher(registry, async () => {}, { supervisor, worktrees });
 
-  // Required Mission MCP tools with no bundle on disk is the terminal path's own refusal,
+  // Required Mission MCP tools the bundle cannot publish is the terminal path's own refusal
+  // (here the stand-in bundle fails the handshake),
   // and it fires while it is assembling the argv - BEFORE it would open a terminal home.
   // That is deliberate here: a test that let the terminal path run to its spawn would
   // create a real tmux session on the developer's machine, and `heldHomeNames` would then
@@ -287,7 +293,7 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
     assert.equal(registry.getTask(`task-term-${agent}`)?.status, "failed");
     assert.match(
       registry.getTask(`task-term-${agent}`)?.error ?? "",
-      /required Mission MCP tools/,
+      /Mission MCP tools/,
     );
   }
 });
@@ -522,6 +528,61 @@ test("a plan launch is refused when the built bundle cannot publish the review t
   assert.match(task.error ?? "", /npm run build/, "name the fix");
 });
 
+test("a grill-first launch delivers the resolved Grill action ahead of its contract and requires request_plan_decisions", async () => {
+  // The success path through the fresh-dispatch seam, not the composer on its own: the
+  // dispatcher has to resolve the Library's Grill action (the operator's edited text here),
+  // resolve the grill skill for this harness, hand both to the turn-one composer, and require
+  // the decisions tool the interview is asked through. Dropping any one of those still
+  // launches, so each is asserted on what actually reached the supervisor.
+  const repo = seedRepo("grill-first-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  assert.deepEqual(applySkillsConfig({ enabled: true, skills: { grill: true } }).refused, []);
+  const registry = new Registry();
+  const actions = new SessionActionManager(registry);
+  const shipped = actions.get(GRILL_SESSION_ACTION_ID)!;
+  const edited = `${shipped.promptMarkdown}\nAsk about rollout risk in the first round.\n`;
+  assert.equal(actions.update(GRILL_SESSION_ACTION_ID, { expectedRevision: shipped.revision, promptMarkdown: edited }).ok, true);
+  registry.upsertTask(
+    mkTask({
+      id: "task-grill-on",
+      status: "dispatching",
+      repoRoot: repo,
+      agent: "claude",
+      kind: "ship",
+      grillFirst: true,
+      intent: "add archive exports",
+    }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  let required: readonly string[] = [];
+
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async (tools) => {
+        required = tools;
+        return { ok: true as const };
+      },
+    }).dispatch("task-grill-on");
+  } finally {
+    const current = actions.get(GRILL_SESSION_ACTION_ID)!;
+    actions.reset(GRILL_SESSION_ACTION_ID, current.revision);
+    applySkillsConfig({ enabled: false });
+  }
+
+  assert.equal(registry.getTask("task-grill-on")?.status, "running", registry.getTask("task-grill-on")?.error ?? "");
+  const prompt = supervisor.starts[0]!.prompt;
+  assert.match(prompt, /^add archive exports/, "the operator's words stay first");
+  const grill = prompt.indexOf(`${GRILL_FIRST_HEADING}\n`);
+  assert.ok(grill > 0, "the Grill block was delivered");
+  assert.ok(prompt.includes(`\n/grill\n\n${edited}`), "this harness's skill line, then the EDITED instruction verbatim");
+  const contract = prompt.indexOf("## Ship task completion handoff");
+  assert.ok(contract > grill, "the Grill block comes before the ship contract, which still follows");
+  assert.ok(required.includes("request_plan_decisions"), `the launch requires the decisions tool: ${required.join(", ")}`);
+  assert.ok(supervisor.starts[0]!.mcp, "and carries the Mission MCP server that publishes it");
+});
+
 test("a build with no supervisor refuses the runtime rather than silently using the other", async () => {
   const repo = seedRepo("no-sup-repo");
   setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
@@ -537,25 +598,92 @@ test("a build with no supervisor refuses the runtime rather than silently using 
   assert.match(task.error ?? "", /no session supervisor/);
 });
 
-test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
-  const repo = seedRepo("pi-extension-missing-repo");
+test("a managed Pi chat launches with healthy extension tools and no MCP descriptor", async () => {
+  const repo = seedRepo("pi-chat-extension-repo");
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
   const registry = new Registry();
-  registry.upsertTask(
-    mkTask({ id: "task-pi-extension", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat" }),
-  );
+  registry.upsertTask(mkTask({
+    id: "task-pi-chat", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat", workflowId: null,
+  }));
   const supervisor = fakeSupervisor(registry);
-
   await new Dispatcher(registry, async () => {}, {
     supervisor,
-    piExtensionInstalled: async () => false,
-  }).dispatch("task-pi-extension");
+    piExtensionInstalled: async () => true,
+    missionMcpDescriptor: async () => { throw new Error("Pi uses its extension, not an MCP descriptor"); },
+    verifyMissionMcpTools: async () => { throw new Error("the extension health check already verifies its bridge"); },
+  }).dispatch("task-pi-chat");
+  const task = registry.getTask("task-pi-chat")!;
+  assert.equal(task.status, "running", task.error ?? "Pi chat must reach running");
+  assert.equal(supervisor.starts.length, 1);
+  assert.equal(supervisor.starts[0]!.agent, "pi");
+  assert.equal(supervisor.starts[0]!.mcp, null);
+});
 
-  const task = registry.getTask("task-pi-extension")!;
-  assert.equal(task.status, "failed");
-  assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
-  assert.equal(task.worktreePath, null);
-  assert.equal(supervisor.starts.length, 0);
+test("Pi refuses chat, plan, and scout dispatch when the installed bridge lacks a required tool", async (t) => {
+  const prior = { MISSION_PI_EXTENSION: process.env.MISSION_PI_EXTENSION,
+    PI_EXTENSIONS_DIR: process.env.PI_EXTENSIONS_DIR, MISSION_MCP_SERVER: process.env.MISSION_MCP_SERVER };
+  t.after(() => {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const { symlinkSync } = await import("node:fs");
+  const { piBridgeSource, piMetadataSource, writePiIntegration } = await import("./helpers/pi-integration.ts");
+  const { missionToolsAvailability } = await import("../src/server/mission-tools.ts");
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  delete process.env.MISSION_MCP_SERVER;
+
+  for (const [kind, missingTool] of [
+    ["chat", "dispatch_task"], ["plan", "publish_plan"], ["scout", "submit_scout_artifacts"],
+  ] as const) {
+    const integration = join(home, `pi-${kind}-incomplete-integration`);
+    // A healthy generation first proves this fixture is loadable, not merely broken.
+    writePiIntegration(integration);
+    process.env.MISSION_PI_EXTENSION = join(integration, "extension.js");
+    process.env.PI_EXTENSIONS_DIR = join(home, `pi-${kind}-extensions`);
+    mkdirSync(process.env.PI_EXTENSIONS_DIR, { recursive: true });
+    symlinkSync(process.env.MISSION_PI_EXTENSION, join(process.env.PI_EXTENSIONS_DIR, "mission-control.js"));
+    assert.equal((await missionToolsAvailability("pi")).available, true);
+    writePiIntegration(integration, piMetadataSource, piBridgeSource(
+      MISSION_MCP_TOOLS.filter((name) => name !== missingTool),
+    ));
+    const registry = new Registry();
+    const id = `task-pi-${kind}-missing-tool`;
+    registry.upsertTask(mkTask({
+      id, status: "dispatching", repoRoot: seedRepo(`pi-${kind}-missing-tool-repo`), agent: "pi", kind,
+    }));
+    const supervisor = fakeSupervisor(registry);
+    await new Dispatcher(registry, async () => {}, { supervisor }).dispatch(id);
+    const task = registry.getTask(id)!;
+    assert.equal(task.status, "failed", `${kind} must refuse a bridge missing ${missingTool}`);
+    assert.match(task.error ?? "", /healthy Mission Control Pi extension/);
+    assert.equal(task.worktreePath, null, "refuse before provisioning");
+    assert.equal(supervisor.starts.length, 0, "no agent starts without its required tool");
+  }
+});
+
+test("managed Pi dispatch requires its extension for ship, bugfix, and chat before provisioning", async () => {
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  for (const kind of ["ship", "bugfix", "chat"] as const) {
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: "task-pi-extension", status: "dispatching", agent: "pi", kind,
+      repoRoot: seedRepo(`pi-${kind}-extension-missing-repo`),
+    }));
+    const supervisor = fakeSupervisor(registry);
+
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      piExtensionInstalled: async () => false,
+    }).dispatch("task-pi-extension");
+
+    const task = registry.getTask("task-pi-extension")!;
+    assert.equal(task.status, "failed", `${kind} cannot bypass the managed SDK extension preflight`);
+    assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
+    assert.equal(task.worktreePath, null);
+    assert.equal(supervisor.starts.length, 0);
+  }
 });
 
 test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", async () => {
@@ -598,7 +726,7 @@ test("a cancel landing mid-launch stops the driver it just started", async () =>
     // The teardown a cancel triggers. Cancelling here, at the moment the driver has just
     // been started, is what leaves an agent working in a worktree that is being handed back.
     async () => {},
-    { supervisor, missionMcpDescriptor: async () => null },
+    { supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) },
   );
   const original = supervisor.start.bind(supervisor);
   supervisor.start = async (input) => {

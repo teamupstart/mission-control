@@ -633,7 +633,7 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 export type CmuxControl =
   /** The socket answered. `accessMode` is cmux's own `capabilities.access_mode`. */
   | { state: "ready"; accessMode: string }
-  /** No socket at the path the CLI looked at, which on this backend means the app is closed. */
+  /** No listener at the path the CLI looked at, including a socket left behind on exit. */
   | { state: "stopped" }
   /** The socket is there and will not admit us: `automation.socketControlMode` is `cmuxOnly`. */
   | { state: "refused" }
@@ -650,6 +650,9 @@ export type CmuxControl =
  *     sentence instead of stat-ing a socket path here, because the CLI "auto-discovers
  *     tagged/debug sockets" (its `--help`) and a second implementation of that discovery
  *     would answer "closed" for an app that is running on a socket we did not think of.
+ *   - app exited leaving its socket: exit 1, `Error: Failed to connect to socket at <path>
+ *     (Connection refused, errno 61)`. Measured on 0.64.22 after SIGTERM. A socket file
+ *     without a listener needs the same app-start remedy as a missing socket.
  *   - control refused: exit 1, `Error: ERROR: Access denied - only processes started inside
  *     cmux can connect`.
  *
@@ -672,7 +675,10 @@ export async function cmuxControlProbe(exec: TerminalExec = defaultExec): Promis
     return { state: "ready", accessMode: parsed?.access_mode ?? "unknown" };
   }
   const said = `${r.stderr} ${r.stdout}`;
-  if (said.includes("Socket not found")) return { state: "stopped" };
+  if (
+    said.includes("Socket not found") ||
+    /Failed to connect to socket at [^\n]+ \(Connection refused, errno \d+\)/.test(said)
+  ) return { state: "stopped" };
   if (said.includes("Access denied")) return { state: "refused" };
   return { state: "failed", error: r.stderr.trim() || "cmux capabilities failed" };
 }

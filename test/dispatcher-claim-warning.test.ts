@@ -1,0 +1,133 @@
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
+
+// A dispatched task whose pool claim fails still launches, and its agent is told which step
+// failed and what it printed. Real Git and a real pooled slot; only the SDK supervisor is fake.
+
+const home = mkdtempSync(join(tmpdir(), "mission-dispatch-claim-"));
+process.env.HARNESS_HOME = home;
+process.env.MISSION_CLAUDE_BIN = "/bin/echo";
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
+
+const { Registry } = await import("../src/server/registry.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
+const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+const { WorktreeClaimSchema } = await import("../src/shared/protocol.ts");
+
+type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+type Session = import("../src/shared/types.ts").Session;
+
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  delete process.env.MISSION_CLAUDE_BIN;
+  delete process.env.MISSION_MCP_SERVER;
+});
+
+function seedRepo(name: string): { repo: string; sha: string } {
+  const repo = join(home, name);
+  const sha = seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
+  return { repo, sha };
+}
+
+function fakeSupervisor(registry: InstanceType<typeof Registry>) {
+  const starts: Parameters<SdkSupervisor["start"]>[0][] = [];
+  const supervisor = {
+    starts,
+    async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
+      starts.push(input);
+      return registry.registerSdkSession({ id: `sdk:${starts.length}`, agent: input.agent, name: input.name, cwd: input.cwd });
+    },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  return supervisor as typeof supervisor & SdkSupervisor;
+}
+
+function dispatcherFor(
+  registry: InstanceType<typeof Registry>,
+  supervisor: SdkSupervisor,
+  sha: string,
+  stepCode: string,
+) {
+  const worktrees = new WorktreeManager(undefined, {
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    resolvePolicy: () => ({
+      enabled: true,
+      maxSlots: 2,
+      setupArgv: null,
+      claim: WorktreeClaimSchema.parse({ steps: [{ argv: [process.execPath, "-e", stepCode] }] }),
+    }),
+  });
+  return new Dispatcher(registry, async () => {}, {
+    supervisor,
+    worktrees,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    resolveBases: async () => ({ primary: sha, extras: [] }),
+    inject: async () => {
+      throw new Error("an embedded dispatch must never type at a pane");
+    },
+  });
+}
+
+test("a failed claim launches the task anyway and leads turn one with the failing step and its tail", async () => {
+  const { repo, sha } = seedRepo("claim-fails-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-claim-fails", status: "dispatching", repoRoot: repo, agent: "claude", intent: "fix the build" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  await dispatcherFor(
+    registry,
+    supervisor,
+    sha,
+    `console.error("YN0035: the registry answered 401");process.exit(1)`,
+  ).dispatch("task-claim-fails");
+
+  const task = registry.getTask("task-claim-fails")!;
+  assert.equal(task.status, "running", task.error ?? "");
+  assert.equal(task.provider, "mission");
+  assert.equal(supervisor.starts.length, 1);
+  const prompt = supervisor.starts[0]!.prompt;
+  assert.match(prompt, /^## Dependency install warning\n/);
+  assert.match(prompt, /Failing step 1 of 1: `.*node -e .*` exited with code 1\./);
+  assert.match(prompt, /YN0035: the registry answered 401/);
+  assert.ok(
+    prompt.endsWith(withTaskKindContract(task, "fix the build", { planDiscovery: await taskPlanDiscovery(task) })),
+    "the operator's request and the kind contract follow the note unchanged",
+  );
+  assert.equal(supervisor.starts[0]!.acceptedGoalPrompt, "fix the build", "the card Goal stays the human request");
+});
+
+test("a successful claim leaves turn one exactly as it was", async () => {
+  const { repo, sha } = seedRepo("claim-ok-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-claim-ok", status: "dispatching", repoRoot: repo, agent: "claude", intent: "ship it" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  await dispatcherFor(registry, supervisor, sha, `process.exit(0)`).dispatch("task-claim-ok");
+  const task = registry.getTask("task-claim-ok")!;
+  assert.equal(task.status, "running", task.error ?? "");
+  // Turn one as every dispatch composes it, plan discovery included (#1177).
+  assert.equal(
+    supervisor.starts[0]!.prompt,
+    withTaskKindContract(task, "ship it", { planDiscovery: await taskPlanDiscovery(task) }),
+  );
+});

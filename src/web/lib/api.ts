@@ -1,6 +1,16 @@
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
+import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
+import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
+import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
+import type { DatabaseBackupsSaveRequest } from "@shared/database-backups.ts";
+import type { IdleCachePlan, StorageView } from "@shared/storage-health.ts";
+import type { StorageLimitsConfigPatch } from "@shared/storage-limits.ts";
+import type { ReviewSnoozeDelayId, ReviewSnoozeMeanwhile } from "@shared/review-snooze.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -184,9 +194,12 @@ import type {
   WorkflowLaunchFix,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
-import type {
-  RepoIndexConfigPatch,
-  RepoIndexView,
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  type RepoIndexConfigPatch,
+  type RepoIndexView,
 } from "@shared/repo-index.ts";
 
 export interface ActionResult {
@@ -366,6 +379,14 @@ export const executeWorktreeAction = (token: string, acknowledgements: WorktreeR
 export const dismissWorktreeOperation = (id: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
+/**
+ * Stop the dependency claim running in a slot. The claim fails and its lease is granted with
+ * the warning, so a dispatch waiting on it continues. The result reaches every card through the
+ * task and worktree events; a 404 means the claim had already finished.
+ */
+export const stopWorktreeClaim = (slotId: string, claimId: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/${encodeURIComponent(slotId)}/claim/stop`, "POST", { claimId });
+
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**
@@ -442,6 +463,12 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+
+/** Settings > Storage: the storage aggregate plus the database backup config. */
+export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
+/** Settings > Storage: what the idle-cache budget would remove now. Observes every slot. */
+export const fetchIdleCachePlan = () => fetchJson<IdleCachePlan>("/api/storage/pool-caches");
 /** Machine-local roots that feed every repository picker and name resolver. */
 export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
@@ -1004,15 +1031,151 @@ async function acceptGoal(id: string): Promise<AcceptGoalResult> {
   }
 }
 
-/** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
-export async function fetchRepos(): Promise<string[]> {
+/**
+ * The newest repository list this window has received, with when the daemon's scan behind it
+ * started. Null before the first list lands, and again after the indexed directories change:
+ * a list of other directories is not an answer, and opening a picker on one would offer a
+ * repository the operator just removed.
+ */
+let lastRepos: { repos: string[]; scannedAt: number; identity: string | null } | null = null;
+
+/** Told whenever the window drops its list, so a picker already open stops offering it. */
+const repoListDropListeners = new Set<() => void>();
+
+/** Subscribe to the window dropping its repository list. Returns the unsubscribe. */
+export function onCachedReposDropped(listener: () => void): () => void {
+  repoListDropListeners.add(listener);
+  return () => {
+    repoListDropListeners.delete(listener);
+  };
+}
+
+/** The newest repository list this window has received, for a picker to open on before it asks. */
+export function cachedRepos(): string[] | null {
+  return lastRepos?.repos ?? null;
+}
+
+/** Bumped by `forgetCachedRepos`, so a read sent before the change cannot repopulate the list. */
+let repoCacheGeneration = 0;
+
+/**
+ * The index identity the daemon last announced to this window, or null before the first
+ * announcement and after `forgetCachedRepos`. Tracked even while no list is held: a first
+ * load in flight when the directories change must not be answered by the index that was.
+ * Only an announcement sets it; while it is unknown, any answer is taken.
+ */
+let announcedIdentity: string | null = null;
+
+/**
+ * Forget the window's repository list - the indexed directories changed or were restored.
+ *
+ * Also drops every read already sent (they answer for the directories that were) and the
+ * announced identity, so answers are taken again until the next announcement: the window that
+ * saved hears its own `repo_index_changed` only after its PUT, and must not refuse the new
+ * index meanwhile.
+ */
+export function forgetCachedRepos(): void {
+  lastRepos = null;
+  announcedIdentity = null;
+  repoCacheGeneration += 1;
+  for (const listener of [...repoListDropListeners]) listener();
+}
+
+/**
+ * The daemon named the index it walks now (on the SSE snapshot, and on `repo_index_changed`).
+ * A list answering for any other index is dropped; a list answering for this one is kept -
+ * which is what lets a reconnect under load keep the list the picker most needs, while one
+ * that missed a directory change while disconnected still lets go of a stale list.
+ */
+export function noteRepoIndexIdentity(identity: string): void {
+  if (identity === REPO_INDEX_IDENTITY_UNKNOWN) {
+    // The daemon cannot vouch for any index right now: let go of what is held, and take the
+    // next real answer rather than refuse it against an identity that is not one.
+    if (lastRepos !== null || announcedIdentity !== null) forgetCachedRepos();
+    return;
+  }
+  const superseded = announcedIdentity !== null && announcedIdentity !== identity;
+  const stale = lastRepos !== null && lastRepos.identity !== identity;
+  // A changed index forgets even when no list is held yet: that is what drops a first load
+  // still in flight for the directories that were, and tells an open picker to ask again.
+  if (superseded || stale) forgetCachedRepos();
+  announcedIdentity = identity;
+}
+
+/**
+ * Fetch the workspace's git repos (dispatch bases). Never throws: a read that fails answers
+ * with the newest list this window has, or [] when it has none.
+ *
+ * The daemon answers from its last scan and rescans behind it. `rescan` asks it to wait for
+ * a scan started after the request instead, so a checkout cloned a moment ago is included.
+ *
+ * Answers are ordered by the scan behind them, not by arrival: a caller that sends both
+ * reads can receive the rescan first, and the ordinary one landing after it must not put
+ * the older list back. The answer is always the newest list held, so a caller rendering it
+ * never shows a regression either.
+ */
+export async function fetchRepos(options: { rescan?: boolean } = {}): Promise<string[]> {
+  return (await fetchReposAnswer(options)).repos;
+}
+
+/**
+ * How one repository read ended, for a caller that must tell an empty index from no answer.
+ *
+ * - `answered`: the daemon answered for the current index; `repos` is the newest list held.
+ * - `held`: the read failed, and `repos` is the list the window already had.
+ * - `failed`: the read failed and the window holds no list; `repos` is [] and means nothing.
+ * - `dropped`: the indexed directories changed while it was out (or its answer named another
+ *   index), so it says nothing about the current one. A picker that hears `onCachedReposDropped`
+ *   has already asked again; this answer is not for it.
+ */
+export type RepoReadOutcome = "answered" | "held" | "failed" | "dropped";
+
+/** `fetchRepos`, with how the read ended. Never throws. */
+export async function fetchReposAnswer(
+  options: { rescan?: boolean } = {},
+): Promise<{ repos: string[]; outcome: RepoReadOutcome }> {
+  // Captured before the request: one sent before the directories changed answers for the
+  // directories that were, and is dropped rather than cached or returned.
+  const generation = repoCacheGeneration;
+  // What this window had heard when it asked - see the identity check below.
+  const announcedAtSend = announcedIdentity;
+  const held = (): string[] => lastRepos?.repos ?? [];
+  const failure = (): { repos: string[]; outcome: RepoReadOutcome } =>
+    generation !== repoCacheGeneration
+      ? { repos: held(), outcome: "dropped" }
+      : { repos: held(), outcome: lastRepos ? "held" : "failed" };
   try {
-    const res = await actionFetch("/api/repos");
-    if (!res.ok) return [];
+    const res = await actionFetch(options.rescan ? "/api/repos?rescan=1" : "/api/repos");
+    if (!res.ok || generation !== repoCacheGeneration) return failure();
     const data = (await res.json()) as unknown;
-    return Array.isArray(data) ? (data as string[]) : [];
+    if (!Array.isArray(data) || generation !== repoCacheGeneration) return failure();
+    // The daemon stamps each scan uniquely and increasingly, so only a strictly later stamp
+    // is a newer scan. A daemon too old to stamp is taken in arrival order, as before.
+    const header = res.headers.get(REPOS_SCANNED_AT_HEADER);
+    const stamp = header === null ? Number.NaN : Number(header);
+    const scannedAt = Number.isFinite(stamp) ? stamp : 0;
+    const identity = res.headers.get(REPO_INDEX_IDENTITY_HEADER);
+    // An answer for an index other than the one announced. Which of the two is newer is
+    // decided by whether an announcement landed while this read was out:
+    //  - one did (including the very first): the answer may predate it, so it is dropped -
+    //    the announcement already made the window forget, and an open picker asked again.
+    //  - none did: the daemon answered after everything this window has heard, so the index
+    //    moved on while it was not listening (a dropped event stream). The answer is the
+    //    news: the old list goes, an open picker is told, and this list is the new one.
+    if (announcedIdentity !== null && identity !== null && identity !== announcedIdentity) {
+      if (announcedIdentity !== announcedAtSend) return { repos: held(), outcome: "dropped" };
+      forgetCachedRepos();
+      announcedIdentity = identity;
+      lastRepos = { repos: data as string[], scannedAt, identity };
+      return { repos: held(), outcome: "answered" };
+    }
+    // A list for a different index is never compared by stamp: it replaces the old one.
+    if (!lastRepos || lastRepos.identity !== identity || scannedAt === 0 || scannedAt > lastRepos.scannedAt) {
+      lastRepos = { repos: data as string[], scannedAt, identity };
+    }
+    return { repos: held(), outcome: "answered" };
   } catch {
-    return [];
+    return failure();
   }
 }
 
@@ -1037,6 +1200,24 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
 }
 
 /**
+ * The per-kind dispatch defaults from Settings, or null when the config cannot be read.
+ *
+ * The one read of these rows for surfaces that need nothing else from the workflow config.
+ * Null is "not known", never "none configured": a caller must not resolve a kind against it
+ * as though it were `{}`, which would pass a built-in off as the operator's choice.
+ */
+export async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+  try {
+    const res = await actionFetch("/api/workflows/config");
+    if (!res.ok) return null;
+    const data = (await res.json()) as { kindWorkflowDefaults?: KindWorkflowDefaults };
+    return data.kindWorkflowDefaults ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The refusal body is KEPT, not reduced to its message. A route that answers a conflict
  * with structure - what a destructive action would cost, which the caller then renders -
  * would otherwise have that structure thrown away here, and every such route would have
@@ -1046,12 +1227,14 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
-      headers: body ? { "content-type": "application/json" } : {},
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers },
       body: body ? JSON.stringify(body) : undefined,
+      signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
     if (!res.ok) {
@@ -1065,10 +1248,10 @@ async function request<T extends ActionResult = ActionResult>(
   }
 }
 
-const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("PUT", path, body);
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("POST", path, body, options);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
+  request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
@@ -1268,6 +1451,27 @@ export async function fetchTranscriptBefore(
       // scroll-back rather than looping on an anchor the server never moved.
       atStart: data.atStart ?? true,
     };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * The tool call that launched a session's background sub-agent, as its transcript file
+ * records it - null when it records none. "Jump to launch" asks this for an agent whose
+ * source did not name its launching call; see the route for why the file answers it.
+ */
+export async function fetchSubagentLaunch(
+  sessionId: string,
+  agentId: string,
+): Promise<{ ok: true; toolUseId: string | null } | { ok: false; error: string }> {
+  try {
+    const res = await actionFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/launch`,
+    );
+    const data = (await res.json().catch(() => ({}))) as { toolUseId?: unknown; error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, toolUseId: typeof data.toolUseId === "string" && data.toolUseId ? data.toolUseId : null };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -1610,6 +1814,8 @@ export interface DispatchInput {
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;
+  /** Grill me first; omitted follows the Settings -> Tasks default. */
+  grillFirst?: boolean;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;
@@ -1690,7 +1896,12 @@ export interface ArchiveArtifactBody {
 }
 
 export const api = {
-  setSessionControl: (id: string, enabled: boolean, requestId: string) => request("PUT", `/api/sessions/${encodeURIComponent(id)}/session-control`, { enabled, requestId }),
+  /** `controlRequestId` names the session's own ask when the click is its card's Accept. */
+  setSessionControl: (id: string, enabled: boolean, requestId: string, controlRequestId?: string) =>
+    request("PUT", `/api/sessions/${encodeURIComponent(id)}/session-control`,
+      { enabled, requestId, ...(controlRequestId ? { controlRequestId } : {}) }),
+  declineSessionControlRequest: (id: string, requestId: string) =>
+    request("POST", `/api/sessions/${encodeURIComponent(id)}/session-control/requests/${encodeURIComponent(requestId)}/decline`),
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
   readFileIfChanged: fetchSessionFileIfChanged,
@@ -1775,6 +1986,23 @@ export const api = {
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
+  /** Pause one session: freeze it now, or once its current turn ends. */
+  pauseSession: (id: string, mode: SessionPauseMode = "now") =>
+    post(`/api/sessions/${encodeURIComponent(id)}/pause`, { mode }),
+  /** Resume one session, whatever paused it. */
+  resumeSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/resume`),
+  /** Hibernate a task's session: stop its agent and keep its conversation for Resume. */
+  hibernateSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/hibernate`),
+  /** Reopen a hibernated task's conversation in its worktree. */
+  resumeHibernatedTask: (taskId: string) => post(`/api/tasks/${encodeURIComponent(taskId)}/resume`),
+  /** Pause every live session; optionally hold automatic launches and resume at a set time. */
+  pauseFleet: (options: { holdDispatch: boolean; resumeAt: number | null }) => post("/api/pause/fleet", options),
+  /** Resume what Pause all paused. Sessions paused one at a time stay paused. */
+  resumeFleet: () => post("/api/pause/fleet/resume"),
+  /** Make one session the priority session: every other live session pauses for it. */
+  setPriority: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/priority`),
+  /** End priority and resume the sessions it paused. */
+  endPriority: () => post("/api/pause/priority/end"),
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving
    * the conversation open. Nothing to send: the gesture has one meaning.
@@ -1891,6 +2119,14 @@ export const api = {
     approveFutureBundles = false,
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+  /**
+   * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
+   * with what to do meanwhile. The daemon adds the delay to its own clock.
+   */
+  snoozeReview: (id: string, delay: ReviewSnoozeDelayId, meanwhile: ReviewSnoozeMeanwhile) =>
+    post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
+  /** Answer now: bring a snoozed question back before its time. */
+  wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**
@@ -1926,10 +2162,11 @@ export const api = {
     ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
-   * action; without that claim the daemon refuses a parked task.
+   * action; without that claim the daemon refuses a parked task. Every dashboard launch is a
+   * person's, so it always claims `overridePauseHold`: a pause holds the autopilot, not you.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
-    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled, overridePauseHold: true }),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>
@@ -1944,6 +2181,11 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
+  /** Validate a pinned revision change and return both task snapshots without saving. */
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange, signal?: AbortSignal) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }, { signal }),
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -1952,10 +2194,8 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  taskPlanDependencies: (id: string) =>
-    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+    post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
    * which is not writable through `updateTask` or any create body.
@@ -1994,6 +2234,8 @@ export const api = {
     post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, {
       sessionId,
       overrideDisabled,
+      // A person's handover, so never held by a pause; see `dispatchBacklog`.
+      overridePauseHold: true,
       confirmReset,
     }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
@@ -2119,10 +2361,67 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+  /** `expectRemove` is the exact deletion list the page showed; a mismatch answers 409. */
+  setDatabaseBackupsConfig: (request: DatabaseBackupsSaveRequest) =>
+    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, request),
+  /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
+  backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
+  /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
+    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
+  // --- Task shaping, behind its preview flag (404 while it is off) ---
+  /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
+  getShaping: () =>
+    request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /** Apply one intent. A refusal carries the daemon's `reason`. */
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
+      signal: options?.signal,
+      ...(options?.order ? { headers: { [SHAPING_WRITE_ORDER_HEADER]: options.order } } : {}),
+    }),
+  /**
+   * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
+   * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.
+   */
+  testShaper: async (body: ShapingTestRequest, signal?: AbortSignal): Promise<
+    { ok: true; run: ShapingRun } | { ok: false; aborted: boolean; reason: string }
+  > => {
+    try {
+      const res = await actionFetch("/api/shaping/test", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+      });
+      const data = (await res.json().catch(() => undefined)) as unknown;
+      if (!res.ok) {
+        const failure = (data ?? {}) as { error?: string; reason?: string };
+        return { ok: false, aborted: false, reason: failure.reason ?? failure.error ?? `HTTP ${res.status}` };
+      }
+      // A success reply is read against the run's own shape, never padded out: a reply missing a
+      // field must not draw as a run that would add nothing.
+      const run = readShapingRun(data);
+      if (!run) return { ok: false, aborted: false, reason: "The daemon's dry-run reply was incomplete, so its result cannot be shown." };
+      return { ok: true, run };
+    } catch (error) {
+      return { ok: false, aborted: signal?.aborted === true, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  setStorageLimits: (patch: StorageLimitsConfigPatch) =>
+    put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
+  /** Start measuring the state directory. It finishes in the background. */
+  measureStorage: () => post<ActionResult & { message?: string }>(`/api/storage/usage/measure`),
 
   // --- Repository discovery roots ---
-  setRepoIndex: (cfg: RepoIndexConfigPatch) =>
-    put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg),
+  // Forgets the window's repository list once the save is ACCEPTED: the directories it
+  // answered for have changed, and a picker must not offer a repository just removed. A
+  // refused or failed save changed nothing, so the list, every read in flight and any open
+  // picker are left alone. Forgetting here rather than waiting for `repo_index_changed` also
+  // drops reads sent before the save, and clears the announced identity so this window takes
+  // its new index before its own announcement arrives. A rescan keeps the list - same
+  // directories, and a list that is a few seconds old beats none.
+  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+    if (saved.ok) forgetCachedRepos();
+    return saved;
+  },
   rescanRepoIndex: () => post<ActionResult & RepoIndexView>(`/api/repo-index/rescan`),
 
   // --- Pipelines (observing an external SDLC engine) ---

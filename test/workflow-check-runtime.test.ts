@@ -17,6 +17,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
@@ -92,18 +93,14 @@ let seq = 0;
 /** A real git repository with one commit and a nested package, so a subpath has somewhere to go. */
 function gitRepo(): { repoRoot: string; headSha: string } {
   const repoRoot = realpathSync(mkdtempSync(join(home, `repo-${seq++}-`)));
-  const git = (...args: string[]): string =>
-    execFileSync("git", ["-C", repoRoot, ...args], { stdio: "pipe" }).toString();
-  execFileSync("git", ["init", "-q", "-b", "main", repoRoot], { stdio: "pipe" });
-  git("config", "user.email", "checks@example.com");
-  git("config", "user.name", "Check Fixture");
-  git("config", "commit.gpgsign", "false");
-  mkdirSync(join(repoRoot, "packages", "web"), { recursive: true });
-  writeFileSync(join(repoRoot, "packages", "web", "marker.txt"), "web\n");
-  writeFileSync(join(repoRoot, "root.txt"), "root\n");
-  git("add", "-A");
-  git("commit", "-qm", "base");
-  return { repoRoot, headSha: git("rev-parse", "HEAD").trim() };
+  const headSha = seedGitRepo(repoRoot, {
+    branch: "main",
+    files: { "packages/web/marker.txt": "web\n", "root.txt": "root\n" },
+    email: "checks@example.com",
+    name: "Check Fixture",
+    config: { "commit.gpgsign": "false" },
+  });
+  return { repoRoot, headSha };
 }
 
 interface FakeTree {
@@ -1153,7 +1150,7 @@ test("engine shutdown refuses a check released after lease acquisition", { skip:
   const engine = new WorkflowEngine(store, () => {}, {
     runnerFor: () => { throw new Error("this check-only workflow must not call a model"); },
     workflowPolicy: () => ({
-      liveEnabled: false, repoAllowlist: [f.repoRoot], defaultWorkflowId: null,
+      liveEnabled: false, repoAllowlist: [f.repoRoot], kindWorkflowDefaults: {},
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true, skipPassedJudges: true,
     }),
@@ -1226,7 +1223,7 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     workflowPolicy: () => ({
       liveEnabled: false,
       repoAllowlist: [repoRoot],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true,
       skipPassedJudges: true,
@@ -1306,6 +1303,53 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     1,
   );
   store.cancelRun("run-gate-block", "test_cleanup", 99);
+});
+
+
+test("checks require the reviewed publication tree and cannot depend on a local report", { skip: !SUPPORTED }, async () => {
+  const { captureWorkflowPublication } = await import("../src/server/workflows/publication.ts");
+  const f = fixture();
+  mkdirSync(join(f.repoRoot, "docs/reports/result"), { recursive: true });
+  writeFileSync(join(f.repoRoot, "docs/reports/result/report.html"), "<!doctype html><title>Result</title><p>Local evidence</p>");
+  const captured = await captureWorkflowPublication(f.repoRoot);
+  const request = {
+    slot: "test" as const, repoRoot: f.repoRoot, headSha: f.headSha, workingSubpath: "",
+    publicationTreeOid: captured.publication.treeOid,
+    command: [process.execPath, "-e", "require('node:fs').accessSync('docs/reports/result/report.html')"],
+  };
+  const dependent = await f.runtime.executorFor(attemptRef())(request);
+  assert.equal(dependent.kind, "exited");
+  assert.notEqual(dependent.kind === "exited" && dependent.exitCode, 0,
+    "a check cannot pass by reading an excluded local fixture");
+  const success = await f.runtime.executorFor(attemptRef())({ ...request, command: PASSES });
+  assert.equal(success.kind, "exited");
+  assert.equal(success.kind === "exited" && success.exitCode, 0);
+  writeFileSync(join(f.repoRoot, "required-source.ts"), "export {};\n");
+  const changed = await captureWorkflowPublication(f.repoRoot);
+  const poolCallsBeforeMismatch = f.pool.calls.length;
+  const mismatch = await f.runtime.executorFor(attemptRef())({
+    ...request, command: PASSES, publicationTreeOid: changed.publication.treeOid,
+  });
+  assert.equal(mismatch.kind, "infrastructure");
+  assert.match(mismatch.kind === "infrastructure" ? mismatch.reason : "", /Commit the required deliverables/);
+  assert.equal(f.pool.calls.length, poolCallsBeforeMismatch,
+    "a publication mismatch must not acquire a worktree or begin its dependency claim");
+
+  // A pre-commit review runs the required source from its publication snapshot. Retained
+  // report bytes remain available to Personas, but can never become a Command's fixture.
+  const { captureReviewSnapshot } = await import("../src/server/git/review-snapshot.ts");
+  const persisted = await captureWorkflowPublication(f.repoRoot, [], { objectStorage: "repository" });
+  const snapshot = await captureReviewSnapshot(f.repoRoot, Date.now(), {
+    treeOid: persisted.publication.treeOid, headOid: persisted.headOid,
+  });
+  const reviewed = await f.runtime.executorFor(attemptRef())({
+    ...request,
+    headSha: snapshot.commitOid,
+    publicationTreeOid: persisted.publication.treeOid,
+    command: [process.execPath, "-e", "const fs = require('node:fs'); require('node:assert/strict').equal(fs.readFileSync('required-source.ts', 'utf8'), 'export {};\\n'); if (fs.existsSync('docs/reports/result/report.html')) process.exit(1)"],
+  });
+  assert.equal(reviewed.kind, "exited");
+  assert.equal(reviewed.kind === "exited" && reviewed.exitCode, 0);
 });
 
 // ---- CodeRabbit coverage is checked against the pinned diff ----------------

@@ -160,7 +160,7 @@ test("a spent repair-round Command skips while both execution slots are occupied
     liveEnabled: true,
     checksEnabled: true,
     repoAllowlist: [daemon.repo],
-    defaultWorkflowId: null,
+    kindWorkflowDefaults: { ship: null },
     checkCommands: [
       { repoRoot: daemon.repo, slot: "test", command: ["sh", "-c", "printf 'test passed\\n'"] },
       { repoRoot: daemon.repo, slot: "build", command: waitCommand(buildStarted) },

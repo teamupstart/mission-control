@@ -1,43 +1,15 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
+import { canonicalImagePath, imageAttachments, native, releaseFixtureImage } from './helpers/native-dmg.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
 
 const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS archive tools' : false};
-const native = (command: string, args: string[], input?: string) => execFileSync(command, args,
-  {input, encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}, stdio: ['pipe', 'pipe', 'pipe']});
-
-type ImageAttachment = {'image-path': string; 'system-entities': {'dev-entry': string}[]};
-function imageAttachments(): ImageAttachment[] {
-  const plist = native('/usr/bin/hdiutil', ['info', '-plist']);
-  const info = JSON.parse(native('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], plist));
-  assert.ok(Array.isArray(info.images), 'hdiutil must return an image inventory');
-  return info.images;
-}
-
-function canonicalImagePath(path: string): string {
-  if (existsSync(path)) return realpathSync(path);
-  // A failed create may remove the file while its helper still owns the device.
-  return existsSync(dirname(path)) ? join(realpathSync(dirname(path)), basename(path)) : resolve(path);
-}
-
-function releaseFixtureImage(dmg: string, {images = imageAttachments(), run = native}:
-  {images?: ImageAttachment[]; run?: typeof native} = {}): void {
-  const ownedPath = canonicalImagePath(dmg);
-  for (const image of images) {
-    if (typeof image['image-path'] !== 'string' || canonicalImagePath(image['image-path']) !== ownedPath) continue;
-    // Detach only the owning image's base device, not its partitions or APFS
-    // synthesized devices. Never force a detach or act on another fixture.
-    const device = image['system-entities']?.[0]?.['dev-entry'];
-    assert.ok(typeof device === 'string' && /^\/dev\/disk\d+$/.test(device), 'owned image must identify its base device');
-    run('/usr/bin/hdiutil', ['detach', device]);
-  }
-}
 
 test('fixture cleanup resolves path aliases and detaches only the exact owned image', t => {
   const root = mkdtempSync(join(tmpdir(), 'distribution-owned-'));

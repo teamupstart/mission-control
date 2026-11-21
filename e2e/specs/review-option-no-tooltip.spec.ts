@@ -215,7 +215,7 @@ test("a request_input question's options leave no tooltip over the question eith
   await expect(eslint).toBeFocused();
   expect(await bubble.count(), "arrowing onto an option paints no bubble").toBe(0);
 
-  await group.getByPlaceholder("Other…").fill("oxlint");
+  await group.getByPlaceholder("Other answer, or add context…").fill("oxlint");
   expect(await bubble.count(), "the Other field paints no bubble").toBe(0);
   await expect(modal.getByRole("button", { name: /^Submit/ })).toBeEnabled();
 });
@@ -231,6 +231,7 @@ test("a multi-select request_input question's checkboxes leave no tooltip either
   const group = modal.getByRole("group", { name: LINTER });
   const biome = group.getByRole("checkbox", { name: /^biome/ });
   const eslint = group.getByRole("checkbox", { name: /^eslint/ });
+  await expect(group.getByRole("textbox", { name: /^Other answer or context/ })).toBeVisible();
 
   await group.getByRole("checkbox", { name: "Chat about it" }).hover();
   await expect(bubble).toHaveText(/^Skip choosing for now/);

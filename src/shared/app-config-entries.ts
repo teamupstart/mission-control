@@ -1,3 +1,5 @@
+import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
+import { ShapingConfigSchema } from "./shaping.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
@@ -12,6 +14,7 @@ import {
   ShippingConfigSchema,
   SkillsConfigSchema,
   StandingInstructionsConfigSchema,
+  StoredPauseStateSchema,
   StoredWorkflowPolicySchema,
   TerminalsConfigSchema,
   UiConfigSchema,
@@ -39,6 +42,16 @@ import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
 import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
+import {
+  DatabaseBackupsConfigSchema,
+  DatabaseBackupStatusSchema,
+  type DatabaseBackupsConfig,
+} from "./database-backups.ts";
+import {
+  StorageAlertStateSchema,
+  StorageLimitsConfigSchema,
+  type StorageLimitsConfig,
+} from "./storage-limits.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -48,6 +61,7 @@ export type AppConfigCaptureKind =
   | "away"
   | "harnesses"
   | "foreman"
+  | "inspector"
   | "ui"
   | "standing";
 
@@ -76,6 +90,12 @@ export interface AppConfigFieldsEntry<
   classification: {
     kind: "fields";
     fields: Record<keyof z.output<Schema>, AppConfigValueClass>;
+    /**
+     * Setting fields a backup written by an older build may still carry, which the entry's
+     * own schema migrates on read. A restore accepts them instead of refusing the snapshot
+     * as holding unexpected fields; they are never written back.
+     */
+    legacyFields?: readonly string[];
   };
   backupDomain: SettingsBackupDomainId;
 }
@@ -91,13 +111,16 @@ function fieldsEntry<
   backupDomain: SettingsBackupDomainId,
   fields: Record<keyof z.output<Schema>, AppConfigValueClass>,
   capture: AppConfigCaptureKind = "generic",
+  legacyFields: readonly string[] = [],
 ): AppConfigFieldsEntry<Key, Schema> {
   return {
     key,
     schema,
     snapshotVersion: 1,
     backupDomain,
-    classification: { kind: "fields", fields },
+    classification: legacyFields.length > 0
+      ? { kind: "fields", fields, legacyFields }
+      : { kind: "fields", fields },
     capture,
   };
 }
@@ -133,9 +156,11 @@ const harnessesFields = {
 
 const terminalsFields = {
   multiplexerTerminal: "setting",
+  externalSessions: "setting",
 } satisfies Record<keyof TerminalsConfig, AppConfigValueClass>;
 
 const worktreesFields = {
+  taskRetentionDays: "setting",
   enabled: "setting",
   maxSlots: "setting",
   repositories: "setting",
@@ -145,6 +170,7 @@ const skillsFields = {
   alwaysDraftPr: "setting",
   commitPlanHtml: "setting",
   planStorage: "setting",
+  grillFirstKinds: "setting",
   enabled: "setting",
   defaultSkillEnabled: "setting",
   skills: "setting",
@@ -192,7 +218,7 @@ const foremanFields = {
 const workflowFields = {
   liveEnabled: "setting",
   repoAllowlist: "setting",
-  defaultWorkflowId: "setting",
+  kindWorkflowDefaults: "setting",
   retention: "setting",
   checksEnabled: "setting",
   skipPassedJudges: "setting",
@@ -259,6 +285,7 @@ const uiFields = {
   skin: "setting",
   taskKindHeader: "setting",
   taskKindCard: "setting",
+  backgroundAgentsStyle: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",
@@ -266,21 +293,47 @@ const uiFields = {
   guidedDispatch: "setting",
   guidedTour: "setting",
   showToursOnStartup: "setting",
+  announcedTours: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
   boardSidebarAllSessions: "setting",
+  conversationRailCollapsed: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
+  blockedPlacement: "setting",
+  blockedFrameCollapsed: "setting",
   collapsedBoardColumns: "setting",
+  sessionRailFolded: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",
+  pauseCardControls: "setting",
+  pauseConsoleControls: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {
   directories: "setting",
 } satisfies Record<keyof RepoIndexConfig, AppConfigValueClass>;
+
+const backupsFields = {
+  scheduledCount: "setting",
+  preMigrationCount: "setting",
+  intervalHours: "setting",
+  scheduledMaxAgeDays: "setting",
+  preMigrationMaxAgeDays: "setting",
+  maxTotalBytes: "setting",
+} satisfies Record<keyof DatabaseBackupsConfig, AppConfigValueClass>;
+
+const storageLimitsFields = {
+  limitBytes: "setting",
+  warnAtPercent: "setting",
+  freeFloorBytes: "setting",
+  fleetBanner: "setting",
+  desktopNotification: "setting",
+  poolIdleBudgetBytes: "setting",
+  poolKeepWarm: "setting",
+} satisfies Record<keyof StorageLimitsConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
@@ -302,6 +355,13 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
+  featureFlags: { ...wholeEntry("featureFlags", FeatureFlagsConfigSchema, "setting", "feature-flags"), optionalInSnapshot: true },
+  // Task shaping: registered shapers, stored choices, order, caller identity and budgets.
+  // Backed up whole because it holds no secret text. A credential-bearing header holds only a
+  // reference such as `{env:NAME}`, a URL carries no userinfo or credential query parameter, and
+  // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
+  // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
+  shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
   // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.
@@ -320,7 +380,9 @@ export const APP_CONFIG_ENTRIES = {
     "foreman-instructions",
   ),
   workflows: fieldsEntry(
-    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields,
+    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields, "generic",
+    // Ship's dispatch default before per-kind defaults; migrated by the schema.
+    ["defaultWorkflowId"],
   ),
   taskSources: fieldsEntry(
     "taskSources", TaskSourcesConfigSchema, "task-sources", taskSourcesFields,
@@ -334,7 +396,7 @@ export const APP_CONFIG_ENTRIES = {
     standingFields,
     "standing",
   ),
-  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields),
+  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields, "inspector"),
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
@@ -342,7 +404,19 @@ export const APP_CONFIG_ENTRIES = {
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.
   setupBanner: wholeEntry("setup.banner", SetupBannerDismissalSchema, "operational", null),
+  /**
+   * Headless mode's `dispatch.launcher.prompt` (spec 7.4): whether a new Claude session is offered
+   * the launcher. Absent means on. `operational` with no backup domain, so the settings backup
+   * contract is unchanged; `GET /dispatch/config` is its only reader.
+   */
+  dispatchLauncherPrompt: wholeEntry("dispatch.launcher.prompt", z.boolean(), "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
+  /**
+   * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`
+   * with no backup domain: it names this machine's live processes by pid, and restored onto
+   * another installation it would describe agents that were never running there.
+   */
+  pauseState: wholeEntry("pause.state", StoredPauseStateSchema, "operational", null),
   costTelemetryEnabledAt: wholeEntry(
     "costTelemetryEnabledAt", z.number().nullable(), "derived", null,
   ),
@@ -351,6 +425,33 @@ export const APP_CONFIG_ENTRIES = {
     "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
   ),
   terminals: fieldsEntry("terminals", TerminalsConfigSchema, "terminals", terminalsFields),
+  /**
+   * Full-database backup counts and cadence. `openDb` reads this row straight through its own
+   * handle before migrations run (`src/server/database-backups/service.ts`), so the key and
+   * schema must stay readable on a database that has not been upgraded yet.
+   */
+  backups: {
+    ...fieldsEntry("backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields),
+    optionalInSnapshot: true,
+  },
+  /**
+   * What the full-database backup captures last did: attempts, successes and the current
+   * failure streak per kind. The daemon writes it through the same raw handle as the backup
+   * service reads `backups`. `operational` with no backup domain: it describes this machine's
+   * disk, and restored onto another installation it would report captures that never ran there.
+   */
+  backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
+  /** Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget. */
+  storageLimits: {
+    ...fieldsEntry("storage.limits", StorageLimitsConfigSchema, "storage-limits", storageLimitsFields),
+    optionalInSnapshot: true,
+  },
+  /**
+   * When each storage warning's current occurrence began. `operational` with no backup domain,
+   * as `backups.status` is: it describes this machine's disk, and restored onto another
+   * installation it would date a warning that never happened there.
+   */
+  storageAlerts: wholeEntry("storage.alerts", StorageAlertStateSchema, "operational", null),
   /**
    * General telemetry collection and export.
    *

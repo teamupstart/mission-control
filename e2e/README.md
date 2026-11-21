@@ -1,3 +1,15 @@
+`feature-flags-stream.spec.ts` exercises Phase 1's real dashboard event consumer against the
+isolated production daemon. A private Vite build substitutes a preview fixture registry and
+adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` values plus a
+consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
+hook, routes or SSE transport. Two open windows assert both config and the resolved answer
+from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
+without navigation. The probe build replaces the shipped registry and adds no product controls.
+`MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
+private build; `hook` forces the hook's answer to false. Each negative control must fail.
+`MC_E2E_EVIDENCE=1` captures the peer window after reconnection under
+`e2e/.artifacts/feature-flags-stream/`.
+
 # Browser end-to-end tests
 
 `specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
@@ -335,6 +347,32 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/board-card-jump-shortcut.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/board-card-jump-shortcut/focused-playwright-transcript.txt
+```
+
+### The folded session rail
+
+`e2e/.artifacts/session-rail-fold/` carries seven frames; `07` is the Board's all-sessions
+drill-in folded, with the back to the board now at the left of the detail head. `01` and `02` are the same Console
+session with the rail open and then folded to its strip, which is the "the conversation takes
+the rail's width" claim: compare the reply box's left edge between them. `03` is a folded strip
+after a session started waiting on you, with the Needs you count drawn and pulsing, and `06` is
+the same strip after a second one did, the count risen to 2 and pulsing again. `04` and `05` are
+the Board drill-in's column rail, open and then folded. The spec also asserts what a frame cannot
+show: the fold survives a reload, `[` toggles it from the keyboard but not while you type a reply,
+<kbd>↑</kbd>/<kbd>↓</kbd> still switch the open session while no rail row is drawn, Escape out of
+the reader hands the keyboard to the strip, and the risen count is a fresh pill rather than the
+spent one, which is what makes its pulse replay.
+
+Regenerate them with:
+
+```sh
+mkdir -p e2e/.artifacts/session-rail-fold
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/session-rail-fold.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/session-rail-fold/focused-playwright-transcript.txt
 ```
 
 ### The Board card panel and its preview
@@ -2119,6 +2157,21 @@ Kill on "the only card", is the failure mode this note exists to prevent. Both a
 which CI installs for exactly this reason, and which both specs skip themselves over when
 absent.
 
+**A spec that turns discovery on and starts its agent by hand must also set
+`outsideSessions: true`** in `test.use`. While **Show sessions started outside Mission Control**
+is off, discovery shows only the sessions its admission rule keeps (see [sessions started outside
+Mission Control](../docs/sessions.md#sessions-started-outside-mission-control)), and a fake binary started in a
+tmux pane, a scripted terminal-boundary session, or the fake Herdr server's own agent is an
+outside session. The option turns the setting on for that test's daemon before the test body
+runs. A spec whose sessions all come from a dispatch, a managed resume, Continue in terminal, or
+an observed pipeline worktree leaves it off, because proving those stay visible with the default
+is part of what it covers. A spec that pairs one of those with a hand-started control session
+sets it, because the control is an outside session: `session-driven-by-engine.spec.ts` starts a
+pipeline worker and an ordinary agent in the repository root beside it. Its pipeline worker is
+then visible either way, so the default-off admission of pipeline workers is covered by
+`test/discovery-admission.test.ts` rather than by that spec. `external-sessions-setting.spec.ts`
+covers the setting itself.
+
 `startDaemon()` then verifies two things before any test runs, because the whole isolation
 story is worthless if the daemon under test is not the one it thinks it is:
 
@@ -2221,3 +2274,31 @@ tool list, including the planning tools; no external provider or account is used
 Pi's isolated extensions directory to the installer's isolated directory, proves automatic
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
+
+`feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
+**Resident active hours**, **Task shaping** and **Session control requests** rows appear, and toggling each of the first two in
+one window changes a second window without a reload. `headless-mode-flag.spec.ts` covers the
+`headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
+the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
+uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
+`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+Use this build when a spec needs populated flag controls, search, palette or daemon writes.
+The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
+after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots
+under `e2e/.artifacts/feature-flags/`. No product module contains a fixture switch.
+
+### Resident active hours
+
+`specs/residents-active-hours.spec.ts` covers the `resident-active-hours` preview. The editor
+draws the **Active hours** card while the flag is on, and a Settings toggle in another window adds
+or removes it live. The one exception: a draft whose schedule cannot be saved, such as one with
+no day chosen, keeps the card on screen after the flag is turned off, so the error stays
+reachable; once it is fixed the card goes away and the profile saves. Turning hours on fills the
+zone picker with the browser's zone. Days, times and zone chosen in the card are saved with the
+profile. In the dock, a launched resident outside its window reads as **asleep**, with the time
+its held wake goes out, or the wake's own time when it is already due inside the next window,
+and reads as waiting again once the flag is off. Inside its window, a resident whose next wake
+falls after the window closes reads as **waiting** with the held wake's time.
+`MC_E2E_EVIDENCE=1` writes `01-active-hours-card.png`, `02-dock-asleep.png`,
+`03-dock-awake-held.png` and `04-dock-asleep-due-inside.png` under
+`e2e/.artifacts/residents-active-hours/`; attach them to the pull request, never commit them.

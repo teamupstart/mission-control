@@ -1,10 +1,16 @@
+import { hibernatedTasks } from "@shared/hibernation.ts";
+import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
+import { useShapingSettings } from "./useShapingSettings.ts";
+import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
+import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
+import { FleetPauseBanner } from "./components/FleetPauseControl.tsx";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
-  type RestoringSession,
   type Session,
   type Task,
 } from "@shared/types.ts";
@@ -14,6 +20,7 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
@@ -60,9 +67,11 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
+import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
+import { setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
-import { LineStrip } from "./components/LineStrip.tsx";
+import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -90,6 +99,7 @@ import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -100,12 +110,20 @@ import {
   cardShortcutTarget,
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
-import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
+import {
+  refreshAnnouncedTours,
+  uiConfig,
+  uiConfigHydrated,
+  updateUiConfig,
+  useUiConfig,
+  useUiConfigHydrated,
+} from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
   chordFromEvent,
@@ -117,7 +135,8 @@ import {
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay } from "./lib/format.ts";
-import { matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { matchesRestoringFilter, matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { matchesBacklogSearch } from "./lib/backlog-filter.ts";
 import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
@@ -142,6 +161,7 @@ import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
@@ -153,8 +173,10 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { isBuiltinResidentProfileId } from "@shared/residents.ts";
 import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
@@ -173,6 +195,7 @@ import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
+import { StorageBanner, useStorageNotifications } from "./components/StorageBanner.tsx";
 import { OrganizationTelemetryNotice } from "./components/OrganizationTelemetryNotice.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
@@ -181,7 +204,18 @@ import { GuidedTourController } from "./tour/GuidedTourController.tsx";
 import { TourPicker } from "./components/TourPicker.tsx";
 import { TourPreferenceNotice } from "./components/TourPreferenceNotice.tsx";
 import { tourCatalog } from "./tour/catalog.ts";
-import { startupTourDecision } from "./tour/startup.ts";
+import {
+  pendingTourAnnouncement,
+  recordTourAnnouncements,
+  startupTourDecision,
+  withOwedAnnouncements,
+} from "./tour/startup.ts";
+import {
+  oweAnnouncement,
+  owedAnnouncementsMark,
+  readOwedAnnouncements,
+  settleOwedAnnouncements,
+} from "./tour/owed-announcements.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
 import { tourEntry } from "./tour/entries.ts";
@@ -206,6 +240,12 @@ import {
   type WorkflowsTourRuntime,
 } from "./tour/tours/workflows.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
+import {
+  RESIDENTS_TOUR,
+  selectResidentsTourProfile,
+  type ResidentsTourNavigation,
+  type ResidentsTourRuntime,
+} from "./tour/tours/residents.ts";
 import { createTourTargetRegistry, type TourTargetId } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -331,10 +371,17 @@ export function App(): React.JSX.Element {
     fileCommentReviews,
     fleetCost,
     lineSummary,
+    featureFlags,
+    subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
@@ -359,8 +406,8 @@ export function App(): React.JSX.Element {
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
   const alertScope = useMemo(
-    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({ sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
@@ -402,6 +449,8 @@ export function App(): React.JSX.Element {
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
+  // Storage's size and free-space warnings, as a desktop notification when the operator asked.
+  useStorageNotifications(storageHealth);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
   // target of its own - what it draws is `attention` below, folded from state App already has -
@@ -516,6 +565,12 @@ export function App(): React.JSX.Element {
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
   const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
+  // The top bar's Residents button, registered here rather than by the dock that draws it:
+  // Settings > Display renders a preview top bar whose dock would overwrite the real one.
+  const residentsButtonTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
+    tourTargets,
+    "residents:topbar-button",
+  );
   // The gear, for the Setup tour's first stop. App renders the topbar above `TourTargetHost`,
   // so it registers through the owned hook exactly as Dispatch does.
   const settingsGearTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
@@ -545,7 +600,17 @@ export function App(): React.JSX.Element {
   const [residentDrawerSelected, setResidentDrawerSelected] = useState<string | null>(null);
   /** A one-shot request to focus a card in the drawer. */
   const [residentCardFocus, setResidentCardFocus] = useState<{ sessionId: string | null; nonce: number } | null>(null);
-  const residentDrawerShown = residentsInDrawer && (residentDrawerOpen || residentDrawerPinned);
+  /**
+   * The Meet your residents tour shows this drawer whatever the placement. Under Board and
+   * Console it borrows the drawer for the length of the tour - only one the tour opened, never
+   * the stored pin - the way See the work borrows a switched-off Line, and writes nothing.
+   */
+  const residentsTourBorrowsDrawer = !residentsInDrawer && activeTour?.tourId === "residents";
+  const residentDrawerShown = residentsInDrawer
+    ? residentDrawerOpen || residentDrawerPinned
+    : residentsTourBorrowsDrawer && residentDrawerOpen;
+  const residentDrawerShownRef = useRef(residentDrawerShown);
+  residentDrawerShownRef.current = residentDrawerShown;
   // The one launch state behind the dock and the drawer, so a launch outlives either closing.
   const residentLauncher = useResidentLaunches();
   /**
@@ -630,6 +695,22 @@ export function App(): React.JSX.Element {
       openSettingsAnchor(door.category, door.anchor);
     },
     [openSettingsAnchor],
+  );
+  /**
+   * The door an environment warning in the dispatch form offers, opened: that check's own
+   * Setup row, which carries the remedy (the Install button, or the command to run).
+   *
+   * Re-reads the setup snapshot too. The dispatch form asked the machine a moment ago, but
+   * the Setup panel shows what was read at startup, and a row the operator was just sent to
+   * must not be missing because the warning is newer than the snapshot.
+   */
+  const refreshSetup = setup.refresh;
+  const openEnvironmentFix = useCallback(
+    (check: EnvironmentCheckId): void => {
+      void refreshSetup();
+      openSettingsAnchor("setup", setupRowAnchor({ source: "environment-check", id: check }));
+    },
+    [openSettingsAnchor, refreshSetup],
   );
   const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
@@ -781,7 +862,11 @@ export function App(): React.JSX.Element {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
     if (activeEditor && !active?.closest(".cdetail")) return;
-    sessionEls.current.get(id)?.focus({ preventScroll: true });
+    // A folded rail draws no rows, so no row is registered for the id. The strip that stands
+    // in for them takes the keyboard instead: leaving the reader must still leave it, or every
+    // Escape would land back inside the reader and the next one could never peel further.
+    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
+      ?.focus({ preventScroll: true });
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -958,11 +1043,47 @@ export function App(): React.JSX.Element {
   // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
   // the same module-level store, so this is a third reader of one value rather than a copy.
   const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
-  const showToursOnStartup = useUiConfig().showToursOnStartup;
+  const { showToursOnStartup, announcedTours } = useUiConfig();
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
+  const announcedToursRef = useRef(announcedTours);
+  announcedToursRef.current = announcedTours;
+  /**
+   * The new tour this profile is owed an announcement of, or null - from the daemon's record and
+   * this browser's midway-dismissal debt, read afresh on every ask. The debt lives in shared
+   * `localStorage`, and another window can announce the tour and settle it at any moment, so no
+   * copy of it is kept: a startup opening that waited behind another dialog, and a Browse tours
+   * opening, both decide from what is owed now. Nothing is owed before hydration, because the
+   * cache cannot say whether a profile predates a tour.
+   */
+  const owedTourAnnouncement = useCallback((): TourId | null => (
+    uiConfigHydrated()
+      ? pendingTourAnnouncement(
+        withOwedAnnouncements(announcedToursRef.current, readOwedAnnouncements()),
+        catalog.map((entry) => entry.id),
+      )
+      : null
+  ), [catalog]);
   const startupTourHandled = useRef(false);
+  /**
+   * The daemon's `announcedTours` has been re-read for the automatic opening about to happen.
+   * Cleared whenever that opening has to wait again, so the record is confirmed at the moment it
+   * opens rather than at some earlier one.
+   */
+  const startupAnnouncementConfirmed = useRef(false);
+  const startupAnnouncementChecking = useRef(false);
+  /**
+   * Counts every time the startup opening is made to wait. A confirming read counts only if no
+   * wait happened between its start and its landing: a dialog that opened meanwhile can stay open
+   * while another window announces the tour, so that read says nothing about the moment the
+   * picker can actually open, and the decision reads again then.
+   */
+  const startupAnnouncementWaits = useRef(0);
+  /** Re-runs the startup decision once a confirming read lands. */
+  const [startupRecheck, setStartupRecheck] = useState(0);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
+  /** The tour the open picker announces, captured as it opened. */
+  const [tourPickerFeatured, setTourPickerFeatured] = useState<TourId | null>(null);
   const tourPickerOrigin = useRef<FocusBookmark>(captureFocusBookmark(null));
   const [tourPreferenceSaving, setTourPreferenceSaving] = useState(false);
   const tourPreferenceSavingRef = useRef(false);
@@ -979,8 +1100,23 @@ export function App(): React.JSX.Element {
     // A palette opened from the document root has no focusable invoker to return to.
     tourPickerOrigin.current = origin.element === document.body
       ? captureFocusBookmark(null) : origin;
+    // Whichever way the picker opens, the first opening that features a new tour is its
+    // announcement, and recording it lets the next window honor the startup preference again.
+    // A refused write rolls back and the next window announces it once more; nothing to report.
+    const featured = owedTourAnnouncement();
+    setTourPickerFeatured(featured);
+    if (featured) {
+      const recorded = recordTourAnnouncements(announcedToursRef.current);
+      // Only debts that existed as this write began are its to settle: the operator can start
+      // the tour from this very picker and leave it midway before the write lands, and that
+      // newer dismissal must survive it.
+      const mark = owedAnnouncementsMark();
+      void updateUiConfig({ announcedTours: recorded }).then((saved) => {
+        if (saved) settleOwedAnnouncements(recorded, undefined, mark);
+      });
+    }
     setTourPickerOpen(true);
-  }, []);
+  }, [owedTourAnnouncement]);
 
   const closeTourPicker = useCallback((): void => {
     setTourPickerOpen(false);
@@ -1015,18 +1151,22 @@ export function App(): React.JSX.Element {
    * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
    * palette opens.
    */
+  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
+  // Owned here beside the flags' settings: its confirmed state is the event stream's, which App holds.
+  const shapingSettings = useShapingSettings(shaping, hasSnapshot && connected, subscribeShaping);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
         guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
+        featureFlags: featureFlagsSettings,
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update, featureFlagsSettings],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -1080,8 +1220,10 @@ export function App(): React.JSX.Element {
       sessionNames,
       residents: paletteResidents,
       settingsBindings: paletteBindings,
+      featureFlags,
     }),
     [
+      featureFlags,
       paletteResidents,
       workflowSummaries,
       workflowRuns,
@@ -1192,6 +1334,15 @@ export function App(): React.JSX.Element {
 
 
   /**
+   * Whether this residents run reached its last stop, which is what seeing it through means.
+   * A run that ends without it was dismissed midway, and its cleanup announces the tour again.
+   */
+  const residentsTourReachedEnd = useRef(false);
+  const beginResidentsRun = useCallback((): void => {
+    residentsTourReachedEnd.current = false;
+  }, []);
+
+  /**
    * How each tour opens: the resource it wants to point at, and the run state it seeds.
    *
    * Keyed by `TourId`, so a new tour cannot be registered without saying both, and the
@@ -1211,8 +1362,12 @@ export function App(): React.JSX.Element {
     // pins the daemon's deterministic demonstration run, whatever the fleet holds.
     "workflows": { resource: pickWorkflowsTourSession, begin: beginWorkflowsTourRun },
     "setup": { resource: () => null, begin: () => {} },
+    // Meet your residents reads the live profile collection and the drawer, both of which
+    // already exist, so it singles nothing out. Each run starts not having reached its end.
+    "residents": { resource: () => null, begin: beginResidentsRun },
   }), [
     beginLibraryRun,
+    beginResidentsRun,
     beginSeeWorkRun,
     beginWorkflowsTourRun,
     pickSeeWorkSession,
@@ -1255,12 +1410,46 @@ export function App(): React.JSX.Element {
       handled: startupTourHandled.current,
       hydrated: tourPreferenceHydrated,
       enabled: showToursOnStartup,
+      // Read now rather than when this document loaded: an opening that waited behind another
+      // dialog must not open past an opt-out for a debt another window has since settled.
+      announcing: owedTourAnnouncement() !== null,
       hasTours: catalog.length > 0,
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
     if (decision === "settle") startupTourHandled.current = true;
-    if (decision === "open") openTourPicker(captureFocusBookmark(null));
-  }, [activeTour, catalog, openTourPicker, overlays.anyOpen, showToursOnStartup, tourPreferenceHydrated]);
+    if (decision === "wait") {
+      startupAnnouncementConfirmed.current = false;
+      startupAnnouncementWaits.current += 1;
+    }
+    if (decision !== "open") return;
+    // Opening on account of an announcement: confirm the daemon still owes it. Preferences do
+    // not live-sync between windows, so another window may have announced the tour while this
+    // one loaded or waited behind a dialog, and opening past an opt-out to announce it twice is
+    // exactly what this must not do. A daemon that cannot answer leaves the loaded record in
+    // force, which errs toward one more showing rather than none.
+    if (owedTourAnnouncement() !== null && !startupAnnouncementConfirmed.current) {
+      if (startupAnnouncementChecking.current) return;
+      startupAnnouncementChecking.current = true;
+      const waitsAtStart = startupAnnouncementWaits.current;
+      void refreshAnnouncedTours().finally(() => {
+        startupAnnouncementChecking.current = false;
+        startupAnnouncementConfirmed.current = startupAnnouncementWaits.current === waitsAtStart;
+        setStartupRecheck((n) => n + 1);
+      });
+      return;
+    }
+    openTourPicker(captureFocusBookmark(null));
+  }, [
+    activeTour,
+    announcedTours,
+    catalog,
+    openTourPicker,
+    overlays.anyOpen,
+    owedTourAnnouncement,
+    showToursOnStartup,
+    startupRecheck,
+    tourPreferenceHydrated,
+  ]);
 
   const startPickerTour = useCallback((id: TourId): void => {
     if (startTour(id, tourPickerOrigin.current)) setTourPickerOpen(false);
@@ -1556,6 +1745,31 @@ export function App(): React.JSX.Element {
   }, []);
   // Setup only navigates and spotlights existing page chrome, so it creates nothing to reclaim.
   const cleanupSetupRun = useCallback(async (): Promise<void> => {}, []);
+  /**
+   * Whether the Residents drawer on screen is one the residents tour opened, rather than one
+   * the operator already had open or pinned. Only that one is the tour's to put away.
+   */
+  const residentsTourOpenedDrawer = useRef(false);
+  /**
+   * The residents tour creates nothing. What it may hold is a drawer it opened: in Drawer
+   * placement that is handed over open on the fleet, which is where the tour ends; under Board
+   * and Console it was borrowed, so it goes away with the tour rather than lying in wait to
+   * spring open if the operator later switches placement.
+   */
+  const cleanupResidentsRun = useCallback(async (): Promise<void> => {
+    if (residentsTourOpenedDrawer.current && uiConfig().residentPlacement !== "drawer") {
+      setResidentDrawerOpen(false);
+    }
+    residentsTourOpenedDrawer.current = false;
+    // Dismissed midway: the tour is owed its announcement again, so the next window's picker
+    // features it once more. The debt lives in this browser only, and the daemon is never asked
+    // to take the tour back off `announcedTours`: that list is written whole, so a late re-arm
+    // could land after another window had already announced the tour and quietly owe it a
+    // second time. A picker opening's own record write, or a run seen through, settles it.
+    if (residentsTourReachedEnd.current) settleOwedAnnouncements(["residents"]);
+    else oweAnnouncement("residents");
+    residentsTourReachedEnd.current = false;
+  }, []);
 
   /**
    * Close whichever tour is active.
@@ -1802,7 +2016,9 @@ export function App(): React.JSX.Element {
    * than to an empty page, which is the rule every unresolvable deep link in this router
    * already takes.
    */
-  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  // Zero while the ai-conductor integration is hidden, so the Pipelines tab cannot appear
+  // even against a daemon that still reports observed repositories.
+  const pipelinesObserving = CONDUCTOR_INTEGRATION_ENABLED ? settingsStatus?.pipelines.observing ?? 0 : 0;
   const runsKind: RunsKind =
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"
@@ -2166,6 +2382,31 @@ export function App(): React.JSX.Element {
     showSetup: () => navigate({ page: "settings", category: "setup" }),
     showTrust: () => navigate({ page: "settings", category: "trust" }),
   }), [navigate]);
+  /**
+   * The residents tour's moves: the Residents page on a profile, the fleet, and the drawer.
+   *
+   * `showDrawer` is not `showResidentDrawer`: that one puts the keyboard on a card, which would
+   * pull focus out of the tour's popover, and the pin it never touches is the operator's.
+   */
+  const residentsNavigation = useMemo<ResidentsTourNavigation>(() => ({
+    showProfile: (profileId) =>
+      navigate(profileId ? { page: "residents", profileId } : { page: "residents" }),
+    showFleet: () => navigate({ page: "fleet" }),
+    showDrawer: () => {
+      if (!navigate({ page: "fleet" })) return false;
+      if (!residentDrawerShownRef.current) residentsTourOpenedDrawer.current = true;
+      setResidentDrawerOpen(true);
+      return true;
+    },
+    hideDrawer: () => {
+      if (!residentsTourOpenedDrawer.current) return;
+      residentsTourOpenedDrawer.current = false;
+      setResidentDrawerOpen(false);
+    },
+    reachedEnd: () => {
+      residentsTourReachedEnd.current = true;
+    },
+  }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
     setLauncherFocusError(message);
@@ -2354,7 +2595,17 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  //
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // per repository for display: an older run of the same repository that is still open holds
+  // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
+  const heldIds = useMemo(() => {
+    const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const run of workflowRuns) {
+      if (run.sessionId) runsBySession.set(run.sessionId, [...(runsBySession.get(run.sessionId) ?? []), run]);
+    }
+    return heldSessionIds(runsBySession);
+  }, [workflowRuns]);
   const pipelineRunByKey = useMemo(() => {
     const map = new Map<string, PipelineRun>();
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
@@ -2370,7 +2621,10 @@ export function App(): React.JSX.Element {
   // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
-  const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Where idle blocked sessions are drawn (Settings → Display → Blocked sessions), for the same
+  // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
+  // the one ordering rather than a decision a view makes while drawing.
+  const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
   // Which sessions are residents, joined through their task to the live run that launched
   // them: the marker and pin from that run's pinned revision. One join, handed to every
   // layout, and its pins reach `orderSessions` here and in both views from the same map.
@@ -2411,8 +2665,10 @@ export function App(): React.JSX.Element {
       ? sessions.filter((s) => !placement.excluded.has(s.id))
       : sessions;
     const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
+    return orderSessions(
+      matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+    );
+  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -2452,6 +2708,12 @@ export function App(): React.JSX.Element {
     return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
   }, [residentDrawerShown, residentEntries]);
   /**
+   * Residents the operator paused, by session: a paused resident does not wake, so its open
+   * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
+   * `PausedResidentsContext`; the review chord is handed it through `residentKeysRef`.
+   */
+  const pausedResidents = useMemo(() => pausedResidentSessionIds(residentRuns, sessions), [residentRuns, sessions]);
+  /**
    * What the global key handler needs about residents, read through a ref so the listener does
    * not re-subscribe on every resident or drawer change.
    */
@@ -2460,6 +2722,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2471,6 +2734,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2508,7 +2772,14 @@ export function App(): React.JSX.Element {
     const q = filter.trim().toLowerCase();
     const items = backlogTasks(tasks);
     if (!q) return items;
-    return items.filter((t) => matchesTaskFilter(t, q));
+    return items.filter((t) => matchesBacklogSearch(t, q));
+  }, [tasks, filter]);
+  // The Backlog's Hibernated section, narrowed by the same filter box for the same reason.
+  const visibleHibernated = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = hibernatedTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
 
   // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
@@ -2518,11 +2789,20 @@ export function App(): React.JSX.Element {
   // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
   // and session-card notices, and the top bar's `did not start` count all read these groups.
   const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Held at zero until the first snapshot: before it, every running task would look
+  // sessionless only because no session has arrived yet.
+  const lostTaskCount = useMemo(
+    () => (hasSnapshot ? lostTasks(tasks, sessions).length : 0),
+    [hasSnapshot, tasks, sessions],
+  );
   // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
   // and on the Board a returned one whose Backlog card is hidden becomes a tile.
   const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
+  // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
+  // cards and the console cannot count paused sessions differently.
+  const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
@@ -2539,6 +2819,9 @@ export function App(): React.JSX.Element {
     const live = new Set(sessions.map((s) => s.id));
     return pendingReviews.filter((r) => live.has(r.sessionId));
   }, [pendingReviews, sessions]);
+  // Questions parked with "Remind me later", for the inbox's Snoozed section and the topbar's
+  // `snoozed` segment - one list, so the figure and what opens under it cannot disagree.
+  const snoozed = useMemo(() => snoozedQuestions(reviews, sessions), [reviews, sessions]);
 
   // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
   // <name>" without every renderer re-deriving it. Archived schedules leave the live
@@ -2670,16 +2953,24 @@ export function App(): React.JSX.Element {
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
   const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
+  // The folded At the top of Idle frame hides its cards on the Board overview only, like a
+  // collapsed column: the rails always list the Blocked group in full.
+  const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
+    && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
-    if (!hideCollapsedColumns) return folded;
-    const inStrips = collapsedColumnSessionIds(fleet.groups, new Set(collapsedColumns));
-    if (inStrips.size === 0) return folded;
-    return new Set([...folded, ...inStrips]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns]);
+    const inStrips = hideCollapsedColumns
+      ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
+      : new Set<string>();
+    const inFrame = hideFoldedBlocked ? fleet.blocked : [];
+    if (inStrips.size === 0 && inFrame.length === 0) return folded;
+    return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
 
+  // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
+  // of the column that draws it and the Own column placement adds a sixth array.
   const boardColumns = useMemo(
-    () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
+    () => fleet.columns.map((c) => c.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
     [fleet, foldedIds],
   );
 
@@ -2914,6 +3205,10 @@ export function App(): React.JSX.Element {
       .map((action) => action.id)
       .sort()[0] ?? null
   ), [sessionActions]);
+  const residentsTourRuntime: ResidentsTourRuntime = {
+    profileId: selectResidentsTourProfile(residentProfiles),
+    drawerShown: residentDrawerShown,
+  };
   const libraryTourRuntime: LibraryTourRuntime = {
     personaId: libraryTourPersonaId,
     actionId: libraryTourActionId,
@@ -3031,6 +3326,21 @@ export function App(): React.JSX.Element {
         />
       ),
     },
+    "residents": {
+      activeTaskId: null,
+      activeRunId: null,
+      cleanup: cleanupResidentsRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={RESIDENTS_TOUR}
+          registry={tourTargets}
+          navigation={residentsNavigation}
+          runtime={residentsTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
   };
   tourBindingsRef.current = tourBindings;
   const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
@@ -3040,6 +3350,14 @@ export function App(): React.JSX.Element {
   const completeSession = completeSessionId
     ? sessions.find((s) => s.id === completeSessionId) ?? null
     : null;
+  // A built-in resident's profile is app data, so its Complete dialog offers no retro that would
+  // propose edits nothing may write. An ended run is no longer listed; the route still knows.
+  const completeResidentRun = completeSession?.task?.kind === "resident"
+    ? residentRuns.find((run) => run.taskId === completeSession.task?.id) ?? null
+    : null;
+  const completeResident = completeResidentRun
+    ? { builtin: isBuiltinResidentProfileId(completeResidentRun.profileId) }
+    : undefined;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
   const requeueSession = requeueSessionId
     ? sessions.find((s) => s.id === requeueSessionId) ?? requeueSentFor
@@ -3066,7 +3384,7 @@ export function App(): React.JSX.Element {
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
-  // the board additionally renders backlog and restoring-session rows.
+  // the board additionally renders backlog, hibernated and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
     // An open resident's detail is drawn by the layout even though no fleet list holds it, and
@@ -3076,7 +3394,8 @@ export function App(): React.JSX.Element {
     (placement.excluded.size > 0 && !filter.trim()) ||
     dispatchingTasks.length > 0 ||
     failedLaunchTiles > 0 ||
-    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+    (layout === "board" &&
+      (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
   const filterableSessionNoun =
@@ -3086,11 +3405,24 @@ export function App(): React.JSX.Element {
         ? "session"
         : "sessions";
 
+  /**
+   * The Line's drawer stages for a Console whose Line is switched off, or undefined.
+   *
+   * Exactly while the strip is not drawn, so the fleet never has two doors to one drawer: the
+   * See work tour borrows the strip while the Line is off, and for that stretch the strip is
+   * the door. The same handler and the same button registry as the strip, which is what makes
+   * `closeLineDrawer` hand the keyboard back to whichever one opened the drawer.
+   */
+  const lineDock: LineDockProps | undefined = layout === "console" && lineHidden && !seeWorkRun
+    ? { summary: lineSummary, openStage: lineDrawer, stageRef: registerLineStage, onStage: onLineStage }
+    : undefined;
+
   const viewProps: SessionViewProps = {
     sessions: visible,
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
+    hibernated: visibleHibernated,
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
@@ -3539,8 +3871,18 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // Fold or unfold the session rail, a bare key for the reason the Line's is. Only while a
+      // rail is actually beside a detail - the Console, or a Board drill-in. On the Board
+      // overview there is no rail to fold, and flipping a preference nobody can see would
+      // surprise whoever opens a card next.
+      if (!typing && chord === bindings.sessionRail && (layout === "console" || boardDetailOpen)) {
+        e.preventDefault();
+        toggleSessionRail();
+        return;
+      }
+
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
-      // strip that opened it.
+      // strip (or, with the Line off, the Console's stage dock) that opened it.
       //
       // Scoped by focus rather than taken unconditionally, because Escape on this page is
       // already a ladder that peels one layer at a time - session detail, then reader, then
@@ -3554,7 +3896,7 @@ export function App(): React.JSX.Element {
       if (
         chord === "Escape" &&
         lineDrawerRef.current &&
-        (target?.closest(".line-drawer") || target?.closest(".line"))
+        (target?.closest(".line-drawer") || target?.closest(".line") || target?.closest(".line-dock"))
       ) {
         e.preventDefault();
         closeLineDrawer();
@@ -3576,6 +3918,12 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      // The Console's stage dock is a row of ordinary buttons, so Tab and Shift+Tab move along
+      // it natively. Without this they would act as they do on a rail row: Tab dives into the
+      // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
+      // never get from Intake to Backlog.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
         if (chord === "Tab") {
@@ -3879,7 +4227,8 @@ export function App(): React.JSX.Element {
       // open. See `reviewChordTarget`.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
-        const target = reviewChordTarget(visible, selectedId, keys.drawerAsking, keys.detailId);
+        const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
+        const target = reviewChordTarget(visible.map(mark), selectedId, keys.drawerAsking.map(mark), keys.detailId);
         if (!target) return;
         e.preventDefault();
         if (target.kind === "resident" && target.opens === "conversation") {
@@ -4203,6 +4552,10 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <FeatureFlagsContext.Provider value={featureFlags}>
+      <FleetPauseContext.Provider value={fleetPause}>
+      <HeldSessionsContext.Provider value={heldIds}>
+      <PausedResidentsContext.Provider value={pausedResidents}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -4226,12 +4579,19 @@ export function App(): React.JSX.Element {
           attention={counts.attention}
           working={counts.working}
           inbox={attention.total}
+          snoozed={snoozed.length}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
             if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
+          lostTasks={lostTaskCount}
+          onOpenLostTasks={() => {
+            // Sitrep is a modal over the fleet, so it opens from any page without leaving it.
+            closeLineDrawer();
+            setReportOpen(true);
           }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
@@ -4252,6 +4612,7 @@ export function App(): React.JSX.Element {
             onOpenLaunch: openResidentLaunch,
             onManage: () => navigate({ page: "residents" }),
             launcher: residentLauncher,
+            buttonTourRef: residentsButtonTourRef,
             // Drawer placement: the same button opens the drawer, and the dock stays shut.
             ...(residentsInDrawer
               ? { onToggleDrawer: toggleResidentDrawer, drawerOpen: residentDrawerShown }
@@ -4294,6 +4655,8 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        <FleetPauseBanner />
+        <StorageBanner health={storageHealth} />
         <OrganizationTelemetryNotice
           notice={settingsStatus?.telemetry?.organizationNotice ?? null}
           onDismiss={async () => {
@@ -4497,6 +4860,8 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              featureFlagsSettings={featureFlagsSettings}
+              shapingSettings={shapingSettings}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -4517,6 +4882,8 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              storageHealth={storageHealth}
+              storageConfigRevision={storageConfigRevision}
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
@@ -4553,6 +4920,15 @@ export function App(): React.JSX.Element {
           // a density, which the daemon reads as switching the Line back on.
           onDensity={lineHidden ? undefined : setLineDensity}
         />
+
+        {/* A Console with nothing to arrange has no rail, so the stages the rail would carry
+            sit where the strip would have been. An empty fleet still has a backlog, and a
+            filter that matches no session still leaves the queue worth opening. */}
+        {lineDock && !layoutHasContent && (
+          <div className="line-dock-loose">
+            <LineStageDock {...lineDock} />
+          </div>
+        )}
 
         {/* A dispatched task with no session now renders inside the fleet, at the top of the
             Working group where its real row will land. Both layouts own that placement through
@@ -4652,7 +5028,9 @@ export function App(): React.JSX.Element {
             emulator adapter" the moment you typed "ghostty". */}
         {(() => {
           const layoutView = layoutHasContent
-            ? layout === "console" ? <ConsoleView {...viewProps} /> : <BoardView {...viewProps} />
+            ? layout === "console"
+              ? <ConsoleView {...viewProps} lineDock={lineDock} />
+              : <BoardView {...viewProps} />
             : null;
           // Open, the drawer is a column beside the layout, so the Board or Console narrows
           // instead of being covered. Otherwise the layout is exactly as it always was.
@@ -4684,7 +5062,7 @@ export function App(): React.JSX.Element {
         {residentsInDrawer && !residentDrawerShown && (
           <ResidentsEdgeTab
             live={residentEntries.length}
-            needsYou={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "attention")}
+            needsYou={residentEntries.some(residentEntryAmber)}
             working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
             onOpen={() => showResidentDrawer()}
           />
@@ -4828,6 +5206,7 @@ export function App(): React.JSX.Element {
                   lead={restartPromptSessionId === completeSession.id
                     ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
                     : undefined}
+                  resident={completeResident}
                   onCompleted={() => onKilled(completeSession.id)}
                   onClose={closeComplete}
                 />
@@ -4844,7 +5223,7 @@ export function App(): React.JSX.Element {
               />
 
               {tourPickerOpen && (
-                <TourPicker entries={catalog} enabled={showToursOnStartup}
+                <TourPicker entries={catalog} featuredId={tourPickerFeatured} enabled={showToursOnStartup}
                   hydrated={tourPreferenceHydrated} saving={tourPreferenceSaving}
                   saveError={tourPreferenceError} onSave={saveTourPreference}
                   onStart={startPickerTour} onClose={closeTourPicker} />
@@ -4860,6 +5239,7 @@ export function App(): React.JSX.Element {
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
+                  snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}
@@ -4885,6 +5265,9 @@ export function App(): React.JSX.Element {
                     focusSession(sessionId);
                     requestComposerFocus(sessionId);
                   }}
+                  files={files}
+                  // The review stays pending; "to review" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
 
@@ -4908,6 +5291,7 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
+                onOpenEnvironmentFix={openEnvironmentFix}
                 onEnsembleLaunched={openEnsembleRun}
                 residentProfiles={residentProfiles}
                 onEditResidentProfile={(profileId) =>
@@ -5053,30 +5437,12 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </PausedResidentsContext.Provider>
+      </HeldSessionsContext.Provider>
+      </FleetPauseContext.Provider>
+      </FeatureFlagsContext.Provider>
     </OverlayHost>
   );
-}
-
-/** The restoring-row counterpart of `matchesSessionFilter`, with its only truthful state label. */
-function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
-  const haystack = `${session.name} restoring ${session.agent ?? ""}`.toLowerCase();
-  return haystack.includes(q);
-}
-
-/**
- * True when a backlog task matches the nav-bar filter - the task-shaped counterpart of
- * `matchesSessionFilter`, matching the same three core things a session does (title, status, agent)
- * so one query reads the board across both.
- *
- * `status` is the literal here, not a display label, and that is not the inconsistency
- * it looks like: a backlog task's status IS "backlog", the word already on the column
- * header, whereas a session's raw state lies (see `matchesSessionFilter`). Labels join the
- * haystack because they exist to be searched - they are the operator's own tags, and a
- * filter that could not see them would make them decorative.
- */
-function matchesTaskFilter(t: Task, q: string): boolean {
-  const haystack = `${t.title} ${t.status} ${t.agent} ${t.labels.join(" ")}`.toLowerCase();
-  return haystack.includes(q);
 }
 
 /** A launch failure can be terminal, or safely returned to Backlog with its reason. */
@@ -5098,7 +5464,8 @@ function summarize(sessions: Session[]): { attention: number; working: number } 
   for (const s of sessions) {
     const tone = stateDisplay(s).tone;
     if (tone === "attention") attention++;
-    else if (tone === "working") working++;
+    // A frozen agent keeps its column but is not working; the title bar's count says so.
+    else if (tone === "working" && !isFrozen(s)) working++;
   }
   return { attention, working };
 }

@@ -410,7 +410,7 @@ test("a newer conflicting metadata read clears an optimistic effort", () => {
 // ---- skills ----
 
 test("a harness with no skills is never owed a reload, however healthy the session", async () => {
-  const cfg = { enabled: true, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" as const, defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
+  const cfg = { enabled: true, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" as const, grillFirstKinds: [], defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
   await withCapabilityNull("codex", "skills", () => {
     // Everything else about this session is perfect: a pane, hooks seen, idle, started
     // before the generation. The only reason it is excluded is the capability - which is
@@ -423,7 +423,7 @@ test("a harness with no skills is never owed a reload, however healthy the sessi
 });
 
 test("a harness with skills but NO reload command is owed nothing either", () => {
-  const cfg = { enabled: true, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" as const, defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
+  const cfg = { enabled: true, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" as const, grillFirstKinds: [], defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
   const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
   assert.deepEqual(owed, ["codex"]);
   for (const agent of owed) {
@@ -633,7 +633,15 @@ test("resident MCP pinning is recorded only where scripts/probe-resident-mcp.ts 
   });
   // Codex offers only the pinned set: lifting its overlay would load a trusted project's
   // servers unverified, and it has no account connectors to import.
-  assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, { mechanism: "codex-home-overlay", secrets: "scoped-launcher", allNativeSources: null });
+  assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, {
+    mechanism: "codex-home-overlay",
+    secrets: "scoped-launcher",
+    allNativeSources: {
+      mechanism: "codex-native-home",
+      sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
+      previewFlag: "codex-resident-native-mcp",
+    },
+  });
   assert.equal(HARNESS_CAPABILITIES.pi.mcpSelection, null);
 });
 

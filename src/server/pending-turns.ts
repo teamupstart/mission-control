@@ -1,6 +1,6 @@
 import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
-import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
+import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
   MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
@@ -8,12 +8,16 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import type { ReviewContinuationKind } from "./reviews.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
   createReviewContinuationPendingTurn,
+  createSnoozeInstructionPendingTurn,
+  SNOOZE_INSTRUCTION_TURN_PREFIX,
+  MESSAGE_ANSWER_TURN_PREFIX,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -33,7 +37,10 @@ import {
   confirmHumanEcho,
   expectHumanEcho,
   markHumanEchoCaptured,
+  recordInjection,
   releaseHumanEcho,
+  releaseInjection,
+  reserveInjection,
   type HumanEchoTicket,
 } from "./injections.ts";
 import { unref } from "./util/timers.ts";
@@ -49,6 +56,13 @@ export interface IdleSdkSender {
   ): Promise<"started" | null>;
   send(id: string, turn: SdkTurn, beforeSend?: () => string | null): Promise<SdkSendDisposition>;
   interruptForDelivery(id: string, beforeInterrupt: () => string | null): Promise<void>;
+  /**
+   * Whether this session's driver must not be handed a turn yet: a hibernated task's woken
+   * driver before Resume binds the task to it (`SdkSupervisor.wakeBound`). Rows stay queued,
+   * and the `session_upsert` the binding emits re-arms their delivery. Optional, because only
+   * the supervisor has woken drivers.
+   */
+  holdsDelivery?(id: string): boolean;
 }
 
 export interface PendingTurnSubmitResult {
@@ -131,6 +145,21 @@ interface ArmedDrain {
  * editable row on Mission Control's side of the line and makes every ambiguous terminal
  * outcome an explicit human decision instead of an automatic duplicate.
  */
+/**
+ * Who WROTE a queued row, when it was not the operator. Every row is the operator's words
+ * except two the daemon composes: a snoozed question's "carry on" instruction, and the answer
+ * to a message-mode question (`async-input`), whoever gave it. Those are reserved and recorded
+ * as `harness` authorship like any other daemon-typed text, so the agent's prompt hook does not
+ * take them for the human's Goal and the scout trail does not archive them as something the
+ * operator said. Authorship changes nothing about escalation: `nextDelivery` steers and
+ * interrupts these rows on the same clock as an operator message.
+ */
+function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
+  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+    ? "harness"
+    : null;
+}
+
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
@@ -319,11 +348,16 @@ export class PendingTurnManager {
    * Unlike an ordinary composer submit, the idempotency key is the review itself. The DB
    * inserts the pending turn and stamps the review in one transaction, so startup recovery
    * can call this again without duplicating the human's answer.
+   *
+   * `snooze-instruction` is the other review message this outbox carries: the "carry on"
+   * instruction of a question snoozed after its wait had already ended. It has its own turn id
+   * and its own stamp on the review, so it can never take the answer's place.
    */
   submitReviewContinuation(
     reviewId: string,
     sessionId: string,
     text: string,
+    kind: ReviewContinuationKind = "answer",
   ): PendingTurnSubmitResult {
     if (!this.started) {
       return {
@@ -345,7 +379,10 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
-    const pendingTurn = createReviewContinuationPendingTurn({
+    const queue = kind === "snooze-instruction"
+      ? createSnoozeInstructionPendingTurn
+      : createReviewContinuationPendingTurn;
+    const pendingTurn = queue({
       reviewId,
       noteKey: noteKeyFor(session),
       text,
@@ -632,13 +669,32 @@ export class PendingTurnManager {
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) &&
       !this.interruptHolds.has(session.id) &&
+      // Paused: hold every row where it is. Lifting the pause emits a `session_upsert`, and
+      // that is what re-arms the drain - so a message typed while paused is delivered on resume.
+      !session.pause &&
+      // Woken and not yet bound to its task: held the same way, and re-armed by the binding.
+      !this.sdk.holdsDelivery?.(session.id) &&
       canMessage(session)
     );
+  }
+
+  /**
+   * A row as its escalation clock should read it. Steer and interrupt deadlines count from
+   * `createdAt`, so a message queued during a long pause would otherwise be overdue the moment
+   * the pause lifts and interrupt the turn it resumed. Rows older than the last resume count
+   * from the resume instead, which gives them the same quiet minute any new message gets.
+   */
+  private rebased(session: Session, row: PendingTurn): PendingTurn {
+    // Read from the registry, where `PauseManager` keeps it - and restores it on start - so a
+    // daemon restart just after a resume does not make every held message overdue at once.
+    const resumedAt = this.registry.sessionResumedAt(session.id);
+    return resumedAt !== null && row.createdAt < resumedAt ? { ...row, createdAt: resumedAt } : row;
   }
 
   /** Shared safety gates; only steering is allowed to relax the idle requirement. */
   private canDeliver(session: Session): boolean {
     return !this.stopped && !this.interruptHolds.has(session.id) && session.stateConfirmed &&
+      !session.pause && !this.sdk.holdsDelivery?.(session.id) &&
       (session.state === "idle" || session.state === "working") &&
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) && canMessage(session) &&
@@ -656,7 +712,7 @@ export class PendingTurnManager {
   private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
     return session.pendingTurns.flatMap((row) => {
       if (row.interruptAttemptedAt != null) return [];
-      const stage = deliveryStage(session, row, this.deps.now());
+      const stage = deliveryStage(session, this.rebased(session, row), this.deps.now());
       return stage ? [{ turn: row, ...stage }] : [];
     });
   }
@@ -688,7 +744,7 @@ export class PendingTurnManager {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
     const ahead = session.pendingTurns
       .filter((row) => row.interruptAttemptedAt == null)
-      .flatMap((row) => deliverySchedule(session, row).map((stage) => stage.at))
+      .flatMap((row) => deliverySchedule(session, this.rebased(session, row)).map((stage) => stage.at))
       .filter((at) => at > this.deps.now());
     return ahead.length ? Math.min(...ahead) : null;
   }
@@ -902,6 +958,10 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
+    // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
+    // report it back while the send is still in flight (see `reserveInjection`).
+    const author = daemonAuthorOf(turn);
+    if (author) reserveInjection(session.id, turn.text, author);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -912,7 +972,7 @@ export class PendingTurnManager {
           // boundary immediately before the driver is handed the turn. Earlier, the row could
           // wait behind another operation long enough for its turn stamp to be stale, and a
           // guard that refuses leaves nothing to release.
-          humanEcho ??= expectHumanEcho(session.id, turn.text, {
+          if (!author) humanEcho ??= expectHumanEcho(session.id, turn.text, {
             noteKey: turn.noteKey,
             cycle: this.registry.getSession(session.id)?.workCycle,
             now: this.deps.now(),
@@ -932,6 +992,7 @@ export class PendingTurnManager {
         );
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
@@ -957,7 +1018,8 @@ export class PendingTurnManager {
           ? confirmHumanEcho(humanEcho, { queued: accepted === "steered", now: this.deps.now() })
           : { captured: false };
         try {
-          if (!echo.captured
+          // A daemon-written row is nobody's ask, so it never becomes a Goal revision.
+          if (!author && !echo.captured
             && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
             && humanEcho) {
             markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
@@ -1010,6 +1072,7 @@ export class PendingTurnManager {
         );
       } else {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
@@ -1027,6 +1090,8 @@ export class PendingTurnManager {
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
+    const author = daemonAuthorOf(turn);
+    if (author) reserveInjection(session.id, turn.text, author);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1083,6 +1148,7 @@ export class PendingTurnManager {
           boundaryCrossed || result.pasted || result.ok,
         );
       } else {
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
@@ -1148,6 +1214,7 @@ export class PendingTurnManager {
         );
       }
     } else {
+      if (author) releaseInjection(session.id, turn.text);
       withdrawOtherSend(otherSend);
       releasePendingTurn(
         turn.id,
@@ -1346,7 +1413,11 @@ export class PendingTurnManager {
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
     // would read as though this site were special, and the two sites that turned out to
     // need one had not copied it.
-    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
+    // A daemon-written row settles its reservation instead, which journals it under its own
+    // origin through the injection observer; only the operator's words are journaled as human.
+    const author = daemonAuthorOf(turn);
+    if (author) recordInjection(sessionId, turn.text, author);
+    else journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
     this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
   }
 

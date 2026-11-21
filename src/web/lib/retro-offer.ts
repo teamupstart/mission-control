@@ -1,5 +1,6 @@
 import type { RetroReason, Session } from "@shared/types.ts";
 import type { RetroResponse } from "@shared/protocol.ts";
+import { canMessage } from "@shared/pane.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { inspectorChipView } from "../components/session-bits.tsx";
 
@@ -23,7 +24,11 @@ import { inspectorChipView } from "../components/session-bits.tsx";
 export interface RetroOffer {
   label: string;
   tooltip: string;
-  /** Non-empty. Ordered as the daemon ordered them; drives the tooltip's second sentence. */
+  /**
+   * Ordered as the daemon ordered them; drives the tooltip's second sentence. Non-empty on every
+   * memory retro. A resident's retro is offered at completion whether or not it was steered, so
+   * its list may be empty.
+   */
   reasons: RetroReason[];
 }
 
@@ -92,6 +97,9 @@ export function retroOffer(
   session: Session,
   run: WorkflowRunSummary | null,
 ): RetroOffer | null {
+  // A resident's retro edits its standing instructions rather than repository memory, and it is
+  // offered where a resident ends - the Complete dialog - not on its card. See `residentRetroOffer`.
+  if (isResident(session)) return null;
   const reasons = session.retro?.reasons ?? [];
   if (reasons.length === 0) return null;
   if (run?.gate !== "clean" && !inspectorClean(session)) return null;
@@ -111,13 +119,57 @@ export function retroOffer(
  * on purpose, not a prompt competing for attention on a card, which is what makes the weaker
  * condition the right one in that one place.
  */
-export function retroBackstopOffer(session: Session): RetroOffer | null {
+export function retroBackstopOffer(
+  session: Session,
+  resident: ResidentRetroContext = {},
+): RetroOffer | null {
+  if (isResident(session)) return residentRetroOffer(session, resident);
   const reasons = session.retro?.reasons ?? [];
   if (reasons.length === 0) return null;
   return {
     label: "Run a retro first",
     tooltip: `${WHAT_IT_DOES} ${because(reasons)} The task stays open and this session stays`
       + " alive so it can answer.",
+    reasons,
+  };
+}
+
+function isResident(session: Session): boolean {
+  return session.task?.kind === "resident";
+}
+
+/** What the dashboard knows about the profile behind a resident session, when it knows. */
+export interface ResidentRetroContext {
+  /** A built-in profile ships with the app; nothing a retro proposes could be written to it. */
+  builtin?: boolean;
+}
+
+const RESIDENT_WHAT_IT_DOES =
+  "Ask this resident to review its conversation and propose changes to its standing instructions"
+  + " or its Persona. You choose which changes to apply, and nothing changes until you do.";
+
+/**
+ * A resident's retrospective, offered when the operator goes to complete it.
+ *
+ * Not conditioned on steering the way a memory retro is: the moment is the point. A resident runs
+ * for days, its operator shapes it through conversation, and Complete is the one time those
+ * lessons can still be read back from a live session. It needs the session to take a turn, so an
+ * unreachable one gets no offer, and a built-in profile - which nothing may edit - gets none.
+ */
+export function residentRetroOffer(
+  session: Session,
+  resident: ResidentRetroContext = {},
+): RetroOffer | null {
+  if (!isResident(session) || resident.builtin) return null;
+  if (session.state === "exited" || !canMessage(session)) return null;
+  const reasons = session.retro?.reasons ?? [];
+  const steered = reasons.includes("corrections")
+    ? " Offered because you steered it during the work."
+    : "";
+  return {
+    label: "Run a retro first",
+    tooltip: `${RESIDENT_WHAT_IT_DOES}${steered} The task stays open and this resident stays alive`
+      + " so it can answer.",
     reasons,
   };
 }

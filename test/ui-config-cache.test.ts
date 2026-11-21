@@ -38,6 +38,17 @@ test("startup preference defaults on for old caches and legacy imports, preservi
   assert.equal(readCache().showToursOnStartup, true);
 });
 
+test("a cache without announced tours reads every one as seen, and keeps a stored list", () => {
+  // Only the daemon's record can say a profile predates a tour, and the startup picker waits
+  // for it, so a cold paint must never invent an announcement the daemon would not make.
+  store.set("mission-control.ui", JSON.stringify({ showToursOnStartup: false }));
+  assert.deepEqual(readCache().announcedTours, [...UI_CONFIG_DEFAULTS.announcedTours]);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: [] }));
+  assert.deepEqual(readCache().announcedTours, []);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: ["residents", 7, "from-a-newer-build"] }));
+  assert.deepEqual(readCache().announcedTours, ["residents", "from-a-newer-build"]);
+});
+
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   // Board. Retiring Cards moved this to Console by accident; see `UI_CONFIG_DEFAULTS`.
@@ -53,15 +64,22 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // chose from the mockups: a badge before the console's title, a tab on the card's edge.
   assert.equal(config.taskKindHeader, "badge");
   assert.equal(config.taskKindCard, "tab");
+  // Nested sub-cards, the recommended treatment, for an install that never chose.
+  assert.equal(config.backgroundAgentsStyle, "nested");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
   assert.equal(config.boardSidebarAllSessions, false);
+  assert.equal(config.conversationRailCollapsed, false);
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
+  assert.equal(config.blockedPlacement, "needs-you");
+  assert.equal(config.blockedFrameCollapsed, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -78,6 +96,9 @@ test("a written cache round-trips", () => {
     // Both off their defaults, so neither round-trips by falling back.
     residentPlacement: "fleet",
     residentDrawerPinned: true,
+    // Both off their defaults, for the same reason.
+    blockedPlacement: "column",
+    blockedFrameCollapsed: true,
     conversationView: "chat",
     lineDensity: "expanded",
     // Off its default, so it cannot round-trip by falling back.
@@ -87,6 +108,8 @@ test("a written cache round-trips", () => {
     // Off on both, so neither round-trips by falling back to its default.
     taskKindHeader: "off",
     taskKindCard: "off",
+    // Off its default, so it cannot round-trip by falling back.
+    backgroundAgentsStyle: "chip",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -94,6 +117,8 @@ test("a written cache round-trips", () => {
     guidedDispatch: false,
     guidedTour: false,
     showToursOnStartup: false,
+    // Empty, off the all-seen default, so only a copied field round-trips it.
+    announcedTours: [],
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
     // Head-seeded, which is what any record this build writes looks like. That is what makes
@@ -106,23 +131,33 @@ test("a written cache round-trips", () => {
     // round-tripping this field says anything.
     groupBoardByRepo: false,
     boardSidebarAllSessions: true,
+    // Off its default, so it cannot round-trip by falling back.
+    conversationRailCollapsed: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
+    // Off their defaults: one is emptied, the other picks a set the build does not ship.
+    pauseCardControls: [],
+    pauseConsoleControls: ["composer", "badge"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
   assert.equal(config.residentPlacement, "fleet");
   assert.equal(config.residentDrawerPinned, true);
+  assert.equal(config.blockedPlacement, "column");
+  assert.equal(config.blockedFrameCollapsed, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
   assert.equal(config.lineHidden, true);
   assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
+  assert.equal(config.backgroundAgentsStyle, "chip");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -130,13 +165,19 @@ test("a written cache round-trips", () => {
   assert.equal(config.guidedDispatch, false);
   assert.equal(config.guidedTour, false);
   assert.equal(config.showToursOnStartup, false);
+  assert.deepEqual(config.announcedTours, []);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.boardSidebarAllSessions, true);
+  assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
+  // An emptied list is the operator's answer, never the default coming back.
+  assert.deepEqual(config.pauseCardControls, []);
+  assert.deepEqual(config.pauseConsoleControls, ["composer", "badge"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {
@@ -246,6 +287,14 @@ test("a task-kind style this build does not ship reads as the shipped one", () =
   );
   assert.equal(readCache().taskKindHeader, "badge");
   assert.equal(readCache().taskKindCard, "tab");
+});
+
+test("a background sub-agents treatment this build does not ship reads as Nested sub-cards", () => {
+  // An `off` was never offered, and a treatment from a later build is not this one's to draw.
+  for (const stray of ["off", "lane", 3, null]) {
+    store.set("mission-control.ui", JSON.stringify({ backgroundAgentsStyle: stray }));
+    assert.equal(readCache().backgroundAgentsStyle, "nested", `${JSON.stringify(stray)} was adopted`);
+  }
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

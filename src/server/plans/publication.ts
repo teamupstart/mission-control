@@ -5,6 +5,7 @@ import { decisionLead, formatResponse, STANDING_APPROVAL_NOTE } from "@shared/re
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
 import { openDb, loadHumanResolvedReviews } from "../db.ts";
+import { isApprovingActor } from "@shared/review-item.ts";
 import type { Registry } from "../registry.ts";
 import type { TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
@@ -149,13 +150,16 @@ function approval(authority: PlanAuthority, input: PlanIdentity, context: Return
     AND session_id = ? AND task_id IS ? AND episode_id IS ? AND binding_id IS ? AND workflow_version_id IS ?`)
     .all(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
       context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null) as unknown as ApprovalRow[];
-  // Human resolutions are ordered oldest first. Choose the latest matching resolution
+  // Human resolutions are ordered oldest first. Answers given from a home session or `mctl` are in
+  // the list too, but only a `home-approval:` one can approve (`isApprovingActor`): a later plain
+  // `home:` or `mctl` answer, or a request for changes, therefore beats an earlier approval (7.9).
+  // Choose the latest matching resolution
   // before checking its answer, so an earlier approval cannot survive a later refusal.
   const reviews = loadHumanResolvedReviews(authority.sessionId).filter((review) => candidates.some((candidate) => candidate.review_id === review.id));
   const latest = reviews.at(-1);
   // Millisecond timestamps cannot order simultaneous conflicting answers. Fail closed.
   if (!latest || !reviews.filter((review) => review.resolvedAt === latest.resolvedAt).every((review) =>
-    review.status === "answered" && review.selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other))) {
+    review.status === "answered" && isApprovingActor(review.resolvedBy) && review.selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other))) {
     throw new PlanStoreError("Waiting for explicit human approval of this complete final bundle and current workflow binding; dismissal or ordinary decisions are not approval");
   }
   const approved = candidates.find((candidate) => candidate.review_id === latest.id)!;

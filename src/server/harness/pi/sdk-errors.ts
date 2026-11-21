@@ -45,8 +45,8 @@ export const PI_FAILURE_MESSAGE_CAP = 400;
 const SECRETS: readonly RegExp[] = [
   // AWS access key ids: AKIA/ASIA/AROA/AIDA + 16 uppercase alphanumerics.
   /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ABIA|ACCA)[A-Z0-9]{16}\b/g,
-  // `key=value` credential assignments, in either an env or a query-string spelling.
-  /\b(?:aws_)?(?:secret_access_key|session_token|security_token|access_key_id|api[_-]?key|client_secret|refresh_token|id_token|access_token|password)\b\s*[=:]\s*\S+/gi,
+  // Credential assignments, including JSON keys and quoted values with escaped quotes.
+  /["']?\b(?:aws_)?(?:secret_access_key|session_token|security_token|access_key_id|api[_-]?key|client_secret|refresh_token|id_token|access_token|password)\b["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi,
   // A scheme-and-token pair, BEFORE the `Authorization` rule below rather than after it.
   //
   // The order is the whole of this fix. `Authorization: Bearer <token>` is the commonest
@@ -154,14 +154,16 @@ export function classifyPiFailure(error: unknown, provider: string | null): PiSd
   if (error instanceof PiSdkError) return error;
   const raw = error instanceof Error ? error.message : String(error);
   const kind = classifyKind(raw);
+  return new PiSdkError(kind, failureMessage(raw, kind, provider), { cause: error });
+}
+
+function failureMessage(raw: string, kind: PiFailureKind, provider: string | null, prefix = ""): string {
   const remedy = remedyFor(kind, provider);
   const suffix = remedy ? ` - ${remedy}` : "";
-  // The remedy's room comes off the top, so the combined sentence is already within the cap
-  // and `PiSdkError`'s own `redact` has nothing left to cut. Without this the repair
-  // instruction is what gets dropped, which is the one part of the sentence that is
-  // actionable.
-  const detail = redactWithin(raw, PI_FAILURE_MESSAGE_CAP - suffix.length);
-  return new PiSdkError(kind, `${detail}${suffix}`, { cause: error });
+  // Rebudget an already-classified message without duplicating its remedy. Reserve both
+  // prefix and remedy before truncating detail so note() cannot cut off the login command.
+  const detail = suffix && raw.endsWith(suffix) ? raw.slice(0, -suffix.length) : raw;
+  return `${prefix}${redactWithin(detail, PI_FAILURE_MESSAGE_CAP - prefix.length - suffix.length)}${suffix}`;
 }
 
 function classifyKind(raw: string): PiFailureKind {
@@ -182,4 +184,11 @@ function classifyKind(raw: string): PiFailureKind {
     return "model-unavailable";
   }
   return "provider-error";
+}
+
+/** Shared live activity and durable transcript wording for a failed Pi turn. */
+export function piTurnFailure(error: unknown, provider: string | null): string {
+  const detail = typeof error === "string" ? error.trim() : error;
+  const failure = classifyPiFailure(detail || "Provider returned an error without details", provider);
+  return failureMessage(failure.message, failure.kind, provider, "Pi turn failed: ");
 }

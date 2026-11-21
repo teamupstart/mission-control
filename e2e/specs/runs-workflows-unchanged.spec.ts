@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import {
   seedConductorDaemon,
   seedConductorRun,
@@ -176,6 +177,7 @@ test("the Workflows tab renders today's rail and reader with pipelines enabled b
   dashboard,
   daemon,
 }) => {
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   const runId = await seedRun(dashboard, daemon);
   await observePipelines(daemon);
 

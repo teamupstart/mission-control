@@ -112,3 +112,10 @@ export interface TaskPlanDependencyRequirements {
   requirements: TaskPlanDependencyRequirement[];
   error: string | null;
 }
+
+export const TaskPlanInputChangeSchema = z.object({
+  expectedUpdatedAt: z.number().int().optional(),
+  from: TaskPlanInputSchema,
+  to: TaskPlanInputSchema,
+}).strict();
+export type TaskPlanInputChange = z.infer<typeof TaskPlanInputChangeSchema>;

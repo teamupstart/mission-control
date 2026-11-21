@@ -14,6 +14,7 @@ import type { PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
 import { ResidentProfileEditor } from "./ResidentProfileEditor.tsx";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /** A built-in's rail tag: an application-owned identity, as the Library marks its own. */
 const BUILTIN_TAGS = [{ label: "built-in", tone: "system" }] as const;
@@ -87,6 +88,8 @@ export function ResidentsPage({
 }): React.JSX.Element {
   const [dirty, setDirty] = useState(false);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  const tourRailRef = useTourTargetRef<HTMLElement>("residents:rail");
+  const tourNewRef = useTourTargetRef<HTMLButtonElement>("residents:new");
   /**
    * The settings Duplicate opened the new-profile editor with. Set before the route moves to
    * `creating` (the router may land that a render later), dropped when the route LEAVES
@@ -142,7 +145,7 @@ export function ResidentsPage({
         </p>
       </header>
       <section className="residents-body">
-        <aside className="residents-rail" aria-label="Resident profiles">
+        <aside ref={tourRailRef} className="residents-rail" aria-label="Resident profiles">
           <div className="residents-rail-head">
             <div>
               <h3>Profiles</h3>
@@ -150,6 +153,7 @@ export function ResidentsPage({
             </div>
             <Tooltip label="Author a new resident profile">
               <button
+                ref={tourNewRef}
                 type="button"
                 className="btn"
                 onClick={() => {

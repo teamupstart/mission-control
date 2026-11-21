@@ -1,3 +1,5 @@
+import type { FeatureFlagsConfig } from "./feature-flags.ts";
+import type { ShapingConfigView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -9,8 +11,10 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -39,6 +43,7 @@ import type {
 // status can reuse the document contract without introducing an emitted module cycle.
 import type { ForemanInstructionsSource, HtmlBlockPathStep } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
+import type { GrillFirstTaskKind } from "./task.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TelemetrySettingsSummary } from "./telemetry.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -478,6 +483,57 @@ export interface WorkCycleSummary {
   updatedAt: number;
 }
 
+/** Where one background sub-agent is. Running is live; the other three are how it ended. */
+export type SubagentState = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * One background sub-agent a session launched, as its harness reported it.
+ *
+ * Every nullable value is null when the source does not report it, never a placeholder: a
+ * terminal hook says only that an agent started and stopped, so its row carries no counters,
+ * and a renderer omits what is null rather than drawing a zero. Elapsed time is not a field -
+ * the browser derives it from `startedAt` and `endedAt`, so a running row ticks without a
+ * frame per second on the wire.
+ */
+export interface SubagentEntry {
+  /** The harness's own id for this agent (Claude's `task_id`). Unique within the summary. */
+  id: string;
+  /** Agent type, such as `Explore` or `general-purpose`. */
+  type: string | null;
+  description: string | null;
+  state: SubagentState;
+  /** Epoch ms the source says it started, else when the daemon first saw it. */
+  startedAt: number;
+  /** Epoch ms it ended; null while running. */
+  endedAt: number | null;
+  toolUses: number | null;
+  tokens: number | null;
+  /** Name of the last tool it ran. */
+  lastTool: string | null;
+  /** The source's one-line progress or result summary. */
+  summary: string | null;
+  /**
+   * The id of the parent's tool call that launched it (Claude's Agent `tool_use` id), which
+   * is what a conversation surface anchors "jump to launch" on.
+   */
+  launchTurnId: string | null;
+}
+
+/**
+ * A session's background sub-agents: live state, rebuilt from the driver's stream and never
+ * persisted. Absent on a session with nothing to show.
+ *
+ * `agents` holds at most `SUBAGENT_LIMIT` entries, running first (oldest start first) and
+ * then the newest finished. A finished agent stays listed until the operator's next turn,
+ * which folds it into `finishedFolded` - except when the list would exceed the limit, which
+ * folds the oldest finished agents at once to make room. Foreground and ambient work never
+ * appears here.
+ */
+export interface SubagentSummary {
+  agents: SubagentEntry[];
+  finishedFolded: number;
+}
+
 /**
  * A persisted SDK session whose driver has not been adopted by this daemon yet.
  *
@@ -555,6 +611,15 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/** A session's pending ask for Control other sessions, as the dashboard card draws it. */
+export interface SessionControlRequestView {
+  id: string;
+  /** The agent's own words for why it needs the grant. Untrusted text, shown verbatim. */
+  reason: string;
+  /** Epoch ms. */
+  requestedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -599,6 +664,31 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
+   * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
+   * registry from `SessionControlRequests`, like `sessionControlEnabled`. It grants nothing:
+   * only the operator's trusted desktop click on the card it draws does, through the same
+   * private authorization as the session control menu. Optional so an older snapshot parses.
+   */
+  sessionControlRequest?: SessionControlRequestView | null;
+  /**
+   * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
+   *
+   * RESOLVED by the registry from the daemon's `PauseManager`, never by discovery or the SDK
+   * supervisor, the way `sessionControlEnabled` is: a discovery pass cannot clear it. While it
+   * is set, nothing automated starts a turn here; once `phase` is `frozen`, the agent's process
+   * tree is stopped. Optional so a snapshot from an older daemon still parses.
+   */
+  pause?: SessionPause | null;
+  /**
+   * When this session last resumed from a pause, epoch ms, or null. Resolved by the registry
+   * from `PauseManager` like `pause`. Every deadline that started before a pause counts from
+   * here instead - a message held through it, an item awaiting pickup - so the time the agent
+   * was frozen is never read as the time it ignored something. Optional so a snapshot from an
+   * older daemon still parses.
+   */
+  resumedAt?: number | null;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -721,8 +811,17 @@ export interface Session {
    * activity has been persisted for the current logical key, and consumers must fail closed.
    */
   workCycle?: WorkCycleSummary;
-  /** Count of pending review items for this session (denormalized for the card). */
+  /**
+   * Count of pending review items this session's agent is waiting on inside a tool call
+   * (denormalized for the card). Excludes message-mode questions, which `openQuestions` counts.
+   */
   pendingReviews: number;
+  /**
+   * Count of pending message-mode `request_input` questions (`ReviewItem.waitMode`): filed by an
+   * agent that kept working rather than waiting in the call. A snoozed question is in neither
+   * count. A snapshot from an older daemon may lack it; read it as zero.
+   */
+  openQuestions: number;
   /**
    * The current task projected onto this session's views.
    *
@@ -836,13 +935,18 @@ export interface Session {
    * live card offering re-attach, never an automatic rebind. Null normally.
    */
   orphanedQueue: OrphanedQueueHint | null;
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   /**
    * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
-   * if any check failed, else `pending` while any is still running, else
+   * if any check has a blocking conclusion (including cancellation), else `pending`
+   * while any is still running, else
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /**
    * The Inspector's state for this session's pull request, or null when there is no PR
    * or the Inspector never adopted it.
@@ -862,6 +966,12 @@ export interface Session {
    * offer rather than making Retro permanent chrome.
    */
   retro?: RetroSummary;
+  /**
+   * The background sub-agents this session launched, or ABSENT when there are none running
+   * or recently finished. Written only by `Registry.setSubagents` from the session's driver,
+   * and cleared when an SDK session registers again or its process is replaced.
+   */
+  subagents?: SubagentSummary;
   /**
    * The pipeline run this session is doing the work of, or null - which is every session
    * on a fleet with no pipeline provider enabled, and so the overwhelmingly common case.
@@ -1943,6 +2053,8 @@ export interface SkillsView {
   alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
+  /** The kinds whose new tasks start with Grill me first on. */
+  grillFirstKinds: GrillFirstTaskKind[];
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
   enabled: boolean;
   skills: SkillRow[];
@@ -2022,6 +2134,9 @@ export const TASK_STATUSES = [
   "done",
   "cancelled",
   "failed",
+  // The operator stopped the agent to free its memory and will resume the same conversation
+  // in the same worktree later (`@shared/hibernation.ts`). Neither active nor terminal.
+  "hibernated",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -2195,15 +2310,8 @@ export interface TaskRepoEntry {
   mergedAt: number | null;
 }
 
-/**
- * How long a terminal task's checkouts survive without a Git-visible change.
- *
- * Fixed, and deliberately without a configuration key in this release - see
- * `docs/worktrees-and-checks.md`. Shared rather than server-only because the dashboard states
- * the policy in words next to the manual cleanup control, and a copy that drifted from the
- * server's window would be a promise the product does not keep.
- */
-export const TASK_WORKTREE_RETENTION_DAYS = 30;
+/** Shipped default; the daemon's worktrees.taskRetentionDays setting overrides it. */
+export { TASK_RETENTION_DEFAULT_DAYS as TASK_WORKTREE_RETENTION_DAYS } from "./worktree-retention.ts";
 
 /** Bytes of automatic-cleanup explanation that may reach a browser. One short sentence. */
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
@@ -2248,10 +2356,102 @@ export interface TaskAutomaticCleanup {
   detail: string | null;
 }
 
+/**
+ * A dispatch waiting on a pool's dependency claim: which repository's tree, which step, and
+ * since when. `slotId` and `claimId` are what Stop names, so a Stop can only ever stop the
+ * claim this view describes.
+ */
+export interface TaskProvisioning {
+  phase: "installingDependencies";
+  /** The repository whose worktree is claiming: the task's primary, or an attached one. */
+  repoRoot: string;
+  slotId: string;
+  claimId: string;
+  /** When the claim began, for its elapsed time. */
+  startedAt: number;
+  step: {
+    /** 1-based, of `stepCount`. */
+    step: number;
+    stepCount: number;
+    /** The step's command as text, cut to a fixed bound. */
+    command: string;
+    startedAt: number;
+  };
+}
+
+/**
+ * A dependency claim that failed in one of a task's worktrees, field by field. Claim variable
+ * values were removed from `reason` and `tail` before the claim reported them.
+ */
+export interface TaskClaimWarning {
+  repoRoot: string;
+  /** 1-based, of `stepCount`. */
+  step: number;
+  stepCount: number;
+  /** The failing step's command as text, cut to a fixed bound. */
+  command: string;
+  /** What happened to it, as a phrase: "exited with code 1", "was stopped". */
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+}
+
+/**
+ * A manual lease being acquired in the background, as `make session` polls it. The daemon
+ * answers a manual acquire with `202` and this request's id when the pool has a dependency
+ * claim, because a claim can outlast any HTTP request. In memory only: a request unknown after
+ * a restart is a `404`.
+ */
+export type ManualWorktreeRequestView =
+  | {
+      requestId: string;
+      state: "claiming";
+      /** Since the daemon accepted the request. */
+      elapsedMs: number;
+      /**
+       * The claim step running right now. Null while the slot is still being chosen, reset or
+       * set up, or its fingerprint read.
+       */
+      step: {
+        /** 1-based, of `stepCount`. */
+        step: number;
+        stepCount: number;
+        /** The step's command as text, cut to a fixed bound. */
+        command: string;
+        elapsedMs: number;
+      } | null;
+    }
+  | {
+      requestId: string;
+      state: "granted";
+      elapsedMs: number;
+      lease: { path: string; leaseId: string; baseSha: string };
+      /** Present when the claim failed. The lease is granted anyway. */
+      claimWarning?: Omit<TaskClaimWarning, "repoRoot">;
+    }
+  | {
+      requestId: string;
+      state: "failed";
+      elapsedMs: number;
+      reason: string;
+      /** `expired` is a grant nobody picked up within the pickup window. */
+      outcome: "notAcquired" | "outcomeUnknown" | "expired";
+    };
+
 export interface Task {
   /** Null or absent on historical tasks means a Git checkout. */
   workspaceKind?: "resident-workspace" | null;
   id: string;
+  /**
+   * The work unit this task belongs to, `wu_<ULID>` (`isWorkUnitId`, @shared/work-unit.ts), or
+   * null. A plan task and the phase tasks its session creates share one; a standalone task has
+   * its own. Null for a resident run, which is not a piece of work, and for a row that predates
+   * the column until its next dispatch or assign gives it one. Written once: no later write
+   * changes it. Only `TaskManager` mints or copies it. See `docs/work-units.md`.
+   */
+  workUnitId: string | null;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
   /** The full task prompt delivered as the agent's first message. */
@@ -2275,6 +2475,13 @@ export interface Task {
   planInputError?: string | null;
   /** Independent policy corruption must not be cleared by replacing plan inputs. */
   planPolicyError?: string | null;
+  /**
+   * Grill me first, pinned at creation from the dispatch or the kind's default
+   * (`SkillsConfig.grillFirstKinds`). Read only through `taskGrillsFirst` (`@shared/task.ts`),
+   * which also asks the kind. Optional on the type so hand-built fixtures need not name it;
+   * absent means off.
+   */
+  grillFirst?: boolean;
   /**
    * Where this item sits in the backlog, ascending - the operator's order and the only one.
    *
@@ -2515,6 +2722,12 @@ export interface Task {
    */
   launchFailure?: TaskLaunchFailure | null;
   /**
+   * Present exactly while the task is `hibernated`: the embedded session that resumes, the
+   * conversation it reopens, the blocker it carried, and why the last Resume failed, if it
+   * did. Absent or null on every other task. See `@shared/hibernation.ts`.
+   */
+  hibernation?: TaskHibernation | null;
+  /**
    * Set on a Report bug session: the failed task it was started to report. The session's own
    * identity, persisted on it, so a report session that itself fails to start never offers a
    * Report bug of its own - whatever has happened to the failure that started it since.
@@ -2534,6 +2747,23 @@ export interface Task {
    * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
    */
   residentRestart?: TaskResidentRestart | null;
+  /**
+   * What this task's dispatch is waiting on while it provisions, or null when it waits on
+   * nothing worth naming. Present only while a pool's dependency claim runs a step in one of
+   * its worktrees.
+   *
+   * A projection of the worktree manager's claim registry, never a column: the server derives
+   * it on every `task_upsert` it publishes and re-sends the task as the claim moves, so it
+   * needs no event of its own. A restart drops it with the claim, and the dispatch's existing
+   * recovery reports the outcome.
+   */
+  provisioning?: TaskProvisioning | null;
+  /**
+   * Every worktree of this task whose dependency claim failed when it was leased, primary
+   * first. The trees were handed over anyway, and the agent's launch prompt names the same
+   * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
+   */
+  claimWarnings?: TaskClaimWarning[];
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2632,6 +2862,11 @@ export interface TaskSummary {
    * see. This list includes it.
    */
   repoPrs: TaskRepoPrSummary[];
+  /**
+   * `Task.claimWarnings`, carried to the session card. Absent, never empty, when no claim
+   * failed, so every other card's payload is what it was before claims existed.
+   */
+  claimWarnings?: TaskClaimWarning[];
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -2674,6 +2909,8 @@ export interface RepoPrFeedback {
   prNumber: number;
   /** That pull request's CI rollup as of the last poll, or null when it reported none. */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /** The Inspector's state for it, or null when the Inspector never adopted it. */
   inspector: InspectorSummary | null;
 }
@@ -2682,12 +2919,28 @@ export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
 /**
  * Persisted as text in `reviews.status`, so these spellings are append-only.
  *
- * `orphaned` is the only one the DAEMON writes; the other four terminal statuses are a
- * human's answer arriving through `/api/reviews/:id/resolve`. It means the session that
- * asked went away before anyone answered, which is why it is not `dismissed` - the
+ * `orphaned` and `superseded` are the ones the DAEMON writes; the other four terminal statuses
+ * are a human's answer arriving through `/api/reviews/:id/resolve`. `orphaned` means the session
+ * that asked went away before anyone answered, which is why it is not `dismissed` - the
  * operator declining to choose and the agent no longer being there to hear a choice are
  * different facts, and only the first is evidence of intent (see
  * `loadResolvedWorkflowReviews`, which reads none of it).
+ *
+ * `superseded` means the same session asked a new `request_input`
+ * question after the blocking call that asked this one had already given up, which is what an
+ * agent does when its MCP client times out: it asks the same decision again, often reworded.
+ * The newer card is the one its agent is waiting on, so this one leaves the queue rather than
+ * making the operator answer the same decision twice (`ReviewManager.create`).
+ *
+ * `snoozed` is the one status that is NOT terminal. The operator chose "Remind me later" on a
+ * `request_input` question: the agent's blocking call has returned and it is carrying on, and
+ * the question is parked off the queue until `ReviewItem.snooze.until`, when the daemon puts it
+ * back to `pending`. It is outstanding, never settled, so every reader that asks "is this
+ * waiting on a person right now" keeps reading `pending` and leaves it out by construction.
+ *
+ * `withdrawn` is terminal and never a human resolution: the agent took back a question it filed
+ * and no longer needs answered (the asynchronous input inbox's `withdraw_question`). Appended,
+ * like every status here, because the spelling is persisted in `reviews.status`.
  */
 export type ReviewStatus =
   | "pending"
@@ -2695,7 +2948,56 @@ export type ReviewStatus =
   | "rejected"
   | "answered"
   | "dismissed"
-  | "orphaned";
+  | "orphaned"
+  | "snoozed"
+  | "superseded"
+  | "withdrawn";
+
+/** Why the daemon closed a question nobody answered. Persisted in `reviews.closed_reason`, so append-only. */
+export const REVIEW_CLOSED_REASONS = ["merged"] as const;
+export type ReviewClosedReason = (typeof REVIEW_CLOSED_REASONS)[number];
+
+/**
+ * What the operator told the agent to do while a snoozed question is parked. Persisted in
+ * `reviews.snooze_mode`, so append-only.
+ *
+ * - `judgment`: carry on with its best judgment, the recommended option where one was offered.
+ * - `option`: carry on with one offered option as a provisional answer (`ReviewSnooze.optionId`).
+ * - `hold`: do everything else first and leave the work that depends on the answer untouched.
+ */
+export const REVIEW_SNOOZE_MODES = ["judgment", "option", "hold"] as const;
+export type ReviewSnoozeMode = (typeof REVIEW_SNOOZE_MODES)[number];
+
+/**
+ * "Remind me later" on one `request_input` question.
+ *
+ * Kept after the question comes back, so the returned card can say it is a reminder and what
+ * the agent was told meanwhile, and so the answer reaches the agent as the answer to a question
+ * it carried on without.
+ */
+export interface ReviewSnooze {
+  /** When the operator last chose "Remind me later" on it (epoch ms). */
+  at: number;
+  /** When it comes back to the operator (epoch ms). */
+  until: number;
+  /**
+   * What the agent was told to do meanwhile. Fixed at the first snooze: that is the only time
+   * the agent is told anything, so a later snooze only moves `until`.
+   */
+  mode: ReviewSnoozeMode;
+  /** The offered option the agent carries on with, for `mode: "option"`. */
+  optionId: string | null;
+  /** When it last came back to the operator, or null while it has not yet. */
+  remindedAt: number | null;
+  /**
+   * False when no snooze of this question has told its agent anything yet: a message-mode
+   * question (`async-input`) snoozed only on "Keep doing what it said", which sends nothing and
+   * leaves `mode` unrecorded (it reads as `judgment`). Its next snooze may still choose what the
+   * agent does meanwhile. Absent once a mode was recorded, which is every other snooze, and on a
+   * row from an older daemon; absent reads as told.
+   */
+  instructed?: boolean;
+}
 
 /**
  * Who settled a review. Persisted as text in `reviews.resolved_by`, so these spellings
@@ -2710,8 +3012,20 @@ export type ReviewStatus =
  * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
  * operator's behalf, because they ticked "approve all future bundles for this task" on an
  * earlier one. It is logged in the conversation as what it is, never as the human's answer.
+ *
+ * The headless-mode actors (spec 7.8, 7.9) are set by the daemon, never read from a request
+ * body: `home:{sessionId}` is an answer given from a registered home session,
+ * `home-approval:{sessionId}` is an accepted plan or review approval from one (the only home
+ * actor that counts as human approval for plan publication), and `mctl` is the command line.
  */
-export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
+export type ReviewActor =
+  | "human"
+  | "foreman"
+  | "standing-approval"
+  | `session:${string}`
+  | `home:${string}`
+  | `home-approval:${string}`
+  | "mctl";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -2810,6 +3124,36 @@ export interface ReviewItem {
    * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
    */
   standingApprovalEligible?: boolean;
+  /**
+   * The question offers "Remind me later": it was asked through the `request_input` tool, whose
+   * agent is told how to carry on without the answer. Other `input` reviews act on the
+   * selection itself (a product issue confirmation, a workflow Command, a resident's
+   * instruction change), so parking them would leave something waiting that nobody told to
+   * carry on. Persisted (`reviews.snoozable`); absent means no.
+   */
+  snoozable?: boolean;
+  /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
+  snooze?: ReviewSnooze | null;
+  /**
+   * How the agent waits for this question's answer. `"message"`: `request_input` returned at
+   * once with a receipt (the `async-input` preview flag) and the answer reaches the agent later
+   * as a message in its conversation. Absent: the agent waits inside its tool call, which is
+   * every other review and every question asked with the flag off. Persisted
+   * (`reviews.wait_mode`).
+   */
+  waitMode?: "message";
+  /**
+   * The agent's own line on what it does while a message-mode question is open: the assumption
+   * it proceeds on, or what it holds back. At most 300 characters. Persisted
+   * (`reviews.meanwhile`); absent when the agent gave none.
+   */
+  meanwhile?: string | null;
+  /**
+   * Why the daemon closed this question unanswered, when it recorded one. `"merged"`: the task's
+   * pull request merged with the question still outstanding, which completes the task and settles
+   * the question `orphaned`. Persisted (`reviews.closed_reason`); absent on every other row.
+   */
+  closedReason?: ReviewClosedReason | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }
@@ -2845,6 +3189,7 @@ export interface MissionReport {
   working: ReportItem[];
   idle: ReportItem[];
   backlog: Task[];
+  sessionless: Task[];
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;
@@ -3422,6 +3767,14 @@ export type ServerEvent =
   | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
+      /**
+       * The current index identity (`repoIndexIdentity`), or `REPO_INDEX_IDENTITY_UNKNOWN`
+       * when the daemon could not read it. Added by the stream, not the registry; optional
+       * only so the registry's own snapshot type, which never carries it, still fits. A window reconnecting after it missed
+       * a `repo_index_changed` compares its repository list against this and drops it on a
+       * mismatch - and keeps it on a match, which is the common reconnect under load.
+       */
+      repoIndexIdentity?: string;
       /** At most 100 unresolved summaries, with a count for the paginated remainder. */
       sessionTransfers?: import("./session-transfer.ts").SessionTransferPage;
       sessions: Session[];
@@ -3545,6 +3898,14 @@ export type ServerEvent =
        * never told.
        */
       lineSummary: LineSummary;
+      /** Bounded to 512 overrides with ids of at most 64 characters. */
+      featureFlags: FeatureFlagsConfig;
+      /**
+       * Task shaping's config view at connect time. Present only while the `task-shaping` flag
+       * is on, so a window never holds the shaping config while the feature is off. Bounded by
+       * `SHAPING_LIMITS`: at most 32 shapers of 16 KiB each, and 128 choices.
+       */
+      shaping?: ShapingConfigView;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -3558,6 +3919,18 @@ export type ServerEvent =
        * any stale `on` it was drawing before the drop.
        */
       keepAwake: KeepAwakeStatus;
+      /**
+       * Pause all and the priority session at connect time - two nullable singletons, so it is
+       * bounded by construction. Per-session pauses ride on each `Session.pause`. Optional so a
+       * snapshot from an older daemon still parses; absent reads as nothing paused.
+       */
+      pause?: PauseState;
+      /**
+       * Backups and storage problems at connect time, so Settings > Storage is right from
+       * the first render. Null until the daemon's storage service has computed
+       * it once; absent from an older daemon, which sends none.
+       */
+      storageHealth?: import("./storage-health.ts").StorageHealth | null;
       /**
        * The latest committed restore marker, or null when this daemon has restored nothing.
        * Bounded to the same three public scalars as the incremental event. A fresh browser
@@ -3686,6 +4059,17 @@ export type ServerEvent =
    * source of these facts: the rail dots and the topbar gear read it, never a re-poll.
    */
   | { type: "settings_status"; status: SettingsStatus }
+  /** Content travels with the event so all windows resolve gates without a second fetch. */
+  | { type: "feature_flags"; config: FeatureFlagsConfig }
+  /**
+   * Task shaping's config view (`shapingConfigView`), sent only while the `task-shaping` flag is
+   * on: after every committed write or settings restore, and when the flag turns on. Turning the
+   * flag off sends `config: null`, which clears it in every window. An entry this build cannot
+   * run travels only as its id, label and reason, never as its raw stored envelope. Content
+   * travels with the event for `feature_flags`' reason: every window shows the change with no
+   * second fetch.
+   */
+  | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.
@@ -3709,6 +4093,20 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
+   * The database backup config was saved. Content-free: `GET /api/storage` is the one reader
+   * of that config, and `storage_health` cannot stand in, because a save that prunes nothing
+   * leaves the aggregate unchanged and publishes no frame.
+   */
+  | { type: "storage_config_changed" }
+  /**
+   * The indexed directories (Settings > Repositories) were saved. Carries only the new index
+   * identity (`repoIndexIdentity`, 16 hex characters): every open window drops the repository
+   * list it holds for the Dispatch picker unless that list answers for this identity. The
+   * window that saved forgets before it even writes; this is how every OTHER window stops
+   * offering a repository from a removed directory.
+   */
+  | { type: "repo_index_changed"; identity: string }
+  /**
    * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
    * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
    * inbox and the `to answer` count in every other.
@@ -3725,6 +4123,17 @@ export type ServerEvent =
    * `Registry.setKeepAwakeStatus`).
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * Pause all or the priority session started, changed or ended. Carries the whole state so
+   * every open dashboard converges without a fetch. Per-session pauses travel on
+   * `session_upsert`; this is only the fleet-wide half.
+   */
+  | { type: "pause_state"; state: PauseState }
+  /**
+   * The storage aggregate moved: a capture settled or copies were pruned. Carries the whole aggregate, for `line_summary`'s reason,
+   * and is emitted only when it changed (see `StorageHealthService.recompute`).
+   */
+  | { type: "storage_health"; health: import("./storage-health.ts").StorageHealth }
   /**
    * The local archive library changed - a reconciliation batch indexed, refused, or pruned
    * at least one bundle. An invalidation signal: a surface showing archive history re-runs
@@ -3761,6 +4170,13 @@ export interface ToolCall {
    * reviewer through here or not at all.
    */
   input?: string;
+  /**
+   * The harness's own id for this call (Claude's `tool_use` block id), when the transcript
+   * records one. It is the id the Agent SDK names a background sub-agent's launch by
+   * (`SubagentEntry.launchTurnId`), so the conversation can find the turn that launched an
+   * agent. Display-only: Foreman's window never reads it.
+   */
+  id?: string;
 }
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */

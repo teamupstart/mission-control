@@ -15,6 +15,12 @@ plain files on disk. The Electron shell supervises the daemon and the HTTP-only 
 it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
 an independently started worker safe as a standby.
 
+Pi's SDK registers the public `@earendil-works/pi-ai/lazy-oauth` loaders before creating a
+runtime. This keeps OAuth providers inside the daemon bundle rather than resolving missing
+provider files beside `index.mjs`. The coding-agent and pi-ai versions are pinned together
+so they share one loader registry. Bundle smoke derives OpenAI Codex and Anthropic request
+auth using synthetic credentials with networking disabled.
+
 ## Startup while SDK sessions restore
 
 The shell immediately shows **Starting Mission Control** from a local page that does not

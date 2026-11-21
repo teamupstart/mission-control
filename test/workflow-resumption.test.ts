@@ -65,6 +65,7 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 // Browser-safe and imported here on purpose: the notice is only correct if the field the
 // DAEMON puts on the detail is the field the browser reads, and asserting the two halves in
 // different files is how they drift.
@@ -189,6 +190,7 @@ interface Probe {
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
+  retainedArtifacts?: Array<{ path: string; sha256: string; bytes: number }>;
 }
 
 interface Harness {
@@ -199,6 +201,7 @@ interface Harness {
   injected: string[];
   head: { sha: string };
   probe: Probe;
+  probedArtifacts: Array<readonly { path: string }[] | undefined>;
   duringProbe: { fn: (() => void) | null };
   /**
    * The transcript anchor a CAPTURE would read. Deliberately not on `Probe`: the observer's
@@ -237,6 +240,7 @@ function harness(
   const injected: string[] = [];
   const head = { sha: "head-1" };
   const probe: Probe = { headSha: "head-1", workingTreeStatus: [], diffFingerprint: "content-1" };
+  const probedArtifacts: Harness["probedArtifacts"] = [];
   /** Run once inside the next repository read. See `readEvidenceProbe` below. */
   const duringProbe: { fn: (() => void) | null } = { fn: null };
   const transcript = { anchor: 0 };
@@ -257,7 +261,8 @@ function harness(
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readEvidenceProbe: async () => {
+    readEvidenceProbe: async (_registry, _binding, retainedArtifacts) => {
+      probedArtifacts.push(retainedArtifacts);
       // Fired INSIDE the read, which is the only place a test can stand in the window the
       // reminder's rechecks exist to cover: two git commands take long enough for a session
       // to pick up its turn, and every gate after this await is asked because of it.
@@ -266,6 +271,7 @@ function harness(
         ...probe,
         headSha: head.sha,
         diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
+        localArtifactHashes: probe.retainedArtifacts,
       };
     },
     readContextRaw: async (_registry, binding) => {
@@ -287,6 +293,15 @@ function harness(
           transcriptTruncated: false,
           standards: [],
           standardsTruncated: false,
+          ...(probe.retainedArtifacts ? {
+            publication: {
+              version: 1 as const,
+              treeOid: "1".repeat(40),
+              unpublishedPaths: [],
+              pathsTruncated: false,
+              localArtifacts: probe.retainedArtifacts.map((artifact) => ({ ...artifact })),
+            },
+          } : {}),
         },
       };
       return {
@@ -322,7 +337,7 @@ function harness(
     personas,
     workflows: manager,
   });
-  return { registry, store, manager, app, injected, head, probe, transcript, duringProbe };
+  return { registry, store, manager, app, injected, head, probe, probedArtifacts, transcript, duringProbe };
 }
 
 /**
@@ -545,6 +560,29 @@ test("unchanged evidence leaves the run WAITING, and never blocks or re-captures
   await h.manager.stop();
 });
 
+test("retained raw report changes resume a repair even when Git identity is unchanged", async () => {
+  const retained = { path: "docs/reports/probe/report.html", sha256: "1".repeat(64), bytes: 80 };
+  const h = await personaFeedbackRun("raw-report", "v-raw-report", "auto", undefined, {
+    workingTreeStatus: ["?? docs/"],
+    retainedArtifacts: [retained],
+  });
+  try {
+    reportIdle(h, "raw-report", h.agentSessionId, h.paneId);
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1);
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "probe must receive the judged snapshot's receipts");
+    h.probe.retainedArtifacts = [{ ...retained, sha256: "2".repeat(64) }];
+    await h.manager.sweepResumptions(SETTLED());
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "comparison must use the prior receipts");
+    const submissions = h.store.listSubmissions(h.runId);
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[1]!.round, 2);
+    assert.notEqual(submissions[1]!.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+  } finally {
+    await h.manager.stop();
+  }
+});
+
 test("content changes inside the same dirty paths resume the next repair round", async () => {
   const h = await personaFeedbackRun(
     "content-persona",
@@ -649,6 +687,33 @@ test("a blocked session is not handed the next round until its blocker clears", 
   await h.manager.sweepResumptions(SETTLED());
   assert.equal(h.store.listSubmissions(h.runId).length, 2, "clearing the blocker did not release the round");
   await h.manager.stop();
+});
+
+test("an outstanding request_input question holds the next round, snoozed or not, until it is answered (async-input)", async () => {
+  const h = await personaFeedbackRun("asked-persona", "v-asked-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "asked-persona", h.agentSessionId, h.paneId);
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  try {
+    const reviews = new ReviewManager(h.registry);
+    // A call-mode question the operator snoozed: it turns nothing amber, so only the completion
+    // hold can stop the run being resumed around it.
+    const question = reviews.create("asked-persona", "input", "Which linter?", "Which linter?", [
+      { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+    ], { snoozable: true });
+    reviews.snooze(question.id, 60 * 60_000);
+    assert.notEqual(h.registry.getSession("asked-persona")?.pendingReviews, 1, "a snoozed question is not pending");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1, "the run resumed around an outstanding question");
+    assert.equal(withheldReasons(h, h.runId).at(-1), "session_needs_you");
+
+    reviews.resolve(question.id, "answer", "eslint", "human");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 2, "answering the question did not release the round");
+  } finally {
+    applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false });
+    await h.manager.stop();
+  }
 });
 
 test("a blocker reported while the repository is read holds the run, on the unchanged branch too", async () => {

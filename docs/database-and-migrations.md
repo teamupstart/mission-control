@@ -38,6 +38,11 @@ Mission Control creates verified recovery points for normal operation and schema
 [Backup and restore](sqlite-database.html#backup) in the database field guide for the authoritative
 backup, retention, validation, failure-handling, and offline-restore procedure.
 
+Backup status appears on the Backups tab of **Settings > Storage**: the interval, the count, age
+and size limits, the copies that are always kept, Back up now, the last success and last failure of
+each kind, and the kept copies with their total size. The Overview tab's Problems list names a failing
+capture until a capture of either kind succeeds. See [Storage](storage.md).
+
 ## Recovering the product database
 
 Use the supported recovery command from a current Mission Control checkout. Pass the absolute
@@ -146,3 +151,18 @@ episode; a plan task owes one per plan directory it wrote. It refers to
 task and session ids as values and has no foreign key or cascade to either, because a published
 archive has to outlive both. Losing it loses the ability to resume an unfinished capture, never
 the ability to read a finished one.
+
+## Idle online backup completion
+
+`database-backups/online.ts` wraps the native SQLite backup used by captures and restore
+verification. On 2026-11-20, a standalone `node:sqlite` probe on macOS 26.6.2 with Homebrew
+Node 26.7.0 observed a completed native copy at one second while the await continuation
+had not run. The await resumed after a JavaScript callback at about 1002 ms. This observation
+is specific to that verified environment; it does not establish the same timing on other
+platforms or Node versions.
+
+A referenced 10 ms timer exists only while the
+backup is pending and is cleared on success or failure. This preserves the online snapshot
+and its WAL semantics; it neither changes the scheduling clock nor times out a still-active
+SQLite operation. `test/database-backup-idle.test.ts` exercises an otherwise quiet child
+process with a parent watchdog and verifies that the helper leaves no timer behind.

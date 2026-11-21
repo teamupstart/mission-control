@@ -1,3 +1,9 @@
+import { actionWaitSentence } from "../workflows/run-model.ts";
+import { prCheckSummary } from "@shared/pr-check-details.ts";
+import { PrChecksStatus } from "./PrChecksStatus.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { canMessage } from "@shared/pane.ts";
+import { branchUpdateLabel, branchConflictPrompt } from "@shared/pr-branch-update.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentType,
@@ -6,6 +12,7 @@ import type {
   SessionCost,
   SessionMeta,
   Task,
+  TaskClaimWarning,
   TaskPriority,
   TaskRepoPrSummary,
 } from "@shared/types.ts";
@@ -22,7 +29,10 @@ import {
   repoLeaf,
   sessionTitleDetail,
   type StateDisplay,
+  type Tone,
 } from "../lib/format.ts";
+import { ariaKeyshortcuts, formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { costChipText, RUNTIME_LABEL, subtitle } from "../lib/session-text.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
@@ -34,6 +44,7 @@ import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { questionBadge, useQuestionAgent } from "../lib/async-questions.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
   PIPELINE_PROVIDER_INFO,
@@ -61,32 +72,6 @@ import { PIPELINE_GROUP_LABELS } from "../pipelines/pipeline-run-model.ts";
  * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
  * `test/pr-chip-parity.test.ts` pins the PR decision across all four.
  */
-
-/**
- * Where this session was found, phrased for the small grey subtitle.
- *
- * The pane id rides along only for a MULTIPLEXER, and that asymmetry is about the axis
- * rather than about tmux: a multiplexer names a SESSION that may hold many panes, so which
- * pane this card is only answerable by saying it, while an emulator names the tab itself
- * and has nothing left to disambiguate. Both shipped backends read exactly as they always
- * did; a third one inherits whichever rule its axis already states.
- */
-export function subtitle(session: Session): string {
-  if (session.runtime === "sdk") return RUNTIME_LABEL;
-  const namer = session.terminals.find((h) => h.backend === session.nameSource);
-  if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
-  return session.nameSource;
-}
-
-/**
- * What an embedded session is called where a pane string would go.
- *
- * "Agent SDK" rather than the `sdk` the `NameSource` spells, because this line answers
- * "where is this session?" for a human, and the honest answer is that there is nowhere to
- * go and look - it runs inside Mission Control. Named once and shared by all four
- * surfaces, so the three mark vocabularies say the same word.
- */
-export const RUNTIME_LABEL = "Agent SDK";
 
 const RUNTIME_TITLE =
   "This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.";
@@ -677,7 +662,9 @@ export function RepoGroupHead({
  */
 export function RepoGroupCaret(): React.JSX.Element {
   return (
-    <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
+    // Sized on the element as well as in CSS (12px, `.brh-chevron`), so it stays a small glyph
+    // wherever it is drawn - Settings' preview card included - even before a rule reaches it.
+    <svg className="brh-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden focusable="false">
       <path
         d="M2.8 4.4 6 7.8l3.2-3.4"
         fill="none"
@@ -1144,6 +1131,16 @@ export function EnsembleRailGroup({
   );
 }
 
+/** Same live action explanation as Runs, including when a question moves the card out of Idle. */
+export function WorkflowActionWait({ runs, idPrefix }: { runs: readonly WorkflowRunSummary[]; idPrefix?: string }): React.JSX.Element {
+  return <>{runs.filter(run => run.status === "waiting_for_action" && run.actionWait).map(run => (
+    <span className="workflow-action-wait" key={run.id} id={idPrefix ? `${idPrefix}-${run.id}` : undefined}>
+      <strong>{run.workflowName}</strong>
+      <span>{actionWaitSentence(run.actionWait!)}</span>
+    </span>
+  ))}</>;
+}
+
 /**
  * The rule that splits a tone group's genuinely-free sessions from the ones an open workflow
  * run is holding.
@@ -1180,7 +1177,7 @@ export function FleetSectionHead({
         // case. It is also the shorter of the two, and this wraps to three lines at the 250px a
         // board column gets by default.
         <span className="fleet-section-why">
-          Waiting on a run that is still open - it sends the next round on its own.
+          A workflow owns the next turn. Open its run for the current step and available actions.
         </span>
       )}
     </div>
@@ -1653,11 +1650,60 @@ export function prChipView(session: Session): PrChipView | null {
         : state === "closed"
           ? `Pull request ${label} closed - open on GitHub`
           : `Open pull request ${label} - open on GitHub`,
-    failingTitle: "A CI check failed on this pull request - open on GitHub",
+    failingTitle: prCheckSummary(session.prCheckDetails),
   };
 }
 
-/** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
+/** Shared by every PR presentation, including each attached repository. */
+export function PrBranchUpdateStatus(props: { session: Session; url: string; detailed?: boolean }): React.JSX.Element {
+  // A replacement URL gets fresh state; a prior request can only finish on its unmounted instance.
+  return <BranchUpdateStatus key={props.url} {...props} />;
+}
+
+function BranchUpdateStatus({ session, url, detailed = false }: { session: Session; url: string; detailed?: boolean }): React.JSX.Element | null {
+  const enabled = useFeatureFlag("automatic-pr-branch-update");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = session.prBranchUpdates?.[url];
+  useEffect(() => { setSent(false); setError(null); }, [url, update?.status, update?.reason]);
+  if (!enabled || !update) return null;
+  return <span className="pr-branch-update" role="status" onClick={e => e.stopPropagation()}>
+    <Tooltip label={update.reason ?? branchUpdateLabel(update)}>
+      <span>{branchUpdateLabel(update)}</span>
+    </Tooltip>
+    {detailed && update.reason && <span className="pr-branch-update-reason">{update.reason}</span>}
+    {detailed && update.status === "conflict" && canMessage(session) && <Tooltip label="Ask the owning session to resolve conflicts and push without merging the PR">
+      <button className="btn" type="button" disabled={sent || busy}
+      onClick={async () => {
+        setBusy(true); setError(null);
+        try {
+          const result = await api.injectPrompt(session.id, branchConflictPrompt(url));
+          if (result.ok) setSent(true);
+          else setError(result.error || "Could not send the conflict resolution prompt. Try again.");
+        }
+        catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+        finally { setBusy(false); }
+      }}>{sent ? "Sent to session" : busy ? "Sending…" : "Send to session to resolve"}</button>
+    </Tooltip>}
+    {error && <span role="alert">{error}</span>}
+  </span>;
+}
+
+/** Refusals need room that the compact header cannot provide. */
+export function PrBranchUpdateDetails({ session }: { session: Session }): React.JSX.Element | null {
+  const enabled = useFeatureFlag("automatic-pr-branch-update");
+  const url = session.prUrl;
+  if (!enabled || !url || !session.prBranchUpdates?.[url]?.reason) return null;
+  return <div className="detail-pr-update">
+    <Tooltip label="Open this pull request on GitHub">
+      <a href={url} target="_blank" rel="noreferrer">PR {session.prNumber ? `#${session.prNumber}` : "on GitHub"}</a>
+    </Tooltip>
+    <PrBranchUpdateStatus session={session} url={url} detailed />
+  </div>;
+}
+
+/** The PR chip, plus a separate results button when CI needs attention. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
@@ -1675,20 +1721,8 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
           <span className="pr-num">{view.label}</span>
         </a>
       </Tooltip>
-      {view.failing && (
-        <Tooltip label={view.failingTitle}>
-          <a
-            className="pr-checks-alert"
-            href={view.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={view.failingTitle}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ChecksFailedIcon />
-          </a>
-        </Tooltip>
-      )}
+      <PrBranchUpdateStatus session={session} url={view.url} />
+      {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
     </>
   );
 }
@@ -1708,28 +1742,25 @@ export function PrRailMark({ session }: { session: Session }): React.JSX.Element
   if (!view) return null;
   const title = view.failing ? view.failingTitle : view.title;
   return (
+    <>
     <Tooltip label={title}>
       <span className={`rail-pr ${view.tone}`}>
         {view.label}
         {view.failing && " ⚠"}
       </span>
     </Tooltip>
+    <PrBranchUpdateStatus session={session} url={view.url} />
+    </>
   );
 }
 
-/**
- * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
- * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
- * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
- * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
- * tile don't behave differently on hover. Same shared `prChipView` gate as the other three
- * drawings - see its comment for the `prNumber` gate this replaced.
- */
+/** The board's PR link and separate CI results affordance share the console's decision. */
 export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
-  const title = view.failing ? view.failingTitle : view.title;
+  const title = view.title;
   return (
+    <>
     <Tooltip label={title}>
       <a
         className={`tile-flag tile-flag-link ${view.tone}`}
@@ -1741,13 +1772,20 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
         onClick={(e) => e.stopPropagation()}
       >
         {view.label}
-        {view.failing && " ⚠"}
       </a>
     </Tooltip>
+    {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
+    <PrBranchUpdateStatus session={session} url={view.url} />
+    </>
   );
 }
 
-/** The status badge; a button that opens the reviews modal when there are pending reviews. */
+/**
+ * The status badge; a button that opens the reviews modal when there is something to answer. A
+ * session still working past its message-mode questions (`async-input`) reads "N questions open"
+ * in the tone it already wears, never amber; once it stops, `stateDisplay` turns it amber and
+ * this is today's amber button (`questionBadge`).
+ */
 export function StateBadge({
   session,
   onOpenReviews,
@@ -1762,20 +1800,20 @@ export function StateBadge({
   // doing. The Console detail draws this component, so it follows.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = display ?? runtimeState;
-  if (session.pendingReviews > 0 && onOpenReviews) {
+  const agent = useQuestionAgent(session);
+  const asks = onOpenReviews ? questionBadge(agent, st) : null;
+  if (asks && onOpenReviews) {
     return (
-      <Tooltip
-        label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
-      >
+      <Tooltip label={asks.tooltip}>
         <button
-          className={`badge badge-${st.tone} badge-btn`}
+          className={`badge badge-${asks.tone} badge-btn${session.pause ? " is-paused" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenReviews();
           }}
         >
           <span className="badge-dot" />
-          {st.label} <Keycap action="review" />{" "}
+          {asks.label} <Keycap action="review" />{" "}
           {/* Its own element so the console header's ladder can shed it: this button is the
               one thing that row is never allowed to hide, so what it gives up on a narrow
               pane is the chord hint and this arrow (`detailHeadLadder.ts`, rung 1). */}
@@ -1787,7 +1825,7 @@ export function StateBadge({
     );
   }
   return (
-    <span className={`badge badge-${st.tone}`}>
+    <span className={`badge badge-${st.tone}${session.pause ? " is-paused" : ""}`}>
       <span className="badge-dot" />
       {st.label}
     </span>
@@ -1995,18 +2033,16 @@ function AdvisorChip({ modelId }: { modelId: string }): React.JSX.Element {
  * would claim evidence the ledger does not carry.
  */
 export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
-  if (!cost) return null;
+  const text = costChipText(cost);
+  if (!cost || text === null) return null;
   const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
   if (cost.costUsd === null) {
-    const total = tokensIn + cost.output;
-    if (total <= 0) return null;
     return (
       <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Standard API pricing unavailable${cost.pricingModels.length ? ` for ${cost.pricingModels.join(", ")}` : " because no exact model was recorded"}.`}>
-        <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
+        <span className="rt-pill cost-chip">{text}</span>
       </Tooltip>
     );
   }
-  if (cost.costUsd <= 0) return null;
   const tone = costTone(cost.costUsd);
   const missionEstimated = cost.basis === "api-equivalent";
   const models = cost.pricingModels.length ? cost.pricingModels.join(", ") : "unknown model";
@@ -2023,7 +2059,7 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
             `${compactTokens(cost.output)} out.\nCalculated by Claude Code; not subscription-plan spend or an invoice.`
       }
     >
-      <span className={`rt-pill cost-chip cost-${tone}`}>≈{fmtUsd(cost.costUsd)}</span>
+      <span className={`rt-pill cost-chip cost-${tone}`}>{text}</span>
     </Tooltip>
   );
 }
@@ -2048,6 +2084,45 @@ export function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
 }
 
 /**
+ * The dependency claims that failed in a task's worktrees when it was leased them. The trees
+ * were handed over anyway and the agent was told; this is the operator's copy of the same note,
+ * so a build that fails on dependencies is not a mystery on the card.
+ *
+ * Each failure is one disclosure: the summary says which repository and which step, and opening
+ * it shows the command and the output tail. Renders nothing when no claim failed.
+ */
+export function TaskClaimWarnings({
+  warnings,
+}: {
+  warnings: readonly TaskClaimWarning[] | undefined;
+}): React.JSX.Element | null {
+  if (!warnings || warnings.length === 0) return null;
+  return (
+    <div className="task-claim-warnings" role="group" aria-label="Dependency install warnings">
+      {warnings.map((warning) => (
+        <details key={`${warning.repoRoot}:${warning.step}`} className="task-claim-warning">
+          <Tooltip label={`Show the failing command and its output in ${warning.repoRoot}`}>
+            <summary>
+              Dependency install failed in {repoLeaf(warning.repoRoot)}: step {warning.step} of{" "}
+              {warning.stepCount} {warning.reason}.
+            </summary>
+          </Tooltip>
+          <code className="task-claim-command" aria-label={`Failed command: ${warning.command}`}>{warning.command}</code>
+          {warning.tail ? (
+            <pre className="task-claim-tail" aria-label="Dependency install output tail" tabIndex={0}>
+              {warning.truncatedBytes > 0 ? `(${warning.truncatedBytes} earlier bytes dropped)\n` : ""}
+              {warning.tail.replace(/\n+$/, "")}
+            </pre>
+          ) : (
+            <p className="task-claim-note">The step printed nothing.</p>
+          )}
+        </details>
+      ))}
+    </div>
+  );
+}
+
+/**
  * A multi-repo task's repositories, each with the pull request it has produced.
  *
  * The one drawing of "one PR per changed repo", shared by the card and the console for the
@@ -2064,9 +2139,10 @@ export function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
  * on. It is also what the completion quorum is waiting for, said out loud.
  */
 export function TaskRepoPrs({
-  repoPrs,
+  repoPrs, session,
 }: {
   repoPrs: readonly TaskRepoPrSummary[];
+  session: Session;
 }): React.JSX.Element | null {
   if (repoPrs.length === 0) return null;
   return (
@@ -2092,8 +2168,8 @@ export function TaskRepoPrs({
           );
         }
         return (
+          <span key={entry.repoRoot}>
           <Tooltip
-            key={entry.repoRoot}
             label={`${entry.repoRoot} (${role}) - pull request ${label} ${state} - open on GitHub`}
           >
             <a
@@ -2108,6 +2184,9 @@ export function TaskRepoPrs({
               <span className="pr-num">{label}</span>
             </a>
           </Tooltip>
+          {entry.feedback?.prChecks === "failing" && <PrChecksStatus key={entry.prUrl} details={entry.feedback.prCheckDetails} url={entry.prUrl} />}
+          <PrBranchUpdateStatus session={session} url={entry.prUrl} detailed />
+          </span>
         );
       })}
     </span>
@@ -2556,6 +2635,136 @@ export function ColumnWidthControl({
   );
 }
 
+/** One state group as the folded session rail counts it. */
+export interface FoldedRailGroup {
+  /** A lifecycle tone, or the Blocked group, which is drawn red wherever the placement puts it. */
+  tone: Tone | "blocked";
+  label: string;
+  count: number;
+}
+
+/** The breakdown a folded rail reads out - "1 needs you, 3 working" - in rail order. */
+export function foldedRailSummary(groups: readonly FoldedRailGroup[]): string {
+  const parts = groups.filter((g) => g.count > 0).map((g) => `${g.count} ${g.label.toLowerCase()}`);
+  return parts.length > 0 ? parts.join(", ") : "no sessions";
+}
+
+/**
+ * The control that folds the session rail beside an open session, drawn in the rail's head.
+ *
+ * Shared by the Console rail and both Board drill-in rails, so the glyph, the name and the
+ * shortcut it prints are one fact wherever the rail is.
+ */
+export function SessionRailFoldButton({ onFold }: { onFold: () => void }): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  return (
+    <Tooltip
+      label={`Fold the session rail to give the conversation its width (${formatChord(bindings.sessionRail)})`}
+    >
+      <button
+        type="button"
+        className="session-rail-fold"
+        aria-label="Fold the session rail"
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onFold}
+      >
+        «
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * A folded session rail: a 40px strip in the folded Board column's register, which counts what
+ * each state group holds and is itself the button that unfolds the rail.
+ *
+ * Counts, never rows. The point of folding is the width it hands back, and a strip of
+ * per-session targets would spend it again. The Needs you count pulses when it goes up, for the
+ * reason `CollapsedColumnStrip` gives - and the rise is tracked here, at the strip, against the
+ * fleet's Needs you count rather than the pill's. A group that was empty is not drawn, so its
+ * first arrival would otherwise mount a pill with nothing to compare against; and on the Board
+ * the strip lists one column, so the column it follows into Needs you is not a rise by itself.
+ */
+export function FoldedSessionRail({
+  label,
+  groups,
+  asking,
+  onUnfold,
+}: {
+  /** What the rail lists, set vertically: "All sessions", or the drilled-in column's name. */
+  label: string;
+  groups: readonly FoldedRailGroup[];
+  /**
+   * The fleet's Needs you count, when the strip lists less than the whole fleet (a Board column
+   * rail). Omitted, it is read from `groups`, which is the whole fleet on the Console.
+   */
+  asking?: number;
+  onUnfold: () => void;
+}): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  const pulses = useRisePulse(asking ?? groups.find((g) => g.tone === "attention")?.count ?? 0, true);
+  const summary = foldedRailSummary(groups);
+  return (
+    <Tooltip label={`Unfold ${label} (${formatChord(bindings.sessionRail)}): ${summary}`}>
+      <button
+        type="button"
+        className="session-rail-strip"
+        aria-label={`Unfold ${label}: ${summary}`}
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onUnfold}
+      >
+        <span className="session-rail-strip-glyph" aria-hidden>»</span>
+        {groups.filter((g) => g.count > 0).map((g) => (
+          <FoldedRailCount key={g.tone} group={g} pulses={g.tone === "attention" ? pulses : 0} />
+        ))}
+        <span className="board-col-strip-name session-rail-strip-name" aria-hidden>
+          {label}
+        </span>
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * One count pill on a folded rail, which pulses only for rises it was on screen for.
+ *
+ * `pulses` is the strip's running count of Needs you rises. The pill measures from the value it
+ * mounted at, so a pill that appears because focus moved into a column that already had sessions
+ * waiting - no new arrival - starts calm; one that appears because of an arrival mounts first and
+ * pulses on the rise its strip records a moment later. Each later rise re-keys the span, which
+ * remounts it so the animation plays again.
+ */
+function FoldedRailCount({ group, pulses }: { group: FoldedRailGroup; pulses: number }): React.JSX.Element {
+  const since = useRef(pulses);
+  const rises = pulses - since.current;
+  return (
+    <span
+      key={rises}
+      className={`board-col-n session-rail-strip-n tone-${group.tone}${rises > 0 ? " is-pulsing" : ""}`}
+      aria-hidden
+    >
+      {group.count}
+    </span>
+  );
+}
+
+/**
+ * How many times `count` has gone UP while `enabled`, for a folded surface's count to pulse on.
+ *
+ * Keyed into a `key` by the caller, so each rise remounts the pill and the animation replays.
+ * Shared by a folded Board column and the folded session rail, which make the same promise: a
+ * session that starts waiting on you is not hidden by a fold you made an hour ago.
+ */
+function useRisePulse(count: number, enabled: boolean): number {
+  const previous = useRef(count);
+  const [pulses, setPulses] = useState(0);
+  useEffect(() => {
+    if (enabled && count > previous.current) setPulses((n) => n + 1);
+    previous.current = count;
+  }, [enabled, count]);
+  return pulses;
+}
+
 /**
  * A collapsed Board column: a thin strip that still says what the column is and how much it
  * holds, and is itself the button that restores it.
@@ -2564,30 +2773,31 @@ export function ColumnWidthControl({
  * session that starts waiting on you is not hidden by a fold you made an hour ago. It pulses
  * rather than reopening the column: the operator chose to fold it, and a board that undid that
  * choice on every arrival would be one you could not keep folded at all.
+ *
+ * `blockedCount` is the In Needs you Blocked lane folded with its column: a second, red count
+ * under the first, so a fold hides neither how many need you nor how many are blocked.
  */
 export function CollapsedColumnStrip({
   label,
   count,
+  blockedCount,
   announce = false,
   onRestore,
 }: {
   label: string;
   count: number;
+  blockedCount?: number;
   announce?: boolean;
   onRestore: () => void;
 }): React.JSX.Element {
-  const previous = useRef(count);
-  const [pulses, setPulses] = useState(0);
-  useEffect(() => {
-    if (announce && count > previous.current) setPulses((n) => n + 1);
-    previous.current = count;
-  }, [announce, count]);
+  const pulses = useRisePulse(count, announce);
   return (
     <Tooltip label={`Restore ${label} to normal width`}>
       <button
         type="button"
         className="board-col-strip"
-        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}`}
+        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}${
+          blockedCount ? `, ${blockedCount} blocked` : ""}`}
         onClick={onRestore}
       >
         <span className="board-swatch" aria-hidden />
@@ -2599,6 +2809,11 @@ export function CollapsedColumnStrip({
         >
           {count}
         </span>
+        {blockedCount ? (
+          <span className="board-col-n board-col-strip-blocked" aria-hidden>
+            {blockedCount}
+          </span>
+        ) : null}
         <span className="board-col-strip-name" aria-hidden>
           {label}
         </span>

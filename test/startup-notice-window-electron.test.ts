@@ -41,13 +41,16 @@ test("with notifications unavailable, the update-in-progress notice shows in a w
     app.on("window-all-closed", () => {});
     app.whenReady().then(async () => {
       const started = Date.now();
-      setTimeout(async () => {
+      // Probed until the window is up rather than once: it is created hidden and shown on
+      // ready-to-show, which on a loaded machine can come later than any single probe.
+      const probe = async () => {
         const [win] = BrowserWindow.getAllWindows();
-        if (!win) return;
+        if (!win || !win.isVisible()) return void setTimeout(probe, 100);
         const image = await win.webContents.capturePage();
         writeFileSync(out + "/notice.png", image.toPNG());
         writeFileSync(out + "/window.json", JSON.stringify({visible: win.isVisible(), title: win.getTitle(), bounds: win.getBounds()}));
-      }, 1200);
+      };
+      setTimeout(probe, 1200);
       await n.announceStartupNotice(n.MIGRATION_IN_PROGRESS_NOTICE, {
         supported: () => false, show: () => { throw new Error("must not post"); },
         fallback: n.showStartupNoticeWindow, log: (line) => console.log(line),

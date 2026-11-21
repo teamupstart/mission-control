@@ -9,6 +9,8 @@ import type {
   PipelineProviderId,
 } from "@shared/pipeline.ts";
 import type { PipelineInstallerPreparation } from "../pipelines/index.ts";
+import { conductorIntegrationEnabled } from "../pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL, setupDependencyAvailable } from "@shared/conductor-integration.ts";
 import { shellCommand } from "../terminal/shell.ts";
 import type {
   TerminalLaunchOutcome,
@@ -95,14 +97,26 @@ export function isSetupInstallArgv(argv: readonly unknown[]): argv is readonly s
  * the same binary - an operator override included - that the daemon will later run, rather
  * than whichever one the terminal's PATH happens to find first.
  */
-const SETUP_SIGN_IN_COMMANDS: readonly { executable: ExecutableId; argv: readonly string[] }[] = [
+interface SetupSignInCommand {
+  executable: ExecutableId;
+  argv: readonly string[];
+  /**
+   * Run with `HOME` set to the daemon's own home. For a CLI whose stored credentials the
+   * daemon later reads from its effective HOME: the terminal app supplies its own `HOME`, and
+   * a login stored under a different one leaves the daemon reading "signed out" forever.
+   */
+  daemonHome?: true;
+}
+
+const SETUP_SIGN_IN_COMMANDS: readonly SetupSignInCommand[] = [
   { executable: "acli", argv: ["acli", "jira", "auth", "login", "--web"] },
+  { executable: "coderabbit", argv: ["coderabbit", "auth", "login"], daemonHome: true },
 ];
 
 /** The sign-in entry this argv names exactly, or null. */
 export function setupSignInCommand(
   argv: readonly unknown[],
-): { executable: ExecutableId; argv: readonly string[] } | null {
+): SetupSignInCommand | null {
   return SETUP_SIGN_IN_COMMANDS.find((entry) =>
     entry.argv.length === argv.length && entry.argv.every((word, i) => word === argv[i])) ?? null;
 }
@@ -133,6 +147,8 @@ export interface SetupInstallExecutionDeps {
   launchTerminal(backend: SetupTerminalInstallerLaunchBody["backend"], spec: TerminalLaunchSpec): Promise<TerminalLaunchOutcome>;
   /** The absolute path the daemon would run for this executable, or null when absent. */
   resolveExecutable(id: ExecutableId): Promise<string | null>;
+  /** Whether the hidden ai-conductor integration is offered; defaults to the daemon's switch. */
+  conductorIntegration?(): boolean;
 }
 
 /** Dependencies routes may override without moving command ownership into a caller. */
@@ -173,6 +189,10 @@ export async function executeSetupInstall(
   deps: SetupInstallExecutionDeps,
 ): Promise<SetupInstallResponse> {
   const info = deps.catalog[body.id];
+  // A dependency Setup does not list has no remedy to run either.
+  if (!setupDependencyAvailable(body.id, deps.conductorIntegration?.() ?? conductorIntegrationEnabled())) {
+    return refused(body.id, info.label, CONDUCTOR_UNAVAILABLE_DETAIL, 404);
+  }
   const remedy = info.remedy;
 
   let launch: TerminalLaunchSpec;
@@ -185,6 +205,10 @@ export async function executeSetupInstall(
       // A service starts in the daemon, not in a window. `POST /api/setup/service` owns it,
       // and this route will not open a terminal that has nothing to show.
       return refused(body.id, info.label, "This setup remedy starts a background service and opens no terminal.");
+    case "integrations":
+      // The desktop app installs Mission Control's own integrations in-process; there is no
+      // terminal for this route to open.
+      return refused(body.id, info.label, "This setup remedy is installed by the Mission Control desktop app and opens no terminal.");
     case "provider-installer": {
       const repoRoots = await deps.listRepoRoots();
       const installers = await deps.listProviderInstallers(remedy.provider, repoRoots);
@@ -247,7 +271,11 @@ export async function executeSetupInstall(
           argv: [
             FIXED_OS_EXECUTABLES.sh,
             "-c",
-            setupInstallerShell([program, ...signIn.argv.slice(1)], "sign-in"),
+            setupInstallerShell([
+              ...(signIn.daemonHome ? [FIXED_OS_EXECUTABLES.env, `HOME=${deps.homeDir}`] : []),
+              program,
+              ...signIn.argv.slice(1),
+            ], "sign-in"),
           ],
         };
         break;

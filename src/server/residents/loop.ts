@@ -1,5 +1,4 @@
-import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
-import { residentWakeMarker } from "@shared/resident-turn.ts";
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentCompactionFocus, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
 import { sessionMessages, type SessionMessages } from "../harness/index.ts";
@@ -8,24 +7,41 @@ import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
+import { CompactionError } from "../harness/compaction.ts";
+import { residentStandingRestatement } from "./launch.ts";
+import { residentAwakeAt, residentSleepingUntil } from "@shared/resident-schedule.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import {
-  ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, completeResidentCompaction, completeResidentGeneration,
-  humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, residentClaims,
-  residentGuardrail, releaseResidentReviewPause, resumeResident, settleResidentClaim, type ResidentIteration,
+  ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, clearResidentRunRequest, completeResidentCompaction,
+  completeResidentGeneration, humanResidentTurn, liveRun, markResidentCompacted, paceResident, pauseResident, pruneResidentLoop,
+  recordResidentCompactionFailure, requestResidentRun, residentClaims, residentGuardrail, residentRestatementOwed, residentWakeTextFor,
+  releaseResidentReviewPause, resumeResident, retryResidentCompaction, settleResidentClaim, type ResidentIteration,
 } from "./loop-store.ts";
 
+const BUSY_BLOCKER = "A human message or active turn has priority.";
+/** Seconds before each retry of a failed compaction. One more failure pauses the resident. */
+export const RESIDENT_COMPACTION_RETRY_DELAYS_S = [60, 300, 900] as const;
+
 interface LoopDeps {
-  registry: Pick<Registry, "subscribe" | "getTask" | "getSession" | "upsertResidentRun" | "onTurnDelivered">;
+  registry: Pick<Registry, "subscribe" | "getTask" | "getSession" | "upsertResidentRun" | "onTurnDelivered" | "onCompacted">;
   sdk: Pick<SdkSupervisor, "sendWhenIdle" | "compact">;
   refreshSession: (session: Session) => void;
   now?: () => number;
   messages?: (session: Session) => SessionMessages | null;
+  /** Whether active hours are honoured: the `resident-active-hours` gate, read per decision. */
+  activeHours?: () => boolean;
+  /** Called with a listener whenever that gate may have changed; returns an unsubscribe. */
+  onActiveHoursChanged?: (listener: () => void) => () => void;
 }
+
+/** The feature that holds scheduled wakes outside a resident's active hours. */
+export const RESIDENT_ACTIVE_HOURS_FLAG = "resident-active-hours";
 
 /** The daemon's only resident-turn owner. All decisions re-read the durable pinned run. */
 export class ResidentLoop {
   private readonly now: () => number;
   private readonly messages: (session: Session) => SessionMessages | null;
+  private readonly activeHours: () => boolean;
   private stopped = true;
   private subscriptions: Array<() => void> = [];
   private timers = new Map<string, NodeJS.Timeout>();
@@ -35,6 +51,7 @@ export class ResidentLoop {
   constructor(private readonly deps: LoopDeps) {
     this.now = deps.now ?? Date.now;
     this.messages = deps.messages ?? sessionMessages;
+    this.activeHours = deps.activeHours ?? (() => featureEnabled(RESIDENT_ACTIVE_HOURS_FLAG));
   }
   start(): void {
     if (!this.stopped) return;
@@ -67,6 +84,23 @@ export class ResidentLoop {
         humanResidentTurn(run.id, turnId.startsWith("review-continuation:"));
         this.cancelTimer(run.id);
         this.publish(run.id);
+        this.enqueue(run.id);
+      }
+    }));
+    // The one path that records a compaction: every one the driver observes, this loop's own
+    // maintenance `/compact` included, as well as the harness's auto-compact, Codex's native
+    // backstop, or a `/compact` the operator typed. Completion only settles loop state.
+    this.subscriptions.push(this.deps.registry.onCompacted(({ sessionId }) => {
+      const session = this.deps.registry.getSession(sessionId);
+      const run = session?.task?.kind === "resident" ? residentRunForTask(session.task.id)?.run : undefined;
+      if (run && run.endedAt === null && markResidentCompacted(run.id)) this.publish(run.id);
+    }));
+    // Turning active hours on or off re-times every waiting resident at once: a held wake that
+    // is now allowed fires, and one that is now outside its window is held.
+    this.subscriptions.push((this.deps.onActiveHoursChanged ?? ((listener) => onFeatureFlagsChanged(() => listener())))(() => {
+      for (const { run } of listOpenResidentRuns()) {
+        if (run.launchState !== "launched") continue;
+        this.cancelTimer(run.id);
         this.enqueue(run.id);
       }
     }));
@@ -120,6 +154,10 @@ export class ResidentLoop {
       this.publish(id);
     }
     if (run.loopState === "paused") { this.cancelTimer(id); return; }
+    // The operator paused this session: hold every wake, keeping a queued Run now and the pacing
+    // intent, until the `session_upsert` that lifts the pause observes it again. Without this a
+    // Run now held by the pause re-woke itself here, through microtasks, without ever yielding.
+    if (session.pause) { this.cancelTimer(id); return; }
     // A request holds delivery without discarding the durable wake or pacing intent.
     if (reportBucket(session) === "needs-you") { this.cancelTimer(id); return; }
     if (session.pendingTurns.length > 0) {
@@ -136,11 +174,17 @@ export class ResidentLoop {
     if (cycle?.completedAt !== null && cycle?.completedAt !== undefined &&
         completeResidentGeneration(id, cycle.generation, cycle.completedAt)) this.publish(id);
     const current = getResidentRun(id)!.run;
+    // Run now pressed while busy: human turns and the turn in progress went first; now it runs.
+    if (current.runRequestedAt !== null) { this.cancelTimer(id); void this.wake(id, "run_now"); return; }
     if (current.nextWakeAt === null || this.timers.has(id)) return;
+    // Outside its active hours the resident sleeps: the wake stays due, and fires when the next
+    // window opens. Nothing durable changes, so turning the feature off sends it on time.
+    const now = this.now();
+    const fireAt = residentSleepingUntil(current.settings.schedule, current.nextWakeAt, now, this.activeHours()) ?? current.nextWakeAt;
     const timer = setTimeout(() => {
       this.timers.delete(id);
       void this.wake(id, "loop");
-    }, Math.max(0, Math.min(2_147_483_647, current.nextWakeAt - this.now())));
+    }, Math.max(0, Math.min(2_147_483_647, fireAt - now)));
     timer.unref();
     this.timers.set(id, timer);
   }
@@ -175,17 +219,36 @@ export class ResidentLoop {
     this.enqueue(run.id);
     return receipt;
   }
-  async runNow(id: string): Promise<void> {
+  /**
+   * Wake now, or queue the wake behind whatever has priority. A human message, an open
+   * request and the turn in progress all go first; the queued run fires on the next idle
+   * observation, once, and a pause drops it.
+   */
+  async runNow(id: string): Promise<"started" | "queued"> {
     const run = liveRun(id);
     if (this.stopped) throw new ResidentLoopRefusal("The resident loop is restoring or shutting down.");
     const session = this.session(run);
     if (!session) throw new ResidentLoopRefusal("The resident session is unavailable.");
-    if (session.state !== "idle" || session.workCycle?.active || session.pendingTurns.length) {
-      throw new ResidentLoopRefusal("A human message or active turn has priority. Run again when the resident is idle.");
-    }
+    const busy = session.state !== "idle" || !!session.workCycle?.active || session.pendingTurns.length > 0 ||
+      reportBucket(session) === "needs-you" || this.sending.has(id) || run.loopState === "compacting";
     if (run.loopState === "paused") this.resume(id);
+    if (busy) {
+      requestResidentRun(id, this.now());
+      this.publish(id);
+      this.enqueue(id);
+      return "queued";
+    }
     this.cancelTimer(id);
     await this.wake(id, "run_now");
+    // The session can turn busy between the check above and the wake's own; the wake then
+    // keeps the request rather than dropping it, and this answer says so.
+    return getResidentRun(id)?.run.runRequestedAt != null ? "queued" : "started";
+  }
+  /** Drop a queued Run now. Refuses when nothing is queued, so a stale click is visible. */
+  cancelRunNow(id: string): void {
+    liveRun(id);
+    if (!clearResidentRunRequest(id)) throw new ResidentLoopRefusal("No queued run to cancel.");
+    this.publish(id);
   }
   private wake(id: string, trigger: "loop" | "run_now"): Promise<void> {
     if (this.stopped) return Promise.resolve();
@@ -203,19 +266,44 @@ export class ResidentLoop {
     const target = current && this.session(current);
     if (this.stopped || !current || current.endedAt !== null || current.loopState === "paused") return "Resident paused or ended.";
     if (!target || target.id !== session.id || target.agentSessionId !== session.agentSessionId) return "Resident conversation changed.";
-    if (target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return "A human message or active turn has priority.";
+    // A session the operator paused is busy in exactly this sense: the wake waits, and the
+    // `session_upsert` that lifts the pause is what lets observation send it.
+    if (target.pause || target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
     return null;
+  }
+  /**
+   * The blocker, if any. A Run now that meets a busy session is queued behind it instead of
+   * being dropped. Only busy blockers queue: observation sees the same busy session and waits,
+   * so the request cannot spin, and a paused, ended or replaced run keeps nothing.
+   */
+  private held(run: ResidentRun, session: Session, trigger: "loop" | "run_now"): string | null {
+    const blocked = this.blocker(run, session);
+    if (blocked === BUSY_BLOCKER && trigger === "run_now") {
+      requestResidentRun(run.id, this.now());
+      this.publish(run.id);
+    }
+    return blocked;
   }
   private async deliver(id: string, trigger: "loop" | "run_now"): Promise<void> {
     let run = liveRun(id);
     if (run.loopState === "paused" || claimedIteration(id)) return;
+    // A scheduled wake never goes out while the resident sleeps, compaction included: the
+    // observation that follows re-arms it for the next window. Run now is the operator's own.
+    if (trigger === "loop" && !residentAwakeAt(run.settings.schedule, this.now(), this.activeHours())) return;
     let session = this.session(run);
-    if (!session || this.blocker(run, session)) return;
+    if (!session || this.held(run, session, trigger)) return;
     // A restored overdue wake or Run now can precede the next passive poll.
     // Reuse that reader before checking context and spend, then re-read its registry result.
     this.deps.refreshSession(session);
     session = this.session(run);
-    if (!session || this.blocker(run, session)) return;
+    if (!session || this.held(run, session, trigger)) return;
+    // This delivery is the queued Run now. Spend it before anything that awaits, so a failed
+    // compaction's backoff is not overtaken by the same request on the next observation.
+    // A human turn that takes over during an await below gets priority, not the request: it
+    // is put back, so the run still follows that turn. Pausing paths drop it, as a pause does.
+    const queuedAt = getResidentRun(id)?.run.runRequestedAt ?? null;
+    const restore = () => { if (queuedAt !== null) { requestResidentRun(id, queuedAt); this.publish(id); } };
+    if (clearResidentRunRequest(id)) this.publish(id);
     const cap = residentGuardrail(run, this.now());
     if (cap) { this.pause(id, cap); return; }
     const contextPct = session.meta?.contextPct;
@@ -225,10 +313,28 @@ export class ResidentLoop {
     if (contextPct >= run.settings.loop.contextThreshold) {
       beginResidentCompaction(id);
       this.publish(id);
-      const compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
+      let compactedPct: number;
+      try {
+        compactedPct = await this.deps.sdk.compact(session.id, residentCompactionFocus(run.settings.loop.compactionFocus), () => this.blocker(run, session));
+      } catch (error) {
+        run = liveRun(id);
+        // A delivered human turn moved the loop to working; its completion schedules the next wake.
+        if (run.loopState !== "compacting") { if (run.loopState === "working") restore(); return; }
+        // `blocker` cannot classify a driver failure: the interrupted `/compact` is itself an
+        // active turn until it unwinds. Only a refusal before sending is a human preemption.
+        const preempted = !(error instanceof CompactionError) && this.blocker(run, session) !== null;
+        const current = this.session(run);
+        if (preempted || this.stopped || !current || current.id !== session.id || current.agentSessionId !== session.agentSessionId) {
+          this.pause(id, "Compaction interrupted by a human message or a conversation change.");
+          return;
+        }
+        this.compactionFailed(id, error);
+        return;
+      }
       run = liveRun(id);
       if (this.blocker(run, session)) {
         if (run.loopState === "compacting") this.pause(id, "Compaction interrupted by a human message or a conversation change.");
+        else if (run.loopState === "working") restore();
         return;
       }
       const current = this.session(run)!;
@@ -237,15 +343,20 @@ export class ResidentLoop {
       }
       completeResidentCompaction(id, current.workCycle?.generation ?? null);
     }
-    if (this.blocker(run, session)) return;
+    const blockedAfterCompaction = this.blocker(run, session);
+    if (blockedAfterCompaction) { if (blockedAfterCompaction === BUSY_BLOCKER) restore(); return; }
+    // The window can close while a compaction runs: recheck before the wake is claimed, so the
+    // loop prompt never goes out after it. The next observation re-arms for the next opening.
+    // Publish too: compaction published `compacting`, and nothing else would until the window opens.
+    if (trigger === "loop" && !residentAwakeAt(run.settings.schedule, this.now(), this.activeHours())) { restore(); this.publish(id); return; }
     // Compaction spends tokens too. Recheck the window after every awaited operation.
     const afterCompaction = residentGuardrail(liveRun(id), this.now());
     if (afterCompaction) { this.pause(id, afterCompaction); return; }
     let offset: number | null = null;
     try { const transcript = this.messages(session); offset = transcript?.read.size(transcript.path) ?? null; } catch { /* unknown evidence is explicit */ }
-    const claim = claimResidentWake(id, trigger, offset, this.now(), noteKeyFor(session));
+    const claim = claimResidentWake(id, trigger, offset, this.now(), noteKeyFor(session), this.restatement(run));
     if (!claim) return;
-    const text = `${residentWakeMarker(id, claim.seq)}\n${run.settings.loop.prompt}`;
+    const text = residentWakeTextFor(claim, run);
     let crossed = false;
     reserveInjection(session.id, text, "resident");
     try {
@@ -263,12 +374,42 @@ export class ResidentLoop {
     }
     this.publish(id);
   }
+  /** Retry a failed compaction on a backoff; pause once the retries are spent. */
+  private compactionFailed(id: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const retryable = !(error instanceof CompactionError) || error.retryable;
+    const failures = recordResidentCompactionFailure(id);
+    const delaySeconds = RESIDENT_COMPACTION_RETRY_DELAYS_S[failures - 1];
+    if (!retryable || delaySeconds === undefined) {
+      const attempts = failures > 1 ? ` Paused after ${failures} compaction attempts.` : "";
+      this.pause(id, `${message}${attempts} Resume to try again.`);
+      return;
+    }
+    const session = this.session(liveRun(id));
+    const idle = !!session && session.state === "idle" && !session.workCycle?.active;
+    const wait = delaySeconds < 60 ? `${delaySeconds}s` : `${Math.round(delaySeconds / 60)}m`;
+    retryResidentCompaction(id, {
+      delaySeconds, at: this.now(), idle, generation: session?.workCycle?.generation ?? null,
+      reason: `${message} Retrying in ${wait} (retry ${failures} of ${RESIDENT_COMPACTION_RETRY_DELAYS_S.length}).`,
+    });
+    this.publish(id);
+  }
+  /**
+   * The standing task to restate on this wake, when a compaction owes one. A restatement that
+   * cannot be composed is skipped rather than holding the wake: the role still rides on the
+   * harness's own channel, and the debt stays owed for the next wake to try again.
+   */
+  private restatement(run: ResidentRun): string | null {
+    if (!residentRestatementOwed(run.id)) return null;
+    try { return residentStandingRestatement(run, this.deps.registry.getTask(run.taskId)); }
+    catch (error) { console.error(`[residents] could not restate the standing task for run ${run.id}:`, error); return null; }
+  }
   private findMarker(session: Session, claim: ResidentIteration, run: ResidentRun): number | null {
     if (claim.transcript_offset === null) return null;
     try {
       const transcript = this.messages(session);
       if (!transcript) return null;
-      const expected = `${residentWakeMarker(claim.run_id, claim.seq)}\n${run.settings.loop.prompt}`;
+      const expected = residentWakeTextFor(claim, run);
       let offset = claim.transcript_offset;
       for (;;) {
         const page = transcript.read.after(transcript.path, offset, 50);

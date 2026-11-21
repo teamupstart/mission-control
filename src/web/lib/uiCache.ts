@@ -3,8 +3,10 @@ import {
   LAYOUT_MODES,
   LINE_DENSITIES,
   RESIDENT_PLACEMENTS,
+  BLOCKED_PLACEMENTS,
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
+  BACKGROUND_AGENTS_STYLES,
   TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
@@ -14,7 +16,9 @@ import type {
   LayoutMode,
   LineDensity,
   ResidentPlacement,
+  BlockedPlacement,
   TaskKindCardStyle,
+  BackgroundAgentsStyle,
   TaskKindHeaderStyle,
   UiConfig,
 } from "@shared/protocol.ts";
@@ -138,11 +142,25 @@ function parseTaskKindCard(raw: string | undefined): TaskKindCardStyle {
     : UI_CONFIG_DEFAULTS.taskKindCard;
 }
 
+/** An unknown or missing treatment is Nested sub-cards, exactly as `UiConfigSchema` reads it. */
+function parseBackgroundAgentsStyle(raw: string | undefined): BackgroundAgentsStyle {
+  return (BACKGROUND_AGENTS_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as BackgroundAgentsStyle)
+    : UI_CONFIG_DEFAULTS.backgroundAgentsStyle;
+}
+
 /** An unknown or missing placement is the drawer, exactly as `UiConfigSchema` reads it. */
 function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
   return (RESIDENT_PLACEMENTS as readonly string[]).includes(raw ?? "")
     ? (raw as ResidentPlacement)
     : UI_CONFIG_DEFAULTS.residentPlacement;
+}
+
+/** An unknown or missing blocked placement is In Needs you, exactly as `UiConfigSchema` reads it. */
+function parseBlockedPlacement(raw: string | undefined): BlockedPlacement {
+  return (BLOCKED_PLACEMENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as BlockedPlacement)
+    : UI_CONFIG_DEFAULTS.blockedPlacement;
 }
 
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
@@ -151,6 +169,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     residentPlacement: parseResidentPlacement(raw?.residentPlacement),
     // Only a stored `true` pins: anything else is the floating default.
     residentDrawerPinned: raw?.residentDrawerPinned === true,
+    blockedPlacement: parseBlockedPlacement(raw?.blockedPlacement),
+    // Only a stored `true` folds: anything else is the open default.
+    blockedFrameCollapsed: raw?.blockedFrameCollapsed === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
     // A cache written by the build that stored Disabled as `lineDensity: "hidden"` (#1399)
@@ -159,6 +180,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
+    backgroundAgentsStyle: parseBackgroundAgentsStyle(raw?.backgroundAgentsStyle),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,
@@ -170,6 +192,12 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     guidedTour: raw?.guidedTour ?? UI_CONFIG_DEFAULTS.guidedTour,
     showToursOnStartup: typeof raw?.showToursOnStartup === "boolean"
       ? raw.showToursOnStartup : UI_CONFIG_DEFAULTS.showToursOnStartup,
+    // A fresh array, like `trustStaged` below. A miss reads as every announced tour already
+    // seen: only the daemon's record can say a profile predates one, and the startup picker
+    // waits for that record before it reads this field at all.
+    announcedTours: Array.isArray(raw?.announcedTours)
+      ? raw.announcedTours.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.announcedTours],
     // A fresh array either way: the default is a shared frozen literal, and the cache must
     // hand back something the Trust panel can build its next patch from without mutating it.
     trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],
@@ -197,11 +225,15 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // `??` for the same reason: a stored value is the operator's choice of which state groups
     // the Board drill-in sidebar lists, and `||` would read a stored `false` as absent.
     boardSidebarAllSessions: raw?.boardSidebarAllSessions ?? UI_CONFIG_DEFAULTS.boardSidebarAllSessions,
+    conversationRailCollapsed: raw?.conversationRailCollapsed === true,
     // A fresh array, like `trustStaged`: the column-width store builds its next patch from
     // what it reads here.
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)
       ? raw.collapsedBoardColumns.filter((id): id is string => typeof id === "string")
       : [],
+    // Only a stored `true` folds, as `residentDrawerPinned` reads: anything else is the open
+    // rail every earlier build drew.
+    sessionRailFolded: raw?.sessionRailFolded === true,
     // Fresh arrays, for the reason above: the Top bar panel builds its next patch from what
     // it reads here, and a miss means the shipped bar - nothing hidden, nothing minimized.
     hiddenTopbarItems: Array.isArray(raw?.hiddenTopbarItems)
@@ -210,6 +242,13 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     compactTopbarItems: Array.isArray(raw?.compactTopbarItems)
       ? raw.compactTopbarItems.filter((id): id is string => typeof id === "string")
       : [],
+    // Non-empty defaults, so a miss restores them while a stored [] (every control off) stays.
+    pauseCardControls: Array.isArray(raw?.pauseCardControls)
+      ? raw.pauseCardControls.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.pauseCardControls],
+    pauseConsoleControls: Array.isArray(raw?.pauseConsoleControls)
+      ? raw.pauseConsoleControls.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.pauseConsoleControls],
   };
 }
 

@@ -131,6 +131,19 @@ export interface FakePullRequest {
   createdAt: string;
   mergedAt: string | null;
   headRefOid: string;
+  /**
+   * The head commit's checks, in the shape `gh pr list --json statusCheckRollup` prints: one
+   * entry per check RUN, so a check that ran twice on one commit appears twice. Omitted means
+   * none reported.
+   */
+  statusCheckRollup?: unknown[];
+  /**
+   * The same runs as GraphQL's `statusCheckRollup.contexts` nodes, which carry each run's app
+   * and triggering event. The branch poller reads these before it lets a later run clear a
+   * failure. Omitted means that read finds no pull request, and the failure stands.
+   */
+  checkContexts?: unknown[];
+  branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
@@ -530,31 +543,45 @@ setInterval(() => {
 server.listen(socketPath);
 `;
 
-const FAKE_WEZTERM = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
-const { createConnection } = require("node:net");
-const { join } = require("node:path");
-const dir = process.env.MC_E2E_RECORD_DIR;
-if (dir) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
-}
-const args = process.argv.slice(2);
-if (args.includes("cli")) {
-  const socket = process.env.WEZTERM_UNIX_SOCKET || process.env.MC_E2E_WEZTERM_SOCKET;
-  if (!socket) process.exit(1);
-  const client = createConnection(socket);
-  client.once("error", () => { process.exitCode = 1; });
-  client.once("connect", () => {
-    if (process.env.WEZTERM_LOG === "wezterm_client::client=trace") {
-      process.stderr.write("TRACE wezterm_client::client > connect to Socket(" + JSON.stringify(socket) + ")\\n");
-    }
-    if (args.includes("list")) process.stdout.write("[]\\n");
-    if (args.includes("spawn")) process.stdout.write("0\\n");
-    client.end();
-  });
-}
-`;
+/**
+ * The stand-in `wezterm` CLI. It records each argv, and for `cli` it identifies the fixture's
+ * socket the way the real client does - the trace line Mission Control reads to find and pin
+ * it - then answers `list` with no panes and `spawn` with pane 0.
+ *
+ * Bash rather than Node, for speed. Every WezTerm operation first runs `wezterm cli list` to
+ * locate the socket, under a 2.5 s budget sized for a real CLI; a fake that was itself a cold
+ * Node start overran it under four browser workers, so a Herdr launch failed as "pane identity
+ * is stale" and a focus opened no window, at random. `[ -S ]` stands in for the connect: the
+ * fixture's listener lives as long as the daemon, so a socket of the right type is exactly what
+ * a connect would prove. Bash, not `/bin/sh`, for the string substitution the escaping needs -
+ * Linux CI's `/bin/sh` is dash.
+ */
+const FAKE_WEZTERM = [
+  "#!/usr/bin/env bash",
+  "# One JSON string, escaped without a subprocess: an argv here carries paths and titles.",
+  // Quoted pattern and replacement are literal in every bash this runs under (3.2 on macOS,
+  // 5.x on Linux CI); an unquoted backslash in a replacement is not.
+  "bs='\\'; q='\"'",
+  "json() { local s=${1//\"$bs\"/\"$bs$bs\"}; s=${s//\"$q\"/\"$bs$q\"}; out=\"$q$s$q\"; }",
+  "has() { local want=$1; shift; for a in \"$@\"; do [ \"$a\" = \"$want\" ] && return 0; done; return 1; }",
+  "if [ -n \"$MC_E2E_RECORD_DIR\" ]; then",
+  "  mkdir -p \"$MC_E2E_RECORD_DIR\"",
+  "  record='{\"argv\":['; sep=",
+  "  for arg in \"$@\"; do json \"$arg\"; record+=\"$sep$out\"; sep=,; done",
+  "  printf '%s]}\\n' \"$record\" > \"$MC_E2E_RECORD_DIR/wezterm-$$-$RANDOM.json\"",
+  "fi",
+  "has cli \"$@\" || exit 0",
+  "socket=${WEZTERM_UNIX_SOCKET:-$MC_E2E_WEZTERM_SOCKET}",
+  "[ -n \"$socket\" ] && [ -S \"$socket\" ] || exit 1",
+  "if [ \"$WEZTERM_LOG\" = \"wezterm_client::client=trace\" ]; then",
+  "  json \"$socket\"",
+  "  printf 'TRACE wezterm_client::client > connect to Socket(%s)\\n' \"$out\" >&2",
+  "fi",
+  "has list \"$@\" && printf '[]\\n'",
+  "has spawn \"$@\" && printf '0\\n'",
+  "exit 0",
+  "",
+].join("\n");
 
 /**
  * The stand-in `gh`, so a spec can watch what the daemon asks GitHub to do - and so that it
@@ -589,16 +616,16 @@ if (args.includes("cli")) {
  * missing `gh` rather than as a broken fixture.
  */
 const FAKE_GH = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { mkdirSync, writeFileSync, renameSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, \`gh-\${Date.now()}-\${process.pid}.json\`),
-    JSON.stringify({ argv, cwd: process.cwd() }, null, 2),
-  );
+  const stamp = \`\${Date.now()}-\${process.pid}\`;
+  const pending = join(dir, \`.pending-gh-\${stamp}\`);
+  writeFileSync(pending, JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+  renameSync(pending, join(dir, \`gh-\${stamp}.json\`));
 }
 const command = argv.join(" ");
 /** Whatever the spec last scripted, re-read per call. Absent or unreadable means none. */
@@ -711,7 +738,7 @@ if (argv[0] === "--version") {
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
-    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -727,8 +754,32 @@ if (argv[0] === "--version") {
   process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
-    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
+  } : null } } }));
+ } else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeStateStatus"))) {
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr?.branchUpdate ? {
+    state: pr.state, isDraft: pr.branchUpdate.isDraft ?? false, headRefOid: pr.headRefOid,
+    baseRefOid: pr.branchUpdate.baseRefOid, baseRefName: "main", mergeable: "MERGEABLE",
+    mergeStateStatus: pr.branchUpdate.mergeStateStatus, reviewDecision: pr.branchUpdate.reviewDecision ?? null,
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts ?? [] } } } }] },
+  } : null } } }));
+} else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").endsWith("/update-branch")) {
+  const number = argv[3].split("/").at(-2);
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === number);
+  if (pr?.branchUpdate?.refusal) { process.stderr.write(pr.branchUpdate.refusal); process.exitCode = 1; }
+  else process.stdout.write(JSON.stringify({ message: "Updating pull request branch." }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("statusCheckRollup"))) {
+  // The branch poller confirming a re-run before it clears a failure: the head commit's checks
+  // with their app and event. Answered for the checkout it was run in, like \`pr list\`.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr && pr.checkContexts ? {
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } } } }] },
   } : null } } }));
 } else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {
   let statuses = {};

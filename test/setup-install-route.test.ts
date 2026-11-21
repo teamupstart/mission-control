@@ -12,7 +12,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { SETUP_DEPENDENCY_INFO } = await import("../src/shared/setup-catalog.ts");
+const { HOOK_INSTALL_REMEDY, SETUP_DEPENDENCY_INFO } = await import("../src/shared/setup-catalog.ts");
 const { setupInstallerShell } = await import("../src/server/setup/install.ts");
 type SetupDependencyId = import("../src/shared/setup-catalog.ts").SetupDependencyId;
 type SetupRemedy = import("../src/shared/setup-catalog.ts").SetupRemedy;
@@ -105,6 +105,9 @@ function appFor({
         title: "Install ai-conductor",
         terminalEnv: { PATH: `${checkout}/bin` },
       }),
+      // The provider remedies here are ai-conductor's, which the shipped build hides; this file
+      // tests the remedy itself. `conductor-integration-switch.test.ts` pins the refusal.
+      conductorIntegration: () => true,
       ...install,
     },
   });
@@ -191,6 +194,19 @@ test("the route refuses inert remedies before launch", async () => {
   const serviceResponse = await post(service, { id: "herdr", backend: "cmux" });
   assert.equal(serviceResponse.status, 409);
   assert.match(await serviceResponse.text(), /starts a background service and opens no terminal/);
+
+  // Mission Control's own integrations are installed in-process by the desktop app. A request
+  // naming one here has nothing to run, and never reaches its copy-only fallback argv either.
+  const integrations = appFor({
+    calls,
+    install: { catalog: catalogWith("codex-cli", HOOK_INSTALL_REMEDY) },
+  });
+  const integrationsResponse = await post(integrations, { id: "codex-cli", backend: "cmux" });
+  assert.equal(integrationsResponse.status, 409);
+  const integrationsBody = await integrationsResponse.json() as { ok: boolean; outcome: string; detail: string };
+  assert.equal(integrationsBody.ok, false);
+  assert.equal(integrationsBody.outcome, "refused");
+  assert.equal(integrationsBody.detail, "This setup remedy is installed by the Mission Control desktop app and opens no terminal.");
   assert.deepEqual(calls, []);
 });
 
@@ -446,6 +462,51 @@ test("the acli sign-in opens the binary the daemon resolves, labelled as a sign-
     setupInstallerShell(["/opt/tools/acli", "jira", "auth", "login", "--web"], "sign-in"),
   ]);
   assert.match(calls[0]!.argv[2]!, /\[sign-in exited %s\]/);
+});
+
+test("the CodeRabbit sign-in opens the coderabbit the daemon resolves", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async (id) => id === "coderabbit" ? "/opt/homebrew/bin/coderabbit" : null },
+  }), { id: "coderabbit-auth", backend: "cmux" });
+  assert.equal(response.status, 200);
+  assert.match((await response.json() as { detail: string }).detail, /opened the sign-in/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.name, "Sign in: CodeRabbit CLI sign-in");
+  assert.deepEqual(calls[0]!.argv, [
+    "/bin/sh",
+    "-c",
+    // HOME pinned to the daemon's home: the terminal app's own HOME may differ, and the
+    // daemon reads CodeRabbit's stored credentials from its effective HOME.
+    setupInstallerShell(["/usr/bin/env", `HOME=${home}`, "/opt/homebrew/bin/coderabbit", "auth", "login"], "sign-in"),
+  ]);
+});
+
+test("the CodeRabbit sign-in is refused before any terminal opens when coderabbit cannot be found", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async () => null },
+  }), { id: "coderabbit-auth", backend: "cmux" });
+  assert.equal(response.status, 409);
+  const body = await response.json() as { ok: boolean; outcome: string; detail: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.outcome, "refused");
+  assert.match(body.detail, /coderabbit is not installed.*Install it first/);
+  assert.deepEqual(calls, []);
+});
+
+test("the Herdr and CodeRabbit installs are Homebrew commands inside the install grammar", async () => {
+  for (const [id, argv] of [
+    ["herdr", ["brew", "install", "herdr"]],
+    ["coderabbit-cli", ["brew", "install", "--cask", "coderabbit"]],
+  ] as const) {
+    const calls: LaunchCall[] = [];
+    const response = await post(appFor({ calls }), { id, backend: "cmux" });
+    assert.equal(response.status, 200, id);
+    assert.deepEqual(calls[0]!.argv, ["/bin/sh", "-c", setupInstallerShell(argv)], id);
+  }
 });
 
 test("the acli sign-in is refused before any terminal opens when acli cannot be found", async () => {

@@ -1,6 +1,8 @@
+import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileCommentReview,
   FileCommentThread,
@@ -14,6 +16,8 @@ import type {
   Task,
 } from "@shared/types.ts";
 import type { LineSummary } from "@shared/line.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
+import { EMPTY_PAUSE_STATE, type PauseState } from "@shared/pause.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -39,6 +43,7 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
+import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -174,6 +179,18 @@ export interface MissionState {
    * quiet fleet is six real sentences, not an absence.
    */
   lineSummary: LineSummary | null;
+  /** Whole flag config from SSE, defaulting off before the first snapshot. */
+  featureFlags: FeatureFlagsConfig;
+  /** Observe each confirmed config before React can batch successive stream updates. */
+  subscribeFeatureFlags: (listener: (config: FeatureFlagsConfig) => void) => () => void;
+  /**
+   * Task shaping's config view from SSE. Null before the first snapshot and whenever the
+   * `task-shaping` flag is off: the daemon sends it only while the flag is on, and clears it
+   * with a `null` frame when the flag turns off.
+   */
+  shaping: ShapingConfigView | null;
+  /** Observe each confirmed shaping config, as `subscribeFeatureFlags` does for flags. */
+  subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -191,6 +208,16 @@ export interface MissionState {
    */
   keepAwakeStatus: KeepAwakeStatus | null;
   /**
+   * Pause all and the priority session. Starts empty and is replaced whole by the snapshot and
+   * every `pause_state` frame; an older daemon that sends none reads as nothing paused.
+   */
+  pauseState: PauseState;
+  /**
+   * Backups and storage problems, or null before the first snapshot and from an older daemon
+   * that sends none. Replaced whole by every `storage_health` frame.
+   */
+  storageHealth: StorageHealth | null;
+  /**
    * How many times the per-harness dispatch defaults have changed since this stream opened,
    * plus one per (re)connect. A COUNTER, not the config: `harnesses_config_changed` carries
    * no body, so surfaces that name those defaults - the Harnesses panel and the dispatch
@@ -203,6 +230,8 @@ export interface MissionState {
   harnessesRevision: number;
   /** Content-free invalidation counter for the bounded Settings > Worktrees query. */
   worktreesRevision: number;
+  /** Content-free invalidation counter for the backup config Settings > Storage edits. */
+  storageConfigRevision: number;
   /**
    * Content-free invalidation counter for the attention-inbox dismissals
    * (`GET /api/attention/dismissals`). Bumped on every (re)connect as well as on
@@ -275,10 +304,25 @@ export function useEventStream(): MissionState {
   );
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
+  const [featureFlags, setFeatureFlags] = useState<FeatureFlagsConfig>(FEATURE_FLAGS_DEFAULTS);
+  const featureFlagsListeners = useRef(new Set<(config: FeatureFlagsConfig) => void>());
+  const subscribeFeatureFlags = useCallback((listener: (config: FeatureFlagsConfig) => void) => {
+    featureFlagsListeners.current.add(listener);
+    return () => { featureFlagsListeners.current.delete(listener); };
+  }, []);
+  const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
+  const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
+    shapingListeners.current.add(listener);
+    return () => { shapingListeners.current.delete(listener); };
+  }, []);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
+  const [pauseState, setPauseState] = useState<PauseState>(EMPTY_PAUSE_STATE);
+  const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
+  const [storageConfigRevision, setStorageConfigRevision] = useState(0);
   const [attentionDismissalsRevision, setAttentionDismissalsRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
   const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
@@ -300,6 +344,7 @@ export function useEventStream(): MissionState {
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
       setWorktreesRevision((n) => n + 1);
+      setStorageConfigRevision((n) => n + 1);
       setAttentionDismissalsRevision((n) => n + 1);
       // Same rule for the archive library, which rides no snapshot at all: bundles can be
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
@@ -347,6 +392,7 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
@@ -404,6 +450,11 @@ export function useEventStream(): MissionState {
           // And the strip, for the same reason it is in the snapshot at all: it is permanent
           // chrome, so waiting for the next change would open the fleet on six blank stages.
           setLineSummary(msg.lineSummary);
+          setFeatureFlags(msg.featureFlags ?? FEATURE_FLAGS_DEFAULTS);
+          for (const listener of featureFlagsListeners.current) listener(msg.featureFlags ?? FEATURE_FLAGS_DEFAULTS);
+          // Absent while the flag is off, which is the same answer as a cleared frame.
+          setShaping(msg.shaping ?? null);
+          for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -412,6 +463,10 @@ export function useEventStream(): MissionState {
           // development this build can connect to an older daemon whose snapshot has no
           // such field, and `undefined` must read as unknown - never as on.
           setKeepAwakeStatus(msg.keepAwake ?? null);
+          // Version-skew guard again: an older daemon's snapshot carries no pause state.
+          setPauseState(msg.pause ?? EMPTY_PAUSE_STATE);
+          // The `?? null` is the version-skew guard: an older daemon's snapshot has no field.
+          setStorageHealth(msg.storageHealth ?? null);
           // A fresh window loaded current settings before this first snapshot, so the marker
           // is only its baseline. On reconnect, a changed marker means the one-shot event
           // landed during the gap. Reuse the same ownership check as the live event so an
@@ -643,6 +698,14 @@ export function useEventStream(): MissionState {
         case "line_summary":
           setLineSummary(msg.line);
           break;
+        case "feature_flags":
+          setFeatureFlags(msg.config);
+          for (const listener of featureFlagsListeners.current) listener(msg.config);
+          break;
+        case "shaping_config":
+          setShaping(msg.config);
+          for (const listener of shapingListeners.current) listener(msg.config);
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -652,6 +715,15 @@ export function useEventStream(): MissionState {
         case "keep_awake_status":
           setKeepAwakeStatus(msg.status);
           break;
+        // Replaced whole: two singletons the daemon owns, so every window converges on them.
+        case "pause_state":
+          setPauseState(msg.state);
+          break;
+        // Replaced whole: the aggregate is one recompute, and a patch could draw a problem
+        // list from one pass beside backup status from another.
+        case "storage_health":
+          setStorageHealth(msg.health);
+          break;
         // Counted, not stored: the event carries no config (see its declaration), so the
         // number is the whole signal - it tells the harness pickers to re-read the route.
         case "harnesses_config_changed":
@@ -659,6 +731,16 @@ export function useEventStream(): MissionState {
           break;
         case "worktrees_changed":
           setWorktreesRevision((n) => n + 1);
+          break;
+        case "storage_config_changed":
+          setStorageConfigRevision((n) => n + 1);
+          break;
+        // Not counted: nothing re-reads on it. A repository list answering for any other index
+        // is dropped (an open picker re-asks), and the next Dispatch open asks again. The
+        // snapshot carries the same identity, so a window that was disconnected for this frame
+        // still catches up on reconnect - without dropping a list that is still right.
+        case "repo_index_changed":
+          noteRepoIndexIdentity(msg.identity);
           break;
         // Counted: the frame carries no rows, and the hook holding them re-reads the route.
         case "attention_dismissals_changed":
@@ -671,6 +753,8 @@ export function useEventStream(): MissionState {
           setArchivesRevision((n) => n + 1);
           break;
         case "settings_restored":
+          // A restore can replace the indexed directories along with everything else.
+          forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;
           if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
           break;
@@ -780,10 +864,17 @@ export function useEventStream(): MissionState {
     fileCommentReviews: fileCommentReviewsList,
     fleetCost,
     lineSummary,
+    featureFlags,
+    subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     archivesRevision,
     settingsRestoreNotice,

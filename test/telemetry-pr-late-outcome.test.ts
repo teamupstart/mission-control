@@ -718,6 +718,8 @@ function stubRegistry(operational: string[]) {
     reconcileRepoPrs: () => {},
     reconcileClosedDependencyPrs: () => {},
     reconcilePrMerges: (m: Map<string, number>) => merges.push(new Map(m)),
+    // No stacked pull requests here: every merge passes the stacked-merge gate unread.
+    isStackedTaskPr: () => false,
   };
 }
 

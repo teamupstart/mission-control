@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
 import type { Locator, Page } from "@playwright/test";
@@ -405,4 +406,26 @@ test("session PR links turn red when closed and recover when reopened or merged"
   });
   await expect(flag).toHaveCSS("color", danger);
   await shoot(dashboard, "closed-pr-board");
+});
+
+
+test("attached repositories open their own check results and job links", async ({ dashboard, daemon }) => {
+  await dispatchAcross(dashboard, daemon);
+  const session = await settledSession(daemon);
+  const task = await provisionedTask(daemon);
+  createTaskBranches(task);
+  await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
+  const jobUrl = "https://github.com/example/second-repo/actions/runs/1/job/2";
+  writeGhPullRequests(daemon.home, [{
+    cwd: task.extraRepos[0]!.worktreePath!, url: PR_SECOND, number: 20, state: "OPEN",
+    createdAt: new Date().toISOString(), mergedAt: null, headRefOid: "0".repeat(40),
+    statusCheckRollup: [{ name: "Attached build", status: "COMPLETED", conclusion: "CANCELLED", detailsUrl: jobUrl }],
+  }]);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await dashboard.locator(".task-repo-prs").getByRole("button", { name: /1 cancelled check/ }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Pull request checks" });
+  await expect(dialog.getByRole("link", { name: "Attached build: CANCELLED" })).toHaveAttribute("href", jobUrl);
+  await expect(dialog.getByRole("link", { name: "Open pull request on GitHub" })).toHaveAttribute("href", PR_SECOND);
+  await expectContentClearsBorder(dialog);
+  await shoot(dashboard, "attached-check-results", dialog);
 });

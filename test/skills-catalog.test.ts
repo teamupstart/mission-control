@@ -262,6 +262,37 @@ test("the shipped html-plans skill is a real, loadable Claude skill", () => {
   assert.match(text, /Invoke the `phased-plan` skill/);
 });
 
+// These are instruction-contract guards, not an evaluation of a model's compliance.
+// Both discovery and the loaded procedure must defer before requiring managed tools.
+test("html-plans discovery respects the selected planning workflow", () => {
+  const description = skillDescription("html-plans");
+  assert.match(description, /explicitly invoked/);
+  assert.match(description, /active workflow requires Mission Control-managed planning/);
+  assert.match(description, /Do not apply to explicitly selected repository-native planning workflows/);
+  assert.doesNotMatch(description, /every written plan|whenever you .*plan/i);
+});
+
+test("html-plans preserves native artifacts and approvals before requiring tools", () => {
+  const text = readFileSync(new URL("../skills/html-plans/SKILL.md", import.meta.url), "utf8");
+  const applicability = text.slice(text.indexOf("## When this applies"), text.indexOf("1. Call `get_plan_context`"));
+  assert.match(applicability, /Git-tracked artifacts/);
+  assert.match(applicability, /approval and publication contracts/);
+  assert.match(applicability, /Do not call Mission Control tools/);
+  assert.match(applicability, /Missing Mission Control tools do not block that workflow/);
+  assert.match(applicability, /Installing or enabling this skill.*does not select/s);
+  assert.doesNotMatch(text, /Whenever you write a plan/);
+});
+
+test("html-plans keeps the managed workflow fail-closed after opting in", () => {
+  const text = readFileSync(new URL("../skills/html-plans/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /Mission Control plan task/);
+  assert.match(text, /`phased-plan`/);
+  assert.match(text, /For this Mission Control workflow only,[\s\S]*?managed tools are unavailable[\s\S]*?do not fall back to writing plans into Git/);
+  for (const tool of ["get_plan_context", "save_plan", "request_plan_decisions", "get_plan_publication_context", "submit_workflow_evidence"]) {
+    assert.ok(text.includes(`\`${tool}\``), `the managed procedure still requires ${tool}`);
+  }
+});
+
 test("the shipped html-report skill names the path contract the Files tab actually honors", () => {
   const skill = readCatalog().skills.find((s) => s.id === "html-report");
   assert.ok(skill, "html-report should be in the catalog");

@@ -775,6 +775,16 @@ function backlogConfig(cfg: ForemanConfig): BacklogConfig {
 async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): Promise<boolean> {
   if (!cfg.autoBacklog) return false;
 
+  // The operator's launch hold: Pause all with launches held, or a priority session. Asked
+  // first and on its own, so a paused fleet costs one GET a tick and no plan. A daemon that
+  // predates the route answers with an error, which holds nothing; the daemon's own refusal
+  // in `TaskManager` is the backstop either way.
+  const pause = await client.pauseState().catch(() => null);
+  if (pause && ((pause.fleet?.holdDispatch ?? false) || pause.priority !== null)) {
+    noteBacklog(pause.priority ? "holding launches while a priority session runs" : "holding launches while everything is paused");
+    return false;
+  }
+
   // Three reads, concurrently - all cheap loopback GETs against state the daemon already
   // holds in memory. A failed read decides nothing: the machine's inputs would be
   // partial, and a partial task list reads as spare capacity.
@@ -2068,6 +2078,18 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
   };
 }
 
+/** Compare the admitted registration, including identity and bytes, across a verifier call.
+ * Ignore capture timestamps: reserving the same proof does not change what was judged.
+ * Other episodes and coverage-only edits are not inputs to this completion verifier.
+ */
+function promptedEvidenceSnapshot(evidence: WorkflowSessionEvidenceList, episodeKey: string): string {
+  const items = [...evidence.images, ...evidence.artifacts]
+    .filter(item => item.episodeKey === episodeKey)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(({ updatedAt: _updatedAt, ...item }) => item);
+  return JSON.stringify(items);
+}
+
 /**
  * Admit only evidence registered under the intent episode being verified.
  *
@@ -2447,6 +2469,11 @@ export async function processPromptedWrapup(
     const freshEvidence = await client.workflowEvidence(current.session.id).catch(() => null);
     if (!freshEvidence || freshEvidence.registrationEligible !== registeredEvidence.registrationEligible) {
       log(`${session.name}: prompted wrap-up held - workflow evidence eligibility changed or is unavailable`);
+      return false;
+    }
+    if (evidenceRead.value && promptedEvidenceSnapshot(freshEvidence, candidate.episodeKey)
+      !== promptedEvidenceSnapshot(evidenceRead.value, candidate.episodeKey)) {
+      log(`${session.name}: prompted wrap-up held - workflow evidence changed during verification`);
       return false;
     }
   }

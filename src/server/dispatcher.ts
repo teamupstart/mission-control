@@ -40,8 +40,9 @@ import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   taskHasRepository,
   dispatchHasNoProvisionedResources,
+  taskGrillsFirst,
   TASK_KIND_BEHAVIOR,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   taskKindForcedRuntime,
   taskKindPersonaRefusal,
 } from "@shared/task.ts";
@@ -52,6 +53,7 @@ import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
+import { taskRepoManifest } from "./repo-manifest.ts";
 import {
   personaLaunchRefusal,
   pipelineHostStanding,
@@ -93,6 +95,7 @@ import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   missionMcpDescriptorForPipelineTask,
+  withDecisionAskTool,
   newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
@@ -100,6 +103,7 @@ import {
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
 import { planSkillsForAgent } from "./plans/skills.ts";
+import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
@@ -131,6 +135,9 @@ import type {
   PipelineEngineerRunSnapshot,
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
+import { claimWarningsBlock, type WorktreeClaimWarning } from "./worktrees/claim.ts";
+import { taskOwner } from "./worktrees/owners.ts";
+import { taskClaimWarning, taskProvisioningView } from "./task-claims.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
@@ -393,6 +400,16 @@ export class Dispatcher {
     } = {},
   ) {
     this.worktrees = deps.worktrees ?? new WorktreeManager();
+    // A dispatch waiting on a dependency claim says so on its task: "Installing dependencies",
+    // with the step and how long it has run. Derived from the claim registry on every publish,
+    // and re-sent as the claim starts a step or ends, so it rides the ordinary `task_upsert`.
+    const worktrees = this.worktrees;
+    registry.setTaskProvisioningSource((task) => taskProvisioningView(task, worktrees.runningTaskClaim(task.id)));
+    worktrees.onClaimChange((claim) => {
+      if (claim.owner.kind !== "task") return;
+      const owner = taskOwner(claim.owner.key);
+      if (owner) registry.refreshTaskProvisioning(owner.taskId);
+    });
     this.legacy = deps.legacy ?? new LegacyTreehouseService();
     this.teardown = teardown ?? ((task, legacy, priority) =>
       teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
@@ -421,6 +438,8 @@ export class Dispatcher {
       // A new attempt: whatever the last one failed of is no longer this task's state, and a
       // failure of this one writes its own record below.
       launchFailure: null,
+      // A prior attempt's failed claims describe trees this attempt does not have.
+      ...(task.claimWarnings?.length ? { claimWarnings: [] } : {}),
       dispatchedAt: task.dispatchedAt ?? Date.now(),
       // A retry must prove its new provider run instead of inheriting the prior attempt's
       // slug and completing against a projection it did not launch.
@@ -452,7 +471,10 @@ export class Dispatcher {
         return;
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
-      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      const missionMcp = withDecisionAskTool(
+        kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence),
+        capabilitiesFor(task.agent).missionTools?.mechanism,
+      );
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.
@@ -522,6 +544,12 @@ export class Dispatcher {
         ? (this.deps.planSkills ?? planSkillsForAgent)(task.agent)
         : null;
       if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
+      // Grill me first's skill, resolved in the same place and for the same reason: a launch
+      // that cannot invoke it cannot run the interview its contract opens with.
+      const grillFirst = taskGrillsFirst(task)
+        ? grillFirstForAgent(task.agent, grillAction((id) => this.registry.getSessionAction(id)))
+        : null;
+      if (grillFirst && !grillFirst.ok) throw new Error(grillFirst.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
       // path. A task that attaches repositories and cannot be given write access to them
       // must not start at all: the worktrees would be provisioned and the intent manifest
@@ -568,13 +596,14 @@ export class Dispatcher {
       // its harness capability does not pay for a network round trip first.
       let wt: DispatchWorkspace = { path: task.repoRoot, branch: null, provider: null, leaseId: null, baseSha: null };
       let extras: Task["extraRepos"] = [];
+      let claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }> = [];
       if (taskHasRepository(task)) {
         backlogRecoveryEligible = true;
         const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
           { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
           baseSha,
         );
-        ({ primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases));
+        ({ primary: wt, extras, claimWarnings } = await this.provisionAll(task, taskId, slug, shortId, bases));
         backlogRecoveryEligible = false;
         // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
         // The collection lands in the SAME patch so every durable native owner becomes visible
@@ -587,6 +616,11 @@ export class Dispatcher {
             worktreeLeaseId: wt.leaseId,
             baseSha: wt.baseSha,
             extraRepos: extras,
+            // The trees were handed over even though a claim failed in them; the task card says
+            // which, beside the note the agent's launch prompt carries.
+            ...(claimWarnings.length > 0
+              ? { claimWarnings: claimWarnings.map(({ repoRoot, warning }) => taskClaimWarning(repoRoot, warning)) }
+              : {}),
           });
         } catch (recordError) {
           const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
@@ -678,12 +712,17 @@ export class Dispatcher {
       // something the operator only said once. `standingInstructionsChannel` is the single
       // reading of which case this is, via the mechanism the composer already recorded.
       const standingPrefix = standing.mechanism === "prompt-prefix" ? standing.text : "";
+      // A failed dependency claim leads, ahead of the manifest: it is context about the trees
+      // themselves, and empty unless a claim actually failed, so every other launch is unchanged.
+      const claimNote = claimWarningsBlock(claimWarnings);
       const planDiscovery = await taskPlanDiscovery(provisioned);
       const inputProblemAtDelivery = taskPlanInputProblem(provisioned);
       if (inputProblemAtDelivery) throw new Error(inputProblemAtDelivery);
       const composeTurnOne = (standingBlock: string) =>
+        claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
           planDiscovery,
           // A stacked launch was just pinned to its prerequisite's open pull request, so the
@@ -798,13 +837,13 @@ export class Dispatcher {
       // control stays only for a human swapping an existing session's mode from the card.
       const modeArgs = dispatchPermissionModeArgs(task.agent);
       // The ask channel rides along on every dispatch: it takes Claude's built-in
-      // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
+      // `AskUserQuestion` away and hands the agent our `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
       // started and we merely discovered. It returns nothing rather than half its flags on
-      // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
-      // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
+      // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
+      // launch is then refused below with that reason; see `askChannelContribution`.
       const codexLaunch = task.agent === "codex"
         ? await prepareCodexLaunch(
             getHarnessesConfig().autoModeOnDispatch,
@@ -835,15 +874,19 @@ export class Dispatcher {
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
+      // Every decision a task asks goes through `request_input`. A launch that needs the ask
+      // channel and cannot have it is refused, with the reason, rather than started with the
+      // built-in menu (a decision asked outside it) or with no way to ask at all.
+      if (askChannel.unavailable) throw new Error(askChannel.unavailable);
       // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
       // single-valued and repeating it is last-wins with no warning, so a second flag beside
       // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
       //
       // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
       // with `AskUserQuestion` removed and no replacement is worse than one with the
-      // built-in intact. The standing instruction does NOT acquire that tie - a missing MCP
-      // bundle has nothing to do with the operator's own words - so it still ships when
-      // `askChannelContribution` returns nothing at all.
+      // built-in intact, and a launch that needs the channel and cannot have it was refused
+      // just above. The standing instruction does NOT acquire that tie, so it still ships for
+      // an agent the ask channel does not apply to.
       const askArgs = [
         ...askChannel.args,
         ...systemPromptAppendArgs([
@@ -883,8 +926,8 @@ export class Dispatcher {
       if (missionMcp && !missionMcpRegistered) {
         throw new Error(
           `the launch could not carry the required Mission MCP tools ` +
-            `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-            `session could not submit its result`,
+            `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+            `session could not use them`,
         );
       }
       // …and that the registration points at a server which actually PUBLISHES them.
@@ -977,8 +1020,12 @@ export class Dispatcher {
       // session holds right now (almost always the synthetic id - hooks have not fired
       // yet) and the registry's rotation move carries it to the agent-session key when
       // the binding arrives. The embedded branch above needs no row: an SDK session is
-      // invited by its runtime.
-      this.registry.setForemanInvite(discovered.id, "dispatch");
+      // invited by its runtime. A kind that launches uninvited
+      // (`TASK_KIND_BEHAVIOR[kind].foremanInvite`) writes no row, so its session resolves
+      // to null like a discovered one until the operator invites Foreman.
+      if (TASK_KIND_BEHAVIOR[task.kind].foremanInvite) {
+        this.registry.setForemanInvite(discovered.id, "dispatch");
+      }
       if (await this.abortIfSettled(taskId)) return;
 
       // Discovery only proves the process exists. Hooked agents prove they can READ before
@@ -1098,6 +1145,17 @@ export class Dispatcher {
       // Read off `cur` before any branch below tears its resources down, so the record names
       // the phase this attempt actually reached.
       const launchFailure = this.launchFailureFor(cur);
+      // This catch also returns resource-free failures to Backlog. Record them before that
+      // early return: the task card alone cannot correlate a failed attempt with daemon load.
+      console.error(`[dispatch] ${JSON.stringify({
+        event: "dispatch_failed",
+        timestamp: new Date(launchFailure.at).toISOString(),
+        taskId,
+        phase: launchFailure.phase,
+        repoRoot: err instanceof DispatchBaseError ? err.repoRoot : cur.repoRoot,
+        error: message,
+        ...(err instanceof DispatchBaseError ? { git: err.git } : {}),
+      })}`);
       // The same resource proof startup reconciliation uses, restricted to the base-freeze
       // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no
       // hidden agent or checkout, so put backlog-capable work back where the operator is
@@ -1105,7 +1163,7 @@ export class Dispatcher {
       // launch refusals before this phase remain failed so an unchanged retry is not
       // presented as ordinary work; failures after it retain the conservative cleanup path.
       if (backlogRecoveryEligible && dispatchHasNoProvisionedResources(cur)) {
-        const returnsToBacklog = taskKindAllowsBacklog(cur.kind);
+        const returnsToBacklog = taskAllowsBacklog(cur);
         this.patch(taskId, {
           status: returnsToBacklog ? "backlog" : "failed",
           error: message,
@@ -1907,21 +1965,26 @@ export class Dispatcher {
     const mcp = harnessMcp
       ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
       : null;
+    // Installed-extension harnesses already passed missionToolsAvailability before
+    // provisioning. Pi's inspectMissionMcpTools handshake requires every MISSION_MCP_TOOLS
+    // entry, including plan/scout tools, so this covers every kind without an MCP descriptor.
+    const extensionProvidesMissionTools =
+      capabilitiesFor(task.agent).missionTools?.mechanism === "installed-extension";
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.
-    if (missionMcp && !mcp) {
+    if (missionMcp && !extensionProvidesMissionTools && !mcp) {
       throw new Error(
         `the launch could not carry the required Mission MCP tools ` +
-          `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-          `session could not submit its result`,
+          `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+          `session could not use them`,
       );
     }
     // The terminal arm's content check, applied to the same bundle for the same reason: an
     // embedded session reaches our MCP server through the descriptor rather than an argv, but
     // a descriptor pointing at a stale bundle publishes exactly as little. See the sibling
     // guard in `dispatch` for what drifts and why the existence check cannot see it.
-    if (missionMcp) {
+    if (missionMcp && !extensionProvidesMissionTools) {
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
         missionMcp.tools,
         mcp,
@@ -2183,6 +2246,11 @@ export class Dispatcher {
     return this.registry.getTask(taskId)?.status === "dispatching";
   }
 
+  /** The condition under which task cancel stops this task's claims, asked as one registers. */
+  private taskCancelled(taskId: string): boolean {
+    return this.registry.getTask(taskId)?.status === "cancelled";
+  }
+
   /**
    * Checkpoint between dispatch steps: if a cancel/complete settled the task in
    * flight, tear down whatever this dispatch already created (it may have run
@@ -2223,7 +2291,12 @@ export class Dispatcher {
     slug: string,
     shortId: string,
     bases: TaskDispatchBases,
-  ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
+  ): Promise<{
+    primary: ProvisionedWorktree;
+    extras: TaskRepoEntry[];
+    /** Every tree whose dependency claim failed, primary first, for the launch prompt. */
+    claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }>;
+  }> {
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
@@ -2232,6 +2305,7 @@ export class Dispatcher {
       bases.primary,
       0,
       this.worktrees,
+      () => this.taskCancelled(taskId),
     );
     const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
       { repoRoot: task.repoRoot, position: 0, wt: primary },
@@ -2239,6 +2313,13 @@ export class Dispatcher {
     const extras: TaskRepoEntry[] = [];
     try {
       for (const [index, entry] of task.extraRepos.entries()) {
+        // A cancel that landed while an earlier tree was claiming stopped that claim; the
+        // next repository's claim must not start in its place. The rest stay unprovisioned,
+        // and `abortIfSettled` tears down what was taken, exactly as for any cancel it sees.
+        if (!this.stillDispatching(taskId)) {
+          extras.push(...task.extraRepos.slice(index));
+          break;
+        }
         // Slot is the entry's position in `task_repos`, offset by one for the primary at
         // slot 0. Its base was frozen alongside every other repository's before this loop
         // started - a pin means nothing in another repository, so a secondary took its own
@@ -2251,6 +2332,7 @@ export class Dispatcher {
           bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
+          () => this.taskCancelled(taskId),
         );
         taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
@@ -2284,7 +2366,10 @@ export class Dispatcher {
       }
       throw err;
     }
-    return { primary, extras };
+    const claimWarnings = taken.flatMap(({ repoRoot, wt }) =>
+      wt.claimWarning ? [{ repoRoot, path: wt.path, warning: wt.claimWarning }] : [],
+    );
+    return { primary, extras, claimWarnings };
   }
 
   private async teardownTaskResources(
@@ -2393,6 +2478,11 @@ export interface ProvisionedWorktree {
    * against to decide whether a repo changed at all.
    */
   baseSha: string | null;
+  /**
+   * The pool's dependency claim ran in this tree and failed. The tree is still handed over;
+   * the agent's launch prompt names the failing step and its output tail.
+   */
+  claimWarning?: WorktreeClaimWarning;
 }
 
 /**
@@ -2434,6 +2524,25 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
   );
 }
 
+interface DispatchGitResult {
+  command: string[];
+  elapsedMs: number;
+  timeoutMs: number | null;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  outcomeUnknown: boolean;
+  overflowed: boolean;
+}
+
+/** Carry process facts through the error boundary without changing the task's error text. */
+class DispatchBaseError extends Error {
+  constructor(message: string, readonly repoRoot: string, readonly git: DispatchGitResult | null) {
+    super(message);
+    this.name = "DispatchBaseError";
+  }
+}
+
 /**
  * Where an ordinary, unpinned task starts: a freshly fetched remote-default commit.
  *
@@ -2452,12 +2561,32 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
  * nobody can reconstruct afterwards. So only a `git remote` listing that SUCCEEDED and did
  * not name `origin` may take the local-HEAD path - a probe that timed out cannot.
  */
-export async function resolveDispatchBase(repoRoot: string): Promise<string> {
-  const origin = await originConfigured(repoRoot);
+export async function resolveDispatchBase(repoRoot: string, execute: typeof run = run): Promise<string> {
+  let lastCommand: DispatchGitResult | null = null;
+  const measured: typeof run = async (bin, args, opts) => {
+    const started = performance.now();
+    const result = await execute(bin, args, opts);
+    lastCommand = {
+      command: [bin, ...args],
+      elapsedMs: Math.round(performance.now() - started),
+      timeoutMs: result.timeoutMs ?? opts?.timeoutMs ?? null,
+      // `run` uses a synthetic code 1 for killed children and spawn refusals. It is not
+      // an exit status Git reported, so retain the signal/uncertainty instead.
+      exitCode: result.outcomeUnknown || result.signal || result.overflowed || result.childPid === null
+        ? null : result.code,
+      signal: result.signal ?? null,
+      timedOut: result.timedOut ?? false,
+      outcomeUnknown: result.outcomeUnknown,
+      overflowed: result.overflowed,
+    };
+    return result;
+  };
+  const origin = await originConfigured(repoRoot, measured);
   if (!origin.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   // A local-only repository is ordinary - a scratch checkout, a fixture, a repo whose
@@ -2472,11 +2601,12 @@ export async function resolveDispatchBase(repoRoot: string): Promise<string> {
     }
     return head;
   }
-  const fresh = await freshRemoteDefaultSha(repoRoot);
+  const fresh = await freshRemoteDefaultSha(repoRoot, measured);
   if (!fresh.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not freeze ${repoRoot}'s remote default branch: ${fresh.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   return fresh.value;
@@ -2590,6 +2720,7 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  abandoned?: () => boolean,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2612,6 +2743,8 @@ export async function provisionWorktree(
       baseSha: exactBase,
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
+      runClaim: true,
+      ...(abandoned ? { abandoned } : {}),
     });
     if (acquired.outcome === "acquired") {
       return {
@@ -2620,6 +2753,7 @@ export async function provisionWorktree(
         provider: "mission",
         leaseId: acquired.lease.leaseId,
         baseSha: acquired.lease.baseSha,
+        ...(acquired.claimWarning ? { claimWarning: acquired.claimWarning } : {}),
       };
     }
     if (acquired.outcome === "outcomeUnknown") {
@@ -3009,74 +3143,16 @@ async function teardownOneWorktree(
 // ---- pure helpers (unit-tested) ----
 
 /**
- * The repo manifest prepended to a multi-repo task's intent, or the intent unchanged.
- *
- * Everything here is something the agent cannot work out for itself from inside its cwd:
- *
- *  - **Where the other repos are.** Nothing in the primary worktree names them.
- *  - **Read each repo's own AGENTS.md/CLAUDE.md.** Only the primary's loads automatically -
- *    both harnesses resolve instruction files from the working directory, so a sibling
- *    checkout's conventions are invisible unless the agent goes and reads them.
- *  - **One pull request per repo you actually changed.** The default assumption is one
- *    branch, one pull request; without this an agent will commit across repos and open a
- *    single pull request in the one it happens to be standing in, leaving the rest of the
- *    work on unpushed local branches.
- *
- * Each repo's branch is stated PER REPO and read from what was actually provisioned. The
- * design's intent is one shared name across the set - that is what makes the resulting pull
- * requests legible as one task - and the Git fallback delivers it, while a native lease is
- * detached. Claiming a shared name a native repo does not have would send the agent to push
- * a branch that does not exist there, so the manifest reports the set it got and says plainly
- * when they differ.
- *
- * Repos with no worktree are omitted rather than listed as unavailable: this text is
- * delivered after provisioning, so an entry without one is a bug being reported to the
- * wrong audience.
+ * The repo manifest (`taskRepoManifest`) prepended to a multi-repo task's intent, or the
+ * intent unchanged.
  */
 export function intentWithRepoManifest(task: Task, standingBlock = ""): string {
-  const attached = task.extraRepos.filter((entry) => entry.worktreePath !== null);
-  if (attached.length === 0) return withStandingInstructions(standingBlock, task.intent);
-  const branchOf = (branch: string | null): string => (branch ? `, on branch ${branch}` : "");
-  // Whether the whole set really did land on one branch name. The Git fallback cuts
-  // `harness/<slug>-<shortId>` in every repo, while a native lease is detached. A mixed set
-  // can therefore carry branch names and nulls, and this is read from what was provisioned -
-  // a manifest that promised one shared branch would send the agent to push a branch that
-  // does not exist in the secondary.
-  const branches = [task.branch, ...attached.map((entry) => entry.branch)];
-  const shared = task.branch !== null && branches.every((b) => b === task.branch)
-    ? task.branch
-    : null;
-  const lines = [
-    "## Repositories for this task",
-    "",
-    "This task spans several repositories. You have write access to all of them.",
-    "",
-    `- ${task.worktreePath ?? task.repoRoot} - PRIMARY (your working directory), from ${task.repoRoot}${branchOf(task.branch)}`,
-    ...attached.map(
-      (entry) => `- ${entry.worktreePath} - from ${entry.repoRoot}${branchOf(entry.branch)}`,
-    ),
-    "",
-    ...(shared
-      ? [`Every one of them is on the branch ${shared}.`, ""]
-      : [
-          "They are NOT all on the same branch - each repo's branch is listed above. Work on the",
-          "branch each repo is already checked out on; do not assume one shared name.",
-          "",
-        ]),
-    "Before you touch a repository, read its own AGENTS.md / CLAUDE.md - only the primary's",
-    "loads automatically, so the others' conventions are invisible until you read them.",
-    "",
-    "Commit and push in each repository you change, and open ONE pull request per repository",
-    "you actually changed. A repository you did not change needs no commit and no pull request.",
-    "",
-    "---",
-    "",
-  ];
+  const manifest = taskRepoManifest(task);
   // Manifest, then standing instructions, then the intent - all three, in that order. The
   // manifest names the checkouts these rules are ABOUT, so putting the instructions above it
   // would invert the reason they are next to each other; putting them below the intent would
   // bury the operator's own words under server-owned prose.
-  return `${lines.join("\n")}${withStandingInstructions(standingBlock, task.intent)}`;
+  return `${manifest ? `${manifest}\n\n---\n` : ""}${withStandingInstructions(standingBlock, task.intent)}`;
 }
 
 /** A filesystem/git-safe slug from a task title - the branch and worktree name. */

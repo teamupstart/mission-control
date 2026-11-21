@@ -24,7 +24,11 @@ import type { ShippingConfig } from "../../src/shared/protocol.ts";
 // nothing reaches GitHub.
 
 // The Inspector polls every second here (90s by default) so its merge gate runs inside the
-// test; it is switched off by default, so the other cases never reach it.
+// test. A fresh install starts it Live, so each case switches it off first and only the
+// stacked-release case turns it back on, at the point it means the merge gate to run. Left on
+// from the start, it reviews the child pull request before its repository is allowlisted,
+// records that review as incomplete, and parks it on the fixture's empty diff - after which
+// the merge gate never runs again and keeps reporting `inspector-not-allowlisted`.
 test.use({ daemonEnv: { MISSION_PR_POLL_MS: "500", MISSION_INSPECTOR_POLL_MS: "1000" } });
 const EVIDENCE = artifactsDir("shipping-stacking");
 
@@ -37,6 +41,10 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return await res.json() as T;
 }
+
+test.beforeEach(async ({ daemon }) => {
+  await api(daemon, "/api/inspector/config", { enabled: false }, "PUT");
+});
 
 async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -85,6 +93,12 @@ test("the Stacked pull requests card shows Stack as the shipped default, sets an
   await expect(card).toContainText("Wait for merge - a dependent starts once its prerequisite merges");
   const depth = card.getByRole("spinbutton", { name: "stacked pull requests above one on the default branch" });
   await expect(depth).toHaveValue("3");
+  await expect(depth).toHaveAttribute("max", "10");
+  await depth.fill("10");
+  await depth.blur();
+  await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).maxStackDepth).toBe(10);
+  await expect(depth).toHaveValue("10");
+  await shoot(card, "shipping-card-depth-10");
   await depth.fill("2");
   await depth.blur();
   await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).maxStackDepth).toBe(2);
@@ -694,7 +708,15 @@ test("a stack breaks, follows a replacement parent, and offers its restack promp
 test("a cancelled parent task holds its stack with a Reschedule, then a Start, that restarts its work", async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);
   const { parent, row } = await openStack(daemon, 81, 82);
-  expect((await api<{ ok: boolean }>(daemon, `/api/tasks/${parent.id}/cancel`, {})).ok).toBe(true);
+  // A cancel that cannot yet release the worktree - a PR poll's `gh` still has it as its working
+  // directory, which is ordinary on a loaded machine - still cancels the task and says so; only
+  // the cleanup is left tracked. The task's status is the fact this case depends on.
+  const cancel = await fetch(`${daemon.baseURL}/api/tasks/${parent.id}/cancel`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  const cancelled = await cancel.json() as { ok: boolean; error?: string };
+  if (!cancelled.ok) expect(cancelled.error).toMatch(/^task cancelled, but its resources remain tracked/);
+  expect((await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status).toBe("cancelled");
   await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe("Stack broken: #81's task was cancelled");
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
@@ -703,9 +725,12 @@ test("a cancelled parent task holds its stack with a Reschedule, then a Start, t
   const reschedule = queued.getByRole("button", { name: "Reschedule #81's task" });
   await expect(reschedule).toBeEnabled();
   await shoot(queued, "merge-queue-parent-task-cancelled");
-  await reschedule.click();
-  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status, { timeout: 15_000 })
-    .toBe("backlog");
+  // While the cancel's worktree cleanup is still running, Reschedule answers "try again in a
+  // moment". Retry the click as an operator would, until the task is re-filed.
+  await expect(async () => {
+    if (await reschedule.isEnabled({ timeout: 500 }).catch(() => false)) await reschedule.click({ timeout: 2_000 }).catch(() => {});
+    expect((await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status).toBe("backlog");
+  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000] });
 
   await expect(queued).toContainText("Stack broken: #81's task was rescheduled", { timeout: 30_000 });
   await expect(queued.getByRole("button", { name: "Reschedule #81's task" })).toHaveCount(0);
@@ -806,4 +831,61 @@ test("when the parent cannot be read, the pending catch-up is withdrawn until Gi
   writeGhPullRequests(daemon.home, [moved, childPr]);
   await expect(queued).toContainText(offered, { timeout: 30_000 });
   await expect(queued.getByRole("button", { name: "Send catch-up prompt" })).toBeEnabled();
+});
+
+// The #1416 / #1417 incident, through the real dashboard: the parent merges, and a person merges
+// the child on GitHub into the parent's now-finished branch before anything retargets it. That
+// merge never reached main, so the child's task stays open, and the stack reads Broken with its
+// own reason on the board tile and in the merge queue. With Foreman off the merge queue offers
+// the recovery prompt, whose button types it into the child's (fake) session.
+test("a child merged into its finished parent's branch reads Stack broken, keeps its task open, and offers the recovery prompt", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
+  const { child, childSession, parentPr, childPr, row } = await openStack(daemon, 131, 132);
+
+  const STRAY = "57a7".repeat(10);
+  const parentMergedAt = Date.now() - 60_000;
+  writeGhPullRequests(daemon.home, [
+    { ...parentPr, state: "MERGED" as const, mergedAt: new Date(parentMergedAt).toISOString(), mergeCommit: "5eed".repeat(10) },
+    // 22 seconds later, into `feat/stack-parent`: the branch #131 merged from.
+    { ...childPr, state: "MERGED" as const, mergedAt: new Date(parentMergedAt + 22_000).toISOString(), mergeCommit: STRAY },
+  ]);
+  const broken = "Stack broken: merged into #131's branch, not main";
+  const offered = `${broken} - Recovery needed: Foreman is off`;
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe(offered);
+
+  // The merge completed nothing: the child's task is still open.
+  const childTask = async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === child.id)!;
+  expect((await childTask()).status).not.toBe("done");
+  expect((await childTask()).outcomeUrl).toBeNull();
+  // The session card carries the same standing once the daemon re-reads its inspections.
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === childSession.id)?.inspector?.stack?.label,
+    { timeout: 30_000 }).toBe(offered);
+
+  await boardLayout(dashboard, daemon);
+  const tile = dashboard.locator(".stack-lifecycle").filter({ hasText: broken });
+  await expect(tile).toBeVisible({ timeout: 30_000 });
+  await expect(tile.getByRole("button", { name: "Send recovery prompt" })).toBeEnabled();
+  await shoot(dashboard, "board-stack-merged-into-parent");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#132" });
+  await expect(queued).toContainText(offered);
+  const send = queued.getByRole("button", { name: "Send recovery prompt" });
+  await expect(send).toBeEnabled();
+  await shoot(queued, "merge-queue-recovery-foreman-off");
+  await send.click();
+  await expect.poll(async () => {
+    const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
+    return transcript.messages.some((m) => m.role === "user"
+      && m.text.includes("create a new branch from `origin/main`")
+      && m.text.includes(`gh pr diff ${childPr.url} | git apply --3way`)
+      && m.text.includes(`merge commit \`${STRAY}\``)
+      && m.text.includes("gh pr create --base main")
+      && m.text.includes("Do NOT force-push, rebase, reset or otherwise rewrite `feat/stack-child` or `feat/stack-parent`"));
+  }, { timeout: 30_000, message: "the recovery prompt reached the child's session" }).toBe(true);
+  await expect(queued).toContainText(`${broken} - recovering`, { timeout: 15_000 });
+  await expect(queued.getByRole("button", { name: "Send recovery prompt" })).toHaveCount(0);
+  await shoot(queued, "merge-queue-recovering");
+  expect((await childTask()).status, "the stray merge still completed nothing").not.toBe("done");
 });

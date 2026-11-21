@@ -25,23 +25,30 @@ const INFOSEC_PATHS = [
   "**/.yarn/cache/**",
 ];
 
-test("the catch-all lists Delivery Squad and Developer Platform together while retaining the existing owner", () => {
+// Owned by Infosec together with Repo Automation (DEVPLAT-570), so the automation that
+// maintains this file across teamupstart repositories can have its changes approved.
+const CODEOWNERS_RULE = ["CODEOWNERS", "@teamupstart/infosec", "@teamupstart/repo-automation"];
+
+test("the catch-all lists Delivery Squad, Developer Platform and Repo Automation while retaining the existing owner", () => {
   const [pattern, ...owners] = rules[0]!;
   assert.equal(pattern, "*");
   assert.deepEqual(new Set(owners), new Set([
     "@teamupstart/delivery-squad",
     "@teamupstart/developer-platform",
     "@mancej",
+    "@teamupstart/repo-automation",
   ]));
 });
 
-test("only Infosec's dependency rules override the catch-all", () => {
+test("only Infosec's dependency rules and the CODEOWNERS rule override the catch-all", () => {
   // CODEOWNERS is last-match-wins, so a later rule replaces the catch-all's owners rather than
   // offering alternatives. That is deliberate for dependency files - Infosec review is what
-  // lets its auto-approver merge dependency PRs - and an accident anywhere else.
+  // lets its auto-approver merge dependency PRs - and for this file itself, and an accident
+  // anywhere else.
   const overrides = rules.slice(1);
-  assert.deepEqual(overrides.map(([path]) => path), INFOSEC_PATHS);
-  for (const [path, ...owners] of overrides) {
+  assert.deepEqual(overrides.map(([path]) => path), [...INFOSEC_PATHS, CODEOWNERS_RULE[0]]);
+  for (const [path, ...owners] of overrides.slice(0, INFOSEC_PATHS.length)) {
     assert.deepEqual(owners, ["@teamupstart/infosec"], `${path} must be owned by Infosec alone`);
   }
+  assert.deepEqual(overrides.at(-1), CODEOWNERS_RULE);
 });

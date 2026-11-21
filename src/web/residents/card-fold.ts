@@ -43,3 +43,31 @@ export function toggleResidentCardCollapsed(sessionId: string): void {
 export function useResidentCardsCollapsed(): ReadonlySet<string> {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+
+/**
+ * Whether the drawer's Profiles launch list is folded to its heading, so someone watching live
+ * residents gets the room back. A module store for the reason the cards' fold is one - the drawer
+ * remounts on every open - and un-persisted for the same reason: a reload opens it again.
+ */
+let profilesCollapsed = false;
+const profilesListeners = new Set<() => void>();
+
+function subscribeProfiles(listener: () => void): () => void {
+  profilesListeners.add(listener);
+  return () => profilesListeners.delete(listener);
+}
+
+function profilesSnapshot(): boolean {
+  return profilesCollapsed;
+}
+
+/** Fold the Profiles launch list to its heading, or open it again. */
+export function toggleResidentProfilesCollapsed(): void {
+  profilesCollapsed = !profilesCollapsed;
+  for (const listener of profilesListeners) listener();
+}
+
+/** Whether the Profiles launch list is folded, for the drawer that draws it. */
+export function useResidentProfilesCollapsed(): boolean {
+  return useSyncExternalStore(subscribeProfiles, profilesSnapshot, profilesSnapshot);
+}

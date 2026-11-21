@@ -1,25 +1,37 @@
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+export { FeatureFlagIntentSchema } from "./feature-flags.ts";
+export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
+export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
+import { SESSION_PAUSE_MODES, SESSION_PAUSE_REASONS } from "./pause.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { STACK_DEPTH_LIMITS } from "./stacking.ts";
+import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
+  GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
+  MAX_TASK_EXTRA_REPOS,
   RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
+  CHAT_WORKFLOW_REFUSAL,
   taskKindAllowsBacklog,
+  taskKindAllowsSchedule,
   taskKindBacklogRefusal,
   taskKindCreator,
   taskKindPersonaRefusal,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
-import type { HarnessLaunchedTaskKind } from "./task.ts";
+import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -30,11 +42,14 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { WORK_UNIT_ID_PATTERN } from "./work-unit.ts";
 import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
+import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
+import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -248,6 +263,27 @@ const EnvSchema = z
   })
   .prefault({});
 
+/** One bounded sub-agent text field from a hook bridge (`hook-subagents.mjs` clips to the same bound). */
+const HookSubagentText = z.string().min(1).max(HOOK_SUBAGENT_TEXT_MAX);
+
+/** The Agent tool call a Claude `PostToolUse` reports. See `agentToolDescriptor`. */
+const HookAgentToolSchema = z.object({
+  agentId: HookSubagentText.optional(),
+  /** Claude's `tool_response.status`; `async_launched` is a background agent. */
+  status: HookSubagentText.optional(),
+  subagentType: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+});
+
+/** One entry of Claude's in-flight `background_tasks`. See `backgroundTaskList`. */
+const HookBackgroundTaskSchema = z.object({
+  id: HookSubagentText,
+  /** Claude's friendly label: `subagent`, `shell`, `monitor`, `workflow`, … */
+  type: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+  agentType: HookSubagentText.optional(),
+});
+
 /**
  * Payload a Claude Code hook posts to the daemon. The hook script forwards the
  * raw event JSON plus the terminal env it captured (pane ids), which the daemon
@@ -306,6 +342,32 @@ export const HookIngestSchema = z.object({
   //
   // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
   prCreated: z.boolean().optional(),
+  // The sub-agent this hook fired inside, when it did. Claude stamps `agent_id` on every hook
+  // a sub-agent's own tool calls raise, and those describe the sub-agent, not its parent: a
+  // background agent's `PreToolUse` must not flip an idle parent back to working. The daemon
+  // reads its presence and nothing else, so the value is a free string.
+  //
+  // Optional so a hook installed before this field existed keeps ingesting unchanged.
+  agentId: z.string().min(1).max(200).optional(),
+  // What a TERMINAL session's background sub-agents are read from (`harness/hook-subagents.ts`).
+  // An SDK session's driver owns its sub-agents and the daemon ignores these for it.
+  //
+  // Each one CATCHES to absent rather than failing the parse. They ride on events that also
+  // move the parent - `Stop` carries `backgroundTasks` - so a malformed descriptor must cost the
+  // sub-agent row, never the parent's own state.
+  //
+  // The sub-agent's type, on the events a sub-agent raises (`SubagentStart`, `SubagentStop`).
+  agentType: HookSubagentText.optional().catch(undefined),
+  // The Agent tool call a `PostToolUse` reports: which agent it launched and whether it went to
+  // the background.
+  agentTool: HookAgentToolSchema.optional().catch(undefined),
+  // The session's in-flight background work as `Stop` and `SubagentStop` list it. Present and
+  // empty means nothing is running; absent means this event does not say.
+  backgroundTasks: z.array(HookBackgroundTaskSchema).max(HOOK_BACKGROUND_TASKS_MAX).optional().catch(undefined),
+  // True when the bridge cut `backgroundTasks` at its bound. The list is then NOT the whole
+  // in-flight set - an agent past the cut is still running - so it may add agents but never stop
+  // one by omission.
+  backgroundTasksTruncated: z.literal(true).optional().catch(undefined),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
@@ -611,6 +673,30 @@ export const CreateReviewSchema = z
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).max(PLAN_DECISION_LIMITS.decisions).optional(),
+    /**
+     * Offer "Remind me later" on this question. Only the `request_input` tool sends it, because
+     * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
+     */
+    snoozable: z.boolean().optional(),
+    /**
+     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
+     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
+     * older build never sends this and is always told `call`.
+     */
+    asyncCapable: z.boolean().optional(),
+    /** What the agent does while the question is open: one line, `input` only. */
+    meanwhile: z.string()
+      .transform((line) => oneLine(line))
+      .pipe(z.string().max(MEANWHILE_MAX_CHARS))
+      .optional(),
+  })
+  .refine((r) => r.kind === "input" || r.snoozable !== true, {
+    message: "only kind 'input' can offer Remind me later",
+    path: ["snoozable"],
+  })
+  .refine((r) => r.kind === "input" || r.meanwhile === undefined, {
+    message: "only kind 'input' can carry a meanwhile line",
+    path: ["meanwhile"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -637,6 +723,10 @@ export const DetachReviewWaitSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
+});
+export const ListOpenQuestionsSchema = DetachReviewWaitSchema;
+export const WithdrawQuestionSchema = DetachReviewWaitSchema.extend({
+  reason: z.string().trim().min(1).max(2000),
 });
 export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
 
@@ -835,14 +925,15 @@ export const ProductIssuePreflightSchema = z.object({
   ),
 });
 
-/**
- * How many SECONDARY repositories one request may attach.
- *
- * A sanity bound on a request body rather than a product limit on how many repositories a
- * task may coordinate - nothing downstream reads it as a maximum. Named because several
- * request surfaces bound the same launch manifest and must not carry private copies.
- */
-export const MAX_TASK_EXTRA_REPOS = 8;
+/** Defined beside the task kinds so resident launch schemas share it without a cycle. */
+export { MAX_TASK_EXTRA_REPOS };
+
+/** MCP `create_task`'s `workUnit`: join the calling session's task's work unit, or start one. */
+export const McpWorkUnitChoiceSchema = z.enum(["inherit", "new"]).describe(
+  "Work unit for the new task. \"inherit\" joins the work unit of the task this session is running; " +
+    "\"new\" starts its own. Omit it to let the session's task kind decide: a plan task's session " +
+    "shares its work unit with the tasks it creates, every other session's tasks get their own",
+);
 
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
@@ -853,6 +944,10 @@ const McpCreateTaskBaseSchema = z.object({
   intent: z.string().min(1),
   dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
+  // Which work unit the new task joins - never an id: no request body chooses one. On the base
+  // shape so all three creation routes accept it. Omitted, the calling session's task kind
+  // decides (see `mcpCreateWorkUnitSource`).
+  workUnit: McpWorkUnitChoiceSchema.optional(),
 });
 
 const mcpTaskDependenciesAreBounded = ({
@@ -976,6 +1071,27 @@ export const ResolveReviewSchema = z.object({
   selections: resolution.action === "dismiss" ? null : resolution.selections,
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
+
+/**
+ * "Remind me later" on a `request_input` question, from the dashboard.
+ *
+ * `delay` is an id, never a duration or a timestamp: the daemon owns the clock and adds the
+ * delay to its own time. `meanwhile` is what the agent is told to do until the question comes
+ * back, and defaults to its best judgment. It is honoured only on the first snooze of a
+ * question, because that is the only time the agent hears anything (`ReviewSnooze.mode`).
+ */
+export const SnoozeReviewSchema = z.object({
+  delay: z.enum(REVIEW_SNOOZE_DELAY_IDS),
+  meanwhile: z
+    .discriminatedUnion("mode", [
+      z.object({ mode: z.literal("judgment") }),
+      z.object({ mode: z.literal("hold") }),
+      z.object({ mode: z.literal("option"), optionId: z.string().min(1).max(64) }),
+    ])
+    .optional()
+    .default({ mode: "judgment" }),
+});
+export type SnoozeReview = z.infer<typeof SnoozeReviewSchema>;
 
 /** MCP `report_status`: update the session's activity line. */
 export const StatusSchema = z.object({
@@ -1242,6 +1358,12 @@ export const DispatchSchema = z
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /**
+     * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`);
+     * either way the answer is pinned on the task at creation. Ignored for a kind that does
+     * not offer it (`GRILL_FIRST_TASK_KINDS`).
+     */
+    grillFirst: z.boolean().optional(),
     backlog: z.boolean().optional().default(false),
     /**
      * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
@@ -1570,7 +1692,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
  * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `personaId`, `workflowId`,
- * `dependencies` and `enabled` are PROVISIONING fields -
+ * `grillFirst`, `dependencies` and `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
  * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
@@ -1632,11 +1754,28 @@ const UpdateTaskFieldsSchema = z
     personaId: TaskPersonaIdSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /** Grill me first. Provisioning intent, like `workflowId`. */
+    grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
+    planInputChange: TaskPlanInputChangeSchema.optional(),
+    previewOnly: z.boolean().optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
+  .extend({
+    /**
+     * Any kind a Recurring Mission may file, so the dashboard can edit a mission-filed row
+     * into a chat. Whether THIS row may hold the kind is the task's question, not the
+     * schema's: `TaskManager.update` asks `taskAllowsBacklog`, which admits a chat only on a
+     * row a mission filed. The MCP schemas keep the backlog kinds: an agent cannot file or
+     * edit a chat.
+     */
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
@@ -1654,9 +1793,14 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   title: true,
   intent: true,
   planInputs: true,
+  planInputChange: true,
+  previewOnly: true,
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
+  // Grill me first is the human's choice at dispatch; a task an agent files takes the
+  // Settings default, so MCP neither advertises nor sets it.
+  grillFirst: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -1676,7 +1820,6 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
-  planInputs: true,
   personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
@@ -1695,6 +1838,7 @@ export const McpListTasksSchema = z.object({
   priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
   enabled: z.boolean().optional(),
   dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  workUnitId: z.string().trim().regex(WORK_UNIT_ID_PATTERN, "workUnitId must be a work unit id (wu_ and 26 Crockford base32 characters)").optional().describe("Match the tasks of one work unit exactly"),
   limit: z.number().int().min(1).max(100).default(50),
   cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
   includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
@@ -1703,6 +1847,11 @@ export type McpListTasks = z.infer<typeof McpListTasksSchema>;
 
 export const McpGetTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of a task in any status"),
+}).strict();
+
+/** MCP cancels one task through the existing lifecycle and cleanup owner. */
+export const McpCancelTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to cancel, even when it has no session"),
 }).strict();
 
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
@@ -1803,6 +1952,8 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
 export const DispatchBacklogTaskSchema = z.object({
   defaultModel: ModelIdSchema.nullable().optional(),
   overrideDisabled: z.boolean().optional().default(false),
+  /** A person's launch, through the operator's launch hold (Pause all, priority). Foreman never sends it. */
+  overridePauseHold: z.boolean().optional().default(false),
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 
@@ -1832,6 +1983,8 @@ export type PipelineSettlement = z.infer<typeof PipelineSettlementSchema>;
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
   overrideDisabled: z.boolean().optional().default(false),
+  /** A person's handover, through the operator's launch hold. Foreman never sends it. */
+  overridePauseHold: z.boolean().optional().default(false),
   /**
    * The caller has accepted what the handover reset discards beyond git state - the
    * agent's work queue, its context, the branch it stands on.
@@ -2613,6 +2766,15 @@ export const SkillsConfigSchema = z.object({
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
+  /**
+   * Grill me first: the kinds whose new tasks start with it on, from Settings -> Tasks. Empty,
+   * so every kind starts off. Pinned on each task at creation and overridable per dispatch.
+   * On, the session runs the Grill session action before its work; off, the task is exactly
+   * the task it always was. Bounded by the kinds that offer it: each appears at most once.
+   */
+  grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .max(GRILL_FIRST_TASK_KINDS.length)
+    .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2649,7 +2811,7 @@ export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
 export const SkillsConfigPatchSchema = partialPatch(
-  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, alwaysDraftPr: true }),
+  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true }),
 )
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
@@ -2659,11 +2821,9 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 /**
  * The Inspector's consent model, in one object.
  *
- * Every default here is the OFF position, and that is not caution theatre: this is the
- * only subsystem that writes to a public place under the operator's GitHub identity.
- * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
- * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
- * three deliberate acts, and the first two are reversible without anyone else seeing.
+ * Field defaults preserve the posture of older saved configs and backups with missing keys.
+ * New databases record the enabled, Live posture when initialized.
+ * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
   /**
@@ -2877,8 +3037,14 @@ void inspectorInspectionSchemaMatchesType;
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
-  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
-  codeRabbitAutoResolve: z.boolean().default(false),
+  /**
+   * Prompt the eligible owner about CodeRabbit threads, independently of merge consent.
+   *
+   * On by default. An install that stored the old default-off value is switched on exactly
+   * once by the schema 38 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
+   * opt-out is an ordinary stored `false` and is kept.
+   */
+  codeRabbitAutoResolve: z.boolean().default(true),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -2944,7 +3110,7 @@ export const ShippingConfigSchema = z.object({
    * that targets the default branch. A dependent whose parent is already this deep waits for
    * the bottom of its stack to merge.
    */
-  maxStackDepth: z.number().int().min(1).max(5).default(3),
+  maxStackDepth: z.number().int().min(STACK_DEPTH_LIMITS.min).max(STACK_DEPTH_LIMITS.max).default(STACK_DEPTH_LIMITS.default),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 
@@ -3254,12 +3420,144 @@ export const WORKTREES_CONFIG_LIMITS = {
   maxCommonDirectoryBytes: 4096,
   maxSetupArgs: 32,
   maxSetupArgBytes: 4096,
+  maxClaimSteps: 16,
+  maxClaimStepVariables: 32,
+  maxClaimVariableNameBytes: 128,
+  maxClaimFingerprintPaths: 64,
+  maxClaimFingerprintPathBytes: 1024,
+  defaultClaimTimeoutMinutes: 10,
+  maxClaimTimeoutMinutes: 240,
+  maxClaimSeedPaths: 64,
+  maxClaimSeedExcludes: 64,
 } as const;
 
 const WorktreeSetupArgvSchema = z
   .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxSetupArgBytes))
   .min(1)
   .max(WORKTREES_CONFIG_LIMITS.maxSetupArgs);
+
+/**
+ * Names a claim step may not ask for. `PATH` is the daemon's executable snapshot, and the
+ * `MISSION_`/`FLEET_`/`HARNESS_` prefixes are the daemon's own configuration, its state-home
+ * override and its admission token among them. A step that needs one of those is asking for the
+ * daemon, not for a dependency install.
+ */
+const RESERVED_CLAIM_VARIABLE = /^(PATH|(MISSION|FLEET|HARNESS)_.*)$/;
+
+const WorktreeClaimVariableNameSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimVariableNameBytes)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a variable name is letters, digits and underscores")
+  .refine((name) => !RESERVED_CLAIM_VARIABLE.test(name), "PATH and MISSION_/FLEET_/HARNESS_ names are reserved");
+
+/**
+ * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).
+ * Anything that cannot be such a path is refused rather than silently matching nothing: an
+ * absolute path, a `.` or `..` segment, an empty segment, or a backslash.
+ */
+function repositoryRelativeGlob(glob: string): boolean {
+  return !glob.startsWith("/") &&
+    !glob.includes("\\") &&
+    glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+const WorktreeClaimFingerprintPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a fingerprint path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * One seed path: a repository-relative glob matched level by level in a sibling slot, so each
+ * segment is a literal name or a one-level pattern. `**` is refused, because matching it would
+ * mean walking every installed dependency tree to find the paths to clone.
+ */
+const WorktreeClaimSeedPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  )
+  .refine(
+    (glob) => glob.split("/").every((segment) => !segment.includes("**")),
+    "a seed path cannot use **; name each directory level, with * for one level",
+  )
+  // In any letter case: on a case-insensitive disk `.Git` is the worktree's own `.git`, and a
+  // seed must never replace a checkout's Git administrative pointer.
+  .refine(
+    (glob) => glob.split("/").every((segment) => segment.toLowerCase() !== ".git"),
+    "a seed path cannot name .git",
+  );
+
+/** A path removed from a seed's clone before it is placed. `**` is allowed here. */
+const WorktreeClaimSeedExcludeSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed exclusion is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
+ * its steps run, and what to leave out of the clone.
+ */
+const WorktreeClaimSeedSchema = z
+  .object({
+    paths: z.array(WorktreeClaimSeedPathSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedPaths),
+    exclude: z.array(WorktreeClaimSeedExcludeSchema).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedExcludes).default([]),
+  })
+  .strict();
+export type WorktreeClaimSeed = z.infer<typeof WorktreeClaimSeedSchema>;
+
+const WorktreeClaimStepSchema = z
+  .object({
+    /** Operator-authored argv, never a shell string. */
+    argv: WorktreeSetupArgvSchema,
+    /** Variable NAMES this step receives on top of the scrubbed check base. Never values. */
+    env: z
+      .array(WorktreeClaimVariableNameSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimStepVariables)
+      .refine((names) => new Set(names).size === names.length, "a step names each variable once")
+      .default([]),
+  })
+  .strict();
+
+/**
+ * The pool's dependency claim: ordered steps run inside a task lease after reset or add and
+ * setup, and before the final proof. Stored beside `setupArgv`, so settings backups capture it
+ * with the rest of the repository override.
+ */
+export const WorktreeClaimSchema = z
+  .object({
+    steps: z.array(WorktreeClaimStepSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSteps),
+    /** Covers the whole claim, every step together. */
+    timeoutMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimTimeoutMinutes)
+      .default(WORKTREES_CONFIG_LIMITS.defaultClaimTimeoutMinutes),
+    /** Repository-relative globs whose blob ids decide whether a slot's claim is current. */
+    fingerprintPaths: z
+      .array(WorktreeClaimFingerprintPathSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPaths)
+      .default([]),
+    /**
+     * Seeding. Not a fingerprint input: what a seed copies changes how a cold slot gets its
+     * dependencies, never which dependencies a commit needs.
+     */
+    seed: WorktreeClaimSeedSchema.optional(),
+  })
+  .strict();
+export type WorktreeClaim = z.infer<typeof WorktreeClaimSchema>;
 
 const WorktreeRepositoryConfigSchema = z
   .object({
@@ -3272,6 +3570,8 @@ const WorktreeRepositoryConfigSchema = z
       .optional(),
     /** Operator-authored argv. It is never read from a repository-controlled file. */
     setupArgv: WorktreeSetupArgvSchema.optional(),
+    /** Operator-authored dependency claim. Also never read from the repository. */
+    claim: WorktreeClaimSchema.optional(),
   })
   .strict();
 
@@ -3284,8 +3584,11 @@ const WorktreeRepositoryKeySchema = z
  * The only policy authority for native worktrees. Operational pool/slot rows deliberately
  * do not repeat any of these values.
  */
+const TaskRetentionDaysSchema = z.number().int().min(TASK_RETENTION_MIN_DAYS).max(TASK_RETENTION_MAX_DAYS);
+
 export const WorktreesConfigSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.default(TASK_RETENTION_DEFAULT_DAYS),
     enabled: z.boolean().default(true),
     maxSlots: z
       .number()
@@ -3318,6 +3621,8 @@ const WorktreeRepositoryConfigPatchSchema = z
       .optional(),
     /** Null removes an existing operator-authored setup command. */
     setupArgv: WorktreeSetupArgvSchema.nullable().optional(),
+    /** Replaces the whole claim. Null removes it. */
+    claim: WorktreeClaimSchema.nullable().optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, "repository patch must change at least one field");
@@ -3325,6 +3630,7 @@ const WorktreeRepositoryConfigPatchSchema = z
 /** Partial update. A null repository value removes that repository's whole override. */
 export const WorktreesConfigPatchSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.optional(),
     enabled: z.boolean().optional(),
     maxSlots: z
       .number()
@@ -3372,6 +3678,7 @@ const WorktreeOwnerTargetSchema = z
 
 /** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
 export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
   z
     .object({
@@ -3399,6 +3706,13 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
   z
     .object({ action: z.literal("legacyReturn"), owner: WorktreeOwnerTargetSchema })
     .strict(),
+  // Settings > Storage's idle-cache budget: the exact idle slots its plan chose, across pools.
+  z
+    .object({
+      action: z.literal("trimIdle"),
+      slotIds: z.array(WorktreeStableIdSchema).min(1).max(WORKTREE_INVENTORY_LIMITS.bulkSlots),
+    })
+    .strict(),
 ]);
 
 export const WorktreeActionExecuteSchema = z
@@ -3417,6 +3731,7 @@ export const WorktreeActionExecuteSchema = z
           "over-capacity",
           "legacy-unverifiable",
           "foreign",
+          "unverifiable",
         ]),
       )
       .max(16),
@@ -3425,6 +3740,15 @@ export const WorktreeActionExecuteSchema = z
 
 export const OpenWorktreeSchema = z
   .object({ backend: z.enum(TERMINAL_BACKEND_IDS) })
+  .strict();
+
+/**
+ * Stop the dependency claim running in a slot. `claimId` is the running claim's own id, as the
+ * slot card and the task card were shown it, so a Stop can never land on a later claim in the
+ * same slot.
+ */
+export const StopWorktreeClaimSchema = z
+  .object({ claimId: z.string().min(1).max(128) })
   .strict();
 
 /**
@@ -3558,7 +3882,9 @@ export const DEFAULT_MULTIPLEXER_TERMINALS = {
 } as const satisfies Record<MultiplexerId, EmulatorId | null>;
 
 /**
- * The "Terminals" settings blob: what a multiplexer's sessions open in.
+ * The "Terminals" settings blob: terminal settings. What a multiplexer's sessions open in,
+ * and whether discovery shows sessions Mission Control did not start (workers in an observed
+ * pipeline worktree are shown either way).
  *
  * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
  * different key. That object says which backend hosts a DISPATCHED session, keyed per agent
@@ -3578,6 +3904,12 @@ export const TerminalsConfigSchema = z.object({
     // build still cannot create one.
     .catchall(StoredEmulatorBackendSchema)
     .prefault(DEFAULT_MULTIPLEXER_TERMINALS),
+  /**
+   * Show Claude, Codex, and Pi sessions started outside Mission Control, which passive
+   * discovery would otherwise skip (`Registry.discoveryAdmission`). Off for every install,
+   * upgrades included: a stored blob or settings snapshot without the key parses as off.
+   */
+  externalSessions: z.boolean().default(false),
 });
 export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
 
@@ -3599,6 +3931,7 @@ export const TerminalsConfigPatchSchema = z
         message: "empty multiplexer terminal update",
       })
       .optional(),
+    externalSessions: z.boolean().optional(),
   })
   .strict()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
@@ -3742,6 +4075,20 @@ export const ResidentPlacementSchema = z.enum(RESIDENT_PLACEMENTS);
 export type ResidentPlacement = (typeof RESIDENT_PLACEMENTS)[number];
 
 /**
+ * Where the Board draws idle blocked sessions: sessions with a durable blocker that are idle or
+ * unconfirmed. `needs-you` gives them a lane under Needs you, `idle` a red frame at the top of
+ * Idle, and `column` a Blocked column of their own between Needs you and Working. One ordering
+ * (`src/web/lib/fleet-order.ts`) produces the blocked group; this only decides where it is drawn,
+ * so the Console rail, the arrow keys and the ⌘-numbers follow it without a second order.
+ *
+ * Later builds may append choices. The stored field reads an unknown one as the default, so a
+ * downgrade still opens, while the patch schema refuses one.
+ */
+export const BLOCKED_PLACEMENTS = ["needs-you", "idle", "column"] as const;
+export const BlockedPlacementSchema = z.enum(BLOCKED_PLACEMENTS);
+export type BlockedPlacement = (typeof BLOCKED_PLACEMENTS)[number];
+
+/**
  * How one session's Conversation is DRAWN - the same rows, read two ways.
  *
  * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
@@ -3818,6 +4165,21 @@ export type TaskKindHeaderStyle = (typeof TASK_KIND_HEADER_STYLES)[number];
 export const TASK_KIND_CARD_STYLES = ["tab", "chip", "band", "medallion", "off"] as const;
 export const TaskKindCardStyleSchema = z.enum(TASK_KIND_CARD_STYLES);
 export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
+
+/**
+ * How a session shows the sub-agents it launched in the background, on its board card and in
+ * its conversation together: `nested` hangs sub-cards beneath the card and docks a Background
+ * agents tray above the reply box; `chip` puts one chip in the card's flags that opens the
+ * agent list, and gives the conversation rail an Agents tab. One value covers both halves,
+ * because each was decided as a pair (`docs/plans/background-subagent-visibility/plan.md`).
+ *
+ * There is no `off`: the decision was one treatment or the other. Persisted on operators'
+ * machines, so append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the
+ * picker's order.
+ */
+export const BACKGROUND_AGENTS_STYLES = ["nested", "chip"] as const;
+export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
+export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
 
 /**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
@@ -3972,6 +4334,17 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
   };
 }
 
+/**
+ * Tours the startup tour picker features once to a profile that existed before they shipped.
+ *
+ * Append-only, oldest first: every id is a web `TourId`, and `src/web/tour/announcements.ts`
+ * holds this list to that union. A fresh profile is born having seen all of them - nothing in
+ * the catalog is news to someone opening it for the first time - so `announcedTours` defaults to
+ * this whole list, while the daemon gives a record stored before that key existed an empty one.
+ * That absence is the "upgraded" signal, exactly as it is for `hiddenDisplayItemsSeed`.
+ */
+export const ANNOUNCED_TOURS = ["residents"] as const;
+
 export const UI_CONFIG_DEFAULTS = {
   /**
    * Board, which is the product's intended first view. Retiring Cards (#706) moved this to
@@ -3989,6 +4362,10 @@ export const UI_CONFIG_DEFAULTS = {
   residentPlacement: "drawer",
   /** The drawer floats over the page until someone pins it as a column. */
   residentDrawerPinned: false,
+  /** A lane under Needs you, the placement confirmed in review of the blocker plan. */
+  blockedPlacement: "needs-you",
+  /** The At the top of Idle frame starts open: a blocked session is never folded away unasked. */
+  blockedFrameCollapsed: false,
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4007,6 +4384,8 @@ export const UI_CONFIG_DEFAULTS = {
   skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
+  /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
+  backgroundAgentsStyle: "nested",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -4015,6 +4394,8 @@ export const UI_CONFIG_DEFAULTS = {
   // Retained for clients that used the former one-time orientation.
   guidedTour: true,
   showToursOnStartup: true,
+  /** Every announced tour: a fresh profile has nothing in the catalog to be told is new. */
+  announcedTours: [...ANNOUNCED_TOURS] as readonly string[],
   trustStaged: [],
   /**
    * NOT empty, and this is the one place the reason is written down.
@@ -4078,8 +4459,11 @@ export const UI_CONFIG_DEFAULTS = {
   groupBoardByRepo: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
+  conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /** The session rail starts open, as every build before the fold drew it. */
+  sessionRailFolded: false,
   /**
    * Empty, both of them: the bar ships the way its predecessor drew it - every item present
    * and every control at full size, with the measured ladder still shedding labels when the
@@ -4087,6 +4471,16 @@ export const UI_CONFIG_DEFAULTS = {
    */
   hiddenTopbarItems: [] as readonly string[],
   compactTopbarItems: [] as readonly string[],
+  /**
+   * Which pause controls a board card draws (`PAUSE_CARD_CONTROLS`): the run chip on the
+   * runtime row alone, out of the box. A paused card's own look is not a control and stays on.
+   */
+  pauseCardControls: ["chip"] as readonly string[],
+  /**
+   * Which pause controls the console draws (`PAUSE_CONSOLE_CONTROLS`): the tab-row toolbar
+   * button and the state badge's split half with its paused band, out of the box.
+   */
+  pauseConsoleControls: ["toolbar", "badge"] as readonly string[],
 } as const;
 
 /**
@@ -4102,6 +4496,15 @@ export const UiConfigSchema = z.object({
   residentPlacement: ResidentPlacementSchema.default(UI_CONFIG_DEFAULTS.residentPlacement),
   /** Whether the Residents drawer is pinned as a column beside the fleet. Per machine. */
   residentDrawerPinned: z.boolean().default(UI_CONFIG_DEFAULTS.residentDrawerPinned),
+  /**
+   * Where idle blocked sessions are drawn on the Board and in the Console rail. Permissive on
+   * read, like `skin`: a placement a newer build added reads as the default after a downgrade
+   * rather than failing the whole config. The patch schema below is strict.
+   */
+  blockedPlacement: BlockedPlacementSchema
+    .default(UI_CONFIG_DEFAULTS.blockedPlacement)
+    .catch(UI_CONFIG_DEFAULTS.blockedPlacement),
+  blockedFrameCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.blockedFrameCollapsed),
   /**
    * Which rendering the Conversation opens in. A per-session override lives in the browser
    * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
@@ -4132,6 +4535,14 @@ export const UiConfigSchema = z.object({
   skin: SkinIdSchema.default(UI_CONFIG_DEFAULTS.skin).catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
+  /**
+   * Which background sub-agent treatment the board and the conversation draw. `.catch` like
+   * `skin`, so a value a newer build added reads as Nested sub-cards after a downgrade rather
+   * than failing the whole `ui` record. The patch schema below is strict.
+   */
+  backgroundAgentsStyle: BackgroundAgentsStyleSchema
+    .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
+    .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -4174,6 +4585,20 @@ export const UiConfigSchema = z.object({
   guidedTour: z.boolean().default(UI_CONFIG_DEFAULTS.guidedTour),
   /** Offer the tour catalog once per dashboard document, including upgraded profiles. */
   showToursOnStartup: z.boolean().default(UI_CONFIG_DEFAULTS.showToursOnStartup),
+  /**
+   * Which `ANNOUNCED_TOURS` this profile's startup picker has already featured.
+   *
+   * A tour on that list and missing here opens the picker once more, even with
+   * `showToursOnStartup` off, preselected on the new tour - the opt-out was a choice about the
+   * catalog the operator had seen, not one they made about a tour that did not exist yet. The
+   * opening records it, so the next window goes back to honoring the preference. Ids are not
+   * validated, as `trustStaged`'s are not: one this build does not know is inert, and a build
+   * that retires a tour must still be able to read its own record.
+   */
+  announcedTours: z
+    .array(z.string().min(1))
+    .max(UI_CONFIG_LIST_MAX)
+    .default([...UI_CONFIG_DEFAULTS.announcedTours]),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *
@@ -4248,6 +4673,7 @@ export const UiConfigSchema = z.object({
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
+  conversationRailCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.conversationRailCollapsed),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *
@@ -4260,6 +4686,17 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
+  /**
+   * Whether the session rail beside an open session's detail is folded down to a strip, so
+   * the conversation and terminal take the width it held.
+   *
+   * One flag for every rail the dashboard draws there - the Console's, and the Board drill-in's
+   * in both of its shapes - because they are one surface: the Board's focused column BECOMES
+   * that rail, and a fold that held on one side of the morph and not the other would read as
+   * the rail reopening by itself. Saved, like `collapsedBoardColumns`: how wide someone wants
+   * their reader is a way of working, not a gesture. See `src/web/lib/session-rail.ts`.
+   */
+  sessionRailFolded: z.boolean().default(UI_CONFIG_DEFAULTS.sessionRailFolded),
   /**
    * The topbar's optional items the operator has hidden - the session counts, search, the cost
    * estimate, product feedback, and alerts and away mode.
@@ -4280,6 +4717,15 @@ export const UiConfigSchema = z.object({
    * expanded, with the ladder still free to minimize it on a narrow window.
    */
   compactTopbarItems: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
+  /**
+   * The pause controls each surface draws, as lists of ENABLED ids - several at once is
+   * allowed, and none is allowed. Enabled rather than hidden because these are alternative
+   * placements of one control, and a placement a later build adds should not appear on every
+   * card unasked. Not validated against the id sets (`@shared/pause.ts`), so a retired or
+   * newer id is inert rather than a parse error.
+   */
+  pauseCardControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseCardControls]),
+  pauseConsoleControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseConsoleControls]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4319,6 +4765,11 @@ export const UiConfigPatchSchema = z.preprocess(
     // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
     // `{ skin: "nope" }` into a successful write of Default.
     skin: SkinIdSchema.optional(),
+    // Strict for the same reason: a `.partial()` of the stored `.catch` would store the default
+    // for a placement this build does not know.
+    blockedPlacement: BlockedPlacementSchema.optional(),
+    // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
+    backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -5434,7 +5885,7 @@ export const InjectPromptSchema = z.object({
    */
   stack: z.object({
     prKey: z.string().min(1).max(512),
-    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    kind: z.enum(["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
     tip: z.string().min(1).max(128).nullable(),
   }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
@@ -5874,6 +6325,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     branch: z.string().min(1).max(400).nullable(),
     expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    mergedContentTreeOid: CommitOidSchema.nullable().optional(),
     observedAt: z.number().int(),
   }),
 ]);
@@ -6156,6 +6608,7 @@ export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCove
   );
 
 export const WorkflowCanonicalCriterionSchema = z.object({
+  fulfilledByAction: z.literal("pull_request").nullable().optional(),
   id: z.string().min(1).max(200),
   text: z.string().trim().min(1)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
@@ -6198,6 +6651,7 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    deferredToAction: z.literal("pull_request").optional(),
     // Absent on every readiness row written before the repair packet could name a contested
     // claim, so it defaults rather than failing those rows open.
     contestedClientCriterionIds: z.array(
@@ -6492,6 +6946,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
   criteria: z.array(z.object({
     criterionId: z.string().min(1).max(200),
     material: z.boolean(),
+    deferredToAction: z.literal("pull_request").optional(),
     claimId: z.string().min(1).max(200).nullable(),
     evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
     gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
@@ -6662,6 +7117,18 @@ const WorkflowContextSnapshotInputSchema = z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    publication: z.object({
+      version: z.literal(1),
+      treeOid: CommitOidSchema,
+      unpublishedPaths: z.array(z.string().max(4_096)).max(500),
+      artifactProblems: z.array(z.string().max(2_000)).max(100).default([]),
+      pathsTruncated: z.boolean(),
+      localArtifacts: z.array(z.object({
+        path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+      })).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount),
+    }).optional(),
     reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
@@ -7085,6 +7552,13 @@ export const WorkflowInspectorGateStateSchema = z.object({
   findingFingerprints: z
     .array(z.string().min(1).max(200))
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
+  // Gate CAS compares serialized state; append new optional fields in writer order.
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
 });
 
 /**
@@ -7177,6 +7651,20 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * One row per kind this app launches (`HARNESS_LAUNCHED_TASK_KINDS`). An absent key follows
+ * the kind's built-in, `null` is an explicit None, and a string names a workflow identity.
+ * `pipeline` has no key: Conductor owns what runs after its work.
+ *
+ * Not `.strict()`: the tolerant read below falls back to the COMPLETE default on any parse
+ * failure, so a key a newer build added would otherwise cost the operator their allowlist.
+ */
+const KindWorkflowDefaultsSchema = z.object(
+  Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, z.string().min(1).max(500).nullable().optional()]),
+  ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<z.ZodNullable<z.ZodString>>>,
+);
+
+/**
  * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
@@ -7189,8 +7677,8 @@ export const WorkflowPolicySchema = z.object({
   skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
-  defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
+  kindWorkflowDefaults: KindWorkflowDefaultsSchema
+    .default(DEFAULT_WORKFLOW_POLICY.kindWorkflowDefaults),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
       .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
@@ -7204,6 +7692,51 @@ export const WorkflowPolicySchema = z.object({
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
 
 /**
+ * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
+ *
+ * The old single `defaultWorkflowId` was Ship's dispatch default. Every save wrote it, so it
+ * cannot tell "chose No-Mistakes" from "never touched it"; both read as the built-in, which
+ * behaves identically and lets an untouched install follow a later change to it. Any other
+ * value, `null` included, becomes an explicit Ship row. A blob that already has the map
+ * keeps it and the legacy key is dropped.
+ *
+ * Read-time, like `keepPreFieldCommandConsent`: a save writes the map, plus the legacy key as
+ * a rollback mirror of the Ship row that this read then drops. Old settings backups restore
+ * through this same schema, so they need no translation of their own.
+ */
+function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob;
+  if (!Object.prototype.hasOwnProperty.call(blob, "defaultWorkflowId")) return blob;
+  const { defaultWorkflowId: legacy, ...rest } = blob as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(rest, "kindWorkflowDefaults")) return rest;
+  if (legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID || legacy === undefined) return rest;
+  return { ...rest, kindWorkflowDefaults: { ship: legacy } };
+}
+
+/**
+ * `PUT /api/workflows/config`'s deprecated alias: a `defaultWorkflowId` in the body sets the
+ * Ship row, by the same rule the stored read applies.
+ *
+ * A write that names the old field means to set Ship's default, so it wins over a Ship key
+ * in the same body's map: a client that read the config, changed `defaultWorkflowId` and
+ * wrote it all back would otherwise be a silent no-op. Every other row in the map stands.
+ */
+function aliasLegacyDefaultWorkflowId(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  if (!Object.prototype.hasOwnProperty.call(body, "defaultWorkflowId")) return body;
+  const { defaultWorkflowId: legacy, ...rest } = body as Record<string, unknown>;
+  if (legacy === undefined) return rest;
+  const rows = rest.kindWorkflowDefaults ?? {};
+  // Not a map, so there is no Ship row to set; the schema refuses the body as it stands.
+  if (!rows || typeof rows !== "object" || Array.isArray(rows)) return rest;
+  const { ship: _replaced, ...others } = rows as Record<string, unknown>;
+  return {
+    ...rest,
+    kindWorkflowDefaults: legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID ? others : { ...others, ship: legacy },
+  };
+}
+
+/**
  * Policy PLUS the legacy flat command list: the complete body `PUT /api/workflows/config`
  * still accepts.
  *
@@ -7212,7 +7745,7 @@ export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
  * schema is what lets the existing Settings form keep saving through one request while the
  * durable owner changes underneath it.
  */
-export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
+export const WorkflowConfigSchema = z.preprocess(aliasLegacyDefaultWorkflowId, WorkflowPolicySchema.extend({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
@@ -7232,7 +7765,7 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
       { message: "Each repository may configure a slot only once" },
     )
     .default([]),
-});
+}));
 
 /**
  * The policy read back off `app_config`, where a value this build cannot parse must not
@@ -7259,7 +7792,9 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
  * longer takes an operator's configured commands with it: those live in their own table with
  * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
+export const StoredWorkflowPolicySchema = z
+  .preprocess(migrateLegacyDefaultWorkflowId, WorkflowPolicySchema)
+  .catch(DEFAULT_WORKFLOW_POLICY);
 
 export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
@@ -7270,7 +7805,7 @@ export const CodeRabbitComparisonSchema = z.object({
 export const CodeRabbitReviewSummarySchema = z.object({
   comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
   counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
-  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryableConnection: z.literal(true).optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
@@ -8302,7 +8837,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -8339,6 +8874,12 @@ const ScheduleTemplateSchema = z
   .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // A chat mission exists so nothing reviews its runs. The editor stands After work down for
+  // it; this keeps a direct API caller from storing one the editor would never offer.
+  .refine((t) => taskKindAllowsBacklog(t.kind) || t.workflowId === null, {
+    path: ["workflowId"],
+    message: CHAT_WORKFLOW_REFUSAL,
   });
 
 /**
@@ -8862,8 +9403,113 @@ export const SessionTransferQuerySchema = z.object({
 });
 
 
+// ---- Pausing sessions (`@shared/pause.ts`) ----
+
+/** Pause one session: now, or once its current turn ends. */
+export const PauseSessionRequestSchema = z.object({
+  mode: z.enum(SESSION_PAUSE_MODES).default("now"),
+}).strict();
+
+/**
+ * Pause all. `resumeAt` is an epoch ms the daemon resumes at, or null to wait for a person; it
+ * must lie in the future and within a week, so a mistyped date cannot pause a fleet for a year.
+ */
+export const FleetPauseRequestSchema = z.object({
+  holdDispatch: z.boolean().default(true),
+  resumeAt: z.number().int().positive().nullable().default(null),
+}).strict();
+
+/** The longest automatic resume a Pause all may schedule, in ms. */
+export const FLEET_PAUSE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How many paused-session records the stored pause state may hold. */
+export const PAUSE_RECORDS_MAX = 1000;
+
+/**
+ * One paused session as the daemon persists it. `pids` is what was stopped, kept so a restart
+ * can thaw a tree whose session it never sees again; `runtime` decides whether the tree
+ * survives a daemon stop (a pane does, our SDK children do not).
+ */
+export const StoredSessionPauseSchema = z.object({
+  reason: z.enum(SESSION_PAUSE_REASONS),
+  phase: z.enum(["pending", "frozen"]),
+  since: z.number(),
+  interrupted: z.string().max(500).nullable().default(null),
+  runtime: z.enum(SESSION_RUNTIMES),
+  /**
+   * Each stopped process with the digest of its start-and-command identity. A pid alone is not
+   * enough: one can be reused by an unrelated process - across a restart above all - and a
+   * resume must never SIGCONT that process. The identity is checked before every SIGCONT.
+   */
+  procs: z.array(z.object({
+    pid: z.number().int().positive(),
+    identity: z.string().regex(/^[0-9a-f]{64}$/),
+  })).max(4096).default([]),
+  /**
+   * A resume was asked for and saved, and its SIGCONT may not have been sent or may not have
+   * been saved as done. The record stays until both are true, so a restart that finds it
+   * finishes the resume - it never freezes it again, and a pid that refused stays recorded.
+   */
+  resuming: z.boolean().default(false),
+  /**
+   * How the freeze was asked for. A `now` pause whose freeze failed is retried on its timer even
+   * mid-turn; an `after-turn` one waits for the turn to end. Absent on a record written before
+   * this was saved, which reads as `after-turn`, the behaviour it was written under.
+   */
+  mode: z.enum(SESSION_PAUSE_MODES).optional(),
+  /**
+   * When the pause first settled frozen - not when it was asked for (`since`). An after-turn
+   * pause asked for early freezes when its turn ends, and the paused row stops its clock there.
+   * Absent on records written before it was saved.
+   */
+  frozenAt: z.number().nullable().optional(),
+});
+export type StoredSessionPause = z.output<typeof StoredSessionPauseSchema>;
+
+/** The `pause.state` app_config row: the fleet-wide half plus every paused session. */
+export const StoredPauseStateSchema = z.object({
+  fleet: z.object({
+    since: z.number(),
+    resumeAt: z.number().nullable(),
+    holdDispatch: z.boolean(),
+  }).nullable().default(null),
+  priority: z.object({ sessionId: z.string().min(1).max(512), since: z.number() }).nullable().default(null),
+  sessions: boundedRecord(z.string().min(1).max(512), StoredSessionPauseSchema, PAUSE_RECORDS_MAX).default({}),
+  /**
+   * When each recently resumed session resumed, epoch ms: the outbox counts a held message's
+   * escalation from it. Kept only while it can still move a deadline, so it stays small.
+   */
+  resumed: boundedRecord(z.string().min(1).max(512), z.number(), PAUSE_RECORDS_MAX).default({}),
+});
+export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
+
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({
+  enabled: z.boolean(),
+  requestId: z.string().guid().optional(),
+  /**
+   * The session's own pending ask this click accepts, when the click came from its card. Bound
+   * only to which request is still on screen: the grant still needs the private click above,
+   * and a request the session no longer holds refuses the grant rather than applying it to a
+   * conversation that never asked.
+   */
+  controlRequestId: z.string().guid().optional(),
+}).strict();
+/** Longest reason a session may give for wanting Control other sessions. */
+export const SESSION_CONTROL_REQUEST_REASON_MAX = 2_000;
+/** `request_session_control`: the caller is the signed session credential, never a body id. */
+export const RequestSessionControlSchema = z.object({
+  reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX),
+}).strict();
+/** Where one ask stands. Only `granted` means the session holds the grant. */
+export const SESSION_CONTROL_REQUEST_STATUSES = ["pending", "granted", "declined", "expired"] as const;
+export type SessionControlRequestStatus = (typeof SESSION_CONTROL_REQUEST_STATUSES)[number];
+export interface SessionControlRequestResult {
+  id: string;
+  status: SessionControlRequestStatus;
+  /** Why an ask ended without a decision; set only on `expired`. */
+  detail?: string;
+}
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),

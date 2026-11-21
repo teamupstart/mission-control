@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ReviewItem } from "@shared/types.ts";
-import { isConversationResolvedReview } from "@shared/review-item.ts";
+import { isConversationQuestionRecord, isConversationResolvedReview } from "@shared/review-item.ts";
+import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { api } from "./api.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 
 /**
  * The reviews this session's conversation replays, from both halves of where they live.
@@ -34,6 +36,7 @@ export function useTimelineReviews(
   enabled = true,
 ): ReviewItem[] {
   const [stored, setStored] = useState<ReviewItem[]>([]);
+  const asyncInput = useFeatureFlag(ASYNC_INPUT_FLAG);
 
   useEffect(() => {
     let alive = true;
@@ -55,7 +58,7 @@ export function useTimelineReviews(
   // differs and a `useMemo` keyed on it would recompute every time anyway - reading as a
   // cache while never being one. The work it would be hiding is a Map build over a handful
   // of reviews, and the merge downstream already walks the rows once per render.
-  return timelineReviewsFor(sessionId, stored, live);
+  return timelineReviewsFor(sessionId, stored, live, asyncInput);
 }
 
 /**
@@ -73,24 +76,52 @@ export function useTimelineReviews(
  * is true of the request and false of the state, and the gap between them is a frame in which
  * session A's gold answers are drawn into session B's conversation. Filtering here closes it
  * without depending on when React chooses to run the effect.
+ *
+ * `asyncInput` is the live `async-input` flag. A question that waited inside its call and was
+ * closed by a merge is recorded only while the flag is on: with it off, such a question was
+ * never in the conversation before this feature, and must not appear there now, even if a merge
+ * closed it while the flag was on. A message-mode question is recorded either way. It exists only
+ * because the flag was on when it was asked, and turning the flag off leaves it answerable, so
+ * its Asked entry stays where the operator can answer it from.
  */
 export function timelineReviewsFor(
   sessionId: string,
   stored: ReviewItem[],
   live: ReviewItem[],
+  asyncInput = false,
 ): ReviewItem[] {
   // One test, applied identically to both sources. `isConversationResolvedReview` is the same
   // predicate the daemon's SQL filter mirrors, and it matters most for the LIVE list, which
   // carries every review of every status - including the pending one whose card is still on
   // screen. Admitting that would put an unanswered question in the log as though it had been
-  // answered.
+  // answered. A question the conversation records for itself (`isConversationQuestionRecord`:
+  // a message-mode question, or one a merge closed) is admitted in any status; `mergeConversation`
+  // draws it as an Asked or closure entry, and as an answer only when a human gave one.
   const keep = (r: ReviewItem): boolean =>
-    r.sessionId === sessionId && isConversationResolvedReview(r);
+    r.sessionId === sessionId
+    && (isConversationResolvedReview(r)
+      || (isConversationQuestionRecord(r) && (asyncInput || r.waitMode === "message")));
 
   const byId = new Map<string, ReviewItem>();
   // Stored first so the live copy overwrites it, not the other way round: a review in both is
   // the same row, and the live one is never older.
   for (const r of stored) if (keep(r)) byId.set(r.id, r);
-  for (const r of live) if (keep(r)) byId.set(r.id, r);
+  // A live row that no longer qualifies retires its stored copy: the live one is never older, so
+  // a filed question an older MCP child turned back into a blocking call (it loses `waitMode` and
+  // its meanwhile line) must not keep the Asked entry the stale stored row would still draw.
+  for (const r of live) {
+    if (keep(r) || isSnoozedHere(r, sessionId)) byId.set(r.id, r);
+    else byId.delete(r.id);
+  }
   return [...byId.values()];
+}
+
+/**
+ * A question this session's operator chose "Remind me later" on. It is not an answer, but it
+ * is where the answer will go, and the agent carried on because of it, so the conversation
+ * shows it as a snoozed card (`SnoozedReviewCard`). Live only: the parked row is always in the
+ * registry, and the durable fetch returns settled answers alone.
+ */
+function isSnoozedHere(review: ReviewItem, sessionId: string): boolean {
+  return review.sessionId === sessionId && review.status === "snoozed";
 }

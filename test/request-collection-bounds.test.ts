@@ -102,6 +102,7 @@ const ROUTE_FILES = [
   "src/server/routes.ts",
   "src/server/session-control.ts",
   "src/server/residents/routes.ts",
+  "src/server/shaping/routes.ts",
   "src/server/workflows/mcp.ts",
   "src/server/telemetry/primary-actions.ts",
   "src/server/telemetry/workflow-actions.ts",
@@ -178,9 +179,11 @@ test("external model replies and backup JSON also bound every collection", async
   const { VerdictSchema } = await import("../src/server/foreman/verdict.ts");
   const { SettingsBackupJsonValueSchema } = await import("../src/shared/settings-backups.ts");
   const { SETTINGS_BACKUP_CATALOGS } = await import("../src/server/settings-backups/catalogs.ts");
+  const { ShapingConfigSchema, ShapingResultSchema } = await import("../src/shared/shaping.ts");
   const schemas: [string, Schema][] = [
     ["backlog reply", BacklogReportSchema], ["queue reply", QueueVerdictSchema],
     ["Foreman reply", VerdictSchema], ["backup JSON", SettingsBackupJsonValueSchema],
+    ["shaper reply", ShapingResultSchema], ["stored shaping config", ShapingConfigSchema],
     ...SETTINGS_BACKUP_CATALOGS.map((entry): [string, Schema] => [`backup ${entry.domain}`, entry.schema]),
   ];
   assert.deepEqual(schemas.flatMap(([name, schema]) => unboundedCollections(schema).map(at => `${name}: ${at}`)), []);

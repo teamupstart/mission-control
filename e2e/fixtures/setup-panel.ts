@@ -25,6 +25,17 @@ export async function openSetupFamily(page: Page, family: SetupFamilyId): Promis
   await expect(page.locator(`#setup-family-${family}`)).toHaveAttribute("aria-current", "true");
 }
 
+/**
+ * Open Settings → Setup on its Repositories family, where the indexed-directory editor lives.
+ *
+ * Repositories used to be its own Settings category. It is now a Setup family, so a spec
+ * names the family rather than inheriting whichever one the rail opens on.
+ */
+export async function openRepositorySetup(page: Page, baseURL: string): Promise<void> {
+  await page.goto(`${baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "repositories");
+}
+
 /** One Setup row, by the anchor `setupRowAnchor` gives it. */
 export function setupRow(page: Page, anchor: string): Locator {
   return page.locator(`[data-anchor="setup/${anchor}"]`);

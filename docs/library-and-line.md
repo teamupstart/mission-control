@@ -243,7 +243,9 @@ its count, sits in a footer below it.
 revision and when it was last written on one dim line beneath. **Save** is promoted on an action
 you can edit and **Duplicate to edit** on a built-in or an archived one, where there is no
 revision the editor could write. Duplicate and Archive live behind the `⋯` menu, which is absent
-on a read-only action because both of its entries are.
+on a read-only action because both of its entries are. The built-in **Grill** is the exception:
+its instruction is editable and **Save** is promoted, while its name, description and contract
+chips stay read-only, and once edited its `⋯` menu offers **Reset to built-in**.
 
 **Two property chips carry the contract** - `requires skill` and `completes when` - and each
 opens the control that sets it. `requires skill` draws quiet when the action requires none and

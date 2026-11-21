@@ -371,7 +371,7 @@ test("moving a question to chat from the attention inbox opens the session at it
   await expect(detail.locator(".transcript-log .review-answer").getByText("Moved to chat")).toHaveCount(1);
 });
 
-test("typing an Other answer takes a question out of chat, and blank text does not", async ({
+test("text typed beside Chat about it stays, and goes to the agent as context", async ({
   dashboard,
   daemon,
 }) => {
@@ -396,29 +396,28 @@ test("typing an Other answer takes a question out of chat, and blank text does n
   const modal = await openReview(dashboard);
   const group = modal.getByRole("group", { name: question });
   const chat = group.getByRole("radio", { name: "Chat about it" });
-  const other = group.getByPlaceholder("Other…");
+  const other = group.getByPlaceholder("Other answer, or add context…");
   const submit = modal.getByRole("button", { name: /^Submit/ });
 
-  await other.fill("something else");
+  // Typed first, then moved: the move keeps the text.
+  await other.fill("does v2 read v1 files?");
   await chat.check();
-  await expect(other).toHaveValue("");
-  await expect(submit).toHaveText("Submit & chat (1)");
-
-  await other.fill("   ");
+  await expect(other).toHaveValue("does v2 read v1 files?");
+  // And typing more never takes the question back out of chat.
+  await other.fill("does v2 still read v1 files?");
   await expect(chat).toBeChecked();
   await expect(submit).toHaveText("Submit & chat (1)");
-
-  await other.fill("pin to v3");
-  await expect(chat).not.toBeChecked();
-  await expect(submit).toHaveText("Submit");
-  await expect(submit).toBeEnabled();
   await submit.click();
   await expect(modal).toBeHidden();
 
   const result = await agentResult(daemon, id);
   expect(result.status).toBe("answered");
-  expect(result.response).toBe(`Plan decisions submitted:\n\n• ${question}\n  Other: pin to v3`);
-  expect(result.selections).toEqual([{ decisionId: "format", selected: [], other: "pin to v3" }]);
+  expect(result.response).toMatch(
+    new RegExp(`^Plan decisions submitted:\\n\\n• ${question.replace("?", "\\?")}\\n  → Chat about it\\n  Context: does v2 still read v1 files\\?\\n\\nThe human wants to discuss`),
+  );
+  expect(result.selections).toEqual([
+    { decisionId: "format", selected: [], other: "does v2 still read v1 files?", chat: true },
+  ]);
 });
 
 test("moving a question to chat closes the dialog even while another review is still pending", async ({

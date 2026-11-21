@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -143,6 +144,9 @@ function exportedSpans(profile: string): TracesBatchPayload["spans"] {
   return rows.flatMap((row) => (JSON.parse(row.payload_json) as TracesBatchPayload).spans);
 }
 
+/** A Claude SDK launch is refused without Mission Control's server (`sdkAskChannel`). */
+const MISSION_MCP = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
 function launchOpts(over: Partial<SdkLaunchOptions> = {}): SdkLaunchOptions {
   return {
     cwd: "/wt/one",
@@ -187,6 +191,10 @@ test("the launch environment drops an inherited trace context and adds only TRAC
   assert.deepEqual(withAgentTraceContext(inherited, null), { PATH: "/usr/bin" });
   assert.deepEqual(withAgentTraceContext(inherited, PARENT), { PATH: "/usr/bin", TRACEPARENT: PARENT.traceparent });
   assert.equal("TRACEPARENT" in inherited, true, "the input is not mutated");
+  // A carried context, such as a shaping run's, may bring its own tracestate: it replaces the
+  // inherited one, and a context without one still sets none.
+  assert.deepEqual(withAgentTraceContext(inherited, { ...PARENT, tracestate: "mc=launch" }),
+    { PATH: "/usr/bin", TRACEPARENT: PARENT.traceparent, TRACESTATE: "mc=launch" });
 });
 
 // ---- which context a session gets ----
@@ -258,13 +266,13 @@ test("Claude's SDK launch carries the context in env and no telemetry routing ke
     },
   };
 
-  await claudeSdkSpec(deps).launch(launchOpts({ traceContext: PARENT }));
+  await claudeSdkSpec(deps).launch(launchOpts({ traceContext: PARENT, mcp: MISSION_MCP }));
   const withContext = (options as ClaudeSdkQueryOptions | null)?.env ?? {};
   assert.equal(withContext.TRACEPARENT, PARENT.traceparent);
   assert.equal("TRACESTATE" in withContext, false);
   assert.deepEqual(telemetryRoutingKeys(withContext), []);
 
-  await claudeSdkSpec(deps).launch(launchOpts());
+  await claudeSdkSpec(deps).launch(launchOpts({ mcp: MISSION_MCP }));
   const without = (options as ClaudeSdkQueryOptions | null)?.env ?? {};
   assert.equal("TRACEPARENT" in without, false, "an inherited context never reaches the session");
   assert.deepEqual(telemetryRoutingKeys(without), []);
@@ -339,7 +347,7 @@ test("the supervisor launches and restores a session under that session's own co
   };
   t.after(() => (HARNESSES.claude.sdk = real));
 
-  const supervisor = new SdkSupervisor(new Registry());
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start({
     agent: "claude",
     name: "trace",
@@ -360,7 +368,7 @@ test("the supervisor launches and restores a session under that session's own co
     cwd: "/wt/restored-trace", taskId: null, model: null, effort: null, permissionMode: null,
     status: "suspended", turnInProgress: false,
   });
-  await new SdkSupervisor(new Registry()).restore();
+  await new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
   const restored = calls.find((call) => call.resume === "restored-conversation");
   assert.ok(restored, "the suspended row was relaunched");
   assert.deepEqual(restored.traceContext, sessionTraceContext("sdk:restored-trace"));

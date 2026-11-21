@@ -1408,26 +1408,43 @@ export const EFFORT_SELECTIONS_METRIC = defineMetric({
   }),
 });
 
+/**
+ * Entry attribution, independent of where the agent runs or how it was discovered.
+ * A declared human alone is not evidence of dashboard use. Terminal typing never reaches
+ * this event; missing app context stays unknown rather than implying terminal activity.
+ */
+function sessionInteractionSource(actor: TelemetryEnvelope["actor"]): "dashboard" | "automation" | "unknown" {
+  if (actor.kind === "human" && actor.origin === "dashboard" && actor.basis === "app_context") {
+    return "dashboard";
+  }
+  if (["owner", "app_context", "declared"].includes(actor.basis) &&
+    ["agent", "foreman", "workflow", "scheduler", "recovery", "system"].includes(actor.kind)) {
+    return "automation";
+  }
+  return "unknown";
+}
+
 export const SESSION_OPERATIONS_METRIC = defineMetric({
   name: "mission.session.operations",
-  description: "Conversation operations that reached a session, by kind, outcome and actor basis.",
+  description: "Conversation operations by kind, outcome, actor basis and interaction source; direct terminal input is unmeasured.",
   unit: "1",
   kind: "counter",
   valueType: "int",
   event: SESSION_OPERATION_EVENT.name,
   audience: AUDIENCE_ALL,
-  dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis"],
+  dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis", "interaction_source"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
   since: 1,
   owner: "src/shared/telemetry-catalog.ts",
-  contribution: (facts) => ({
+  contribution: (facts, envelope) => ({
     dimensions: {
       operation: dim(facts.operation),
       outcome: dim(facts.outcome),
       agent: dim(facts.agent),
       runtime: dim(facts.runtime),
       actor_basis: dim(facts.actor_basis),
+      interaction_source: sessionInteractionSource(envelope.actor),
     },
     value: 1,
   }),

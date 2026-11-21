@@ -12,6 +12,18 @@ export interface ResidentIteration {
   delivery: "claimed" | "sent" | "released" | "unconfirmed";
   transcript_offset: number | null; claimed_at: number; sent_at: number | null;
   conversation_key: string | null; message_id: string | null; message_ts: number | null;
+  /** The exact text sent when it was more than marker and loop prompt; NULL when it was not. */
+  wake_text: string | null;
+  /** The compaction this wake restated the standing task after, or NULL. */
+  reanchor_epoch: number | null;
+}
+/** What a wake sends: its marker, the restated standing task when one is owed, then the loop prompt. */
+export function residentWakeTurn(runId: string, seq: number, prompt: string, restatement: string | null = null): string {
+  return `${residentWakeMarker(runId, seq)}\n${restatement ? `${restatement}\n\n` : ""}${prompt}`;
+}
+/** The text one claimed wake carried, which is what confirms its delivery and identifies its turn. */
+export function residentWakeTextFor(row: ResidentIteration, run: ResidentRun): string {
+  return row.wake_text ?? residentWakeTurn(row.run_id, row.seq, run.settings.loop.prompt);
 }
 export class ResidentLoopRefusal extends Error {}
 export function liveRun(id: string): ResidentRun {
@@ -29,8 +41,9 @@ export function claimedIteration(id: string): ResidentIteration | undefined {
 }
 const CLEAR_REQUEST = "wake_request_delay_s = NULL, wake_request_reason = NULL, wake_request_generation = NULL";
 export function pauseResident(id: string, reason: string): void {
+  // A pause also drops a queued Run now: the operator's next Run now or Resume decides again.
   openDb().prepare(`UPDATE resident_runs SET loop_state = 'paused', pause_reason = ?, next_wake_at = NULL,
-    ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
+    run_requested_at = NULL, ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
 }
 /** Upgrade only the obsolete automatic pause; explicit and guardrail pauses remain durable. */
 export function releaseResidentReviewPause(id: string): boolean {
@@ -41,7 +54,7 @@ export function releaseResidentReviewPause(id: string): boolean {
 export function resumeResident(id: string, working: boolean, generation: number | null, at: number): void {
   const run = liveRun(id);
   openDb().prepare(`UPDATE resident_runs SET loop_state = ?, pause_reason = NULL, wake_reason = NULL, next_wake_at = ?,
-    consumed_generation = ? WHERE id = ?`).run(working ? "working" : "waiting",
+    consumed_generation = ?, compaction_failures = 0 WHERE id = ?`).run(working ? "working" : "waiting",
     working ? null : at + run.settings.loop.delaySeconds * 1000,
     working ? run.consumedGeneration : generation ?? run.consumedGeneration, id);
 }
@@ -51,9 +64,61 @@ export function beginResidentCompaction(id: string): void {
 }
 export function completeResidentCompaction(id: string, generation: number | null): void {
   const run = liveRun(id);
-  // Consume the maintenance generation without scheduling or counting an iteration.
-  openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ? WHERE id = ?")
+  // Consume the maintenance generation without scheduling or counting an iteration. The
+  // compaction itself is recorded by `markResidentCompacted`, from the driver's boundary.
+  openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ?, compaction_failures = 0 WHERE id = ?")
     .run(generation ?? run.consumedGeneration, id);
+}
+/**
+ * Record one compaction of the run's conversation: the only writer of `compaction_epoch`.
+ *
+ * Reached from the driver's observed boundary, so every compaction counts once whoever asked
+ * for it - the loop's own maintenance `/compact`, the harness's auto-compact or native backstop,
+ * or a `/compact` the operator typed. The loop's maintenance compaction is measured from that
+ * same boundary, which the driver announces before the result that completes it.
+ */
+export function markResidentCompacted(id: string): boolean {
+  return !!openDb().prepare(`UPDATE resident_runs SET compaction_epoch = compaction_epoch + 1
+    WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(id).changes;
+}
+/** True when a compaction happened after the last wake that restated the standing task. */
+export function residentRestatementOwed(id: string): boolean {
+  const row = openDb().prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = ?")
+    .get(id) as { compaction_epoch: number; reanchored_epoch: number } | undefined;
+  return !!row && row.compaction_epoch > row.reanchored_epoch;
+}
+/** Count one more consecutive compaction failure and return the new total. */
+export function recordResidentCompactionFailure(id: string): number {
+  return (openDb().prepare(`UPDATE resident_runs SET compaction_failures = compaction_failures + 1
+    WHERE id = ? RETURNING compaction_failures`).get(id) as { compaction_failures: number }).compaction_failures;
+}
+/**
+ * Leave a failed compaction for a later wake, which compacts again because context is still
+ * above the threshold. An idle session gets its wake now, consuming any maintenance
+ * generation so the ordinary cadence cannot replace the backoff. A session still unwinding
+ * the interrupted turn gets the delay as a pacing request, applied from that turn's completion.
+ */
+export function retryResidentCompaction(id: string, retry: { delaySeconds: number; reason: string; at: number; generation: number | null; idle: boolean }): void {
+  const run = liveRun(id);
+  if (run.loopState !== "compacting") return;
+  if (retry.idle) {
+    openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ?, next_wake_at = ?,
+      wake_reason = ?, ${CLEAR_REQUEST} WHERE id = ?`).run(retry.generation ?? run.consumedGeneration,
+      retry.at + retry.delaySeconds * 1000, retry.reason, id);
+  } else {
+    openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', next_wake_at = NULL, wake_reason = ?,
+      wake_request_delay_s = ?, wake_request_reason = ?, wake_request_generation = ? WHERE id = ?`).run(
+      retry.reason, retry.delaySeconds, retry.reason, Math.max(retry.generation ?? -1, run.consumedGeneration ?? -1), id);
+  }
+}
+/** Queue Run now behind the turn in progress. The first press's time is kept. */
+export function requestResidentRun(id: string, at: number): void {
+  liveRun(id);
+  openDb().prepare("UPDATE resident_runs SET run_requested_at = COALESCE(run_requested_at, ?) WHERE id = ?").run(at, id);
+}
+/** Drop a queued Run now. True when one was queued. */
+export function clearResidentRunRequest(id: string): boolean {
+  return !!openDb().prepare("UPDATE resident_runs SET run_requested_at = NULL WHERE id = ? AND run_requested_at IS NOT NULL").run(id).changes;
 }
 export function humanResidentTurn(id: string, preservePacing = false): void {
   openDb().prepare(`UPDATE resident_runs SET next_wake_at = NULL, wake_reason = NULL, ${preservePacing ? "" : `${CLEAR_REQUEST},`}
@@ -101,14 +166,23 @@ export function paceResident(id: string, request: ResidentPacingRequest, generat
     return receipt;
   });
 }
-export function claimResidentWake(id: string, trigger: "loop" | "run_now", offset: number | null, at: number, conversationKey: string | null = null): ResidentIteration | null {
+/**
+ * Claim the next wake. `restatement` is the standing task to restate when a compaction is
+ * owed one; it is carried only when the epochs, read inside this transaction, still owe it.
+ */
+export function claimResidentWake(id: string, trigger: "loop" | "run_now", offset: number | null, at: number,
+  conversationKey: string | null = null, restatement: string | null = null): ResidentIteration | null {
   return inResidentTransaction(() => {
     const run = liveRun(id);
     if (run.loopState === "paused" || claimedIteration(id)) return null;
     const seq = run.lastSeq + 1;
+    const epochs = openDb().prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = ?")
+      .get(id) as { compaction_epoch: number; reanchored_epoch: number };
+    const reanchor = restatement && epochs.compaction_epoch > epochs.reanchored_epoch ? epochs.compaction_epoch : null;
     openDb().prepare("UPDATE resident_runs SET last_seq = ?, loop_state = 'working', next_wake_at = NULL WHERE id = ?").run(seq, id);
-    openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, transcript_offset, claimed_at, conversation_key)
-      VALUES (?, ?, ?, 'claimed', ?, ?, ?)`).run(id, seq, trigger, offset, at, conversationKey);
+    openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, transcript_offset, claimed_at, conversation_key,
+      wake_text, reanchor_epoch) VALUES (?, ?, ?, 'claimed', ?, ?, ?, ?, ?)`).run(id, seq, trigger, offset, at, conversationKey,
+      reanchor === null ? null : residentWakeTurn(id, seq, run.settings.loop.prompt, restatement), reanchor);
     return claimedIteration(id)!;
   });
 }
@@ -120,7 +194,7 @@ export function residentWakePresentation(message: TranscriptMessage, conversatio
     .get(marker[1]!, Number(marker[2]), conversation.key) as unknown as ResidentIteration | undefined;
   const run = row && getResidentRun(row.run_id)?.run;
   if (!row || !run) return null;
-  const expected = `${residentWakeMarker(row.run_id, row.seq)}\n${run.settings.loop.prompt}`;
+  const expected = residentWakeTextFor(row, run);
   if (message.text !== expected) return null;
   if (row.message_id === null) {
     const transcript = conversation.transcript;
@@ -141,13 +215,20 @@ export function residentWakePresentation(message: TranscriptMessage, conversatio
       }
     } catch { return null; }
   }
-  return row.message_id === message.id && row.message_ts === message.ts ? run.settings.loop.prompt : null;
+  // Everything after the marker line: the loop prompt, and any restated standing task before it.
+  return row.message_id === message.id && row.message_ts === message.ts
+    ? expected.slice(residentWakeMarker(row.run_id, row.seq).length + 1) : null;
 }
 export function settleResidentClaim(row: ResidentIteration, delivery: "sent" | "released" | "unconfirmed", at: number): void {
   inResidentTransaction(() => {
     const changed = openDb().prepare(`UPDATE resident_iterations SET delivery = ?, sent_at = ?
       WHERE run_id = ? AND seq = ? AND delivery = 'claimed'`).run(delivery, delivery === "sent" ? at : null, row.run_id, row.seq);
     if (!changed.changes) return;
+    // Only a delivered restatement settles what it restated. A released one was never sent, and
+    // an unconfirmed one may not have been, so the next wake restates again rather than risk none.
+    if (delivery === "sent" && row.reanchor_epoch !== null) {
+      openDb().prepare("UPDATE resident_runs SET reanchored_epoch = MAX(reanchored_epoch, ?) WHERE id = ?").run(row.reanchor_epoch, row.run_id);
+    }
     if (delivery !== "released") openDb().prepare("UPDATE resident_runs SET iteration = iteration + 1 WHERE id = ?").run(row.run_id);
     if (delivery === "unconfirmed") pauseResident(row.run_id, "wake delivery unconfirmed");
     if (delivery === "released") openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', next_wake_at = ?

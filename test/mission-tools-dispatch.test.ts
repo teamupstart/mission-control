@@ -89,7 +89,7 @@ test("one machine probe can satisfy availability without changing Pi's MCP clien
 });
 
 for (const agent of ["claude", "codex"] as const) {
-  test(`${agent} dispatch argv is byte-identical to the pre-capability baseline`, async () => {
+  test(`${agent} dispatch argv matches the launch contract fixture`, async () => {
     const clone = repo();
     setHarnessesConfig({ autoModeOnDispatch: true });
     const registry = new Registry();
@@ -106,11 +106,12 @@ for (const agent of ["claude", "codex"] as const) {
     }).dispatch(id, { missionMcp: { tools: ["request_input", "submit_ensemble_result"] } });
     const argv = captured.argv;
     assert.ok(argv, registry.getTask(id)?.error ?? "spawn must receive argv");
-    // Captured from dispatcher.ts at cc709c01, before this capability change. Only
-    // machine paths, the inherited PATH and temporary credential locations vary.
+    // Originally captured from dispatcher.ts at cc709c01; now includes the shared Go cache.
+    // Only machine paths, the inherited PATH, cache and temporary credential locations vary.
     // Every flag, other value, ordering and escaped byte is pinned.
     const stable = argv.map((arg) => arg
       .replace(/"PATH"="[^"]*"/, '"PATH"="<PATH>"')
+      .replace(/"GOCACHE"="(?:\\.|[^"\\])*"/, '"GOCACHE"="<GO_CACHE>"')
       .replace(/"MISSION_HOME"="[^"]*"/, '"MISSION_HOME"="<AGENT_HOME>"')
       .replace(/"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE"="[^"]*"/,
         '"MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE"="<CREDENTIAL_FILE>"'));
@@ -119,6 +120,8 @@ for (const agent of ["claude", "codex"] as const) {
       .replaceAll(process.cwd(), "<CHECKOUT>")
       .replaceAll(process.execPath, "<NODE>");
     const fixture = new URL(`./fixtures/mission-tools-${agent}-argv.json`, import.meta.url);
+    // Regenerate from the real dispatch boundary with MISSION_UPDATE_DISPATCH_FIXTURES=1.
+    if (process.env.MISSION_UPDATE_DISPATCH_FIXTURES === "1") writeFileSync(fixture, serialized + "\n");
     assert.equal(serialized + "\n", readFileSync(fixture, "utf8"));
   });
 }

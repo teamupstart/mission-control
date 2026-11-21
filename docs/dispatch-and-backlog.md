@@ -39,6 +39,10 @@ request as that first turn and leaves the platform-owned context out. See
 [the first turn of a dispatched session](sessions.md#the-first-turn-of-a-dispatched-session-shows-your-request-not-the-whole-launch-prompt)
 for what is and is not covered by that, and for why no evidence path is affected.
 
+The **pipeline** kind is temporarily unavailable while the ai-conductor integration is rebuilt:
+Dispatch does not offer it, and a stored Pipeline task refuses to dispatch with that reason. The
+rest of this section describes it as it returns.
+
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row plus one durable commission. Before the configured Engineer host
 starts, Mission Control reserves the provider Engineer run with the commission correlation and
@@ -90,7 +94,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
 | **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, bugfix, and document | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, <kbd>d</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
-| **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
+| **After work** | the kind's dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
 A common dispatch is <kbd>+</kbd> <kbd>↵</kbd> <kbd>p</kbd> <kbd>c</kbd> <kbd>↵</kbd>, then
 the task. Digits are ordinary filter characters during Repo and position shortcuts in the
@@ -194,6 +198,45 @@ A [resident](residents.md) takes its Persona from its profile and never from thi
 `create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
 `personaId`.
 
+## Grill me first
+
+**Grill me first** makes a task interview you before it starts its work. It is offered for every
+kind this app launches: ship, bugfix, document, plan, scout and chat. When it is on, the task's
+intent is delivered with the Library's built-in **Grill** session action in front of the kind's
+own contract: the agent asks in rounds, each one `request_plan_decisions` form holding every
+question that can be asked so far, with its recommended option listed first and a free-text
+**Other**. Facts the agent can look up itself, with its subagents, are never put to you; only
+decisions are. There is always at least one round, rounds continue until nothing is left to ask, and
+dismissing a round stops the session before the work starts. A round may open with nothing
+selected, so an answer is only what you selected or wrote. Grilling rounds are not the review of
+anything the task delivers: a plan's review and phased follow-up still come afterwards. Once the
+interview is done the task carries on exactly as it would have, with the settled decisions as
+part of its request. When it is off, a task is delivered exactly as it always was.
+
+- **Where it is set.** Each kind's default is its chip in the **Grill me first** card on
+  **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+  chip in the bar under the **Task** box for every kind that offers it, so one task can differ
+  from its kind's default, and the backlog editor can change it while the task is shelved. The
+  text opposite the chip says where its value came from: **Follows the ship default**, or
+  **Off for this task** with a dot on the chip and a **Reset** that returns it to the default.
+  In the backlog editor it reads as the task's own pin, with no Reset. What it does is the
+  chip's tooltip.
+- **Pinned when filed.** The choice is stored on the task when it is created, so changing a
+  default later moves no existing task. A task filed by a task source, a recurring mission or
+  MCP `create_task` takes its kind's default. Switching a shelved task between two kinds that
+  offer it keeps its choice; switching it in from a kind without it takes the new kind's default.
+- **Editing the interview.** The Grill action is the one built-in session action edited in
+  place: open it under **Library → Actions**, change its instruction and **Save**, and every later
+  grill-first task is sent your text. **Reset to built-in**, in its `⋯` menu, restores the shipped
+  instruction. Its name, required skill and completion stay as shipped.
+- **It needs the Grill skill.** With Grill me first on, the bundled
+  [Grill skill](skills-and-settings.md) must be switched on as well, or the dispatch is refused on
+  the form naming it, and a launch that reaches the daemon anyway fails rather than starting an
+  interview the agent cannot load. A grill-first task of any kind is granted
+  `request_plan_decisions`. Handing one to an agent that is already running is refused before
+  its checkout is reset when Mission Control's MCP server is not built, or does not publish
+  `request_plan_decisions`.
+
 ## Attaching more than one repository
 
 Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
@@ -203,6 +246,9 @@ terminal-only; this does not introduce an embedded Pi runtime.
 Some work does not fit in one repo: a contract change and its consumers, a lockstep API
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.
+
+A [resident profile](residents.md#attaching-more-than-one-repository) can attach the same kind
+of repository set to every launch, and Dispatch > Resident can change it for one run.
 
 Mission MCP agents can create the same repository set with `create_task`. Omitting repository
 selectors keeps the caller's main checkout as primary. `repository` selects another primary and
@@ -312,28 +358,42 @@ when it launches.
 **After work** can arm any active published Workflow for the task. You can make that
 selection and add the task to the backlog while Foreman is off. When the task is dispatched,
 Foreman must be enabled and the selected harness must support its completion boundary; the
-Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
-machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. New installations start on the built-in
-**No-Mistakes Review** workflow. That default stores the workflow identity rather than today's version, so
-each new binding takes the newest immutable version shipped at the time (see
-[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. The dispatch
-form can override that choice for one task, including an explicit **None** that finishes
-without a Workflow.
+Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
-Choosing **document** selects **Documentation Review**.
-Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
-and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
-mission retains its explicit workflow or None. Returning from a kind default restores the prior
-mission choice, including None; an explicit after-work edit cancels that restoration. These kind defaults apply to API-created
-tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
-keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
+**Settings → Tasks** has an **After work** card with one row per task kind Mission Control
+launches: ship, bugfix, document, plan, scout and chat. Each row picks that kind's Workflow.
+Pipeline has none, because Conductor owns what runs after its work. Each row holds one of three
+answers:
 
-Choosing **scout** or **chat** in the dispatch form preselects **None**. Returning to Ship restores
-the selection put aside by a kind switch. A manual after-work choice clears that restoration,
-so returning to Ship does not overwrite it. Plan, Bugfix, and Document defaults remain selectable workflows rather
-than locks: choose **None** to opt out, or select another published workflow.
+| Row | What a new task of that kind arms |
+| --- | --- |
+| **Built-in default (…)** | The kind's built-in, named in the label: **No-Mistakes Review** for ship, **Bug Fix Review** for bugfix, **Documentation Review** for document, **Plan Validation** for plan, and **None** for scout and chat. A plan pinned to local storage always arms **Local Plan Validation**. Nothing is stored, so a later build that changes a built-in reaches the row. |
+| A published Workflow | That Workflow, for example your own copy of a built-in. Any active published Workflow may be chosen for any kind. |
+| **None** | Nothing runs after the work. |
+
+A row stores the workflow identity rather than today's version, so each new binding takes the
+newest immutable version published at the time (see
+[Built-in workflows](workflows.md#built-in-workflows)) while older bindings stay pinned. A row
+is read when a task is filed: changing it reaches the next task, and a task already in the
+backlog keeps the Workflow it was filed with. A Workflow a row names cannot be archived or
+deleted until the row changes; the refusal names the kinds that use it.
+
+The rows reach every creation path that leaves the Workflow unnamed: the dispatch form, a
+`POST /api/tasks` without `workflowId`, MCP-created tasks, and task-source sweeps. An explicit
+Workflow or an explicit **None** always wins.
+
+Choosing a kind in the dispatch form preselects that kind's row. Returning to **ship**
+restores the selection a switch put aside, without waiting for the settings fetch. A manual
+after-work choice clears that restoration, so returning to ship does not overwrite it. Rows
+are defaults, not locks: choose **None** to opt out, or select another published
+workflow. Bugfix and Document behave like Ship for dispatch, backlog scheduling, implementation
+handoff, PR follow-through, and recovery; their default workflows are the difference.
+
+In a Recurring Mission, choosing **bugfix**, **document** or **plan** also preselects its row,
+while a saved mission retains its explicit workflow or None. Returning from a kind default
+restores the prior mission choice, including None; an explicit after-work edit cancels that
+restoration. Ship keeps the mission's own choice, which starts on None (see
+[Recurring missions](recurring-missions.md#the-after-work-handoff)).
 
 **document** writes or maintains repository documentation and produces a reviewable diff.
 It is available in Dispatch, backlog, Recurring Missions, and task sources, with per-kind
@@ -349,9 +409,13 @@ diff is not suppressed as an incidental review artifact.
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
-backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
-artifact, or archive contract.
+backlog, carry dependencies, be created by a task source, or be selected for an Ensemble
+member. The one exception is a [Recurring Mission](recurring-missions.md#chat-missions): a
+mission may name **chat**, and each run files a chat into the backlog that Foreman launches in a
+fresh session like any other run. Mission Control adds no task-kind prompt appendix, artifact, or archive
+contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
+launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
+the ordinary backlog and dispatch checks while the original conversation stays a chat.
 
 With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
 that the agent has answered, but it does not offer or send an automatic completion action; the
@@ -401,6 +465,9 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
+With [Grill me first](#grill-me-first) on, a plan task interviews you before it drafts. The
+plan contract above follows the interview unchanged, review and phased follow-up included.
+
 A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
 the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
@@ -437,23 +504,34 @@ itself satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task of a
-kind those surfaces support.
+Recurring Missions resolve the same per-kind dispatch default when they create an ordinary
+task of a kind those surfaces support without naming a Workflow.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
-listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+listed in the **Repositories** family of **Settings → Setup**, seeded with `~/workspace`, `~/code`, `~/dev`, and
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
 
-The Settings panel is also where the index is maintained. Any directory can be removed, including
-a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
-leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
-checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
-and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+The picker never waits on a rescan it does not need. The daemon answers from its last scan of
+the same directories to the same depth - kept in `repo-index-cache.json` in the state directory,
+so it survives a restart - and walks the disk again behind that answer once the scan is older
+than `MISSION_REPOS_CACHE_MS` (30 seconds by default). Walks of the same directories never overlap: readers share the
+walk in progress, and every Dispatch open that arrives during one shares a single walk queued
+behind it. The form opens on the newest list this window has received, and on every open it also
+asks for a scan that starts after the request. When that answer arrives it replaces the list, so a checkout you
+cloned a moment ago is offered without waiting out the cache. Lists are ordered by when their
+scan started, not by when they arrived, so a slow answer from an older scan never puts a
+repository back or takes one away. Saving a change to the indexed directories, or
+restoring settings, makes every open window forget its list - including a Dispatch form already
+on screen, and a window that was disconnected at the time, which catches up when it reconnects -
+so no picker offers a repository from a directory you just removed. The field reads **indexing workspace…** only when the window holds
+no list and no scan has answered yet.
+
+That Setup family is also where the index is maintained; see
+[Repositories in the setup guide](setup.md#repositories). This same repository picker is reused by Dispatch,
 **Settings → Trust**, **Standing instructions**, and **Task sources**.
 
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
@@ -629,7 +707,14 @@ The prompts go through Foreman; when it cannot send one, the merge queue says wh
 send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
 owner again. If the prerequisite's pull
 request closes without merging, or its task is cancelled or rescheduled, the stacked pull
-request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+request is held as *Stack broken* with an action that fixes it. If someone merges the stacked
+pull request on GitHub into its prerequisite's branch instead of the default branch, nothing is
+completed: the task stays open and its own dependents stay blocked. When that merge came after the
+prerequisite's pull request had already merged, the session is asked to carry the work onto the
+default branch in a new pull request, whose merge completes it. When the prerequisite was still
+open, no prompt is sent, and the operator confirms whether the work reached the default branch. See
+[a merge into the parent's branch](inspector-and-shipping.md#a-merge-into-the-parents-branch).
+Flipping the dependency to
 *After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
@@ -729,6 +814,15 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### Work units
+
+Every task has a [work unit](work-units.md) id, `workUnitId`, except a resident run's. A plan
+task and the phase tasks its session files through MCP `create_task` share one. Which other
+tasks share a work unit and which get their own is set out in
+[Which tasks share one](work-units.md#which-tasks-share-one). A task shelved before work units
+existed gets its id when it is next dispatched or assigned. `list_tasks` can list the tasks of
+one work unit.
+
 ### One agent, one task at a time - but not one task per agent
 
 **An agent runs tasks one after another, for as long as it's alive.** Finish one, take the
@@ -803,11 +897,32 @@ remote-default fetch, including broken Git or SSH authentication to `origin`, is
 and retried from the Board instead of disappearing into terminal history. Its next launch starts
 with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
 ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
-SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
-that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task that
+cannot appear in Backlog, such as a chat no Recurring Mission filed, remains failed even in this
+resource-free state. Deterministic
 launch refusals outside that resource phase also remain failed, and once any launch resource
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
+
+Live dispatch failures also write a single-line `dispatch_failed` JSON record to the daemon
+log, prefixed with `[dispatch]`. It includes an ISO timestamp, task ID, dispatch phase,
+repository path, and error text. A remote-default base-freeze failure includes the last Git
+command as an argv array, measured elapsed milliseconds, timeout budget, exit code or signal,
+and timeout, unknown-outcome, and output-overflow flags. A killed child has a null exit code
+rather than the executor's synthetic exit 1. If an attached repository fails, the record names
+that repository. These local diagnostics do not require telemetry to be enabled.
+
+The fetch budget remains 30 seconds. Timeouts, signals, and ordinary remote refusals are not
+automatically retried; only the existing bounded retry for a remote-tracking ref update race
+applies. A failed base freeze still provisions nothing and can be retried manually.
+
+### Hibernated tasks wait at the top of the backlog
+
+A task whose agent you [hibernated](sessions.md#hibernate-a-task-and-resume-it-later) leaves the
+board and waits in a **Hibernated** section above the queued cards, in the Board's Backlog column
+and in the Line's **Backlog** drawer. Each row has **Resume**. These rows are not backlog work:
+they are never ordered, selected, filtered by the column's own search or taken by the backlog
+autopilot. The column's count includes them, and the fleet filter narrows them like any card.
 
 ### Search and filter the backlog
 
@@ -902,7 +1017,7 @@ or kept failure whose card is hidden - a folded Backlog column, a fleet filter -
 tile instead.
 
 Each one offers the way back in for its kind - **Retry**, for a launch that kept nothing,
-dispatches a Backlog kind again as the same task and files a chat again as a new one; a resident offers **Launch again** and
+dispatches a Backlog kind, or a chat a Recurring Mission filed, again as the same task and files any other chat again as a new one; a resident offers **Launch again** and
 **Open profile**; a kept failure bound to its session offers **Open** - plus **Dismiss** on every
 failure, and **Report bug** on every failure except a report session's own (see below). The
 top bar counts open failures as **N did not start**, and a toast appears the moment one
@@ -996,8 +1111,14 @@ difference from Kill: Kill keeps the tree and settles the task `failed`. An agen
 it keeps running; only the task leaves it.
 
 The control is disabled, with the reason in its tooltip, on a session with no task, a done
-task, a chat task (chat never sits in the backlog), and a Pipeline commission, which has a
-lifecycle of its own and is restarted by filing a new Pipeline task.
+task, any chat task, and a Pipeline commission, which has a lifecycle of its own and is
+restarted by filing a new Pipeline task. A chat's session is a conversation, so it is never
+sent back from there - that holds for a chat a Recurring Mission filed, too. A mission-filed
+chat returns to its Backlog card on its own when its launch fails while freezing its base or
+cutting its worktree, before anything was provisioned, the way other backlog work does. A
+refusal before that phase leaves it failed instead. When a failed launch kept no session,
+**Retry** dispatches that same chat again; one that kept its session offers **Open**, not
+Retry. Its mission's next run files a new chat rather than returning this one.
 
 A task that has already stopped - `cancelled` or `failed`, including one whose agent you
 killed - no longer has a session to press this from. It is re-filed from its own row in
@@ -1026,6 +1147,16 @@ list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent sho
 see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
 item **unless the request explicitly claims an override** - which the dashboard's own
 buttons do, and Foreman never does.
+
+An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
+to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
+is an autopilot hold, not a human approval or permission boundary against the calling agent.
+Dependencies, workflow readiness, and the remaining launch checks still apply. The operator's
+launch hold is different: while Pause all holds launches or a priority session runs, an agent's
+`dispatch_task` is refused, and the tool offers no override for it. Nor does any other route:
+the daemon honours the override only on the operator's own request, never on one carrying the
+daemon token, so an agent calling the dashboard's dispatch or assign route directly is held too. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override
@@ -2096,3 +2227,33 @@ publication prerequisite plus direct implementation task merge dependencies. Art
 never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
 using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
 the versioned tool contract, validation compatibility, retention and recovery.
+
+### Change a pinned plan revision (preview)
+
+Enable **Change pinned plan revision** in Settings > Feature flags. In a backlog task's
+Dependencies section, choose **Change pinned revision**, enter the exact plan ID, revision,
+and comma-separated Markdown filenames, then choose **Preview revision change**. The preview
+shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
+the input and originating prerequisite together; Cancel revision change leaves them untouched.
+Save any separate dependency edits before using this action.
+Dependency editing stays disabled while the revision editor is open; cancel the revision change
+to edit prerequisites separately.
+Dispatch availability follows the validated preview's prerequisites. **Dispatch now** saves the
+selected pin and prerequisites before requesting launch.
+
+Only the superseded pin's prerequisites are removed. An origin still required by another pin
+stays, as do unrelated implementation dependencies and recorded merge evidence. A completed
+replacement origin can be added only with merge proof for the exact saved work episode.
+Missing files, revisions from another repository, stale previews, and invalid dependencies
+are refused without saving either half. No newer revision is selected automatically.
+
+The MCP **update_task** tool accepts the same action as
+`planInputChange: { from, to, expectedUpdatedAt? }`, where both inputs contain
+`repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
+`before` and `after` without writing, then repeat with `previewOnly: false` to save.
+The optional timestamp binds the preview to the task configuration you read.
+This release also adds explicit `planInputs` and `dependencies` array edits to MCP `update_task`,
+independently of the preview flag. This extends to MCP the raw atomic edit already supported by
+the dashboard endpoint. MCP requests remain authenticated and use existing task, repository, and
+dependency validation. Do not combine those arrays with `planInputChange`. Only the `planInputChange`
+action and `previewOnly` mode require the flag; omitted fields keep their saved values.

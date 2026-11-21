@@ -12,6 +12,9 @@
 // Keeping it out of the page module is what lets the router import it without pulling a
 // component (and the five hooks behind it) into the router's module graph.
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
+import { resolveFeatureFlag, type FeatureFlagId, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+
 /**
  * The groups, in rail order, and the order the whole registry is read in.
  *
@@ -149,7 +152,17 @@ export const SETTINGS_CATEGORIES = [
     blurb: "Application updates, external tools, and what is still missing",
     group: "sessions",
     scope: "installation",
-    keywords: ["install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
+    keywords: [
+      "install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins",
+      // Setup lists ai-conductor only while the integration is offered.
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["conductor"] : []),
+    ],
+  },
+  {
+    id: "feature-flags", label: "Feature flags", icon: "⚑",
+    blurb: "Choose preview features and manage features that are on by default",
+    group: "sessions", scope: "machine",
+    keywords: ["preview", "experimental", "beta", "flag", "opt in"],
   },
   {
     id: "harnesses",
@@ -161,6 +174,32 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["agent", "model", "effort", "auto mode", "permission mode", "dispatch"],
   },
   {
+    id: "tasks",
+    label: "Tasks",
+    icon: "❏",
+    blurb: "What each kind of task is dispatched with",
+    // `sessions` / `machine`, beside Harnesses: both say what a dispatched session starts
+    // with, and everything here is daemon-backed, so it reaches tasks created from the API,
+    // a task source or a recurring mission as well as from this dashboard.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "grill me first", "default"],
+  },
+  {
+    id: "task-shaping",
+    label: "Task shaping",
+    icon: "⧈",
+    blurb: "Shapers that gather context and choose guidance for a task",
+    // `sessions` / `machine`, after Harnesses and Tasks: like them it says what a dispatched
+    // session starts with, and everything here is daemon-backed. A remote shaper is called over
+    // the network, which the panel states beside each one, as Telemetry's does per destination.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["shaper", "shaping", "context", "guidance", "gatherer", "selector", "manifest", "dry run", "caller identity"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "task-shaping",
+  },
+  {
     id: "worktrees",
     label: "Worktrees",
     icon: "⑂",
@@ -168,24 +207,6 @@ export const SETTINGS_CATEGORIES = [
     group: "sessions",
     scope: "machine",
     keywords: ["pool", "worktree", "slot", "lease", "capacity", "prune", "treehouse", "cleanup"],
-  },
-  {
-    id: "repositories",
-    label: "Repositories",
-    icon: "▤",
-    blurb: "Which directories are walked to find repository checkouts",
-    group: "sessions",
-    scope: "machine",
-    keywords: [
-      "repository",
-      "index",
-      "scan",
-      "directory",
-      "workspace",
-      "discovery",
-      "picker",
-      "folder",
-    ],
   },
   {
     id: "skills",
@@ -247,6 +268,34 @@ export const SETTINGS_CATEGORIES = [
       "grafana",
       "prometheus",
       "anonymous",
+    ],
+  },
+  {
+    id: "storage",
+    label: "Storage",
+    icon: "◫",
+    blurb: "Disk use, backup limits, the idle-cache budget, cleanup and low-space warnings",
+    // `sessions` / `machine`, beside Restore: both are about recovery points on this machine,
+    // and keeping them adjacent is what tells the two kinds of backup apart. Everything here
+    // is daemon-backed and local; nothing leaves the machine.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "backup",
+      "database",
+      "disk",
+      "space",
+      "copies",
+      "retention",
+      "back up now",
+      "problem",
+      "sqlite",
+      "limit",
+      "warning",
+      "free space",
+      "cleanup",
+      "pool",
+      "cache",
     ],
   },
   {
@@ -410,6 +459,8 @@ export const SETTINGS_CATEGORIES = [
   group: SettingsGroupId;
   scope: SettingsScopeId;
   keywords: readonly string[];
+  /** A preview feature flag the category follows: drawn only while it resolves on. */
+  flag?: FeatureFlagId;
 }[];
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -435,15 +486,74 @@ export type SettingsNavigate = (category: SettingsCategoryId, anchor?: string) =
 export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = "display";
 
 /** Runtime membership, for the router: an unknown id in a link must not become a route. */
+/**
+ * Categories this build retired by folding them into another, mapped to where they live now.
+ *
+ * Settings hashes are links people keep, so a retired id lands on its new home rather than on
+ * the default panel. Repositories became the Setup panel's Repositories family.
+ */
+export const RETIRED_SETTINGS_CATEGORIES: Readonly<Record<string, SettingsCategoryId>> = {
+  repositories: "setup",
+};
+
 export function isSettingsCategory(id: string): id is SettingsCategoryId {
   return SETTINGS_CATEGORIES.some((c) => c.id === id);
 }
 
-/** The categories in one group, in registry order. The rail's only way to draw a group. */
+/**
+ * Whether this build offers a category at all, before any feature flag.
+ *
+ * Conductor stays in the registry while the ai-conductor integration is hidden - its id is a
+ * type other modules name, and the panel is kept for when the integration returns - but it is
+ * not drawn, searched, walked, or routed to. See `shared/conductor-integration.ts`.
+ *
+ * The router reads this half alone, and that is deliberate. A route is parsed before the first
+ * snapshot says which flags are on, and the router rewrites the hash to its canonical form, so
+ * a flag check there would turn every reload of a flag-gated deep link into Display. The page
+ * applies the flag half live through `settingsCategoryAvailable`, as every other reader does.
+ */
+export function settingsCategoryInBuild(
+  id: SettingsCategoryId,
+  conductorEnabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+): boolean {
+  return id !== "conductor" || conductorEnabled;
+}
+
+/** The preview flag a category follows, or null for one that is always drawn. */
+export function settingsCategoryFlag(id: SettingsCategoryId): FeatureFlagId | null {
+  return (settingsCategory(id) as { flag?: FeatureFlagId }).flag ?? null;
+}
+
+/**
+ * Whether a category is drawn right now: the one availability gate the rail, the walk, the
+ * page, settings search and the palette all read. A category that follows a feature flag is
+ * drawn only while that flag resolves on, against the live config the event stream holds, so
+ * it appears and disappears in every window the moment the flag changes. Nothing here is
+ * computed at module load.
+ */
+export function settingsCategoryAvailable(
+  id: SettingsCategoryId,
+  flags: FeatureFlagsConfig,
+  conductorEnabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+): boolean {
+  if (!settingsCategoryInBuild(id, conductorEnabled)) return false;
+  const flag = settingsCategoryFlag(id);
+  return flag === null || resolveFeatureFlag(flag, flags);
+}
+
+/** The categories drawn under these flags, in registry order. Every rail, walk and index reads this. */
+export function visibleSettingsCategories(
+  flags: FeatureFlagsConfig,
+): readonly (typeof SETTINGS_CATEGORIES)[number][] {
+  return SETTINGS_CATEGORIES.filter((c) => settingsCategoryAvailable(c.id, flags));
+}
+
+/** The categories in one group drawn under these flags, in registry order. The rail's only way to draw a group. */
 export function settingsCategoriesIn(
   group: SettingsGroupId,
+  flags: FeatureFlagsConfig,
 ): readonly (typeof SETTINGS_CATEGORIES)[number][] {
-  return SETTINGS_CATEGORIES.filter((c) => c.group === group);
+  return visibleSettingsCategories(flags).filter((c) => c.group === group);
 }
 
 /** One category's entry, by id. */

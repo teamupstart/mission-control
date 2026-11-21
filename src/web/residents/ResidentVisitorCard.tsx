@@ -1,6 +1,8 @@
 import { useCallback } from "react";
 import type { Session } from "@shared/types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { SubagentChip } from "../components/layouts/SubagentChip.tsx";
+import { useDisplayChoice } from "../lib/board-card.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { residentAccentStyle, type ResidentSessionMark } from "./marker.ts";
 
@@ -34,6 +36,10 @@ export function ResidentVisitorCard({ session, mark, variant, selected, register
   const label = `${name} needs you - resident, opens its conversation`;
   const open = (): void => onOpen(session.id);
   const hint = `Open ${name}'s conversation; it needs you`;
+  // A resident can have background agents too. Under Nested sub-cards the board hangs them
+  // beneath this tile as it does under any card; under Chip and popover this tile carries the
+  // same chip a session card does, so the choice never leaves a resident's agents unseen.
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
 
   if (variant === "rail") {
     return (
@@ -82,6 +88,12 @@ export function ResidentVisitorCard({ session, mark, variant, selected, register
         <span className="resident-visitor-name">{name}</span>
       </span>
       <span className="resident-visitor-note">{RESIDENT_VISITOR_NOTE}</span>
+      {/* The tile's flag row, drawn only for the chip; empty (and so hidden) without agents. */}
+      {agentsChip && (
+        <span className="tile-marks">
+          <SubagentChip session={session} />
+        </span>
+      )}
     </div>
   );
 }

@@ -413,15 +413,14 @@ after the reviews and before End.** That is a change of *where the pull request 
 Versions 5 through 7 reach End first and then have the completion policy type a handoff, so the
 run is already successful at the moment the pull request is asked for and nothing proves one
 arrived. In version 8 the pull request is an authored stage: it types the same skill, and its
-`complete` route reaches End only once an open pull request has been observed at the commit the
-continuation captured and the content tree at that commit matches the content tree accepted by
-the parent judged submission. A packaging commit may have a new commit id while preserving that
-tree. End still means the authored graph succeeded - and by the time the
-GitHub Inspector claims that success there is provably something for it to review. Because the graph
+`complete` route reaches End once the pull request action has durable adoption evidence.
+Comparisons with the reviewed head and publication tree are retained as warnings when they do
+not match. A packaging commit may have a new commit id while preserving that tree. End still
+means the authored graph succeeded; the separate Inspector completion policy verifies the
+published submission before the run can finish. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 19 preserve that verified publication
-contract. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
+would ask for one the run already has. Versions 9 through 19 preserve that action and completion-policy separation. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
 immediately before the action, with Slop Filter joining it in versions 12 through 19.
 
 A passed review in versions 1 through 8 and versions 18 onward is then gated on the
@@ -450,7 +449,9 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable.
+bindable. To have new tasks use your copy, publish it and choose it in each task kind's
+**After work** row under **Settings → Tasks** (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
 settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
@@ -675,7 +676,13 @@ Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
 versions name its id. Built-in actions ship with the application, are listed under their own
 **Built-in** rail group and tagged in the editor's header, and are read-only; **Duplicate to
-edit** is the way to a copy you own.
+edit** is the way to a copy you own. The one exception is **Grill**, which
+[Grill me first](dispatch-and-backlog.md#grill-me-first) sends ahead of a task's work by id: its
+instruction is edited in place and saved as this machine's text (tagged **edited**), and **Reset
+to built-in** in its `⋯` menu restores the shipped one. Its name, description, required skill and
+completion stay as shipped, and the edit is not part of a settings backup. Grill is not offered as
+a Workflow stage, and a draft that names it is refused at Publish: its instruction is written to
+run before a task's work, so bound after the work it would have the agent start that work over.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the
@@ -794,12 +801,30 @@ reported on the completed action. None sends a repair packet or spends a repair 
 
 A pull request the bound session adopted **before** the instruction was delivered also completes
 the action, so a session that finds its existing pull request and opens no duplicate is not left
-waiting. It must belong to the same session, still be open, resolve to this checkout's
+waiting. It must belong to the same session, still be open (or have been observed merging
+during the action wait), resolve to this checkout's
 repository, and have no observed branch or state that contradicts it. When the ledger recorded
 the checkout it was opened from, that must match this one too; when it recorded none, the looser
 rule applies and the completion warning says so. The branch and state are normally unobserved
 here, because only the GitHub Inspector's poller records them and it does not run while the
 Inspector is disabled.
+
+A pull request that **merged before** the action was delivered can also satisfy it. Mission
+Control reads the retained Inspector observation for the same repository and branch and resolves
+its published Git tree. That tree must equal the reviewed publication tree. The continuation
+must still have that content and no unpublished changes. Runs records the merged PR URL and
+explains that no new PR is needed. Unknown or different publication proof still requires a PR;
+changes discovered during continuation capture offer the existing resubmit recovery.
+
+A merged, idle task is reconsidered when its workflow finishes or is cancelled, and at startup.
+If a later prompt rolled its single-repository work into a new episode, settlement additionally
+requires a durable receipt tying that episode's latest prompt to an action delivered by the
+latest terminal workflow run, plus a clean checkout matching the recorded merged PR. An
+operator follow-up never borrows that receipt, even if it repeats the action's text. Publication
+and ownership are rechecked after any scout archive wait. Busy sessions, queued work and active
+workflow runs retain ownership, except that merging still releases a blocked `request_input`
+call through its atomic task-completion path. Assigned-agent completions remain reversible when
+work resumes, and dependency edges still require their own bound episode's merge.
 
 ### Command nodes
 
@@ -1214,6 +1239,18 @@ mapping output leaves stable extraction intact and fails closed to deterministic
 attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
 fallback.
 
+Preflight checks locally inspectable work, including requested draft PR title and body content
+and deviation notes. Criterion extraction preserves publication-only outcomes as explicitly
+classified criteria and records publication details in constraints. The daemon defers their proof
+only while the pinned graph still has a pending Pull Request action.
+Personas apply the same boundary on initial and repair rounds, while continuing to check draft
+content, implementation, tests and other deliverables. The Pull Request action reads back the
+created or updated PR from GitHub, verifies its title and required notes, and returns the verified
+URL. This publication instruction also accompanies existing frozen action prompts. It does not
+change the action's durable adoption check, Inspector checks, CI policy, or other evidence gates.
+Already-frozen criterion identities and wording remain immutable; existing runs can classify
+missing publication timing without rewriting the rubric or historical submissions.
+
 A workflow-bound task whose published graph contains a Persona receives an evidence-readiness
 contract before completion, whatever its kind - a scout dispatched with such a workflow receives
 it alongside its report contract. Through `submit_workflow_evidence`, the agent can register three
@@ -1510,6 +1547,32 @@ Links resolve only against evidence frozen for that submission. Historical snaps
 matches normalize into the separate mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
+
+Publication-only criteria, such as "Pull request opened documenting the implementation,
+verification, and deviations", can be classified as fulfilled by the Pull Request action during
+intent compaction. The criterion stays material and visible. Readiness defers its proof only
+when the pinned graph has a reachable action with the `pull_request` completion contract ahead
+of the current submission. The Evidence pane labels it **deferred to Pull Request**, and Personas
+receive the same deferral. This is a scheduling distinction, not proof of completion or an override.
+
+Implementation, tests, and verification still need pre-review evidence. Mixed requirements must
+be split during compaction; an explicit requirement to open the PR before review is not deferred.
+A workflow without that action, or a review after it, still requires publication proof. The
+classification is frozen with the run's criteria and reused across repair rounds.
+
+Existing runs whose criteria predate the classification receive a bounded timing-only
+classification on their next capture when their pinned graph still has a pending Pull Request
+action. This preserves criterion IDs, text, ordering, materiality, and proof-class suggestions.
+The daemon saves the first successful classification, including explicit negative results, for
+reuse in later rounds and after restart. It records a `criterion_fulfillment` model call and a
+`criterion_fulfillment_classified` event. Invalid, incomplete, or failed classification leaves
+the evidence gate unchanged and can be retried; it never grants an override.
+
+For an existing run already paused at readiness, the Evidence pane offers **Classify publication
+criteria**. This creates a same-round recovery segment using the frozen evidence. Historical
+submissions, verdicts, and override records remain unchanged, and no broad override is carried
+forward. New captures distinguish an unclassified legacy criterion (absent timing field) from
+an explicitly non-publication criterion (`fulfilledByAction: null`).
 
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
 result before the engine creates any Persona or Check attempt, until the round exhausts its
@@ -1924,6 +1987,12 @@ When that action's only reachable downstream node is End, the child segment is l
 request is open at the captured commit, published content matches the prior accepted review, and
 no new evidence review was started.
 
+Every session-action wait names its next actor in the same explanation on Runs and on Fleet's
+Board cards and Console rail. Awaiting PR names the session that must open or identify the PR;
+Needs you names the operator who must answer; capture and queued delivery name Mission Control.
+The explanation stays visible even when workflow details are collapsed and disappears when the
+run finishes. The held-session section does not promise automatic progress for an operator wait.
+
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from the **Review worklist**, which is about what the run
 decided rather than what it did. The card names the snapshot the version froze, what the action
@@ -2069,8 +2138,10 @@ because they answer a bug report rather than a reader.
 run might accept: a single primary, in the language of the person reading the page rather than
 of the route behind it. A parked run offers **Start repair round N**, naming the round it
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
-PR**, or **Check again** when its immutable policy declines the handoff; a run blocked on an
-exhausted provider call offers **Retry the failed call**.
+PR**, or **Check again** when its immutable policy declines the handoff; a run blocked as
+**PR closed** offers **Check again**, which reads the pull request from GitHub again and lifts
+the block only if it is open; a run blocked on an exhausted provider call offers **Retry the
+failed call**.
 
 The daemon reports allowed run recovery operations with every summary and run response. The
 header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
@@ -2586,12 +2657,63 @@ pull request and never grants permission to comment on it.
 
 Gate entry records the local committed HEAD, then waits for a normal GitHub Inspector sweep observed
 after entry. It does not start a second GitHub poller. The observed PR must still be open, its
-remote head must equal that captured HEAD, and the captured working tree must have no staged,
-unstaged, or untracked changes outside the commit. A dirty tree requires commit, push, and a fresh
-full submission. A pre-pin mismatch waits for GitHub Inspector to observe the captured committed head; a
+remote head must equal that captured HEAD, and its complete Git tree must match the submission's
+publication tree. Required changes need commit, push, and a fresh full submission. Local report
+artifacts can remain uncommitted under the publication policy below. A pre-pin mismatch waits for
+GitHub Inspector to observe the captured committed head; a
 push after pinning requires a fresh full submission. A stale ledger timestamp or reviewed head
 alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
 GitHub Inspector observation must first prove which head is current.
+
+### Publication content and local artifacts
+
+New submissions retain both the complete worktree tree and a versioned publication tree. Every
+changed or new file belongs in the publication tree by default, including source files, tests,
+configuration, tracked documentation, and staged additions. The daemon makes one narrow exception:
+an untracked `docs/reports/<slug>/report.html` that passes static archive validation, together with
+bounded UTF-8 `.txt`, `.log`, `.csv`, and `.json` companions in that same directory. The report must
+use inline images and styles, contain no scripts or external resource requests, and link only to
+retained companions. Files in Git's index or HEAD are never exempted by this convention. Other
+HTML, binary companions, source files beside a report, and arbitrary evidence registrations do not
+create publication exemptions. Existing gitignored evidence continues through the evidence tray.
+
+The daemon preserves the exact report bytes in the existing submission text-evidence store before
+using the exemption, with path, byte count and SHA-256 receipts. Receipt verification reads raw
+worktree bytes independently of Git clean filters and line-ending normalization. Workflow text limits apply:
+64 KiB per file, 48 files and 384 KiB total including other text evidence. The submission's
+reserved text evidence consumes that budget first. A report and its companions that do not fit
+stay together in the publication tree, with a retention-limit problem, rather than failing the
+whole submission. If a report or companion changes, disappears, or becomes a symlink between
+validation and tree capture, the daemon discards
+the pending report exemptions and retained bytes, then captures once with all reports required.
+Other Git capture failures still fail the submission. Invalid reports stay
+required until corrected; the Intent tab's **Evidence snapshot** names the validation problem and
+required publication paths. Do not commit a report to silence the gate. Correct it and resubmit.
+The same view shows how many local artifacts were retained outside Git.
+
+The PR action compares the accepted publication tree with the complete published commit tree.
+Inspector also compares the complete tree when deciding completion. A shipping-only continuation
+must still match its parent's accepted publication tree; recapturing a packaging result does not
+review newly added or omitted code. This check also runs for continuations captured before
+publication proofs existed. For a legacy capture without publication proof, Inspector compares
+its full content tree instead. A missing accepted or captured tree requires a fresh full
+review before completion. Neither comparison filters the PR tree,
+so missing deliverables and unexpected committed content remain visible. Check nodes verify that
+their pinned commit has the captured publication tree before running. Uncommitted submissions
+pin Commands to a review snapshot of that exact publication tree, including required source
+changes but excluding retained reports. A stale or different pinned tree requires a fresh
+submission. Checks run in their existing isolated committed worktree, so excluded
+local fixtures cannot make a test pass. An unconfigured or unavailable check retains its existing
+explicit skipped outcome; this policy does not invent a test result.
+
+Report-only edits leave publication content unchanged but change evidence identity, so evidence
+reviews can be refreshed. Resumption probes include full tree identity, policy version and raw
+hashes of the prior snapshot's retained artifacts. Git normalization cannot hide changed report
+bytes, and missing or unreadable receipt sources count as changed. An old
+blocked capture can acquire the new proof on its next submission without modifying history.
+Existing snapshots without the policy keep the conservative dirty-tree rule. Missing or pruned
+retention receipts cannot authorize an exemption. Externally supplied ensemble artifacts still
+require their exact commit and a completely clean worktree.
 
 **The gate reads in the run record's Completion tab**, which is present only on a run that has
 an Inspector gate or a Foreman completion claim - most runs have neither and are offered no such
@@ -2655,6 +2777,24 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
+If a temporarily unavailable session blocked a packet before any write, session return,
+Inspector updates, and daemon startup reconcile that prepared packet against a fresh remote
+observation. Session return, daemon startup, and **Check again** request a fresh Inspector read
+before recovery; concurrent recovery requests share that read, and a failed read keeps the packet prepared and
+blocked until a successful fresh read or a newer poll observation arrives. Queued signals
+older than the gate's recorded observation cannot replace its
+head or remote state. Equal timestamps use the current durable observation to break ties;
+without one, conflicting signals are ignored while same-head review completion can proceed.
+An unchanged head receives the original bytes once. A newer head cancels the
+unsent packet without a delivery timestamp: `inspector_only` evaluates it through the existing
+gate, while `restart_workflow` captures a full resubmission, preserving evidence readiness and
+Persona review. Recovery requires the same active attachment, live delivery authorization and
+an unpaused session. **Check again** is available only when the delivery block holds a
+recoverable prepared Inspector feedback packet, and asks Inspector for a fresh remote observation. Uncertain sends remain held for explicit resolution.
+Before re-offering feedback held behind another review or a pause, delivery checks its
+submission and findings gate again. Obsolete queued packets remain unsent without
+interrupting the current review, matching restart recovery's retention policy.
+
 The packet's findings section comes from a pure, shared renderer
 (`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the
 daemon-built CodeRabbit follow-up render findings through it as well, so all three describe a
@@ -2697,6 +2837,20 @@ evaluator can process. It reevaluates the current durable observation and remain
 GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
 so the dashboard omits it and the daemon refuses a direct request without writing a recheck
 audit event.
+
+A run blocks as **PR closed** (`inspector_pr_closed`) only on a GitHub read that said the
+pull request is closed or merged. A signal that read nothing from GitHub - a failed or
+rate-limited poll, a GitHub Inspector settings save, an adoption - leaves the gate where it was,
+and a run waiting on the session's repair push keeps waiting for it across a daemon restart.
+A GitHub answer that does not say which state the pull request is in counts as a failed read,
+never as a closed one. A run already blocked as **PR closed** recovers when its pull request is
+seen open again. While GitHub Inspector still polls the pull request, its next poll lifts the
+block. GitHub Inspector stops polling a pull request once it reads it closed, so **Check again**
+on the run page reads the pull request from GitHub itself: an open answer resumes polling and
+lifts the block, a closed or merged answer leaves it, and a failed read leaves it and is recorded
+on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
+still recovers. Recovery restores the wait the block interrupted, including the repair-push
+wait, without a full restart or another Persona round.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -2899,8 +3053,12 @@ these defaults. The command previews its owned argv, never an editable shell rec
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
-Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
-mean a clean review. YAML-enabled reviews with
+Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
+unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
+exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
+A later complete review clears that condition. To recover from an exhausted incomplete review,
+explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
+Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
 and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
 or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
@@ -2909,8 +3067,18 @@ retained output instead, since Setup would show a healthy CLI. Neither spends a 
 sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
 update, remote-ref fetch or paid-credit continuation happens automatically.
 
+When the provider explicitly marks an error as `errorType: connection` and `recoverable: true`,
+Mission Control automatically retries the same step and captured comparison, up to three total
+attempts. The delays are 30 and 60 seconds plus up to 50% jitter; a longer vendor wait takes
+precedence, including a deadline extended by another node after the retry was scheduled.
+Pending retries survive daemon restart. Every launched attempt spends the existing
+shared review allowance, and retries never authorize extra credits. Missing completion,
+authentication, usage and credit errors do not qualify. Exhaustion retains the connection cause
+and asks the operator to inspect output and retry after connectivity recovers. A heartbeat or
+partial review never satisfies the gate.
+
 CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
-through its review snapshot, a commit of exactly the captured content parented on HEAD, so a ship
+through its review snapshot, a commit of exactly the captured publication content parented on HEAD, so a ship
 task that has not committed yet is reviewed rather than refused. The `.coderabbit.yaml` that
 gates the review is the one in that commit; an ignored, uncommitted YAML blocks with a
 submit-again remedy rather than reviewing under a configuration the review cannot see. A dirty

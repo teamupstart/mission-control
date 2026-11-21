@@ -154,6 +154,7 @@ function mkSchedule(
 function mkTask(over: Partial<Task> = {}): Task {
   return {
     id: uid("task"),
+    workUnitId: null,
     title: "T",
     intent: "do it",
     kind: "ship",
@@ -417,13 +418,13 @@ test("a template priority or effort from a newer build fails closed, it does not
   }
 });
 
-test("a persisted chat template is unreadable because schedules only produce backlog work", () => {
+test("a persisted resident template is unreadable because no mission may file one", () => {
   const s = mkSchedule();
   const row = db
     .openDb()
     .prepare(`SELECT template_json AS t FROM mission_schedule_revisions WHERE schedule_id = ?`)
     .get(s.id) as { t: string };
-  const template = { ...(JSON.parse(row.t) as Record<string, unknown>), kind: "chat" };
+  const template = { ...(JSON.parse(row.t) as Record<string, unknown>), kind: "resident" };
   db.openDb()
     .prepare(`UPDATE mission_schedule_revisions SET template_json = ? WHERE schedule_id = ?`)
     .run(JSON.stringify(template), s.id);

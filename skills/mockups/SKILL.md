@@ -152,6 +152,11 @@ Around those lines, say in a sentence or two what each mock-up shows and how the
 differ. Do not paste the HTML or SVG source into the conversation as well - the preview is
 right there.
 
+When the mock-ups are a choice for the human, present them first and then ask through
+`request_input`; asking in the same message is fine, and the previews stay up until the
+question is answered. Name the checkout-relative paths of the options in its `context` too: the review
+card is where the choice is made, and it opens each named path in Files.
+
 When you revise a mock-up, write it to the same path and present the path again in the
 turn that describes the change, so the new version is previewed where the conversation
 talks about it. A new variant gets a new file.

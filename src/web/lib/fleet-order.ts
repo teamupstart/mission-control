@@ -1,5 +1,7 @@
 import { taskHasRepository } from "@shared/task.ts";
-import type { Session } from "@shared/types.ts";
+import type { Session, SessionBlocker } from "@shared/types.ts";
+import { hasBlocker } from "@shared/session.ts";
+import { UI_CONFIG_DEFAULTS, type BlockedPlacement } from "@shared/protocol.ts";
 import {
   pipelineRunKey,
   pipelineRunKeyOf,
@@ -9,6 +11,7 @@ import {
 import { pipelineSessionDisplay } from "./attention.ts";
 import { NO_HELD_SESSIONS } from "./held.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
+import type { Tone } from "./format.ts";
 
 /**
  * What kind of run a cluster's members share.
@@ -95,11 +98,43 @@ export interface FleetToneGroup extends ToneGroup {
 /** No pinned sessions: the default, which reproduces the order before pinning existed. */
 const NO_PINNED_SESSIONS: ReadonlySet<string> = new Set();
 
-export interface FleetOrder {
-  /** The flat display order, every tone group concatenated in `TONE_GROUPS` order. */
+/**
+ * Doubles as the id a column's width is saved under (`collapsedBoardColumns`), which is why
+ * `"blocked"` is a word and never a `Tone`: a blocker is session state beside the lifecycle,
+ * not a sixth lifecycle reading.
+ */
+export type FleetColumnId = Tone | "blocked";
+
+export const BLOCKED_LABEL = "blocked";
+
+/**
+ * `group` and `blocked` are the two things a column can hold, and `sessions` is both of them in
+ * the order they are drawn. The setting decides only which column `blocked` lands in and on
+ * which side of `group`, so every placement is the same two lists rearranged.
+ */
+export interface FleetColumn {
+  id: FleetColumnId;
+  label: string;
+  group: FleetToneGroup | null;
+  blocked: Session[];
+  /** What the arrow keys walk and the ⌘-numbers count: a lane follows the lane above it. */
   sessions: Session[];
-  /** Every tone group, empty ones included - `groupByTone`'s contract, unchanged. */
+}
+
+export interface FleetOrder {
+  sessions: Session[];
+  /**
+   * Every tone group, empty ones included - `groupByTone`'s contract - WITHOUT the sessions
+   * the blocked group took. A blocked idle session is in `blocked`, never also here.
+   */
   groups: FleetToneGroup[];
+  /**
+   * The blocked group: idle or unconfirmed sessions standing on a blocker, reply flagged
+   * first, then the oldest blocker first. Computed once whatever the placement.
+   */
+  blocked: Session[];
+  blockedPlacement: BlockedPlacement;
+  columns: FleetColumn[];
 }
 
 /**
@@ -183,9 +218,18 @@ export type FleetBlock =
  * that needs you sits at the top of "needs you", not of its old column. A pinned session is
  * never also held - pinned wins - because a resident has no Workflow to hold it.
  *
+ * IDLE BLOCKED SESSIONS ARE ONE GROUP, drawn where `blockedPlacement` says
+ * (Settings → Display → Blocked sessions). An idle or unconfirmed session with a blocker
+ * (`hasBlocker`) leaves its tone group for `blocked`, ordered reply flagged first and then by
+ * the oldest blocker. The placement only decides which column holds that group and on which
+ * side of the column's own cards (`columns`), so the Board, both rails, the arrow keys and the
+ * ⌘-numbers read one order whichever placement is chosen. Like `held` and `byRepo` it is an
+ * argument, and all three call sites read it from the one `useUiConfig` store.
+ *
  * `held` defaults to empty, `byRepo` to false and `pinned` to empty, which together reproduce
  * the pre-workflow, pre-repository, pre-resident ordering exactly - so a caller that has none of
- * them (and every test that predates them) is unaffected.
+ * them (and every test that predates them) is unaffected. A fleet with no blocker is likewise
+ * unaffected by `blockedPlacement`, which defaults to the shipped In Needs you.
  */
 export function orderSessions(
   sessions: readonly Session[],
@@ -194,6 +238,7 @@ export function orderSessions(
   pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>,
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>,
   pinned: ReadonlySet<string> = NO_PINNED_SESSIONS,
+  blockedPlacement: BlockedPlacement = UI_CONFIG_DEFAULTS.blockedPlacement,
 ): FleetOrder {
   const display = (session: Session) => {
     const commissionId = session.task?.pipelineCommissionId;
@@ -209,9 +254,107 @@ export function orderSessions(
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline, (session) => display(session).tone)
+  // The blocked group is taken out BEFORE the tone groups are clustered, so it is out of the
+  // pinned, held, repository and run partitions alike: blocked wins over held (the held marker
+  // stays on the card), and no frame in Idle can straddle a card the Blocked group drew.
+  const blocked = baseline
+    .filter((s): s is BlockedSession => sitsOnBlocker(s, display(s).tone))
+    .sort(byBlockerUrgency);
+  const blockedIds = new Set(blocked.map((s) => s.id));
+  const rest = blockedIds.size > 0 ? baseline.filter((s) => !blockedIds.has(s.id)) : baseline;
+
+  const groups = groupByTone(rest, (session) => display(session).tone)
     .map((group) => clusterGroup(group, held, byRepo, pinned));
-  return { sessions: groups.flatMap((g) => g.sessions), groups };
+  const columns = fleetColumns(groups, blocked, blockedPlacement);
+  return {
+    sessions: columns.flatMap((c) => c.sessions),
+    groups,
+    blocked,
+    blockedPlacement,
+    columns,
+  };
+}
+
+/**
+ * A blocked session that is asking you stays in Needs you, and one that is working stays in
+ * Working: asking and working both mean it is not sitting on its blocker right now. Both still
+ * carry the red flag their tile draws from `hasBlocker`. A gone session stays in Gone.
+ */
+function sitsOnBlocker(session: Session, tone: Tone): session is BlockedSession {
+  return hasBlocker(session) && (tone === "idle" || tone === "neutral");
+}
+
+/** A session `sitsOnBlocker` admitted: its blocker is present by that predicate's contract. */
+type BlockedSession = Session & { blocker: SessionBlocker };
+
+function byBlockerUrgency(a: BlockedSession, b: BlockedSession): number {
+  const flagged = Number(b.blocker.reply !== null) - Number(a.blocker.reply !== null);
+  return flagged
+    || a.blocker.startedAt - b.blocker.startedAt
+    || a.name.localeCompare(b.name)
+    || a.pid - b.pid;
+}
+
+/**
+ * In every placement `sessions` reads top to bottom, so the concatenation of all columns is the
+ * Console rail's order, which draws the same group in the same relative place.
+ */
+function fleetColumns(
+  groups: readonly FleetToneGroup[],
+  blocked: Session[],
+  placement: BlockedPlacement,
+): FleetColumn[] {
+  const host: Tone | null = placement === "needs-you" ? "attention" : placement === "idle" ? "idle" : null;
+  const columns: FleetColumn[] = [];
+  for (const group of groups) {
+    const here = group.tone === host ? blocked : [];
+    columns.push({
+      id: group.tone,
+      label: group.label,
+      group,
+      blocked: here,
+      sessions: here.length === 0
+        ? group.sessions
+        : placement === "idle" ? [...here, ...group.sessions] : [...group.sessions, ...here],
+    });
+    if (placement === "column" && group.tone === "attention") {
+      columns.push({ id: "blocked", label: BLOCKED_LABEL, group: null, blocked, sessions: blocked });
+    }
+  }
+  return columns;
+}
+
+/**
+ * The column a session is drawn in, for a session the fleet list may not hold - a filtered or
+ * resident detail - so the drill-in rail still knows which column to become.
+ */
+export function fleetColumnOf(
+  session: Session,
+  tone: Tone,
+  placement: BlockedPlacement,
+): FleetColumnId {
+  if (!sitsOnBlocker(session, tone)) return tone;
+  return placement === "column" ? "blocked" : placement === "needs-you" ? "attention" : "idle";
+}
+
+export type FleetRailSection =
+  | { kind: "tone"; group: FleetToneGroup }
+  | { kind: "blocked"; sessions: Session[] };
+
+/**
+ * One column's rail sections, top to bottom: the Blocked group sits after Needs you for the
+ * In Needs you and Own column placements and at the top of Idle for At the top of Idle - the
+ * same relative place the Board draws it, so the Console rail mirrors the Board and the
+ * drilled-in column morphs into the rail it already resembles. An empty Blocked group is left
+ * out; an empty tone group is kept, because whether to draw one is the view's decision.
+ */
+export function fleetRailSections(column: FleetColumn): FleetRailSection[] {
+  const blocked: FleetRailSection[] = column.blocked.length > 0
+    ? [{ kind: "blocked", sessions: column.blocked }]
+    : [];
+  if (column.group === null) return blocked;
+  const tone: FleetRailSection = { kind: "tone", group: column.group };
+  return column.id === "idle" ? [...blocked, tone] : [tone, ...blocked];
 }
 
 /**

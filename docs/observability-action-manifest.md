@@ -39,6 +39,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`previewWorktreeAction`](../src/web/lib/api.ts#L343) | `/api/worktrees/actions/preview` |
 | [`executeWorktreeAction`](../src/web/lib/api.ts#L346) | `/api/worktrees/actions/execute` |
 | [`dismissWorktreeOperation`](../src/web/lib/api.ts#L352) | `/api/worktrees/operations/:id/dismiss` |
+| [`stopWorktreeClaim`](../src/web/lib/api.ts#L376) | `/api/worktrees/:id/claim/stop` |
 | [`openWorktreeTerminal`](../src/web/lib/api.ts#L355) | `/api/worktrees/:id/open` |
 | [`fetchEnvironmentChecks`](../src/web/lib/api.ts#L364) | `/api/environment/checks` |
 | [`fetchSetupChecks`](../src/web/lib/api.ts#L367) | `/api/setup/checks` |
@@ -134,6 +135,8 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.submitAnswers`](../src/web/lib/api.ts#L1741) | `/api/sessions/:id/submit-options` |
 | [`api.handoff`](../src/web/lib/api.ts#L1754) | `/api/sessions/:id/handoff` |
 | [`api.resolveReview`](../src/web/lib/api.ts#L1764) | `/api/reviews/:id/resolve` |
+| [`api.snoozeReview`](../src/web/lib/api.ts#L2109) | `/api/reviews/:id/snooze` |
+| [`api.wakeReview`](../src/web/lib/api.ts#L2112) | `/api/reviews/:id/wake` |
 | [`api.dispatch`](../src/web/lib/api.ts#L1772) | `/api/tasks` |
 | [`api.startTourDemo`](../src/web/lib/api.ts#L1780) | `/api/tours/:id/dispatch` |
 | [`api.startTourPreview`](../src/web/lib/api.ts#L1786) | `/api/tours/:id/preview` |
@@ -246,6 +249,8 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `request_plan_decisions` | Review creation, `attention.request`; subsequent polling excluded |
 | `request_review` | Review creation, `attention.request`; subsequent polling excluded |
 | `create_task` | Task owner, `task.create`; dispatch remains Phase 3 |
+| `list_open_questions` | Read-only outstanding-question query, explicitly excluded |
+| `withdraw_question` | Review owner, `attention.withdraw` |
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |

@@ -14,6 +14,7 @@ import {
 } from "./launch-presentation.ts";
 import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
@@ -50,6 +51,8 @@ export function transcriptStreamHandler(registry: Registry) {
   return (c: Context) =>
     streamSSE(c, endedOnShutdown(async (stream) => {
       const send = (m: TranscriptStreamMsg) => stream.writeSSE({ data: JSON.stringify(m) });
+      // The dashboard's view of the agent's turns: task ids shown as titles (`task-titles.ts`).
+      const titled = taskTitlePresenter(registry);
 
       const id = c.req.param("id");
       const session = id ? registry.getSession(id) : undefined;
@@ -118,7 +121,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = resumed.pos;
           await send({
             type: "resume",
-            messages: attributeTranscript(id, resumed.messages, launch(), anchor, conversation()),
+            messages: titled.transcript(attributeTranscript(id, resumed.messages, launch(), anchor, conversation())),
             pos,
           });
         } else {
@@ -126,7 +129,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = init.pos;
           await send({
             type: "init",
-            messages: attributeTranscript(id, init.messages, launch(), anchor, conversation()),
+            messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
             start: init.start,
             atStart: init.atStart,
             pos,
@@ -147,7 +150,7 @@ export function transcriptStreamHandler(registry: Registry) {
           const { messages, pos: next } = read.appended(path, pos);
           pos = next;
           if (messages.length > 0) {
-            await send({ type: "append", messages: attributeTranscript(id, messages, launch(), anchor, conversation()), pos });
+            await send({ type: "append", messages: titled.transcript(attributeTranscript(id, messages, launch(), anchor, conversation())), pos });
             sinceHeartbeat = 0;
             continue;
           }

@@ -149,6 +149,46 @@ test("a finished prerequisite with an open primary pull request stamps its stack
   assert.deepEqual(declaredBlockers(w.tasks.get("C")!, [...w.tasks.values()]), []);
 });
 
+/** Put the prerequisite A `depth` stacked pull requests above one on the default branch. */
+function stackUnder(w: World, depth: number): void {
+  w.tasks.set("R", mkTask({ id: "R", title: "Root", status: "running", repoRoot: "/repo" }));
+  let below = "R";
+  for (let level = 1; level < depth; level++) {
+    const id = `P${level}`;
+    w.tasks.set(id, mkTask({ id, title: `Stack ${level}`, status: "running", repoRoot: "/repo", stackParentTaskId: below, dependencies: [edge(below)] }));
+    below = id;
+  }
+  w.tasks.set("A", { ...w.tasks.get("A")!, stackParentTaskId: below, dependencies: [edge(below)] });
+}
+
+test("at a depth cap of 10 the daemon starts a tenth stacked pull request and holds an eleventh", async () => {
+  // Tenth: A sits nine deep, so C stacking on it makes ten.
+  const tenth = world();
+  tenth.config = ShippingConfigSchema.parse({ stacking: "stack", maxStackDepth: 10 });
+  stackUnder(tenth, 9);
+  const s10 = script();
+  readiness(tenth, s10).reconcile();
+  await settle();
+  assert.equal(childEdge(tenth).stackReadyAt, 1_000, "the tenth stacked pull request is stamped ready");
+  assert.equal(childEdge(tenth).stackBaseBranch, "feat/a");
+  assert.deepEqual(declaredBlockers(tenth.tasks.get("C")!, [...tenth.tasks.values()]), [], "and nothing blocks its start");
+
+  // Eleventh: A already sits ten deep, so C would make eleven.
+  const eleventh = world();
+  eleventh.config = ShippingConfigSchema.parse({ stacking: "stack", maxStackDepth: 10 });
+  stackUnder(eleventh, 10);
+  const s11 = script();
+  readiness(eleventh, s11).reconcile();
+  await settle();
+  assert.equal(childEdge(eleventh).stackReadyAt ?? null, null, "the eleventh is never stamped");
+  assert.equal(s11.reads, 0, "no GitHub read for an edge past the depth cap");
+  assert.deepEqual(
+    declaredBlockers(eleventh.tasks.get("C")!, [...eleventh.tasks.values()]).map((blocker) => blocker.taskId),
+    ["A"],
+    "it waits for its prerequisite",
+  );
+});
+
 test("a wait-for-merge default or an After merge edge is never stamped", async () => {
   for (const setup of [
     (w: World) => { w.config = ShippingConfigSchema.parse({ stacking: "merge" }); },

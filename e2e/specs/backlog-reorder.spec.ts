@@ -540,7 +540,7 @@ test("dropping a card where it already is sends nothing", async ({ dashboard, da
  */
 test.describe("dropped on an idle agent", () => {
   /** Discovery, on and brisk - this block's daemon only. See the header for why that is safe. */
-  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
 
   /**
    * Skipped rather than failed when tmux is absent, so a contributor without it is not
@@ -717,10 +717,11 @@ test.describe("dropped on an idle agent", () => {
     ).find((session) => session.task?.title === "Hand me over")?.id;
 
     // The original assign, plus one explicit reset confirmation when required, and no
-    // duplicate from the busy shortcut. Neither ending ever posts a reorder.
+    // duplicate from the busy shortcut. Neither ending ever posts a reorder. A person's
+    // handover claims both overrides: a parked task, and the launch hold of a fleet pause.
     expect(posted).toEqual([
-      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":false}`,
-      ...(confirmReset ? [`/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":true}`] : []),
+      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"overridePauseHold":true,"confirmReset":false}`,
+      ...(confirmReset ? [`/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"overridePauseHold":true,"confirmReset":true}`] : []),
     ]);
 
     // And it arrived where a handover actually ends: typed into the pane, on the far side of

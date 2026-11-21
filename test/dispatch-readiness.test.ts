@@ -236,6 +236,8 @@ test("the dispatcher does not retry delivery through an evicted session snapshot
   const registry = {
     getSession: () => live,
     waitForPromptAcceptedAtCwd: () => Promise.resolve(false),
+    // The dispatcher names its task provisioning source on construction.
+    setTaskProvisioningSource: () => {},
   } as unknown as InstanceType<typeof Registry>;
   const dispatcher = new Dispatcher(
     registry,
@@ -270,6 +272,7 @@ test("the dispatcher creates no acknowledgement listener for an already-exited s
       waits += 1;
       return Promise.resolve(false);
     },
+    setTaskProvisioningSource: () => {},
   } as unknown as InstanceType<typeof Registry>;
   const dispatcher = new Dispatcher(
     registry,

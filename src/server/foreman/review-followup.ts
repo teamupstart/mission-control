@@ -5,13 +5,21 @@ import type {
   PrChecks,
   Session,
 } from "@shared/types.ts";
+import { isPaused } from "@shared/pause.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
 import { hasBlocker, settledIdle } from "@shared/session.ts";
-import { buildStackPrompt, type StackPromptRequest } from "@shared/stacking.ts";
+import { buildStackPrompt, type StackPromptKind, type StackPromptRequest } from "@shared/stacking.ts";
+
+/** What Foreman's log says when it types each stack prompt. */
+const STACK_PROMPT_REASON: Record<StackPromptKind, string> = {
+  "catch-up": "stacked parent has new commits - catch up",
+  restack: "stacked parent merged - restack onto the default branch",
+  "recover-merge": "stacked pull request merged into its finished parent's branch - recover it onto the default branch",
+};
 import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
 import { WORKFLOW_LIMITS, workflowRunReleasesFollowup } from "@shared/workflow.ts";
 import { dedupeInspectorFindings, renderInspectorFindings } from "../inspector/findings-text.ts";
@@ -463,7 +471,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
       stack: { prKey: pr.prKey, kind: prompt.kind, tip: prompt.tip },
       prKey: pr.prKey,
       mark: mark && mark.prKey === pr.prKey ? mark : { prKey: pr.prKey, findingsRound: null, ciNudged: false },
-      reason: prompt.kind === "restack" ? "stacked parent merged - restack onto the default branch" : "stacked parent has new commits - catch up",
+      reason: STACK_PROMPT_REASON[prompt.kind],
       payload: buildStackPrompt(prompt.kind, standing.facts),
     };
   }
@@ -578,6 +586,7 @@ function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession }: F
   if (s.state === "awaiting_input") return "the session is waiting on input";
   // 4b. A durable blocker: the session is waiting on someone else, so nothing is typed into it.
   if (hasBlocker(s)) return "the session is blocked";
+  if (isPaused(s)) return "the session is paused";
 
   // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
   //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary

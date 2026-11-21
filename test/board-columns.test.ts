@@ -57,8 +57,12 @@ function session(over: Partial<Session> = {}): Session {
   } as Session;
 }
 
+function columnsOf(sessions: Session[]) {
+  return groupByTone(sessions).map((g) => ({ id: g.tone, sessions: g.sessions }));
+}
+
 function modesFor(sessions: Session[]) {
-  return boardColumnModes(groupByTone(sessions));
+  return boardColumnModes(columnsOf(sessions));
 }
 
 test("every empty column is hidden, 'needs you', 'unconfirmed' and 'gone' included", () => {
@@ -100,7 +104,7 @@ test("a dispatch with no sessions yet keeps the working column, and only that on
   const before = modesFor([]);
   assert.equal(before.get("working"), "hidden");
 
-  const modes = boardColumnModes(groupByTone([]), 1);
+  const modes = boardColumnModes(columnsOf([]), 1);
   assert.equal(modes.get("working"), "sessions");
   for (const tone of ["attention", "idle", "neutral", "exited"] as const) {
     assert.equal(modes.get(tone), "hidden", tone);

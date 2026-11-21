@@ -290,6 +290,11 @@ for (const entry of TOUR_ENTRIES) {
       // landing is timing-dependent here; what a fresh catalog can assert deterministically
       // is the handed-over route itself.
       await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/runs");
+    } else if (entry.id === "residents") {
+      // Meet your residents hands the fleet over, landing on the top bar's Residents button,
+      // which exists whether or not its drawer was ever opened.
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/fleet");
+      await expect(page.getByRole("button", { name: /^Residents - \d+ live$/ })).toBeFocused();
     } else {
       await expect(entry.exit ? page.locator("#settings-tab-trust") : page.locator(".gear-btn")).toBeFocused();
     }

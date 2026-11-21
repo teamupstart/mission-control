@@ -232,6 +232,9 @@ export function detectStall(
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall | null {
   if (s.state === "exited" || s.state === "stopping") return null;
+  // Paused on purpose: silence is the point, and a stalled-session alert would only report
+  // the operator's own decision back to them.
+  if (s.pause) return null;
 
   // 1. Foreman escalated a decision to you and it is still sitting there. The most
   //    certain of the three: something explicitly asked for a human and got no reply.

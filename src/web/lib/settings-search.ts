@@ -1,3 +1,6 @@
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { resolveFeatureFlag, type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 // The settings search index: one flat, control-level list of everything the settings
 // page can be told to do.
 //
@@ -16,7 +19,8 @@
 // rule - deterministic substring, registry order, no fuzzy ranking - and this file kept the
 // list and the toggle bindings, so there is still exactly one of each.
 
-import type { SettingsCategoryId } from "./settings-registry.ts";
+import { settingsCategoryAvailable, settingsCategoryInBuild, type SettingsCategoryId } from "./settings-registry.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -70,6 +74,12 @@ const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
   backup: backupDomains("harnesses"),
 }));
 
+const FEATURE_FLAG_CONTROLS: SettingsControl[] = (FEATURE_FLAGS as readonly FeatureFlagDefinition[]).map(flag => ({
+  id: `feature-flag-${flag.id}`, label: flag.label, description: flag.description,
+  category: "feature-flags", anchor: `feature-flags/${flag.id}`,
+  keywords: [flag.id, ...flag.keywords], kind: "toggle", backup: backupDomains("feature-flags"),
+}));
+
 /**
  * One entry per keyboard shortcut, derived from the `ACTIONS` registry rather than
  * collapsed into a single "Keyboard" row. Each shortcut is an independently rebindable
@@ -97,7 +107,12 @@ const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
  * and Foreman's four models and the daemon's background jobs are each one entry over a
  * cluster of `ModelField`s.
  */
-export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
+/**
+ * Every control this registry knows, including those on a category the build withholds.
+ * Registry-level checks (backup ownership) read this; search and the palette read
+ * `settingsControls`.
+ */
+export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "layout",
     label: "Layout",
@@ -183,6 +198,17 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "blocked-placement",
+    label: "Where blocked sessions appear",
+    description:
+      "Show idle blocked sessions in a lane under Needs you, in a red frame at the top of Idle, or in a column of their own.",
+    category: "display",
+    anchor: "display/blocked",
+    keywords: ["blocked", "blocker", "waiting", "lane", "needs you", "idle", "column", "board", "rail", "placement"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",
@@ -216,7 +242,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "board-card",
     label: "Board card",
-    description: "Choose which items a session card draws in every Board column.",
+    description: "Choose which items a session card draws in every Board column, and how a session shows its background sub-agents.",
     category: "display",
     anchor: "display/board-card",
     // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
@@ -259,6 +285,49 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task type",
       "task kind",
       "kind",
+      // The Background sub-agents picker: what the operator saw, or wants to see, under or on
+      // a card while a session's agents run.
+      "sub-agents",
+      "subagents",
+      "background agents",
+      "agents",
+      "sub-cards",
+      "nested",
+      "agent chip",
+      "popover",
+      // The conversation half the same picker switches: the tray above the reply box, or the
+      // rail's Agents tab. Listed HERE, on the entry named for the section that holds the
+      // picker, rather than on Conversation header - a result labelled for another section
+      // reads as a different control even though both jump to the same panel.
+      "agents tab",
+      "tray",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "pause-controls",
+    label: "Pause controls",
+    description:
+      "Choose where you pause and resume a session: corner buttons, a run chip or a menu on Board cards, and a toolbar button, a message box button or the state badge in the console.",
+    category: "display",
+    anchor: "display/pause-controls",
+    keywords: [
+      "pause",
+      "resume",
+      "freeze",
+      "suspend",
+      "stop",
+      "priority",
+      "focus",
+      "bandwidth",
+      "network",
+      "pause all",
+      "run chip",
+      "corner",
+      "composer",
+      "badge",
+      "toolbar",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -267,7 +336,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "topbar",
     label: "Top bar",
     description:
-      "Hide session counts, search, the cost estimate, product feedback or alerts from the top bar, and keep its page and fleet controls minimized.",
+      "Hide session counts, search, the cost estimate, product feedback, alerts or Pause all from the top bar, and keep its page and fleet controls minimized.",
     category: "display",
     anchor: "display/topbar",
     keywords: [
@@ -293,6 +362,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "feedback",
       "alerts",
       "away mode",
+      "pause all",
       "missions",
       "foreman",
       "fleet",
@@ -381,7 +451,9 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "setup-checks",
     label: "Machine setup checks",
-    description: "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor.",
+    description: CONDUCTOR_INTEGRATION_ENABLED
+      ? "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor."
+      : "Inspect agent CLIs, terminals, GitHub access, and Claude extensions.",
     category: "setup",
     anchor: "setup/recheck",
     keywords: [
@@ -393,7 +465,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "github",
       "plugins",
       "skills",
-      "ai-conductor",
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["ai-conductor"] : []),
       "dependencies",
     ],
     kind: "jump",
@@ -423,6 +495,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("terminals"),
   },
   {
+    id: "external-sessions",
+    label: "Show sessions started outside Mission Control",
+    description: "Also show Claude, Codex, and Pi sessions you started yourself in a terminal.",
+    category: "setup",
+    anchor: "setup/external-sessions",
+    keywords: ["outside", "external", "discovery", "hand-started", "manual", "terminal", "tmux", "hide", "sessions"],
+    kind: "toggle",
+    backup: backupDomains("terminals"),
+  },
+  {
     id: "auto-mode",
     label: "Auto mode on dispatch",
     description: "Launch every dispatched session in its most autonomous permission mode.",
@@ -433,6 +515,71 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("harnesses"),
   },
   ...HARNESS_CONTROLS,
+  ...FEATURE_FLAG_CONTROLS,
+  { id: "feature-flags-enable-all", label: "Enable all feature flags",
+    description: "Opt in to current and future preview features, keeping individual choices.",
+    category: "feature-flags", anchor: "feature-flags/enable-all",
+    keywords: ["preview", "alpha", "experimental", "master"], kind: "jump", backup: backupDomains("feature-flags") },
+  {
+    id: "task-kind-workflow-defaults",
+    label: "Default dispatch workflow per task kind",
+    description: "The published Workflow each kind of task preselects to run after its work.",
+    category: "tasks",
+    anchor: "tasks/kinds",
+    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "task-shaping-shapers",
+    label: "Shapers",
+    description: "The registered shapers in run order: switch one on or off, move it, dry-run it, or remove it.",
+    category: "task-shaping",
+    anchor: "task-shaping/shapers",
+    keywords: ["shaper", "gatherer", "selector", "enable", "order", "dry run", "test", "remove", "context", "guidance"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-import",
+    label: "Import a shaper manifest",
+    description: "Paste or choose a shaper manifest, review what it runs or calls, and save it switched off.",
+    category: "task-shaping",
+    anchor: "task-shaping/import",
+    keywords: ["import", "manifest", "register", "add shaper", "json", "command", "mcp", "http"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-identity",
+    label: "Shaping caller identity",
+    description: "The identity a shaper receives as {caller.user}. Declared, not verified, and not a secret.",
+    category: "task-shaping",
+    anchor: "task-shaping/identity",
+    keywords: ["caller", "identity", "user", "caller.user", "who"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-limits",
+    label: "Shaping budgets",
+    description: "How long one shaping step may take, and how much context it may add to a worker's first prompt.",
+    category: "task-shaping",
+    anchor: "task-shaping/limits",
+    keywords: ["deadline", "timeout", "budget", "bytes", "limit", "context size"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "grill-first-defaults",
+    label: "Grill me first per task kind",
+    description: "Which kinds of task start by interviewing you in rounds of decision forms.",
+    category: "tasks",
+    anchor: "tasks/grill-first",
+    keywords: ["grill", "interview", "questions", "decisions", "before starting", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("skills"),
+  },
   {
     id: "worktree-policy",
     label: "Worktree policy",
@@ -467,8 +614,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "repository-index-directories",
     label: "Indexed repository directories",
     description: "Choose which machine directories Mission Control walks for git checkouts.",
-    category: "repositories",
-    anchor: "repositories/directories",
+    category: "setup",
+    anchor: "setup/repositories-directories",
     keywords: ["repository", "index", "scan", "directory", "workspace", "folder"],
     kind: "jump",
     backup: backupDomains("repo-index"),
@@ -477,8 +624,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "repository-index-add",
     label: "Add indexed directory",
     description: "Add another absolute or home-relative directory to repository discovery.",
-    category: "repositories",
-    anchor: "repositories/add",
+    category: "setup",
+    anchor: "setup/repositories-add",
     keywords: ["repository", "add", "path", "directory", "workspace", "folder"],
     kind: "jump",
     backup: backupDomains("repo-index"),
@@ -487,8 +634,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "repository-index-rescan",
     label: "Rescan repositories now",
     description: "Drop the repository discovery cache and walk the indexed directories now.",
-    category: "repositories",
-    anchor: "repositories/rescan",
+    category: "setup",
+    anchor: "setup/repositories-rescan",
     keywords: ["repository", "refresh", "rescan", "cache", "discovery"],
     kind: "jump",
     backup: backupDomains("repo-index"),
@@ -636,6 +783,80 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("operational-action"),
   },
   {
+    id: "storage-overview",
+    label: "Disk use",
+    description: "What Mission Control keeps on this machine by category, measured, and the volume's free space.",
+    category: "storage",
+    anchor: "storage/overview",
+    keywords: ["disk", "space", "size", "usage", "gib", "volume", "free space", "measure", "state directory"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "database-backups",
+    label: "Database backups",
+    description: "Backup interval, how many copies are kept, how old and how large they may grow, Back up now, and the kept copies.",
+    category: "storage",
+    anchor: "storage/backups",
+    keywords: [
+      "backup",
+      "back up now",
+      "interval",
+      "hourly",
+      "pre-migration",
+      "retention",
+      "copies",
+      "age",
+      "budget",
+      "size",
+      "recovery",
+      "disk",
+      "database",
+    ],
+    kind: "jump",
+    backup: backupDomains("database-backups"),
+  },
+  {
+    id: "storage-pool-caches",
+    label: "Idle-cache budget",
+    description: "How much idle native-pool cache may stay warm across every pool, and how many warm slots each pool keeps.",
+    category: "storage",
+    anchor: "storage/pool-caches",
+    keywords: ["pool", "worktree", "slot", "idle", "cache", "warm", "budget", "node_modules", "disk"],
+    kind: "jump",
+    backup: backupDomains("storage-limits"),
+  },
+  {
+    id: "storage-cleanup",
+    label: "Storage cleanup",
+    description: "The exact idle slots the budget would remove, what they free, and what blocks the rest.",
+    category: "storage",
+    anchor: "storage/cleanup",
+    keywords: ["cleanup", "clean up", "reclaim", "remove", "prune", "free space", "disk"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "storage-limits",
+    label: "Storage limits and warnings",
+    description: "A size limit, a free-space floor, and whether a banner or desktop notification warns.",
+    category: "storage",
+    anchor: "storage/limits",
+    keywords: ["limit", "warning", "low space", "free space", "floor", "notification", "banner", "disk full"],
+    kind: "jump",
+    backup: backupDomains("storage-limits"),
+  },
+  {
+    id: "storage-problems",
+    label: "Storage problems",
+    description: "Failed backups, low free space and the size limit, each linked to where it is fixed.",
+    category: "storage",
+    anchor: "storage/problems",
+    keywords: ["problem", "failed", "backup failed", "disk", "warning", "low space"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
     id: "restore-settings",
     label: "Restore settings",
     description: "Preview and restore an owner-only automatic snapshot.",
@@ -703,16 +924,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["episode", "decision", "answered", "escalated", "shadow", "ledger", "history"],
     kind: "jump",
     backup: backupNotApplicable("derived-status"),
-  },
-  {
-    id: "workflow-dispatch-default",
-    label: "Default dispatch workflow",
-    description: "The published Workflow preselected to run after each new agent dispatch.",
-    category: "workflows",
-    anchor: "workflows/dispatch-default",
-    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task"],
-    kind: "jump",
-    backup: backupDomains("workflow-policy"),
   },
   {
     id: "workflow-live-delivery",
@@ -1058,14 +1269,25 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
 ];
 
 /**
- * The control ids the page is expected to wire a boolean binding for: every `"toggle"`
- * that is not risky. The page builds its `Map<controlId, ToggleBinding>` for exactly these
- * (see `SettingsPage`), so a risky control can never receive a binding and can never flip
- * from a search result - it degrades to a jump. Exported so the test can pin that without
- * reaching into the page's runtime wiring.
+ * The indexed controls drawn under these flags. A control on a category that is not drawn -
+ * Conductor's, while the ai-conductor integration is hidden, or Task shaping's while its flag
+ * is off - would be a search hit that leads nowhere, so it is not offered. Read through the
+ * category gate, live, never frozen at module load.
  */
-export const BINDABLE_CONTROL_IDS: readonly string[] = SETTINGS_CONTROLS.filter(
-  (c) => c.kind === "toggle" && !c.risky,
+export function settingsControls(flags: FeatureFlagsConfig): readonly SettingsControl[] {
+  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags));
+}
+
+/**
+ * The control ids the page is expected to wire a boolean binding for: every `"toggle"`
+ * that is not risky, on a category this build offers. The page builds its
+ * `Map<controlId, ToggleBinding>` for exactly these (see `SettingsPage`), so a risky control
+ * can never receive a binding and can never flip from a search result - it degrades to a
+ * jump. Exported so the test can pin that without reaching into the page's runtime wiring.
+ * Whether a control can be bound is a fact about the control, so no flag changes it.
+ */
+export const BINDABLE_CONTROL_IDS: readonly string[] = ALL_SETTINGS_CONTROLS.filter(
+  (c) => settingsCategoryInBuild(c.category) && c.kind === "toggle" && !c.risky,
 ).map((c) => c.id);
 
 /** A runtime get/set pair for one boolean control, supplied by the page. */
@@ -1104,6 +1326,7 @@ export function buildSettingsBindings(sources: {
   autoMode: ToggleSource;
   skillsEnabled: ToggleSource;
   costTrack: ToggleSource;
+  featureFlags?: FeatureFlagsSettings;
 }): SettingsBindings {
   const map: SettingsBindings = new Map();
   map.set("format-messages", {
@@ -1123,5 +1346,12 @@ export function buildSettingsBindings(sources: {
   put("auto-mode", sources.autoMode);
   put("skills-enabled", sources.skillsEnabled);
   put("cost-track", sources.costTrack);
+  if (sources.featureFlags?.ready && !sources.featureFlags.pending) {
+    const state = sources.featureFlags;
+    for (const flag of FEATURE_FLAGS as readonly FeatureFlagDefinition[]) {
+      map.set(`feature-flag-${flag.id}`, { get: () => resolveFeatureFlag(flag.id, state.config),
+        set: enabled => { void state.set({ kind: "flag", id: flag.id, enabled }); } });
+    }
+  }
   return map;
 }

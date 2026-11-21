@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, type CodeRabbitComparison } from "../src/shared/workflow.ts";
@@ -146,8 +147,8 @@ test("bounded readiness refuses old/missing/malformed/unauthenticated status and
 });
 function repo(name:string) {
  mkdirSync(join(home,name));const root=realpathSync(join(home,name));const git=(...args:string[])=>execFileSync("git",["-C",root,...args],{encoding:"utf8"}).trim();
- git("init","-q","-b","main");git("config","user.email","fixture@example.com");git("config","user.name","Fixture");git("config","commit.gpgsign","false");writeFileSync(join(root,"file"),`base ${name}`);git("add",".");git("commit","-qm","base");
- const base=git("rev-parse","HEAD");git("update-ref","refs/remotes/origin/main",base);git("symbolic-ref","refs/remotes/origin/HEAD","refs/remotes/origin/main");git("checkout","-qb","feature");writeFileSync(join(root,"file"),`changed ${name}`);git("commit","-qam","change");return{root,base,git};
+ const base=seedGitRepo(root,{branch:"main",files:{file:`base ${name}`},email:"fixture@example.com",name:"Fixture",config:{"commit.gpgsign":"false"}});
+ git("update-ref","refs/remotes/origin/main",base);git("symbolic-ref","refs/remotes/origin/HEAD","refs/remotes/origin/main");git("checkout","-qb","feature");writeFileSync(join(root,"file"),`changed ${name}`);git("commit","-qam","change");return{root,base,git};
 }
 test("observed default base and full head resolve in correct repo; retries freeze comparison across ref movement",async()=>{
  const first=repo("one"),second=repo("two");assert.notEqual(first.base,second.base);
@@ -259,4 +260,15 @@ test("pending semantic publication keeps its reserved quota across asynchronous 
  const retained=db.prepare("SELECT SUM(retained_bytes) AS bytes FROM workflow_command_artifacts WHERE run_id = ?").get(input.runId) as {bytes:number};
  assert.equal(retained.bytes,64*1024*1024);
  const restarted=new WorkflowCommandArtifactService(db,join(home,"semantic-quota"));assert.equal(restarted.listForAttempt(input.attemptId).find(a=>a.kind==="findings")!.availability,"retained");
+});
+
+test("an incomplete review cannot skip the gate when a competing node consumes the allowance", async () => {
+ const i=input();i.coderabbit!.incompleteReview=true;i.reserveRun=()=>({granted:false,spent:10});
+ const d=deps();d.execute=async()=>{throw new Error("must not execute");};d.codeRabbitProbe=async()=>{throw new Error("must not probe");};
+ const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
+ if(r.kind==="action_required"){
+  assert.match(r.reason,/review remains incomplete.*allowance is exhausted/);
+  assert.match(r.reason,/raise the run allowance in Library > Commands, then submit a new round/);
+  assert.equal(r.setup,undefined);
+ }
 });

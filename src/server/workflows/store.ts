@@ -6,6 +6,7 @@ import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
@@ -126,6 +127,8 @@ import {
   WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -424,6 +427,7 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 export const WORKFLOW_TABLES = [
   "personas",
   "session_actions",
+  "builtin_session_action_overrides",
   "workflow_commands",
   "workflow_command_overrides",
   "workflow_builtin_round_limits",
@@ -3388,19 +3392,102 @@ export class WorkflowStore {
   }
 
   private withBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.builtinActions)));
+    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.currentBuiltinActions())));
   }
 
   private withAddressableBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(rows.concat(this.builtinActions));
+    return this.sortSessionActions(rows.concat(this.currentBuiltinActions()));
+  }
+
+  /**
+   * The shipped actions as this machine runs them: an editable built-in carries the operator's
+   * instruction when one is saved, with that row's revision, so every read - the library, a
+   * draft's validation, Publish's snapshot, Grill me first's delivery - sees one text.
+   */
+  private currentBuiltinActions(): SessionAction[] {
+    const rows = this.db
+      .prepare(`SELECT action_id, prompt_md, revision, updated_at FROM builtin_session_action_overrides`)
+      .all() as Array<{ action_id: string; prompt_md: string | null; revision: number; updated_at: number }>;
+    if (rows.length === 0) return [...this.builtinActions];
+    const overrides = new Map(rows.map((row) => [row.action_id, row]));
+    return this.builtinActions.map((action) => {
+      const row = action.editable ? overrides.get(action.id) : undefined;
+      if (!row) return action;
+      return {
+        ...action,
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+        ...(row.prompt_md === null ? {} : { promptMarkdown: row.prompt_md, customized: true }),
+      };
+    });
   }
 
   private builtinSessionAction(id: string): SessionAction | null {
-    return this.builtinActions.find((action) => action.id === id) ?? null;
+    return this.currentBuiltinActions().find((action) => action.id === id) ?? null;
   }
 
   private builtinSessionActionNamed(normalizedName: string): SessionAction | null {
     return this.builtinActions.find((action) => action.normalizedName === normalizedName) ?? null;
+  }
+
+  /**
+   * Save an editable built-in's instruction. Only the instruction moves: a patch that would
+   * change the name, description, required skill or completion is refused as `builtin`,
+   * because those are the shipped contract. The shipped text itself is stored as a reset.
+   */
+  private updateEditableBuiltinCas(
+    current: SessionAction,
+    expectedRevision: number,
+    patch: SessionActionPatch,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    const contractMoves = (patch.name !== undefined && patch.name !== current.name)
+      || (patch.description !== undefined && patch.description !== current.description)
+      || ("requiredSkillId" in patch && (patch.requiredSkillId ?? null) !== current.requiredSkillId)
+      || (patch.completion !== undefined && patch.completion.kind !== current.completion.kind);
+    if (contractMoves) return { ok: false, reason: "builtin", current };
+    if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+    if (patch.promptMarkdown === undefined) return { ok: true, action: current };
+    const shipped = this.builtinActions.find((action) => action.id === current.id);
+    return this.writeBuiltinOverride(
+      current,
+      patch.promptMarkdown === shipped?.promptMarkdown ? null : patch.promptMarkdown,
+      updatedAt,
+    );
+  }
+
+  /** Put an editable built-in back on its shipped instruction. */
+  resetBuiltinSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    updatedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.builtinSessionAction(id);
+      if (!current) {
+        const row = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: row ? "builtin" : "not_found", current: row };
+      }
+      if (!current.editable) return { ok: false, reason: "builtin", current };
+      if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+      return this.writeBuiltinOverride(current, null, updatedAt);
+    });
+  }
+
+  private writeBuiltinOverride(
+    current: SessionAction,
+    promptMarkdown: string | null,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    this.db
+      .prepare(
+        `INSERT INTO builtin_session_action_overrides (action_id, prompt_md, revision, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(action_id) DO UPDATE SET
+           prompt_md = excluded.prompt_md, revision = excluded.revision, updated_at = excluded.updated_at`,
+      )
+      .run(current.id, promptMarkdown, current.revision + 1, updatedAt);
+    return { ok: true, action: this.builtinSessionAction(current.id)! };
   }
 
   listSessionActions(includeArchived = false): SessionAction[] {
@@ -3504,7 +3591,11 @@ export class WorkflowStore {
   ): SessionActionStoreWrite {
     return transaction(this.db, () => {
       const shipped = this.builtinSessionAction(id);
-      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      if (shipped) {
+        return shipped.editable
+          ? this.updateEditableBuiltinCas(shipped, expectedRevision, patch, updatedAt)
+          : { ok: false, reason: "builtin", current: shipped };
+      }
       const current = this.getSessionActionInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -5395,6 +5486,7 @@ export class WorkflowStore {
           gate: gateState,
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
+          recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -5460,6 +5552,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -6012,15 +6105,31 @@ export class WorkflowStore {
     });
   }
 
-  listWorkflowEvidence(noteKey: string): WorkflowStagedEvidenceList {
+  /** Registration survives capture; the default tray remains staged-only for editing.
+   * Reserved items require a surviving reservation in this conversation's own workflow.
+   * Episode admission remains the completion reader's responsibility.
+   */
+  listWorkflowEvidence(
+    noteKey: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowStagedEvidenceList {
     const owner = this.db.prepare(
       `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
     ).get(noteKey) as { generation: number } | undefined;
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
-        WHERE note_key = ? AND state = 'staged'
+        WHERE note_key = ? AND (
+          state = 'staged' OR (? = 'registered' AND state = 'reserved' AND EXISTS (
+            SELECT 1 FROM workflow_evidence_reservations reservation
+            JOIN workflow_submissions submission ON submission.id = reservation.submission_id
+            JOIN workflow_runs run ON run.id = submission.run_id
+            JOIN workflow_bindings binding ON binding.id = run.binding_id
+            WHERE reservation.staging_id = workflow_evidence_staging.id
+              AND binding.note_key = workflow_evidence_staging.note_key
+          ))
+        )
         ORDER BY created_at ASC, id ASC`,
-    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    ).all(noteKey, view) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ? AND state = 'staged' AND is_current = 1
@@ -7046,6 +7155,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
+      const freshPublishedReview = workflowInspectorGateNeedsFreshReview(inspectorGateState(this.mustRun(input.runId)));
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -7061,6 +7171,7 @@ export class WorkflowStore {
         submissionId: input.id,
         triggerKey: input.triggerKey,
         round: input.round,
+        ...(freshPublishedReview ? { freshPublishedReview: true } : {}),
       }, input.now);
       return {
         run: this.mustRun(input.runId),
@@ -7205,11 +7316,10 @@ export class WorkflowStore {
         const latest = this.latestSubmission(run.id);
         if (latest && latest.round <= run.maxRepairRounds) {
           previousFingerprint = latest.evidenceFingerprint;
-          this.insertSubmissionInTransaction({
+          const repair = this.createRepairSubmission({
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
-            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -7217,15 +7327,8 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
-          assertRunLifecycle(run.id, "capturing", "capturing", null);
-          this.db.prepare(
-            `UPDATE workflow_runs
-                SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
-              WHERE id = ?`,
-          ).run(input.now, run.id);
-          run = this.mustRun(run.id);
-          submission = this.mustSubmission(input.submissionId);
+          run = repair.run;
+          submission = repair.submission;
           state = "resubmitted";
           created = true;
         } else {
@@ -7414,6 +7517,45 @@ export class WorkflowStore {
           WHERE id = ? AND run_criteria_json IS NULL`,
       ).run(payload, id);
       return this.getRun(id)?.criteria ?? null;
+    });
+  }
+
+  /** Add timing metadata once; frozen wording, ids, intent and past submissions never change. */
+  freezeRunCriterionFulfillment(input: {
+    runId: string;
+    source: WorkflowRunCriteria;
+    classifications: Array<{ criterionId: string; fulfilledByAction: "pull_request" | null }>;
+    submissionId: string;
+    now: number;
+  }): WorkflowRunCriteria | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run?.criteria || run.intentState !== "frozen") return null;
+      const stable = (criteria: WorkflowRunCriteria) => ({ ...criteria,
+        canonicalCriteria: criteria.canonicalCriteria.map(({ fulfilledByAction: _timing, ...criterion }) => criterion),
+      });
+      if (!isDeepStrictEqual(stable(run.criteria), stable(input.source))) {
+        throw new Error("Criterion fulfillment source does not match this run's frozen criteria");
+      }
+      const missing = input.source.canonicalCriteria.filter((criterion) => criterion.fulfilledByAction === undefined);
+      const assignments = new Map(input.classifications.map((item) => [item.criterionId, item.fulfilledByAction]));
+      if (assignments.size !== missing.length || input.classifications.length !== missing.length
+          || missing.some((criterion) => !assignments.has(criterion.id))
+          || run.criteria.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined && !assignments.has(criterion.id))) {
+        throw new Error("Criterion fulfillment must classify exactly the unclassified frozen criteria");
+      }
+      if (run.criteria.canonicalCriteria.every((criterion) => criterion.fulfilledByAction !== undefined)) return run.criteria;
+      const criteria = WorkflowRunCriteriaSchema.parse({ ...run.criteria,
+        canonicalCriteria: run.criteria.canonicalCriteria.map((criterion) => criterion.fulfilledByAction !== undefined
+          ? criterion : { ...criterion, fulfilledByAction: assignments.get(criterion.id) }),
+      });
+      this.db.prepare("UPDATE workflow_runs SET run_criteria_json = ? WHERE id = ?")
+        .run(durableRunJson(run.id, "run_criteria_json", criteria), run.id);
+      this.appendEvent(run.id, "criterion_fulfillment_classified", {
+        submissionId: input.submissionId,
+        classifications: input.classifications,
+      }, input.now);
+      return criteria;
     });
   }
 
@@ -8588,13 +8730,29 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
-  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  /** Capture retries read the boundary frozen when the root left the reviewed-tree hold. */
+  submissionRequiresFreshPublishedReview(submissionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events
+      WHERE run_id = (SELECT run_id FROM workflow_submissions WHERE id = ?)
+        AND event_kind = 'submission_created'
+        AND json_extract(payload_json, '$.submissionId') = ?
+        AND json_extract(payload_json, '$.freshPublishedReview') = 1 LIMIT 1`)
+      .get(submissionId, submissionId);
+  }
+
+  /** The newest executed verdict must pass, and pre-publication-review passes cannot cross
+   * the durable fresh-review boundary recorded atomically with its root submission. */
   priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
     const row = this.db.prepare(
       `SELECT * FROM (
          SELECT a.* FROM workflow_node_attempts a
            JOIN workflow_submissions s ON s.id = a.submission_id
           WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND s.round >= COALESCE((
+              SELECT MAX(json_extract(payload_json, '$.round')) FROM workflow_events
+              WHERE run_id = s.run_id AND event_kind = 'submission_created'
+                AND json_extract(payload_json, '$.freshPublishedReview') = 1
+            ), 0)
             AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
             AND a.runner_id IS NOT NULL
           ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1
@@ -8920,6 +9078,19 @@ export class WorkflowStore {
     return row ? parseWorkflowDeliveryRow(row) : null;
   }
 
+  /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events e
+      JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
+        AND d.run_id = e.run_id
+      WHERE e.run_id = ? AND e.event_kind = 'session_action_prompt_observed'
+        AND json_extract(e.payload_json, '$.episodeId') = ?
+        AND json_extract(e.payload_json, '$.promptedAt') = ?
+        AND json_extract(e.payload_json, '$.promptRevision') IS ?
+        AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
+        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
+  }
+
   deliveryForPacket(
     submissionId: string,
     kind: WorkflowDelivery["kind"],
@@ -9119,6 +9290,58 @@ export class WorkflowStore {
     }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
+  /** The packet the current delivery block can actually reconcile, shared by UI and runtime. */
+  recoverableInspectorFeedback(run: WorkflowRun): WorkflowDelivery | null {
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked") return null;
+    const gate = inspectorGateState(run);
+    if (gate?.waitReason !== "findings" || !gate.prKey || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha) return null;
+    const version = this.getWorkflowVersionById(run.workflowVersionId);
+    const binding = this.getBinding(run.bindingId);
+    if (version?.completionPolicy.kind !== "inspector" || binding?.state !== "active"
+        || binding.deliveryMode !== "live" || !binding.sessionId) return null;
+    const latest = this.latestSubmission(run.id);
+    const delivery = this.listDeliveries(run.id)
+      .filter((item) => item.submissionId === latest?.id).at(-1);
+    if (delivery?.kind !== "inspector_feedback" || delivery.state !== "prepared"
+        || delivery.deliveredAt !== null || delivery.sessionId !== binding.sessionId
+        || delivery.noteKey !== binding.noteKey) return null;
+    return delivery;
+  }
+
+  /** Restore an unsent Inspector packet's wait and retire obsolete bytes atomically. */
+  recoverInspectorFeedback(
+    deliveryId: string,
+    expectedState: WorkflowInspectorGateState,
+    state: WorkflowInspectorGateState,
+    superseded: boolean,
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const version = run ? this.getWorkflowVersionById(run.workflowVersionId) : null;
+      if (!delivery || delivery.kind !== "inspector_feedback" || delivery.state !== "prepared"
+          || delivery.deliveredAt !== null || !run || run.status !== "blocked"
+          || run.currentPhase !== "delivery_blocked"
+          || this.latestSubmission(run.id)?.id !== delivery.submissionId
+          || version?.completionPolicy.kind !== "inspector") return null;
+      const updated = this.updateInspectorGate({
+        runId: run.id, expectedState, state,
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
+          ? "waiting_for_new_head" : "waiting_for_session",
+        phase: "inspector_findings", now,
+      });
+      if (!updated) return null;
+      if (superseded) this.setDeliveryState(deliveryId, "cancelled", "inspector_head_superseded", now);
+      this.appendEvent(run.id, "inspector_feedback_recovered", {
+        deliveryId, superseded, failedHeadSha: state.failedHeadSha,
+        observedHeadSha: state.observedHeadSha, policy: version.completionPolicy.onFindings,
+      }, now);
+      return updated;
+    });
+  }
+
   refuseDeliveryBeforeSend(
     id: string,
     error: string,
@@ -9174,8 +9397,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9416,8 +9638,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"

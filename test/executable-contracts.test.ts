@@ -128,6 +128,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
   ],
+  "src/server/shaping/transports/command.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "an operator-configured command shaper, resolved through the locator and spawned without a shell in its own process group, killed at its timeout" },
+  ],
+  "src/server/shaping/transports/group-stdio.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "a stdio MCP shaper's server, resolved through the locator by the mcp transport and spawned without a shell in its own process group, stopped with its group when the run ends" },
+  ],
   "src/server/standards.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git standards reader" },
   ],
@@ -145,6 +151,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
+  ],
+  "src/server/worktrees/claim.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "operator-authored dependency claim step, resolved through the locator and streamed into a bounded tail in its own process group" },
+  ],
+  "src/server/worktrees/seed.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "seeding's copy-on-write clone through the pinned /bin/cp, whose -c (macOS) must be the platform's own; never a PATH search" },
   ],
 };
 

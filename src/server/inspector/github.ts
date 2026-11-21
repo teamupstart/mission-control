@@ -16,6 +16,7 @@ import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
 import type { InspectorComment } from "@shared/types.ts";
 import { scrubSecrets } from "./scrub.ts";
+import { CHECK_CONTEXTS, rollUpChecks } from "../github/check-rollup.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -306,6 +307,8 @@ export interface PrSnapshot {
   baseSha?: string;
   defaultBranch?: string;
   mergeCommitSha?: string | null;
+  /** When it merged (epoch ms), or null. Read so a stacked child's stray merge can be dated. */
+  mergedAt?: number | null;
   title: string;
   body: string;
   isDraft: boolean;
@@ -401,8 +404,8 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
-      baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+      baseRefName baseRefOid mergeCommit{ oid } mergedAt repository{ defaultBranchRef{ name } }
+      commits(last:1){ nodes{ commit{ statusCheckRollup{ state ${CHECK_CONTEXTS} } } } }
       reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
@@ -496,7 +499,13 @@ export async function fetchPr(
     }
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: { ...toSnapshot(pr),
+    // A read that cannot say which state the pull request is in observed nothing. Defaulting
+    // it to CLOSED retired an open pull request's row for good: the tick stops polling a
+    // retired row, and the workflow gate pinned to it blocked as closed.
+    if (!isPrState(pr.state)) {
+      return { ok: false, error: "GitHub's answer did not say whether the pull request is open" };
+    }
+    return { ok: true, value: { ...toSnapshot(pr, pr.state),
       ...(includeCodeRabbitComments ? { issueComments: issueCommentPage(pr.comments) } : {}),
       responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
@@ -527,17 +536,45 @@ function toChecks(state: unknown): ChecksState {
   }
 }
 
-function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
+/**
+ * The head commit's CI, for the merge gate: GitHub's own rollup, except where GitHub says
+ * failing only because of a run a later run of the same check has since re-checked.
+ *
+ * GitHub's aggregate counts every check run the commit ever had, so a title check that failed
+ * and then passed after the title was edited reads FAILURE for good, and the gate held the pull
+ * request on "CI is failing" while GitHub's checks list was green. The override is narrow on
+ * purpose, because this verdict lets a pull request merge itself: it only ever clears a failure,
+ * only when the page of checks is complete, only when a failing run was re-checked by a later run
+ * of the same check - a GitHub Actions run of the same workflow file, triggering event and name, so a
+ * passing `pull_request` run never clears a failed `push` run and another app's failed check is
+ * never cleared at all - and only when every run still counting has a result
+ * `rollUpChecks` recognises: a conclusion GitHub calls a failure and this code does not know
+ * must not read as a pass here.
+ */
+function checksOf(rollup: { state?: unknown; contexts?: unknown } | null | undefined): ChecksState {
+  const github = toChecks(rollup?.state);
+  if (github !== "failing") return github;
+  const contexts = rollup?.contexts as { pageInfo?: { hasNextPage?: unknown }; nodes?: unknown } | null | undefined;
+  if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) return github;
+  const current = rollUpChecks(contexts.nodes);
+  return current.retriedFailure && current.recognized && current.checks !== null ? current.checks : github;
+}
+
+function isPrState(value: unknown): value is PrSnapshot["state"] {
+  return value === "OPEN" || value === "CLOSED" || value === "MERGED";
+}
+
+function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): PrSnapshot {
   const reviewPage = toReviewPage(pr.reviews);
   const firstThreads = threadPage(pr.reviewThreads);
   const headCommit = (
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
-      commit?: { statusCheckRollup?: { state?: unknown } | null };
+      commit?: { statusCheckRollup?: { state?: unknown; contexts?: unknown } | null };
     }[]
   )[0]?.commit;
   const createdAt = Date.parse(String(pr.createdAt ?? ""));
   return {
-    state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
+    state,
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
     ...refFields(pr),
@@ -557,10 +594,10 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
       pr.reviewDecision === "REVIEW_REQUIRED"
         ? (pr.reviewDecision as ReviewDecision)
         : null,
-    checks: toChecks(headCommit?.statusCheckRollup?.state),
+    checks: checksOf(headCommit?.statusCheckRollup),
     threads: firstThreads.threads,
     threadError: firstThreads.error
-      ?? (typeof pr.isDraft !== "boolean" || !["OPEN", "CLOSED", "MERGED"].includes(String(pr.state))
+      ?? (typeof pr.isDraft !== "boolean"
         || typeof pr.headRefOid !== "string" || !pr.headRefOid ? "Missing PR identity or state" : null),
     threadsPageInfo: threadPageInfo(pr.reviewThreads),
     reviews: reviewPage.reviews,
@@ -571,16 +608,18 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
 /** The base, default branch and merge commit of one GraphQL pull request node. */
 function refFields(
   pr: Record<string, unknown>,
-): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null } {
+): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null; mergedAt: number | null } {
   const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
   const defaultBranch = (
     (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
   )?.name;
+  const mergedAt = typeof pr.mergedAt === "string" ? Date.parse(pr.mergedAt) : Number.NaN;
   return {
     baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
     baseSha: typeof pr.baseRefOid === "string" ? pr.baseRefOid : "",
     defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
     mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
+    mergedAt: Number.isFinite(mergedAt) ? mergedAt : null,
   };
 }
 
@@ -601,12 +640,14 @@ export interface PrRefs {
   baseSha?: string;
   defaultBranch: string;
   mergeCommitSha: string | null;
+  /** When it merged (epoch ms). Optional only so hand-built fixtures stay valid. */
+  mergedAt?: number | null;
 }
 
 const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid }
+      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid } mergedAt
       repository{ defaultBranchRef{ name } }
     }
   }

@@ -2,9 +2,10 @@ import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -46,13 +47,7 @@ after(() => {
 // not inject the daemon manager remain on the disposable Git compatibility seam.
 function mkRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), `${name}\n`);
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "first"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": `${name}\n` }, message: "first" });
   const origin = join(home, `${name}.git`);
   execFileSync("git", ["init", "-q", "--bare", origin]);
   execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
@@ -435,6 +430,8 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     // See `TaskManager.withCleanupReservation`.
     cleanupReservations: new Set<string>(),
     stopEmbeddedAgentBeforeReclaim: async () => {},
+    // Cancel stops any dependency claim the task's dispatch is waiting on; this one has none.
+    worktrees: new WorktreeManager(),
   });
 
   const outcome = await manager.cancel("cancel-multi");

@@ -37,6 +37,7 @@ test("an upgraded database preserves Phase 1 runs and gains loop tables with the
   const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'resident_%'`)
     .all() as Array<{ name: string }>).map((row) => row.name).sort();
   assert.deepEqual(tables, [
+    "resident_instruction_proposals",
     "resident_iterations",
     "resident_mcp_secrets",
     "resident_pacing_calls",
@@ -189,4 +190,51 @@ test("schema 12 upgrade captures recovery and leaves old SDK native limits unkno
   db.prepare("UPDATE sdk_sessions SET resident_compaction_token_limit = 180880 WHERE id = 'native-backstop'").run();
   closeDb();
   assert.equal(getSdkSession("native-backstop")!.residentCompactionTokenLimit, 180880);
+});
+
+test("schema 31 upgrade captures recovery and leaves every run owing no restatement until it compacts", async () => {
+  const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, claimed_at)
+    VALUES ('live', 7, 'loop', 'sent', 100)`).run();
+  closeDb();
+  const previous = new DatabaseSync(join(home, "harness.db"));
+  previous.exec(`ALTER TABLE resident_runs DROP COLUMN compaction_epoch;
+    ALTER TABLE resident_runs DROP COLUMN reanchored_epoch;
+    ALTER TABLE resident_iterations DROP COLUMN wake_text;
+    ALTER TABLE resident_iterations DROP COLUMN reanchor_epoch;
+    PRAGMA user_version = 31;`);
+  previous.close();
+  const backupRoot = join(home, "backups", "database");
+  const before = new Set(readdirSync(backupRoot));
+  const db = openDb();
+  assert.equal(readdirSync(backupRoot).filter(name => !before.has(name) && name.startsWith("pre-migration-")).length, 1);
+  assert.deepEqual({ ...db.prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = 'live'").get() },
+    { compaction_epoch: 0, reanchored_epoch: 0 });
+  assert.deepEqual({ ...db.prepare("SELECT wake_text, reanchor_epoch FROM resident_iterations WHERE run_id = 'live' AND seq = 7").get() },
+    { wake_text: null, reanchor_epoch: null }, "an older wake still reads as marker and loop prompt");
+  assert.equal(db.prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+});
+
+test("schema 34 upgrade captures recovery before adding attachment spellings, and existing runs read as attaching none", async () => {
+  const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 35);
+  closeDb();
+  const previous = new DatabaseSync(join(home, "harness.db"));
+  previous.exec("ALTER TABLE resident_runs DROP COLUMN launch_extra_repo_spellings; PRAGMA user_version = 34;");
+  previous.close();
+  const backupRoot = join(home, "backups", "database");
+  const before = new Set(readdirSync(backupRoot));
+  const db = openDb();
+  const captured = readdirSync(backupRoot).filter(name => !before.has(name) && name.startsWith("pre-migration-"));
+  assert.equal(captured.length, 1, "a version-34 database needs a recovery point before the column is added");
+  const recovery = new DatabaseSync(join(backupRoot, captured[0]!), { readOnly: true });
+  try {
+    assert.equal(recovery.prepare("PRAGMA user_version").get()!.user_version, 34);
+    const columns = (recovery.prepare("PRAGMA table_info(resident_runs)").all() as Array<{ name: string }>).map(c => c.name);
+    assert.ok(!columns.includes("launch_extra_repo_spellings"), "the recovery point is the database as it was");
+  } finally {
+    recovery.close();
+  }
+  assert.equal(db.prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+  assert.deepEqual(store.residentRunIdentityByRequest("phase1-request")?.extraRepoSpellings, [], "an existing run attached nothing");
 });

@@ -38,6 +38,7 @@ process.env.HARNESS_MCP_SERVER = fakeBundle;
 const {
   MISSION_MCP_SERVER_NAME,
   MISSION_MCP_TOOLS,
+  kindMissionMcpRequirement,
   claudeMissionMcpArgs,
   codexMissionMcpArgs,
   missionMcpConfigJson,
@@ -807,6 +808,14 @@ test("a required tool is pre-approved beside the ask tool, on one registration",
 test("a dispatch that requires nothing pre-approves exactly what it always did", async () => {
   const args = await askChannelArgs("claude");
   assert.equal(flag(args, "--allowed-tools"), ASK_TOOL);
+});
+
+test("chat launches pre-approve task creation and dispatch on the shared MCP registration", async () => {
+  const requirement = kindMissionMcpRequirement({ kind: "chat", workflowId: null, planInputs: [] }, null);
+  const args = await askChannelArgs("claude", requirement);
+  assert.equal(args.filter((arg) => arg === "--mcp-config").length, 1);
+  assert.equal(flag(args, "--allowed-tools"),
+    [ASK_TOOL, missionMcpToolName("create_task"), missionMcpToolName("dispatch_task")].join(","));
 });
 
 test("a harness with no MCP client is not handed one", async () => {

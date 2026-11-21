@@ -101,3 +101,14 @@ test("the uncertain delivery rung uses the shared label and sentence verbatim", 
   assert.doesNotMatch(rung, /workflow-failed|is-failed/);
   assert.doesNotMatch(html, /Mark delivered|Discard, send new round/);
 });
+
+
+test("publication wait remains the workflow reason independently of CI reporting", () => {
+  const detail = ladderDetail("gate");
+  detail.inspectorGate!.state.waitReason = "working_tree_not_pushed";
+  const html = renderToStaticMarkup(createElement(WorkflowLadder, {
+    summary: detail.summary, detail, onOpenRun: () => {}, onRecheckInspector: () => {}, sessionBound: true,
+  }));
+  assert.ok(html.includes(gateWaitSentence("working_tree_not_pushed")));
+  assert.doesNotMatch(html, /A CI check failed/);
+});

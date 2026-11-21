@@ -243,7 +243,9 @@ test("a rail taller than the window scrolls by itself without a scrollbar beside
   await page.locator(".board-col.tone-working .tile-name").first().click();
   const rail = page.getByRole("navigation", { name: "Sessions", exact: true });
   await expect(rail.locator(".rail-row")).toHaveCount(goals.length);
-  await expectOnlyTheRailScrolls(rail);
+  // The rows scroll under a head that stays put (the fold control and the way back live in
+  // it), so the scroller is the rail's row list rather than the rail itself.
+  await expectOnlyTheRailScrolls(rail.locator(".console-rail-rows"));
   await capture(page, "short-window-all-sessions");
 
   // The detail side still sizes itself to the window rather than to its content: its

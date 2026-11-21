@@ -75,6 +75,21 @@ const START = {
   taskId: null,
 };
 
+test("task-backed Pi launches require Mission tools while direct SDK launches keep them optional", async () => {
+  for (const taskId of [null, "pi-task-tools"]) {
+    const sdk = new FakePiSdk();
+    const scripted = withScriptedPi(sdk);
+    const supervisor = new SdkSupervisor(new Registry());
+    try {
+      await supervisor.start({ ...START, taskId });
+      assert.equal(sdk.created[0]!.missionToolsRequired ?? false, taskId !== null);
+    } finally {
+      await supervisor.stopAll(50);
+      scripted.restore();
+    }
+  }
+});
+
 /**
  * Let the detached pump run, without a clock.
  *
@@ -85,7 +100,13 @@ async function drain(times = 40): Promise<void> {
   for (let i = 0; i < times; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+/**
+ * Poll until `check` holds. The cap is a hang guard, never a speed assertion: it returns the
+ * moment the supervisor catches up. A launch through the fake SDK measured up to 912 ms on a
+ * machine at load average 33, and the full suite's concurrency pushed three launches past the
+ * old 2 s cap, so it is sized for a loaded runner rather than an idle one.
+ */
+async function waitFor(check: () => boolean, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (check()) return;
@@ -200,44 +221,47 @@ test("a managed Pi launch persists Pi's own session id as the thing a restart re
   }
 });
 
-test("a daemon restart reopens the EXACT Pi conversation and sends no unsolicited turn", async () => {
-  const sdk = new FakePiSdk();
-  sdk.sessions.set("pi-session-1", "/fake/.pi/agent/sessions/--wt-pi--/ts_pi-session-1.jsonl");
-  const scripted = withScriptedPi(sdk);
-  try {
-    upsertSdkSession({
-      id: "sdk:pi-restore",
-      agent: "pi",
-      agentSessionId: "pi-session-1",
-      cwd: "/wt/pi",
-      taskId: null,
-      model: "amazon-bedrock/deepseek.v3.2",
-      effort: "high",
-      permissionMode: null,
-      status: "running",
-      turnInProgress: false,
-    });
-    const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => null });
-    await supervisor.restore();
+for (const taskId of [null, "pi-task-tools"]) {
+  test(`a daemon restart reopens the EXACT Pi conversation with ${taskId ? "required" : "optional"} Mission tools`, async () => {
+    const sdk = new FakePiSdk();
+    sdk.sessions.set("pi-session-1", "/fake/.pi/agent/sessions/--wt-pi--/ts_pi-session-1.jsonl");
+    const scripted = withScriptedPi(sdk);
+    try {
+      upsertSdkSession({
+        id: "sdk:pi-restore",
+        agent: "pi",
+        agentSessionId: "pi-session-1",
+        cwd: "/wt/pi",
+        taskId,
+        model: "amazon-bedrock/deepseek.v3.2",
+        effort: "high",
+        permissionMode: null,
+        status: "running",
+        turnInProgress: false,
+      });
+      const registry = new Registry();
+      const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => null });
+      await supervisor.restore();
 
-    assert.equal(scripted.calls.length, 1);
-    assert.equal(scripted.calls[0]!.resume, "pi-session-1");
-    assert.equal(scripted.calls[0]!.prompt, "");
-    // Resolved through Pi's OWN session listing, to the exact file rather than a look-alike.
-    assert.equal(
-      sdk.created[0]!.sessionPath,
-      "/fake/.pi/agent/sessions/--wt-pi--/ts_pi-session-1.jsonl",
-    );
-    assert.deepEqual(sdk.runtime.session.deliveries, [], "a resumed idle session gets no turn");
-    assert.equal(registry.getSession("sdk:pi-restore")?.agentSessionId, "pi-session-1");
-    // The row keeps the id it is being picked up from rather than being blanked and relearned.
-    assert.equal(getSdkSession("sdk:pi-restore")?.agentSessionId, "pi-session-1");
-    await supervisor.stopAll(50);
-  } finally {
-    scripted.restore();
-  }
-});
+      assert.equal(scripted.calls.length, 1);
+      assert.equal(scripted.calls[0]!.resume, "pi-session-1");
+      assert.equal(scripted.calls[0]!.prompt, "");
+      assert.equal(sdk.created[0]!.missionToolsRequired ?? false, taskId !== null);
+      // Resolved through Pi's OWN session listing, to the exact file rather than a look-alike.
+      assert.equal(
+        sdk.created[0]!.sessionPath,
+        "/fake/.pi/agent/sessions/--wt-pi--/ts_pi-session-1.jsonl",
+      );
+      assert.deepEqual(sdk.runtime.session.deliveries, [], "a resumed idle session gets no turn");
+      assert.equal(registry.getSession("sdk:pi-restore")?.agentSessionId, "pi-session-1");
+      // The row keeps the id it is being picked up from rather than being blanked and relearned.
+      assert.equal(getSdkSession("sdk:pi-restore")?.agentSessionId, "pi-session-1");
+      await supervisor.stopAll(50);
+    } finally {
+      scripted.restore();
+    }
+  });
+}
 
 test("a restart whose Pi conversation is gone shows a card and then takes it away", async (t) => {
   // The eviction is the point. `session_remove` is what settles a task, so a row that
@@ -420,6 +444,29 @@ test("the supervisor refuses a permission-mode change Pi has no way to make", as
     );
   } finally {
     await supervisor.stopAll(50);
+    scripted.restore();
+  }
+});
+
+test("shutdown drains a driver without lifting its pause; stopping the session lifts it", async () => {
+  // `PauseManager.stop()` has already continued the driver and kept the pause record for the
+  // next daemon. Lifting it in the drain would forget the operator's pause on every restart.
+  const sdk = new FakePiSdk();
+  const scripted = withScriptedPi(sdk);
+  const released: string[] = [];
+  const pause = { releaseNow: (id: string): string | null => (released.push(id), null), frozenRefusal: () => null };
+  try {
+    const shutdown = new SdkSupervisor(new Registry(), { pause });
+    await shutdown.start(START);
+    await shutdown.stopAll(50);
+    assert.deepEqual(released, [], "the daemon going down is not the session's pause ending");
+
+    const ending = new SdkSupervisor(new Registry(), { pause });
+    const started = await ending.start(START);
+    await ending.stop(started.id);
+    assert.deepEqual(released, [started.id], "a stop of the session itself still thaws and lifts it first");
+    await ending.stopAll(50);
+  } finally {
     scripted.restore();
   }
 });

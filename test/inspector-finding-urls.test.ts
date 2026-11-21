@@ -329,7 +329,7 @@ beforeEach(() => {
   resetAuthenticatedLogin();
   delete process.env.FAKE_FINDINGS;
   writeFileSync(callsPath, "");
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
 });
 
 after(() => {

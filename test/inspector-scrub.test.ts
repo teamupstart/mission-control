@@ -20,6 +20,7 @@ const CASES: [name: string, input: string][] = [
   ["a fine-grained GitHub PAT", "token github_pat_11ABCDEFG0abcdefghijkl_XyZ0123456789 leaked"],
   ["an Anthropic key", "ANTHROPIC_API_KEY is sk-ant-api03-AbCdEf0123456789-XyZ"],
   ["an OpenAI key", "use sk-AbCdEf0123456789AbCdEf0123456789AbCdEf01 for that"],
+  ["an OpenAI project key", "use sk-proj-AbCdEf0123_456789-AbCdEf0123456789 for that"],
   ["an AWS access key id", "id AKIAIOSFODNN7EXAMPLE is in the config"],
   ["a Google API key", "AIzaSyA0123456789abcdefghijklmnopqrstuvw is the key"],
   ["a Slack token", "xoxb-0123456789-0123456789-AbCdEfGhIjKlMnOp is set"],

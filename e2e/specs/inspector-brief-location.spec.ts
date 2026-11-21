@@ -109,6 +109,10 @@ test("the GitHub Inspector panel names both places a repo may keep its brief", a
 });
 
 test("Shipping and Trust name the remote reviewer as GitHub Inspector", async ({ page, daemon }) => {
+  const config = await page.request.put(`${daemon.baseURL}/api/inspector/config`, {
+    data: { enabled: false },
+  });
+  expect(config.ok()).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/shipping`);
   await expect(page.getByText(/once GitHub Inspector has reviewed the current push/)).toBeVisible();
 

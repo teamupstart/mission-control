@@ -58,7 +58,8 @@ export type ActionId =
   | "composerEditor"
   | "requeue"
   | "residents"
-  | "residentsDock";
+  | "residentsDock"
+  | "sessionRail";
 
 export interface ActionDef {
   id: ActionId;
@@ -133,6 +134,16 @@ export const ACTIONS: readonly ActionDef[] = [
     description:
       "Fold the pipeline strip to one row and give the space to the conversation, or unfold it to read each stage's sentence.",
     defaultBinding: "shift+l",
+    group: "global",
+  },
+  {
+    // `[`, the key a sidebar folds on in most editors, and free here: every letter near the
+    // session actions is taken, and the bracket edits no text, so it is safe as a bare key.
+    id: "sessionRail",
+    label: "Fold or unfold the session rail",
+    description:
+      "Fold the session list beside an open session down to a strip, giving its width to the conversation and terminal, or unfold it.",
+    defaultBinding: "[",
     group: "global",
   },
   {

@@ -155,6 +155,10 @@ export const FIXED_OS_EXECUTABLES = {
   swVers: "/usr/bin/sw_vers",
   lipo: "/usr/bin/lipo",
   plistBuddy: "/usr/libexec/PlistBuddy",
+  // Seeding's copy-on-write clone. Pinned rather than searched because its flags are the
+  // platform's own: `-c` is macOS clonefile, so a PATH that put GNU `cp` first would turn the
+  // clone into a refusal or something else.
+  cp: "/bin/cp",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

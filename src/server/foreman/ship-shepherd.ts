@@ -1,4 +1,5 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { isPaused } from "@shared/pause.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { hasBlocker, settledIdle } from "@shared/session.ts";
@@ -141,6 +142,7 @@ function decideShipRecovery(
     return skip("the session needs a human");
   }
   if (hasBlocker(s)) return skip("the session is blocked");
+  if (isPaused(s)) return skip("the session is paused");
   if ((queue?.items.length ?? 0) > 0 || s.pendingTurns.length > 0) {
     return skip("a queue item or pending turn owns the session");
   }

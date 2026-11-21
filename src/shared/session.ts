@@ -7,6 +7,7 @@ import type { PaneDialog, Session, Task } from "./types.ts";
 import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 import { canWriteTo } from "./pane.ts";
+import { WAITING_ON_ANSWER_REASON, waitingOnOpenQuestion } from "./async-input.ts";
 
 /** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
 export function sessionWorkspaceRoot(
@@ -98,6 +99,34 @@ export function provisioningTasks(tasks: Task[]): Task[] {
   return tasks
     .filter((t) => t.status === "dispatching" && t.sessionId === null)
     .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** Running task records not represented by a session, including provisional startup/transfer gaps. */
+export function sessionlessRunningTasks(tasks: Task[], sessions: Session[]): Task[] {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  return tasks.filter((task) => task.status === "running" &&
+    (task.sessionId === null || !sessionIds.has(task.sessionId)))
+    .sort((a, b) => (a.dispatchedAt ?? a.createdAt) - (b.dispatchedAt ?? b.createdAt));
+}
+
+/**
+ * Whether a Pipeline provider, not an agent session, owns this task's lifecycle.
+ *
+ * Such a task runs without a session by design - conductor may launch several sequential
+ * agents and none of them owns the task - and the daemon settles it from the provider
+ * projection. It is not lost, so it must not raise the fleet pulse's alarm.
+ */
+export function isProviderOwnedTask(task: Pick<Task, "pipelineRun" | "pipelineCommissionId">): boolean {
+  return task.pipelineRun !== null || Boolean(task.pipelineCommissionId);
+}
+
+/**
+ * Running tasks nothing will finish: no session is attached and no Pipeline provider owns
+ * them. The one definition behind the fleet pulse's `lost` segment and Sitrep's Lost tasks
+ * section, so the count you click and the list you land on cannot disagree.
+ */
+export function lostTasks(tasks: Task[], sessions: Session[]): Task[] {
+  return sessionlessRunningTasks(tasks, sessions).filter((task) => !isProviderOwnedTask(task));
 }
 
 /**
@@ -397,6 +426,10 @@ export function reportBucket(s: Session, _sessions: Session[] = [s]): ReportBuck
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }
+  // The idle clause (`async-input`): the agent filed a question and kept working, and has now
+  // stopped with it still pending. Below every working reading on purpose, so an agent still
+  // running past its question is not amber. A resident is exempt; see `waitingOnOpenQuestion`.
+  if (waitingOnOpenQuestion(s)) return "needs-you";
   return "idle"; // confirmed idle, or open without confirmed busy evidence
 }
 
@@ -412,5 +445,6 @@ export function needsYouReason(s: Session, _sessions: Session[] = [s]): string |
   if (dialog) return paneDialogReason(dialog);
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
+  if (waitingOnOpenQuestion(s)) return WAITING_ON_ANSWER_REASON;
   return null;
 }

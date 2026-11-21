@@ -453,7 +453,10 @@ click **launch new agent** yourself. Dry-run means dry-run.
 tool-less call through the effective Foreman Provider sees every planning
 item's title and intent and returns, for each item, what it must wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
-the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
+the model forgot is appended unblocked. The planner is told to name tasks by title in each
+`reason` and the `note`, since the board shows them verbatim and never shows a task id. Any id a
+reply still carries there - a backlog task's, or any other saved task's that an intent mentions -
+is served to the board as that task's title, while the stored plan keeps the reply's own words. A cycle would deadlock two cards forever and look
 exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
@@ -555,6 +558,20 @@ your work.
 Autopilot **confirms the rest of that reset unattended**, and it has already ruled out
 what the confirmation protects: an agent is only "free" here with an empty work queue,
 and clearing the context is how a handover works at all.
+
+**Pausing holds the autopilot.** A paused session is never "free", so nothing is assigned to
+it. **Pause all** with *Hold automatic launches too* checked, or a **priority** session, holds
+every automatic launch and assignment until you resume; the Foreman readout says which. The
+daemon refuses an autopilot launch itself while the hold stands, so a Foreman worker older
+than the daemon is held too. A launch you start yourself (Dispatch, **launch anyway**, a drag
+onto a running agent, a retro or a tour) claims its own pause override and is not held. That
+override is separate from the one that starts a parked task: one never implies the other. An
+agent dispatching through the `dispatch_task` tool cannot claim it, nor can anything that calls
+the daemon with its token, so it is held like the autopilot. An ensemble works the same way: launching one yourself, or pressing **Retry** on one
+of its members, is your own launch and is not held. A member the ensemble starts later on its own,
+when a slot frees, and the task it starts for the result you selected wait for the hold to lift,
+then launch without being asked again. Nothing in the ensemble fails for having waited. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
 
 On the **board**, the Backlog column shows the
 [hold switch and its disabled state](dispatch-and-backlog.md#hold-a-backlog-item-back), a **blocked** chip naming

@@ -113,5 +113,21 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
+  // Serving the document is not serving the app. Vite pre-bundles the app's dependencies on
+  // the first request for a module, and every module request waits for that run - on a busy
+  // CI runner `/main.tsx` alone took 15s to answer, inside a spec's 20s wait for the
+  // dashboard to render, so the first navigation timed out on the bundling rather than on
+  // anything the spec was about. Requesting the entry here pays that once, under this
+  // fixture's own deadline, and its static imports are pre-transformed on the way. A failure
+  // is left to the spec's navigation, which reports it against the page it was loading.
+  try {
+    const entry = await fetch(`${origin}/main.tsx`, {
+      signal: AbortSignal.timeout(Math.max(5_000, deadline - Date.now())),
+    });
+    await entry.text();
+  } catch {
+    // Reported by the spec's own navigation, if it matters.
+  }
+
   return { origin, readLog: () => log, stop };
 }

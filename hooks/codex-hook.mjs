@@ -2,6 +2,16 @@
 import { captureTerminalEnv } from "../src/shared/harness-runtime.mjs";
 import { postHookEvent, readStdin } from "../src/shared/hook-bridge.mjs";
 import { opensPullRequest } from "../src/shared/pr-command.mjs";
+import { hookText } from "../src/shared/hook-subagents.mjs";
+
+/**
+ * Codex's own sub-agent lifecycle events. Only these forward `agent_id`: on them it names the
+ * child that started or stopped, which is what a terminal session's background agents are read
+ * from, and the daemon keeps a hook carrying it from moving the parent's state. Codex's schema
+ * also allows `agent_id` on its other events, but what it means there is not pinned down, so
+ * those keep reaching the parent exactly as they did.
+ */
+const SUBAGENT_EVENTS = new Set(["SubagentStart", "SubagentStop"]);
 
 async function main() {
   let payload = {};
@@ -21,6 +31,8 @@ async function main() {
     source: payload.source,
     reason: payload.reason,
     prCreated: opensPullRequest(command) ? true : undefined,
+    agentId: SUBAGENT_EVENTS.has(event) ? hookText(payload.agent_id) : undefined,
+    agentType: SUBAGENT_EVENTS.has(event) ? hookText(payload.agent_type) : undefined,
   });
 }
 main().finally(() => process.exit(0));

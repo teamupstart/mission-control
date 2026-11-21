@@ -7,6 +7,8 @@ let script = {};
 try { script = JSON.parse(readFileSync(process.env.MC_E2E_CODERABBIT_SCRIPT, "utf8")); } catch { /* defaults */ }
 if (process.env.MC_E2E_RECORD_DIR) appendFileSync(`${process.env.MC_E2E_RECORD_DIR}/coderabbit.jsonl`, JSON.stringify({ args, cwd: process.cwd(), home: process.env.HOME, autoUpdate: process.env.CODERABBIT_CLI_DISABLE_AUTO_UPDATE }) + "\n");
 if (args[0] === "--version") { console.log(script.old ? "0.9.0" : script.reviewedFiles ? "0.9.2" : "0.9.1"); process.exit(0); }
+// `authFails`: the status command itself breaks, which is not the same answer as signed out.
+if (args[0] === "auth" && args[1] === "status" && script.authFails) { process.stderr.write("fake coderabbit: auth status crashed\n"); process.exit(1); }
 if (args[0] === "auth" && args[1] === "status") { console.log(JSON.stringify({ type: "status", phase: "auth", authenticated: !script.unauthenticated })); process.exit(0); }
 if (args[0] !== "review" || !args.includes("--agent") || args.includes("--use-credits")) { process.exit(1); }
 const emit = e => process.stdout.write(JSON.stringify(e) + "\n");
@@ -21,6 +23,15 @@ const findings = script.longTitles ? Array.from({ length: 8 }, (_, i) => ({
 for (const finding of findings) emit(finding);
 if (script.largeRaw) for (let i = 0; i < 40; i++) emit({ type: "future_additive_event", diagnostic: "x".repeat(60000) });
 if (script.mode === "incomplete") { emit({ type: "error", errorType: "rate_limit", retryAfterSeconds: script.retryAfterSeconds ?? 60 }); process.exit(1); }
+if (script.connectionFailures) {
+ const calls = readFileSync(`${process.env.MC_E2E_RECORD_DIR}/coderabbit.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line));
+ if (calls.filter(call => call.args[0] === "review").length <= script.connectionFailures) {
+  emit({ type: "heartbeat", status: "reviewing" });
+  emit({ type: "error", errorType: "connection", message: "Connection failed: WebSocket closed", recoverable: true,
+   retryAfterSeconds: script.retryAfterSeconds ?? 0 });
+  process.exit(1);
+ }
+}
 const threshold = args[args.indexOf("--gate") + 1];
 const blocking = findings.filter(f => ["critical","major","minor","trivial","info"].indexOf(f.severity) <= ["critical","major","minor","trivial","info"].indexOf(threshold)).length;
 // CLI 0.9.1 reports an unreviewed-file count. 0.9.2 dropped it for the list of reviewed files,

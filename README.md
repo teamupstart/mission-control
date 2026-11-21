@@ -61,6 +61,13 @@ that handles the routine interruptions you don't want, a verification workflow t
 and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
 drives the work, Mission Control watches that too.
 
+Codex SDK sessions show background child agents from their native thread-tree frames, including
+children still running after the parent finishes. See [harness behavior](docs/harnesses-and-terminals.md#codex-sdk-background-sub-agents).
+
+The [asynchronous input preview](docs/sessions.md#asking-without-stopping) lets agents keep
+working while questions wait in your inbox. Answers carry their original context, and consecutive
+queued answers can arrive together. Agents can list and withdraw questions within a ten-question limit.
+
 Prefer one page? The
 [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
 is this same tour as a single self-contained document, with 25 screenshots from a running
@@ -86,7 +93,9 @@ Each new dashboard window or reload offers a tour picker with a list and preview
 **See the work**, **Author what runs**, or the recommended **Set up this machine**, then
 explicitly select **Start this tour**. No tour starts just from opening or browsing the picker.
 
-Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home.
+Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home; a
+newly added tour, such as **Meet your residents**, is still announced in the picker once, and
+again after you leave that tour midway.
 **Browse tours** in **Settings > Help & tours** or the command palette always reopens it.
 Tours start at their first stop and do not save progress or resume. See the
 [guided tours reference](docs/ui.md#guided-tours) for details.
@@ -121,6 +130,18 @@ Read it as a terminal stream or a chat, queue and reorder messages, answer struc
 change permission posture, interrupt a turn, and drop images directly into the composer.
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
+
+Mission MCP's `cancel_task` cancels saved tasks by task id, including running tasks whose
+session is missing. It uses the dashboard's cancellation and cleanup rules and keeps the task
+record available for inspection or deletion. A red **lost** segment in the topbar's fleet pulse
+counts running tasks that no session or Pipeline run owns; clicking it explains them and opens
+Sitrep, which lists them first with Cancel and Cancel all. After startup observation, eligible running tasks inherited without a
+session binding and unchanged during restore can settle as failed with a session-ended reason,
+retaining their worktrees. [Task recovery](docs/tasks-and-scheduling.md) preserves SDK, Pipeline,
+terminal-handoff and local-plan recovery ownership.
+
+Chat tasks can delegate separate work with Mission MCP's `create_task` and `dispatch_task`,
+using the same backlog and launch checks as the dashboard while the conversation stays open.
 
 Managed terminal resumes [verify Mission tools before stopping the SDK](docs/harnesses-and-terminals.md#managed-terminal-resumes),
 preserve permission posture and attached checkout scope, and retain their prepared environment
@@ -212,6 +233,9 @@ publish after applicable validation without a PR; repository and code dependenci
 wait for their normal merge condition. See
 [managed plans](docs/managed-plans.md).
 
+HTML Plans applies to explicitly selected Mission Control planning. Other repository-native
+planning workflows keep their artifact and approval contracts without requiring Mission Control tools.
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
@@ -292,6 +316,10 @@ Read more in [Foreman](docs/foreman.md).
 
 ## Workflows and Personas
 
+Reused workflow check slots with ignored Go source are quarantined before checks run, preserving
+the files and reporting pool contamination as infrastructure trouble. See
+[check isolation](docs/worktrees-and-checks.md#running-a-check-command).
+
 Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
@@ -329,7 +357,8 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 Local CodeRabbit reviews are available as a reusable Library Command and in the optional
 No-Mistakes review stage. Root YAML enables review without a Library override; the default
-allowance is ten executions, with warning skips on exhaustion. See
+allowance is ten executions. Recoverable connection failures retry automatically within that
+allowance; an incomplete review stays blocked when retries or allowance run out. See
 [CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
 
 Read more in [Workflows and Personas](docs/workflows.md) and
@@ -337,11 +366,13 @@ Read more in [Workflows and Personas](docs/workflows.md) and
 
 ## Shipping and the GitHub reviewer
 
-The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
-answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
-code fixes them. Dry run records what it would say without publishing anything.
+The GitHub Inspector starts enabled in Live mode on fresh installations. It reviews pull requests
+Mission Control can prove it opened and publishes only in repositories granted access in Settings >
+Trust. It comments inline, answers replies in its own threads, re-reviews every pushed head, and
+resolves findings when the code fixes them. Dry run records what it would say without publishing
+anything.
 
-Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, on by default (an upgrade turns it on once; a later opt-out is kept). It prompts
 eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
 attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
 invitation and repository trust, and waits while a workflow owns the session.
@@ -360,6 +391,9 @@ that publication from workflow completion.
 Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor
+
+> Temporarily unavailable: the ai-conductor integration is hidden from Setup, Settings and
+> Dispatch while it is rebuilt. See [Pipelines](docs/pipelines.md).
 
 Some work is driven by a complete SDLC engine rather than one long-running agent. Mission Control
 can observe ai-conductor's gated pipeline, show its agents on the same fleet, surface halts in the
@@ -549,8 +583,12 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Conversation-use telemetry](docs/observability-actions.md#measuring-conversation-use) - confirmed
+  dashboard sends, automation and unknown attribution, with direct terminal input left unmeasured.
 - [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
   gaps and the OTLP query contract.
+- [Feature flags](docs/feature-flags.md) - machine-wide choices and live daemon and dashboard
+  gates. The registry ships empty; Settings controls arrive separately.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries
@@ -565,3 +603,11 @@ Mission Control is licensed under the [Apache License 2.0](LICENSE). See [NOTICE
 attribution information. Third-party dependencies remain subject to their own license terms,
 including the `@anthropic-ai/claude-agent-sdk` dependency and
 [Anthropic's applicable commercial terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+### Automatic PR branch updates (preview)
+
+Settings > Feature flags > **Automatic PR branch updates** lets Mission Control update
+otherwise ready PR branches when GitHub requires them to catch up with their target. The
+PR link follows update progress, fresh checks and reviews, and offers conflict recovery.
+This works for manual merging and grants no permission to merge. See
+[Inspector and shipping](docs/inspector-and-shipping.md#automatic-pr-branch-updates-preview).

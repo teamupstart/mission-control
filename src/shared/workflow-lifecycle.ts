@@ -1,5 +1,5 @@
 import { WorkflowInspectorGateStateSchema } from "./protocol.ts";
-import type { WorkflowInspectorGateState } from "./workflow.ts";
+import type { WorkflowCompletionPolicy, WorkflowInspectorGateState } from "./workflow.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_RUN_TERMINAL_STATUSES,
@@ -83,6 +83,7 @@ export const WORKFLOW_INSPECTOR_GATE_PHASES = [
   "inspector_unadopted_pr",
   "inspector_working_tree_not_pushed",
   "inspector_clean_review",
+  "inspector_reviewed_tree_changed",
 ] as const;
 
 /**
@@ -104,6 +105,7 @@ export const WORKFLOW_INSPECTOR_ENTRY_PHASE: Record<WorkflowGateWaitReason, Work
   inspector_disabled: "inspector_disabled",
   awaiting_fresh_observation: "inspector_awaiting_fresh_observation",
   working_tree_not_pushed: "inspector_working_tree_not_pushed",
+  reviewed_tree_changed: "inspector_reviewed_tree_changed",
   head_mismatch: "inspector_head_mismatch",
   review_pending: "inspector_review",
   clean_review_pending: "inspector_clean_review",
@@ -306,6 +308,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   inspector_round_limit: ["blocked"],
   inspector_unadopted_pr: ["waiting_for_pr"],
   inspector_working_tree_not_pushed: ["waiting_for_session"],
+  inspector_reviewed_tree_changed: ["waiting_for_session"],
 };
 
 /**
@@ -595,6 +598,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   inspector_round_limit: ["maxRepairRounds", "parkedPhase"],
   inspector_unadopted_pr: [],
   inspector_working_tree_not_pushed: [],
+  inspector_reviewed_tree_changed: [],
 };
 
 /** The reserved key a phase detail carries the sticky gate under. See `withInspectorGate`. */
@@ -914,6 +918,20 @@ export function workflowInspectorGate(
   record: WorkflowRunLifecycleRecord,
 ): WorkflowInspectorGateState | null {
   return decodeWorkflowRunLifecycle(record).gate;
+}
+
+/** A different visible hold, such as disabling Inspector, cannot erase an unreviewed tree. */
+export function workflowInspectorGateNeedsFreshReview(gate: WorkflowInspectorGateState | null): boolean {
+  return gate?.waitReason === "reviewed_tree_changed" || gate?.reviewedContent != null;
+}
+
+/** Inspector-only repair cannot waive an outstanding full review of published content. */
+export function workflowInspectorOnlyRepair(
+  policy: WorkflowCompletionPolicy | undefined,
+  gate: WorkflowInspectorGateState | null,
+): boolean {
+  return policy?.kind === "inspector" && policy.onFindings === "inspector_only"
+    && !workflowInspectorGateNeedsFreshReview(gate);
 }
 
 /** The withheld check retry, only on a run actually blocked in the cleanup phase. */

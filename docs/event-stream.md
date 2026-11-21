@@ -84,3 +84,85 @@ The loopback HTTP surface is likewise bounded:
 
 These routes consume the verified snapshot service. They do not parse snapshot payloads or repeat
 digest, preflight, transaction, rollback, or reconciliation logic at the HTTP boundary.
+
+## Pausing
+
+A session's pause rides on the session itself, as `Session.pause` in `session_upsert` and the
+snapshot's `sessions`. Its `phase` is what the dashboard shows; its `stopped` says whether any of
+the agent's processes are stopped right now, and is what every write gate refuses on, because a
+freeze a restart interrupted leaves stopped processes under a `pending` phase. The fleet-wide half (Pause all and the priority session) is the
+`pause_state` event, which carries the whole `PauseState` from `src/shared/pause.ts`: two
+nullable singletons, so it is bounded by construction. The reconnect snapshot carries the same
+value as `pause`, and a snapshot from an older daemon without it reads as nothing paused.
+`PauseManager` (`src/server/pause/manager.ts`) is the only writer of both, and the registry
+emits `pause_state` only when the state changed. It is deliberately absent from
+`LINE_INPUT_EVENTS`, because the Line has no stage for a fleet-wide control.
+See [Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
+## Storage health
+
+`storage_health` carries the whole storage aggregate from `src/shared/storage-health.ts`: backup
+status per kind, the kept copies with their sizes, the total size, the state directory's last
+measurement by category (and its pools, at most `STORAGE_USAGE_POOL_LIMIT`), the volume's free
+space, the storage limits it was judged against, and the current problems. The daemon's
+`StorageHealthService` recomputes it after every database backup capture and prune, measurement,
+volume check that moved, and limits save, and emits the event only when the result changed. The
+aggregate is bounded: eight categories, at most 64 pools, and no per-slot sizes, which stay in the
+daemon for `GET /api/storage/pool-caches`. The
+reconnect snapshot carries the same value as `storageHealth`, or null before the service has
+computed it once, and `GET /api/storage` returns it with the backup config. Settings > Storage
+shows whichever of the two arrived last, so its re-read after a write is not hidden by an older
+stream value while the stream is down. Each problem's id names one occurrence and is built only from durable
+state, so a daemon restart never changes it. See [Backup and restore](sqlite-database.html#backup).
+
+Saving the indexed directories through `PUT /api/repo-index` emits `repo_index_changed`,
+carrying only the new index identity: a 16-character hash of the effective directories and
+depth limit, also sent as `x-repo-index-identity` on every `GET /api/repos` answer. Each open
+window drops the repository list it keeps for the Dispatch picker unless that list answers for
+the announced identity, and a Dispatch form already open lets go of it at once and asks again.
+`settings_restored` drops the list outright, since a restore can replace the directories too.
+
+The snapshot carries the same `repoIndexIdentity`, which is what a window disconnected during
+the save relies on: it never saw `repo_index_changed`, so on reconnect it compares its list
+against the snapshot's identity and drops it on a mismatch. A reconnect with nothing changed
+keeps the list - a daemon under load drops connections, which is exactly when the picker needs
+the list it already has. When the daemon cannot read its index config, the snapshot logs why and
+carries `REPO_INDEX_IDENTITY_UNKNOWN` instead of omitting the field: the window drops its list,
+since nothing vouches for it, and takes the next real answer.
+
+The backup config is not part of that aggregate. Saving it through
+`PUT /api/storage/backups/config` emits the content-free `storage_config_changed`, and the
+hook's `storageConfigRevision` counter, bumped on that event and on every reconnect, makes each
+open Settings > Storage re-read the route. `storage_health` cannot carry that signal: a save
+that prunes nothing leaves the aggregate unchanged, so no frame is sent. A re-read replaces only
+the fields not edited in that window, and Save sends only the fields edited there.
+
+## Feature flags
+
+`feature_flags` carries `{ config }`, the machine's full `{ enableAll, overrides }` setting.
+The reconnect snapshot carries it as `featureFlags`, and `MissionState.featureFlags` is the
+only browser owner. `useFeatureFlag` resolves against that state; before a snapshot it uses
+defaults. The record is bounded to 512 overrides with ids at most 64 characters, below 40 KiB
+when serialized even at the maximum. Identical frames are suppressed by comparing the master
+and every override, independent of key order. It is not a `LINE_INPUT_EVENTS` member: no Line
+stage consumes flags. Writes and settings restores publish after persistence, without polling.
+See [Feature flags](feature-flags.md).
+
+## Task shaping
+
+`shaping_config` carries `{ config }`, Task shaping's config view: `caller`, `limits`, `shapers`,
+`overrides` and `order`, where each shaper this build understands appears in full and an entry it
+cannot run appears only as `{ id, label, unsupported }`. Its raw stored envelope never leaves the
+daemon. The event and the reconnect snapshot's `shaping` field are both behind the `task-shaping`
+flag. While it is off, the snapshot has no `shaping` field, no frame carries a config, and nothing
+reads the stored shapers; the only frame is `{ config: null }`. That clearing frame is sent when
+the flag turns off, so every open window drops the config, and once at daemon start when the flag
+is already off. Repeats are suppressed. Turning the flag on sends the current config, so an open
+window fills Settings > Task shaping with no reload.
+`MissionState.shaping` is the only browser owner, null before the snapshot and while the flag is
+off. `wireShapingConfigEvents` in `src/server/shaping/events.ts` is the one bridge, wired once at
+daemon start, so every write through the shaping store and every settings restore reaches open
+windows through it. Identical frames are suppressed by canonical JSON. The config is bounded by
+`SHAPING_LIMITS`, 32 shapers of at most 16 KiB and 128 choices, below 560 KiB serialized at the
+maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
+folds them. See [Task shaping](task-shaping.md#settings).

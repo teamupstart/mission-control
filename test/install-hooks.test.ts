@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
+import { claudeHooks } from "../src/server/harness/claude/hooks.ts";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
@@ -130,7 +131,7 @@ test("merges hooks without disturbing other keys, the user's hooks, or comments"
     assert.match(text, /keep this comment/);
 
     // Every lifecycle event now has our hook…
-    assert.equal(Object.keys(s.hooks).length, 9);
+    assert.deepEqual(Object.keys(s.hooks).sort(), [...claudeHooks.events].sort());
     // …and the user's own PreToolUse hook still lives alongside ours.
     const cmds = s.hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command));
     assert.ok(cmds.some((c: string) => c === "my-own-hook"), "user hook preserved");
@@ -232,7 +233,7 @@ test("--statusline wraps an existing status line and records the original", () =
     assert.ok(s.statusLine.command.includes(STATUSLINE_MARKER), "status line points at our wrapper");
     // The original command is recorded so the forwarder delegates to it.
     assert.equal(readFileSync(join(home, "statusline-inner"), "utf8").trim(), "npx -y ccstatusline@latest");
-    assert.equal(Object.keys(s.hooks).length, 9, "hooks are installed alongside");
+    assert.deepEqual(Object.keys(s.hooks).sort(), [...claudeHooks.events].sort(), "hooks are installed alongside");
   });
 });
 

@@ -1,5 +1,6 @@
 import { mcpTrustStatus } from "./mcp-trust.ts";
-import { codeRabbitReadiness, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
+import { shellCommand } from "../terminal/shell.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
@@ -14,8 +15,10 @@ import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
+  CODERABBIT_CHECK_REMEDY,
   HERDR_SERVER_REMEDY,
-  SETUP_DEPENDENCY_IDS,
+  INDEXED_REPOSITORIES_INFO,
+  SETUP_DEPENDENCY_DISPLAY_ORDER,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
@@ -35,6 +38,8 @@ import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/in
 import { resolveAgentBin } from "../harness/index.ts";
 import { installedPluginsRead, claudePluginsDir } from "../plugins/installed-plugins.ts";
 import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
+import { conductorIntegrationEnabled } from "../pipelines/availability.ts";
+import { availableSetupDependencyIds } from "@shared/conductor-integration.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
@@ -47,7 +52,9 @@ import { configuredTerminalTargetDeps } from "../terminals-config.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
-import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
+import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
+import { repoIndexView } from "../repo-index.ts";
+import { listRepos } from "../repos.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
@@ -369,13 +376,113 @@ function configuredAcliSites(): string[] {
   return [...sites].sort();
 }
 
-async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
-  const status = await present("coderabbit", deps, "coderabbit");
-  if (status.state !== "satisfied") return status;
-  let version = "";
-  const problem = await codeRabbitReadiness((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV), (value) => { version = value; });
-  return problem ? { state: "needs-setup", why: problem, evidence: status.evidence }
-    : { ...status, evidence: `${status.evidence} (CodeRabbit ${version}; stored authentication ready)` };
+interface CodeRabbitSelection {
+  installed: SetupStatus;
+  /** Null when no CLI was found, so no version was asked for. */
+  version: CodeRabbitVersionReading | null;
+}
+
+/**
+ * One executable lookup and one `--version` per Setup check, shared by both CodeRabbit rows.
+ *
+ * Keyed on the deps object `setupChecksView` scopes to a single check, so the two rows can
+ * never disagree within one response - a CLI row reading 0.9.1 beside a sign-in row whose own
+ * `--version` timed out - and a later check reads the machine again.
+ */
+const codeRabbitSelections = new WeakMap<SetupDeps, Promise<CodeRabbitSelection>>();
+
+function codeRabbitSelection(deps: SetupDeps): Promise<CodeRabbitSelection> {
+  let selection = codeRabbitSelections.get(deps);
+  if (!selection) {
+    selection = (async () => {
+      const installed = await present("coderabbit", deps, "coderabbit");
+      if (installed.state !== "satisfied") return { installed, version: null };
+      const version = await codeRabbitVersionReading((args) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV));
+      return { installed, version };
+    })();
+    codeRabbitSelections.set(deps, selection);
+  }
+  return selection;
+}
+
+/** Installed and new enough. Sign-in is `coderabbit-auth`'s question, the way acli splits it. */
+async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
+  const { installed: status, version: reading } = await codeRabbitSelection(deps);
+  if (status.state !== "satisfied" || !reading) return status;
+  switch (reading.state) {
+    case "compatible":
+      return { ...status, evidence: `${status.evidence} (CodeRabbit ${reading.version})` };
+    case "obsolete":
+      // Named by path: the locator prefers a per-user install over PATH, so installing the
+      // cask elsewhere would leave this binary selected and the row unchanged.
+      // The guide, not the cask, for the same reason: a fresh install elsewhere changes nothing.
+      return {
+        status: {
+          state: "needs-setup",
+          why: `CodeRabbit ${reading.version} at ${status.evidence} is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.`,
+          evidence: status.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+    case "unreadable":
+      return {
+        status: {
+          state: "unknown",
+          why: `The CodeRabbit CLI at ${status.evidence} did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run \`${shellCommand([status.evidence, "--version"])}\` to see why.`,
+          evidence: status.evidence,
+        },
+        // Not the cask: a second install would leave this binary selected and still silent.
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+  }
+}
+
+/**
+ * The same `coderabbit auth status --agent` reading a workflow review makes before it runs,
+ * so this row and a review can never disagree about whether the CLI is signed in.
+ */
+async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
+  const { installed, version } = await codeRabbitSelection(deps);
+  // Sign-in is offered only once the CLI passes the version check. Before that the row says
+  // which prerequisite is missing and carries no command, rather than a sign-in the route
+  // would refuse (missing) or that would run an unsupported CLI (obsolete).
+  if (installed.state !== "satisfied" || !version) {
+    return {
+      status: { state: "needs-setup", why: "Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.", evidence: null },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
+  if (version.state === "obsolete") {
+    return {
+      status: { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  if (version.state === "unreadable") {
+    return {
+      status: { state: "unknown", why: "The CodeRabbit CLI did not report a readable version, so its sign-in was not checked. Press Re-check once it answers.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
+  }
+  const reading = await codeRabbitAuthReading(execute);
+  switch (reading.state) {
+    case "ready":
+      return { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" };
+    case "signed-out":
+      return { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence };
+    case "unverified":
+      // The probe could not tell. Keep its own diagnostic, but neither advise nor offer a
+      // login for a sign-in state that was never read: that is for a confirmed sign-out.
+      return {
+        status: {
+          state: "unknown",
+          why: `${reading.diagnostic}. Press Re-check; if it persists, run \`${shellCommand([installed.evidence, "auth", "status"])}\` to see why.`,
+          evidence: installed.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
+  }
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
@@ -402,6 +509,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   // row already runs the one command whose answer matters.
   "acli-cli": (deps) => present(acliBin(), deps, "acli"),
   "acli-auth": acliAuthStatus,
+  "coderabbit-auth": codeRabbitAuthStatus,
 };
 
 function reasonOf(error: unknown): string {
@@ -416,6 +524,55 @@ async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupPr
       status: { state: "unknown", why: `This check could not run: ${reasonOf(error)}.`, evidence: null },
     };
   }
+}
+
+function repositoryNoun(count: number): string {
+  return `${count} ${count === 1 ? "repository" : "repositories"}`;
+}
+
+/**
+ * Setup passes only once the index has found at least one checkout.
+ *
+ * A machine with every tool installed and nothing to work in cannot dispatch anything, so a
+ * zero count is a required gap rather than an empty list to shrug at. The reason names what
+ * the walk actually saw, because "nothing is indexed" and "four directories, none of them
+ * holding a checkout" are different repairs.
+ */
+export function indexedRepositoriesStatus(read: SetupRepositoryIndexRead): SetupStatus {
+  const looked = read.directories.map((row) =>
+    row.status === "ok" ? `${row.path} (${repositoryNoun(row.repoCount ?? 0)})` : `${row.path} (${row.status.replace(/-/g, " ")})`,
+  );
+  if (read.repoCount > 0) {
+    const holding = read.directories.filter((row) => row.status === "ok" && (row.repoCount ?? 0) > 0);
+    return {
+      state: "satisfied",
+      evidence: holding.length > 0
+        ? `${repositoryNoun(read.repoCount)} in ${holding.map((row) => row.path).join(", ")}`
+        : `${repositoryNoun(read.repoCount)} detected`,
+    };
+  }
+  if (read.directories.length === 0) {
+    return {
+      state: "needs-setup",
+      why: "No directories are indexed, so no repositories can be detected. Add the directory that holds your git checkouts.",
+      evidence: null,
+    };
+  }
+  return {
+    state: "needs-setup",
+    why: `${read.directories.length === 1 ? "The indexed directory holds no" : `None of the ${read.directories.length} indexed directories holds a`} git repository. Add the directory that holds your checkouts, or clone one into an indexed directory, then press Rescan now.`,
+    evidence: looked.join(", "),
+  };
+}
+
+async function indexedRepositoriesRow(deps: SetupDeps): Promise<SetupRowView> {
+  let status: SetupStatus;
+  try {
+    status = indexedRepositoriesStatus(await deps.repositoryIndex());
+  } catch (error) {
+    status = { state: "unknown", why: `The repository index could not be read: ${reasonOf(error)}.`, evidence: null };
+  }
+  return { ...INDEXED_REPOSITORIES_INFO, status };
 }
 
 function environmentRow(check: EnvironmentCheckView): SetupRowView | null {
@@ -486,6 +643,23 @@ export function defaultSetupDeps(): SetupDeps {
     // Composed with the stored preference, so the Terminals rows and the launch menu report
     // the same raiser Focus will actually use.
     terminalTargets: () => terminalTargetViews(configuredTerminalTargetDeps),
+    repositoryIndex: async () => {
+      // Every Setup read carries this row, whichever family is on screen. The count comes from
+      // the shared scan cache, so reads walk the indexed directories at most once per cache
+      // window (the same one the dispatch picker uses) and a vanished last repository is
+      // noticed as soon as that window expires. Only a zero count pays for the per-directory
+      // read the failing row explains itself with. `fresh`, because a required check must not
+      // report the scan from before the window closed while a rescan runs behind it - the
+      // stale-while-revalidate answer is for the picker, not for readiness.
+      const repos = await listRepos({ fresh: true });
+      if (repos.length > 0) return { repoCount: repos.length, directories: [] };
+      const view = await repoIndexView();
+      if (view.repoCount === null) throw new Error(view.scanUnavailable ?? "the workspace scan is unavailable");
+      return {
+        repoCount: view.repoCount,
+        directories: view.directories.map(({ path, status, repoCount }) => ({ path, status, repoCount })),
+      };
+    },
     environmentChecks: environmentCheckViews,
     readBannerDismissal: getSetupBannerDismissal,
     writeBannerDismissal: setSetupBannerDismissal,
@@ -494,13 +668,19 @@ export function defaultSetupDeps(): SetupDeps {
 
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
+  const scoped: SetupDeps = { ...deps };
   await deps.refreshPath?.();
-  const [probed, targets, environment] = await Promise.all([
-    Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
+  // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
+  // count toward any family. See `shared/conductor-integration.ts`.
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
+  const [probed, targets, environment, repositories] = await Promise.all([
+    // A fresh object per check: per-check readings shared between rows key on it.
+    Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
+    indexedRepositoriesRow(deps),
   ]);
-  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
+  const probeById = new Map(dependencyIds.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -511,10 +691,12 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
-    for (const id of SETUP_DEPENDENCY_IDS) {
+    // Reading order, with a follow-up step beneath its anchor; a hidden dependency was never
+    // probed and is skipped.
+    for (const id of SETUP_DEPENDENCY_DISPLAY_ORDER) {
       const info = SETUP_DEPENDENCY_INFO[id];
-      if (info.family === family) {
-        const probe = probeById.get(id)!;
+      const probe = probeById.get(id);
+      if (probe && info.family === family) {
         rows.push({
           rowId: { source: "dependency", id },
           label: info.label,
@@ -528,6 +710,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       }
     }
     if (family === "terminals") rows.push(derived);
+    if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());

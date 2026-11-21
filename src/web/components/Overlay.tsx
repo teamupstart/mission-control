@@ -93,6 +93,11 @@ export const OVERLAY_IDS = {
   residentMcpAllSources: "resident-mcp-all-sources",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
+  prChecks: "pr-checks",
+  featureFlagsConfirm: "feature-flags-confirm",
+  // Settings > Task shaping's manifest import, and its dry run of one shaper.
+  shapingImport: "shaping-import",
+  shapingTest: "shaping-test",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -241,6 +246,27 @@ function useOverlayRegistration(id: string): boolean {
   return stack.length > 0 && stack[stack.length - 1]?.token === token;
 }
 
+/** Read the live tab order: controls can disappear or become disabled while a modal is open. */
+function modalTabStops(panel: HTMLElement): HTMLElement[] {
+  const candidates = [...panel.querySelectorAll<HTMLElement>(
+    'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]',
+  )].filter(element =>
+    (element.tabIndex >= 0 || (element.isContentEditable && !element.hasAttribute("tabindex"))) &&
+    !element.matches(":disabled") && !element.closest("[inert]") &&
+    element.closest(".modal-backdrop") === panel.parentElement &&
+    element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible",
+  );
+  // A radio group contributes one tab stop, even though each radio has tabIndex 0.
+  return candidates.filter(element => {
+    if (!(element instanceof HTMLInputElement) || element.type !== "radio" || !element.name) return true;
+    const group = candidates.filter((candidate): candidate is HTMLInputElement =>
+      candidate instanceof HTMLInputElement && candidate.type === "radio" &&
+      candidate.name === element.name && candidate.form === element.form,
+    );
+    return element === (group.find(radio => radio.checked) ?? group[0]);
+  }).sort((a, b) => (a.tabIndex > 0 ? a.tabIndex : Infinity) - (b.tabIndex > 0 ? b.tabIndex : Infinity));
+}
+
 export function Overlay({
   id,
   onClose,
@@ -295,10 +321,32 @@ export function Overlay({
   const isTop = useOverlayRegistration(id);
   const backdropPress = useRef(false);
   const panelRef = useRef<HTMLElement | null>(null);
+  // Capture before children commit their autofocus, and retain the same opener across
+  // stack changes. Covering this modal is not a dismissal.
+  const [opener] = useState(() => typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+    ? document.activeElement : null);
   const setPanelRef = useCallback((element: HTMLElement | null) => {
     panelRef.current = element;
     surfaceRef?.(element);
   }, [surfaceRef]);
+
+  useRegistrationEffect(() => {
+    const panel = panelRef.current;
+    if (!ariaModal || !isTop || !panel || panel.contains(document.activeElement)) return;
+    (modalTabStops(panel)[0] ?? panel).focus({ preventScroll: true });
+  }, [ariaModal, isTop]);
+
+  useEffect(() => {
+    if (!ariaModal) return;
+    const panel = panelRef.current;
+    return () => {
+      // Passive cleanup runs after removal, so an opener in a removed parent cannot
+      // take focus. Do not steal focus from a different dialog already on top.
+      if (opener?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement))) {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }, [ariaModal, opener]);
 
   useEffect(() => {
     if (!isTop) return;
@@ -335,6 +383,20 @@ export function Overlay({
         return;
       }
       onKeyDown?.(e);
+      if (ariaModal && e.key === "Tab" && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const panel = panelRef.current;
+        if (!panel) return;
+        const stops = modalTabStops(panel);
+        const first = stops[0];
+        const last = stops.at(-1);
+        const active = document.activeElement;
+        if (!first || !panel.contains(active) || active === panel ||
+          (e.shiftKey ? active === first : active === last)) {
+          e.preventDefault();
+          ((e.shiftKey ? last : first) ?? panel).focus({ preventScroll: true });
+        }
+        return;
+      }
       if (
         e.defaultPrevented || e.key !== "Enter" || (!e.metaKey && !e.ctrlKey) ||
         e.altKey || e.shiftKey || e.isComposing
@@ -366,7 +428,7 @@ export function Overlay({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isTop, closable, onClose, onEscape, onKeyDown, onDefaultAction]);
+  }, [isTop, ariaModal, closable, onClose, onEscape, onKeyDown, onDefaultAction]);
 
   return (
     <div
@@ -389,6 +451,9 @@ export function Overlay({
         backdropPress.current = false;
       }}
       onClick={(e) => {
+        // A modal may live inside a clickable board tile. Dismissing it must not
+        // activate that ancestor, including when the overlay is portaled.
+        e.stopPropagation();
         const dismiss = backdropPress.current && e.target === e.currentTarget;
         backdropPress.current = false;
         if (closable && dismiss) onClose();
@@ -400,6 +465,7 @@ export function Overlay({
         role={role}
         aria-label={ariaLabel}
         aria-modal={ariaModal}
+        tabIndex={ariaModal ? -1 : undefined}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

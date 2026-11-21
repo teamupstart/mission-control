@@ -2,7 +2,7 @@ import type { BacklogPlan, BacklogPlanEntry, Task } from "./types.ts";
 import type { TaskDependencyInput } from "./protocol.ts";
 import { dependencyInputOf, dependencyKey } from "./task-dependency.ts";
 import { backlogTasks } from "./session.ts";
-import { taskKindAllowsBacklog } from "./task.ts";
+import { taskAllowsBacklog } from "./task.ts";
 import { stackStartEdge } from "./stacking.ts";
 
 // The backlog autopilot's predicates, defined once - the same reason
@@ -103,7 +103,7 @@ export const PLANNABLE_LIMIT = 400;
  * ones that get a dependency read, instead of the ones a priority chip happened to lift.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).filter((task) => taskKindAllowsBacklog(task.kind)).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).filter((task) => taskAllowsBacklog(task)).slice(0, PLANNABLE_LIMIT);
 }
 
 /**
@@ -343,7 +343,7 @@ function declaredReachable(
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const index = backlogIndex(tasks, plan);
   return backlogTasks(tasks)
-    .filter((task) => task.enabled && task.error === null && taskKindAllowsBacklog(task.kind))
+    .filter((task) => task.enabled && task.error === null && taskAllowsBacklog(task))
     .filter((task) => blockersIn(task, index).length === 0);
 }
 

@@ -1,4 +1,5 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
+import type { KindWorkflowDefaults } from "./task.ts";
 import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
@@ -15,10 +16,7 @@ import { providerModelDefault } from "./model.ts";
 import { launchEffortLevels } from "./harness-capabilities.ts";
 import type { ThinkingLevel } from "./types.ts";
 import { repoAllowlisted } from "./allowlist.ts";
-import {
-  NO_MISTAKES_REVIEW_WORKFLOW_ID,
-  parseBuiltinWorkflowVersionId,
-} from "./builtin-workflow.ts";
+import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -373,6 +371,8 @@ export type WorkflowEvidenceReadinessWarningCode =
   (typeof WORKFLOW_EVIDENCE_READINESS_WARNING_CODES)[number];
 
 export interface WorkflowCanonicalCriterion {
+  /** Absent on legacy criteria; null records a non-publication outcome. Graph ownership still gates deferral. */
+  fulfilledByAction?: "pull_request" | null;
   id: string;
   text: string;
   material: boolean;
@@ -452,6 +452,8 @@ export interface WorkflowEvidenceReadinessLink {
 }
 
 export interface WorkflowEvidenceReadinessCriterion {
+  /** Still owed by a later workflow action, never a claim of satisfaction. */
+  deferredToAction?: "pull_request";
   criterionId: string;
   criterion: string;
   material: boolean;
@@ -634,6 +636,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   unavailableReason?: string | null;
   selection?: WorkflowCoverageSelection;
   enforceCoverage?: boolean;
+  pendingPullRequestAction?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
     ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
@@ -680,6 +683,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       ?? candidates[0] ?? null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
+    const deferred = canonical.fulfilledByAction === "pull_request" && input.pendingPullRequestAction;
     if (canonical.material && !claim) gaps.push("missing_coverage");
     if (matchedIds.length > 1) warnings.push("ambiguous_mapping");
     const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
@@ -691,6 +695,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       && canonical.suggestedProofClass !== claim.proofClass
     ) warnings.push("model_proof_class_disagreement");
     return {
+      ...(deferred ? { deferredToAction: "pull_request" as const } : {}),
       criterionId: canonical.id,
       criterion: canonical.text,
       material: canonical.material,
@@ -699,7 +704,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       authorProofClass: claim?.proofClass ?? null,
       suggestedProofClass: canonical.suggestedProofClass,
       links,
-      gaps: canonical.material ? [...new Set(gaps)].sort() : [],
+      gaps: canonical.material && !deferred ? [...new Set(gaps)].sort() : [],
       warnings,
     };
   });
@@ -1428,10 +1433,25 @@ export interface SessionAction {
   updatedAt: number;
   /**
    * Shipped with the application rather than authored here. Exactly `Persona.builtin`:
-   * app data, never a row, neither editable nor archivable, and Duplicate is the path to
-   * a customized copy.
+   * app data, never a row, never archivable, and Duplicate is the path to a customized copy -
+   * except for a built-in `editable` marks, whose instruction is edited in place.
    */
   builtin: boolean;
+  /**
+   * A built-in whose instruction the operator may edit in place and reset to the shipped
+   * text: the Grill action, which Grill me first delivers by id rather than by a stage an
+   * operator chose. Absent on every other action.
+   */
+  editable?: boolean;
+  /**
+   * False for an action a Workflow stage may never run: the Grill action, which runs ahead of a
+   * task through Grill me first and, bound after the work, would tell the agent to start that
+   * finished task over. Absent on every other action. Independent of `editable`, which says who
+   * may change the instruction, not where it may run.
+   */
+  workflowStage?: false;
+  /** An editable built-in whose instruction is the operator's rather than the shipped text. */
+  customized?: boolean;
 }
 
 /** SessionAction names use the same durable Unicode spelling rule as Persona names. */
@@ -1478,10 +1498,16 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "workflowStage">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+    .filter((action) =>
+      action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
+}
+
+/** Whether a Workflow stage may run this action. See `SessionAction.workflowStage`. */
+export function sessionActionIsStage(action: Pick<SessionAction, "workflowStage">): boolean {
+  return action.workflowStage !== false;
 }
 
 /**
@@ -1869,6 +1895,8 @@ export type SessionActionContinuationExpectation =
       expectedHeadOid: string | null;
       /** Complete content tree accepted by the parent judged submission. */
       acceptedContentTreeOid?: string | null;
+      /** Historical merge satisfaction requires this tree at continuation capture too. */
+      mergedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
       observedAt: number;
     };
@@ -2267,6 +2295,32 @@ export function sessionActionContinuationReachesOnlyEnd(
   return true;
 }
 
+/** Only successful forward routes count; a repair edge cannot promise future publication. */
+export function workflowHasPendingPullRequestAction(
+  graph: PublishedWorkflowGraph,
+  continuationNodeId: string | null = null,
+): boolean {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const start = continuationNodeId ?? graph.nodes.find((node) => node.kind === "session")?.id;
+  if (!start) return false;
+  const pending = graph.edges.filter((edge) => edge.source === start
+    && edge.sourcePort === (continuationNodeId ? "complete" : "submitted"))
+    .map((edge) => edge.target);
+  const visited = new Set<string>([start]);
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = nodes.get(id);
+    if (!node || node.kind === "session" || node.kind === "end") continue;
+    if (node.kind === "session_action" && node.action.completion.kind === "pull_request") return true;
+    pending.push(...graph.edges.filter((edge) => edge.source === id
+      && (edge.sourcePort === "pass" || edge.sourcePort === "complete"))
+      .map((edge) => edge.target));
+  }
+  return false;
+}
+
 export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_session",
   "multiple_sessions",
@@ -2302,6 +2356,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
   "unsupported_effort",
+  "session_action_not_a_stage",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -2708,10 +2763,18 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
   "findings",
   "pr_closed",
   "clean_review_pending",
+  "reviewed_tree_changed",
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
 export interface WorkflowInspectorGateState {
+  /** Present when a published shipping continuation differs from its semantic review. */
+  reviewedContent?: {
+    submissionId: string;
+    headSha: string | null;
+    treeOid: string;
+    publishedTreeOid: string;
+  };
   prKey: string | null;
   prUrl: string | null;
   targetHeadSha: string | null;
@@ -2831,6 +2894,7 @@ export const WORKFLOW_LLM_PURPOSES = [
   "context_compaction",
   "persona_review",
   "context_reconciliation",
+  "criterion_fulfillment",
 ] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -2973,6 +3037,7 @@ export interface CodeRabbitReviewSummary {
   diagnostic: string;
   titles: string[];
   remainingRuns?: number;
+  retryableConnection?: true;
   retryAt?: number;
   expectedDuration?: string;
 }
@@ -3317,14 +3382,21 @@ export interface WorkflowPolicy {
   liveEnabled: boolean;
   repoAllowlist: string[];
   /**
-   * Workflow identity preselected for new single-agent dispatches, or null for none.
+   * The after-work Workflow each task kind preselects, overriding
+   * `BUILTIN_KIND_WORKFLOW_DEFAULTS` kind by kind. An absent kind follows the built-in, `null`
+   * is an explicit None, and a string is a workflow identity.
    *
    * The identity is resolved to its then-current immutable published version when the
    * dispatched session is bound. Keeping the workflow id here means publishing a new version
    * updates the default without rewriting machine settings, while each resulting binding still
-   * pins one immutable version.
+   * pins one immutable version. Resolve a kind through `taskDefaultWorkflowId`, never by
+   * reading this map directly.
+   *
+   * Replaced the single `defaultWorkflowId`, which is migrated on read by
+   * `StoredWorkflowPolicySchema`. `PUT /api/workflows/config` still accepts it as a deprecated
+   * alias for the Ship row (`WorkflowConfigSchema`).
    */
-  defaultWorkflowId: WorkflowId | null;
+  kindWorkflowDefaults: KindWorkflowDefaults;
   retention: WorkflowRetentionConfig;
   /**
    * Machine-wide consent for running a configured command from a workflow.
@@ -3390,10 +3462,9 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
   repoAllowlist: [],
-  // Store the stable workflow identity, not today's version. A task resolves it to the
-  // newest immutable shipped version when its session is armed (v5 in this build), while
-  // an explicit null in Settings or the dispatch form remains an opt-out.
-  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  // Every kind follows its built-in (`BUILTIN_KIND_WORKFLOW_DEFAULTS`) until an operator
+  // sets a row, so an untouched install dispatches exactly as it always has.
+  kindWorkflowDefaults: {},
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,
@@ -4306,7 +4377,7 @@ export interface WorkflowRunIntentProvenance {
  * 6, 5, 5, 5, 5, 7, 2 across one observed run) even where the intent behind them had not
  * moved. A submission cannot be repaired against a target that moves while it is being
  * repaired, so the compaction runs once and every later submission of the run reuses the
- * result verbatim.
+ * stable result. Only missing publication timing metadata may be classified once later.
  *
  * Only the STABLE half lives here. Criterion mappings are per-submission by definition - they
  * bridge one submission's author coverage claims onto these criteria - so they stay on the
@@ -4555,6 +4626,7 @@ export interface WorkflowPersonaReviewInput {
   criteria: Array<{
     criterionId: string;
     material: boolean;
+    deferredToAction?: "pull_request";
     claimId: string | null;
     evidenceIds: string[];
     gaps: WorkflowEvidenceReadinessGapCode[];
@@ -4780,9 +4852,19 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /** Daemon-derived publication proof. Older captures retain their strict dirty-tree rule. */
+    publication?: {
+      version: 1;
+      treeOid: string;
+      unpublishedPaths: string[];
+      pathsTruncated: boolean;
+      localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
+      artifactProblems?: string[];
+    };
     /**
      * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
-     * uncommitted one, a Mission Control review snapshot of `contentTreeOid` parented on HEAD.
+     * uncommitted one, a Mission Control review snapshot of the publication tree parented on
+     * HEAD (the complete content tree for captures made before publication proofs existed).
      * Null for snapshots captured before review snapshots existed, or with no Command to run.
      */
     reviewCommit?: string | null;
@@ -5052,6 +5134,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 
@@ -5075,7 +5163,7 @@ export interface WorkflowRunDetail {
     kind: WorkflowDeliveryKind;
     state: WorkflowDeliveryState;
   } | null;
-  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
+  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review" | "publication"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;
   version: WorkflowVersion | null;

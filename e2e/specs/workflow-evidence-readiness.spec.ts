@@ -46,13 +46,13 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   return await response.json() as T;
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+async function dispatch(page: Page, daemon: DaemonHandle, goal = "Keep focused execution green and retain inspectable acceptance evidence"): Promise<string> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(
-    "Keep focused execution green and retain inspectable acceptance evidence",
+    goal,
   );
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
@@ -1361,4 +1361,87 @@ manualPreflightTest("legacy unknown ids can be withdrawn and duplicate valid cov
   expect(detail.submissions.at(-1)!.readiness?.warningCodes).toContain("ambiguous_mapping");
   await dashboard.setViewportSize({ width: 1440, height: 1400 });
   await capture(dashboard, "18-duplicate-coverage-expanded", contestedPane);
+});
+
+
+for (const legacy of [false, true]) test(`a ${legacy ? "legacy" : "new"} PR publication criterion reaches review without an override and stays visibly deferred`, async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const criterion = legacy ? "Legacy pull request opened documenting the verified implementation"
+    : "Pull request opened documenting the verified implementation";
+  const sessionId = await dispatch(dashboard, daemon, criterion);
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "Publication sequencing reviewer", guidanceMarkdown: "E2E_PASS_VERDICT",
+  });
+  const action = await api<{ id: string }>(daemon, "/api/session-actions", {
+    name: "Publish after review", promptMarkdown: "Open the reviewed pull request", completion: { kind: "pull_request" },
+  });
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Publication readiness regression", evidenceReadinessPolicy: "criterion_mapped_v1",
+    draft: {
+      nodes: [
+        { id: "s", kind: "session", position: { x: 0, y: 0 } },
+        { id: "p", kind: "persona", personaId: persona.id, position: { x: 200, y: 0 } },
+        { id: "a", kind: "session_action", sessionActionId: action.id, position: { x: 400, y: 0 } },
+        { id: "e", kind: "end", outcome: "Complete", position: { x: 600, y: 0 } },
+      ],
+      edges: [
+        { id: "sp", source: "s", sourcePort: "submitted", target: "p", targetPort: "activate" },
+        { id: "pa", source: "p", sourcePort: "pass", target: "a", targetPort: "activate" },
+        { id: "ps", source: "p", sourcePort: "fail", target: "s", targetPort: "return_for_changes" },
+        { id: "ae", source: "a", sourcePort: "complete", target: "e", targetPort: "terminal" },
+      ],
+    },
+  });
+  const published = await api<{ version: { id: string } }>(daemon, `/api/workflows/${created.workflow.id}/publish`, { expectedDraftRevision: 1 });
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id, sessionId, deliveryMode: "preview",
+  });
+  const result = await api<{ run: { id: string } }>(daemon, `/api/workflow-bindings/${binding.id}/submit`, { requestId: "publication-readiness" });
+  let historical: unknown;
+  let parentId = "";
+  if (legacy) {
+    await expect.poll(async () => {
+      const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${result.run.id}`);
+      return detail.submissions.at(-1)?.readiness?.status;
+    }, { timeout: 60_000 }).toBe("gaps");
+    const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${result.run.id}`);
+    const parent = detail.submissions.at(-1)!;
+    expect(parent.readiness?.status).toBe("gaps");
+    parentId = parent.id;
+    // Seed the exact pre-upgrade shape. Production no longer writes absent timing fields.
+    withDaemonDb(daemon, (db) => {
+      const run = db.prepare("SELECT run_criteria_json FROM workflow_runs WHERE id = ?").get(result.run.id) as { run_criteria_json: string };
+      const criteria = JSON.parse(run.run_criteria_json);
+      for (const criterion of criteria.canonicalCriteria) delete criterion.fulfilledByAction;
+      const context = WorkflowContextSnapshotSchema.parse(parent.context);
+      for (const criterion of context.canonicalCriteria) delete criterion.fulfilledByAction;
+      db.prepare("UPDATE workflow_runs SET run_criteria_json = ? WHERE id = ?").run(JSON.stringify(criteria), result.run.id);
+      db.prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(context), parent.id);
+      historical = context;
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${result.run.id}`);
+    const pane = await evidencePane(dashboard);
+    await expect(pane).toContainText("missing coverage");
+    await pane.getByRole("button", { name: "Classify publication criteria" }).click();
+  }
+
+  await expect.poll(async () => {
+    const detail = await api<{ attempts: Array<{ nodeId: string; state: string }> }>(daemon, `/api/workflow-runs/${result.run.id}`);
+    return detail.attempts.some((attempt) => attempt.nodeId === "p" && attempt.state === "completed");
+  }, { timeout: 60_000 }).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${result.run.id}`);
+  const pane = await evidencePane(dashboard);
+  const row = pane.locator(".wf-evidence-criterion").filter({ hasText: criterion });
+  await expect(row).toContainText("deferred to Pull Request");
+  await expect(row).toContainText("material");
+  await expect(row.locator(".workflow-chip.workflow-failed")).toHaveCount(0);
+  await expect(pane).not.toContainText("Operator continued despite gaps");
+  if (legacy) {
+    const detail = await api<{ submissions: WorkflowSubmission[]; readinessOverrides: unknown[] }>(daemon, `/api/workflow-runs/${result.run.id}`);
+    expect(detail.submissions.find((submission) => submission.id === parentId)?.context).toEqual(historical);
+    expect(detail.submissions.find((submission) => submission.id === parentId)?.readiness?.status).toBe("gaps");
+    expect(detail.readinessOverrides).toEqual([]);
+    await expect(pane.getByRole("button", { name: "Classify publication criteria" })).toHaveCount(0);
+  }
+  await capture(dashboard, legacy ? "legacy-publication-recovered" : "publication-deferred", pane);
 });

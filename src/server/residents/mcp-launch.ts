@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
@@ -13,6 +13,7 @@ import {
 } from "@shared/resident-mcp.ts";
 import type { ResidentMcpNativeSources, ResidentProfileRevision } from "@shared/residents.ts";
 import { STATE_DIR, residentMcpLauncherPath } from "../config.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import type { ResidentMcpEntry, ResidentMcpLaunch } from "../harness/types.ts";
 import { resolveMissionMcpRuntime } from "../mission-mcp.ts";
 import type { GlobalMcpDefinition, GlobalMcpRead } from "./mcp-catalog.ts";
@@ -65,6 +66,17 @@ export interface ResidentMcpResolveDeps {
 export type ResidentMcpResolution =
   | { ok: true; servers: ResidentMcpResolvedServer[] | null }
   | { ok: false; error: string };
+
+export function residentNativeMcpProblem(settings: ResidentProfileRevision): string | null {
+  if (settings.mcp.nativeSources !== "all") return null;
+  const agent = settings.execution.agent;
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources;
+  if (!capability) return `${AGENT_IDENTITY[agent].label} cannot start a resident on all of its native MCP sources`;
+  if (capability.previewFlag && !featureEnabled(capability.previewFlag)) {
+    return "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch";
+  }
+  return null;
+}
 
 /**
  * A global server as a launch snapshots it. Its whole definition is private, so it starts through
@@ -167,9 +179,8 @@ export async function resolveResidentMcpSet(
   const label = AGENT_IDENTITY[agent].label;
   const control = capabilitiesFor(agent).mcpSelection;
   const importsAll = settings.mcp.nativeSources === "all";
-  if (importsAll && !control?.allNativeSources) {
-    return { ok: false, error: `${label} cannot start a resident on all of its native MCP sources, so this profile's MCP setting cannot launch` };
-  }
+  const nativeProblem = residentNativeMcpProblem(settings);
+  if (nativeProblem) return { ok: false, error: nativeProblem };
   if (control === null) {
     return settings.mcp.selected.length > 0 || !settings.mcp.inheritDefaults
       ? { ok: false, error: `${label} cannot pin a resident's MCP servers, so this profile's MCP selection cannot launch` }
@@ -178,7 +189,11 @@ export async function resolveResidentMcpSet(
   const inheritDefaults = settings.mcp.inheritDefaults && !importsAll;
   const selected = importsAll ? settings.mcp.selected.filter((ref) => ref.source === "custom") : settings.mcp.selected;
   let globals: GlobalMcpRead | null = null;
-  if (inheritDefaults || selected.length > 0) {
+  // Codex native launches check custom names against the app-server's active layers in
+  // the real workspace. Reading the pinned catalog here would repeat the OAuth lookup and
+  // would miss project and managed collisions.
+  const checksNativeLayers = importsAll && control.allNativeSources?.mechanism === "codex-native-home";
+  if (inheritDefaults || (selected.length > 0 && !checksNativeLayers)) {
     globals = await deps.globals(agent);
     if (globals.problem) return { ok: false, error: `could not read ${label}'s global MCP servers: ${globals.problem}` };
   }
@@ -225,6 +240,9 @@ export async function resolveResidentMcpSet(
     }
     const resolved = resolvedCustom(server, deps.customSecrets(server.id));
     if (typeof resolved === "string") return { ok: false, error: resolved };
+    // Native Codex carries its additions in argv. Keep custom definitions behind the
+    // launcher so a profile can use the full supported argument and field sizes.
+    if (checksNativeLayers) resolved.launcher = true;
     chosen.set(`custom:${server.name}`, resolved);
   }
   const names = new Set<string>();
@@ -266,18 +284,16 @@ function forget(key: string): void {
  * single-use ticket bound to this run, this server and this start, and its expiry. Removed by
  * the launcher when read, and by the daemon once the ticket expires unredeemed.
  */
-function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId: string, now = Date.now()): string {
-  const dir = join(residentMcpRunDir(runId), "credentials");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId: string, path: string, now = Date.now()): string {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const ticket = randomBytes(32).toString("base64url");
-  const path = join(dir, `${randomBytes(12).toString("hex")}.json`);
   const expiresAt = now + RESIDENT_MCP_TICKET_TTL_MS;
   const file: ResidentMcpCredentialFile = { ticket, expiresAt, redeemUrl: `${BASE_URL}/api/residents/mcp/redeem` };
   writeFileSync(path, JSON.stringify(file), { mode: 0o600, flag: "wx" });
   const key = ticketKey(ticket);
   grants.set(key, { runId, source: server.source, server: server.name, startId, expiresAt, path });
   setTimeout(() => forget(key), RESIDENT_MCP_TICKET_TTL_MS + 1_000).unref();
-  return path;
+  return key;
 }
 
 /** Stands in for a credential in a preview: a path no file is ever written to. */
@@ -298,8 +314,8 @@ const UNISSUED_CREDENTIAL = "unissued";
  */
 export const RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS: readonly string[] = ["--use-system-ca"];
 
-/** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
-function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
+/** Only launcher entries need a credential reference. */
+function entryFor(runId: string, server: StoredMcpSnapshotServer, credentialPath: () => string): ResidentMcpEntry {
   const { name, options, transport } = server;
   // A redacted definition renders as a launcher entry, whose redemption refuses it.
   if ((server.harnessLogin === true || !server.launcher) && transport.type !== "redacted") {
@@ -319,7 +335,7 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
       residentMcpLauncherPath(),
       "--run", runId,
       "--server", name,
-      "--credential", startId === null ? UNISSUED_CREDENTIAL : issueCredential(runId, server, startId),
+      "--credential", credentialPath(),
     ],
     // Only what the runtime itself needs (Electron's node mode); never the daemon's environment.
     env: Object.fromEntries(Object.entries(runtime.env).filter((pair): pair is [string, string] => pair[1] !== undefined)),
@@ -331,19 +347,46 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
  * one (launched before snapshots existed, or on a harness with no measured control).
  * `nativeSources` is the run's pinned revision's, so a resume keeps the choice it launched with.
  */
-export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMcpNativeSources = "pinned"): ResidentMcpLaunch | null {
+export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMcpNativeSources = "pinned", disableClaudeAiConnectors = false): ResidentMcpLaunch | null {
   if (!runId) return null;
   const snapshot = runMcpSnapshot(runId);
   if (!snapshot) return null;
+  const prepareStart = (): ReturnType<ResidentMcpLaunch["prepareStart"]> => {
+    const startId = randomUUID();
+    const pending: Array<{ server: StoredMcpSnapshotServer; path: string }> = [];
+    const entries = snapshot.map((server) => entryFor(runId, server, () => {
+      const path = join(residentMcpRunDir(runId), "credentials", `${randomBytes(12).toString("hex")}.json`);
+      pending.push({ server, path });
+      return path;
+    }));
+    const keys: string[] = [];
+    const revoke = () => {
+      for (const key of keys) forget(key);
+    };
+    let issued = false;
+    return { entries, revoke, issue: () => {
+      if (issued) throw new Error("Resident MCP credentials were already issued for this start");
+      issued = true;
+      try {
+        for (const { server, path } of pending) keys.push(issueCredential(runId, server, startId, path));
+      } catch (error) {
+        revoke();
+        throw error;
+      }
+    } };
+  };
   return {
     nativeSources,
+    disableClaudeAiConnectors,
     names: snapshot.map((server) => server.name),
     privateDir: residentMcpRunDir(runId),
     forStart: () => {
-      const startId = randomUUID();
-      return snapshot.map((server) => entryFor(runId, server, startId));
+      const start = prepareStart();
+      start.issue();
+      return start.entries;
     },
-    preview: () => snapshot.map((server) => entryFor(runId, server, null)),
+    prepareStart,
+    preview: () => snapshot.map((server) => entryFor(runId, server, () => UNISSUED_CREDENTIAL)),
   };
 }
 

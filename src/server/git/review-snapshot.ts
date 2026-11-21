@@ -1,5 +1,5 @@
 import { run } from "../util/exec.ts";
-import { captureWorktreeTree, isolatedGitEnvironment } from "./worktree-tree.ts";
+import { captureWorktreeTree, isolatedGitEnvironment, type CapturedWorktreeTree } from "./worktree-tree.ts";
 
 // The commit a workflow's Commands and CodeRabbit review when a submission is uncommitted.
 //
@@ -53,7 +53,7 @@ export function reviewSnapshotRef(commitOid: string): string {
 }
 
 export interface CapturedReviewSnapshot {
-  /** Complete tracked and nonignored worktree content - the same id `captureWorktreeTree` gives. */
+  /** The reviewed tree, excluding retained local artifacts when publication supplied it. */
   treeOid: string;
   /** HEAD at capture, and the snapshot's parent. Null on an unborn branch. */
   headOid: string | null;
@@ -75,9 +75,11 @@ export interface CapturedReviewSnapshot {
 export async function captureReviewSnapshot(
   worktreePath: string,
   now: number = Date.now(),
+  /** Reuse an exact publication capture whose objects were persisted in the repository. */
+  capturedTree?: Pick<CapturedWorktreeTree, "treeOid" | "headOid">,
 ): Promise<CapturedReviewSnapshot> {
   const env = isolatedGitEnvironment(IDENTITY);
-  const captured = await captureWorktreeTree(worktreePath, { objectStorage: "repository" });
+  const captured = capturedTree ?? await captureWorktreeTree(worktreePath, { objectStorage: "repository" });
   const { treeOid, headOid } = captured;
   if (headOid) {
     const headTree = requireOk("git rev-parse HEAD^{tree}", await git(worktreePath, ["rev-parse", "--verify", `${headOid}^{tree}`], env));

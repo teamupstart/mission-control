@@ -30,7 +30,7 @@ process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb, loadPendingReviews } = await import("../src/server/db.ts");
+const { openDb, insertReview, loadPendingReviews } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 
@@ -91,6 +91,45 @@ test("the retry is not written to the database either", () => {
   ask();
   const rows = loadPendingReviews().filter((r) => r.sessionId === SESSION);
   assert.deepEqual(rows.map((r) => r.id), [first.id]);
+});
+
+test("a restored request_input card and retries from either version all offer a typed answer", () => {
+  const sessionId = "sdk:legacy-request-input";
+  const legacyDecisions = DECISIONS.map((decision) => ({ ...decision, allowOther: false }));
+  insertReview({
+    id: "legacy-request-input",
+    sessionId,
+    kind: "input",
+    title: QUESTION,
+    body: QUESTION,
+    status: "pending",
+    response: null,
+    decisions: legacyDecisions,
+    createdAt: 1,
+    resolvedAt: null,
+  });
+
+  const registry = new Registry();
+  const reviews = new ReviewManager(registry);
+  const restored = registry.getReview("legacy-request-input");
+  assert.equal(restored?.decisions?.[0]?.allowOther, true);
+  const currentDecisions = DECISIONS.map((decision) => ({ ...decision, allowOther: true }));
+  for (const payload of [DECISIONS, legacyDecisions, currentDecisions]) {
+    const retried = reviews.create(sessionId, "input", QUESTION, QUESTION, payload);
+    assert.equal(retried.id, restored?.id);
+    assert.equal(retried.decisions?.[0]?.allowOther, true);
+  }
+  assert.equal(registry.pendingReviews(sessionId).length, 1);
+});
+
+test("a confirmation and a plan decision keep their own text-field settings", () => {
+  const { SESSION, reviews } = harness();
+  const confirm = [{ ...DECISIONS[0]!, id: "confirm-publication", allowOther: false }];
+  const confirmation = reviews.create(SESSION, "input", "Publish?", "Publish?", confirm);
+  const plan = reviews.create(SESSION, "plan-decisions", "Plan", "Plan", DECISIONS);
+  const registry = new Registry();
+  assert.deepEqual(registry.getReview(confirmation.id)?.decisions, confirm);
+  assert.deepEqual(registry.getReview(plan.id)?.decisions, DECISIONS);
 });
 
 test("answering the one card unblocks the call that retried onto it", async () => {

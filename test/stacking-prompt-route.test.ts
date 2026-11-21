@@ -21,6 +21,7 @@ import { stackPromptCandidate } from "../src/server/stacking/delivery.ts";
 import type { StackObservation } from "../src/shared/stacking.ts";
 import { openDb } from "../src/server/db.ts";
 import { useStackGitHub, type StackGitHub } from "../src/server/stacking/github.ts";
+import { reportBucket } from "../src/shared/session.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
 
 /** A GitHub seam that answers only the parent read the route's recovery recheck makes. */
@@ -482,4 +483,67 @@ test("a recovery action whose parent changes while delivery waits for the lock i
   assert.deepEqual(f.messages, [], "nothing was typed");
   assert.equal(readStackPromptClaim(f.key, "move-onto-main", "https://github.com/acme/repo/pull/7|CLOSED|feat/parent|OPEN"), null,
     "a positive non-delivery releases the action's claim");
+});
+
+// A child merged by hand into its parent's branch after the parent merged (#1416 / #1417): the
+// recovery prompt rides the same rails automatically. Foreman's decision picks it for the one
+// idle owner, the route types the daemon's text once and claims it against the child's merge
+// commit, and a busy owner or a session that does not own the child receives nothing.
+test("Foreman delivers the recovery prompt for a stray merge to the idle owner exactly once, and to nobody else", async () => {
+  const STRAY = "7".repeat(40);
+  const f = fixture({
+    childState: "MERGED", baseRefName: "feat/parent", childMergeCommitSha: STRAY,
+    parentMergedAt: 1_000, childMergedAt: 23_000,
+  });
+  // The Inspector tick retires a merged row; the poller left the card's pull request open.
+  updateInspectorPr(f.key, { state: "closed", observedState: "MERGED" }, Date.now());
+  f.refresh();
+  const standing = f.session.inspector?.stack;
+  assert.equal(standing?.brokenReason, "merged-into-parent");
+  assert.deepEqual(standing?.prompt, { kind: "recover-merge", tip: STRAY, status: "pending" });
+  const request = { prKey: f.key, kind: "recover-merge", tip: STRAY };
+  const decide = (session: Session) => decideReviewFollowup({
+    session, pr: followupPrs(session)[0]!, bucket: reportBucket(session, f.sessions), mayActLive: true,
+    workflowOwnsSession: false, mark: null, now: Date.now(),
+    cfg: { trackReviewComments: false, trackCiFailures: false, stackPrompts: true, settleMs: 0 },
+  });
+
+  // Busy: Foreman's decision waits, and the daemon refuses its send without typing anything.
+  f.session.state = "working";
+  assert.equal(decide(f.session).kind, "skip");
+  assert.equal((await f.post("foreman", request)).status, 409);
+  assert.deepEqual(f.messages, []);
+  assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY), null, "a refused send claims nothing");
+  f.session.state = "idle";
+
+  // A live idle session that does not run the child's task carries the pull request too, but is
+  // not its owner: Foreman's send to it is refused.
+  const stranger = { ...f.session, id: `${f.session.id}-other`, agentSessionId: `${f.session.agentSessionId}-other`,
+    task: mkTask({ id: "some-other-task", status: "running" }) as unknown as Session["task"] } as Session;
+  f.sessions.push(stranger);
+  f.refresh();
+  assert.equal((await f.post("foreman", request, stranger)).status, 409);
+  assert.deepEqual(f.messages, []);
+
+  // Idle owner: Foreman's decision picks the recovery, and the route delivers the daemon's text.
+  const decision = decide(f.session);
+  assert.equal(decision.kind, "nudge");
+  assert.deepEqual(decision.kind === "nudge" && decision.stack, request);
+  assert.match(decision.kind === "nudge" ? decision.reason : "", /merged into its finished parent's branch/);
+  const sent = await f.post("foreman", request);
+  assert.equal(sent.status, 200, await sent.clone().text());
+  assert.equal(f.messages.length, 1);
+  assert.doesNotMatch(f.messages[0]!, /UNTRUSTED WORKER TEXT/, "the daemon builds the prompt, never the caller");
+  assert.match(f.messages[0]!, /create a new branch from `origin\/main`/);
+  assert.ok(String(f.messages[0]).includes(`gh pr diff ${f.session.prUrl} | git apply --3way`));
+  assert.match(f.messages[0]!, /gh pr create --base main/);
+  assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.outcome, "delivered");
+  assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.sessionId, f.session.id);
+  assert.equal(f.session.inspector?.stack?.label, "Stack broken: merged into #7's branch, not main - recovering");
+
+  // Next pass: nothing new to decide, and a duplicate send is refused without typing.
+  assert.equal(decide(f.session).kind, "skip");
+  assert.equal((await f.post("foreman", request)).status, 409);
+  assert.equal((await f.post("foreman", request, stranger)).status, 409);
+  assert.equal(f.messages.length, 1);
 });

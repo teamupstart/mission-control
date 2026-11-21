@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PauseState } from "@shared/pause.ts";
 import { PlanPublicationContextSchema, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import {
   existsSync,
@@ -1057,6 +1058,11 @@ export class ForemanClient implements ForemanActions {
     return get<BacklogPlan | null>("/api/backlog/plan");
   }
 
+  /** Pause all and the priority session: whether the operator has held automatic launches. */
+  pauseState(): Promise<PauseState> {
+    return get<PauseState>("/api/pause");
+  }
+
   /**
    * Store a fresh plan, replacing whatever was there.
    *
@@ -1226,7 +1232,7 @@ export class ForemanClient implements ForemanActions {
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
   async workflowEvidence(id: string): Promise<WorkflowSessionEvidenceList | null> {
-    const path = `/api/sessions/${enc(id)}/workflow-evidence`;
+    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered`;
     const res = await fetch(BASE_URL + path);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);

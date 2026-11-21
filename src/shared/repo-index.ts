@@ -11,6 +11,28 @@ export const DEFAULT_INDEXED_DIRECTORIES = [
 
 export const MAX_INDEXED_DIRECTORIES = 16;
 
+/**
+ * Response header on `GET /api/repos`: the stamp of the scan that produced the list - when
+ * it started, in epoch milliseconds, made strictly increasing so no two scans share one. A
+ * client holding two answers keeps the one with the later stamp.
+ */
+export const REPOS_SCANNED_AT_HEADER = "x-repos-scanned-at";
+
+/**
+ * Response header on `GET /api/repos`: the identity of the index the list answers for (the
+ * effective directories and depth). The same value rides the SSE snapshot and
+ * `repo_index_changed`, so a window can tell whether a list it holds still applies.
+ */
+export const REPO_INDEX_IDENTITY_HEADER = "x-repo-index-identity";
+
+/**
+ * Sent in place of an identity when the daemon could not read its index config. A window
+ * treats it as "whatever you hold may be stale": it drops its list rather than keep offering
+ * one the daemon cannot vouch for, and takes the next real answer. Not a hash, so it never
+ * equals a real identity.
+ */
+export const REPO_INDEX_IDENTITY_UNKNOWN = "unknown";
+
 export const IndexedDirectorySchema = z.object({
   path: z.string().trim().min(1, "Directory paths cannot be empty."),
 });
@@ -62,6 +84,13 @@ export interface RepoIndexView {
   /** Stored rows that remain intact but do not participate while the environment wins. */
   savedDirectories: IndexedDirectoryView[];
   defaultsMissing: string[];
-  repoCount: number;
-  scannedAt: number;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  repoCount: number | null;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  scannedAt: number | null;
+  /**
+   * Why the counts are unknown: no scan of these directories has ever finished and the walk
+   * timed out or is stuck behind one that did (a stalled mount). Null whenever a count is shown.
+   */
+  scanUnavailable: string | null;
 }

@@ -3,57 +3,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "playwright";
 import { buildSync } from "esbuild";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Session } from "../../src/shared/types.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { argvValue, recordsIn } from "../fixtures/records.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
-
-async function api(daemon: DaemonHandle, path: string, body?: unknown, method = "POST") {
-  const response = await fetch(`${daemon.baseURL}${path}`, {
-    method: body === undefined ? "GET" : method,
-    headers: { "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  expect(response.ok, `${path}: ${response.status}`).toBe(true);
-  return response.json();
-}
-
-async function dispatch(daemon: DaemonHandle, name: string): Promise<Session> {
-  const before: Session[] = await api(daemon, "/api/sessions");
-  await api(daemon, "/api/tasks", { repoRoot: daemon.repo, intent: `write a haiku about ${name}`, title: name, kind: "ship", agent: "claude", workflowId: null });
-  let session: Session | undefined;
-  await expect.poll(async () => {
-    const all: Session[] = await api(daemon, "/api/sessions");
-    session = all.find((s) => !before.some((previous) => previous.id === s.id) && s.agentSessionId && s.state === "idle");
-    return !!session;
-  }).toBe(true);
-  await api(daemon, `/api/sessions/${encodeURIComponent(session!.id)}/rename`, { name });
-  return session!;
-}
-
-/** Use the actual MCP descriptor the fake agent received, including its private locator. */
-async function connect(daemon: DaemonHandle, session: Session): Promise<Client> {
-  let descriptor: { command: string; args: string[]; env: Record<string, string> } | undefined;
-  await expect.poll(() => {
-    const records = recordsIn<{ cwd: string; argv: string[] }>(join(daemon.recordDir, "claude"));
-    for (const record of records.filter((r) => r.cwd === session.cwd)) {
-      const raw = argvValue(record.argv, "--mcp-config");
-      if (raw) descriptor = JSON.parse(raw).mcpServers?.["mission-control"];
-      if (descriptor) break;
-    }
-    return !!descriptor;
-  }).toBe(true);
-  const client = new Client({ name: "session-control-e2e", version: "1" });
-  await client.connect(new StdioClientTransport({
-    command: descriptor!.command, args: descriptor!.args,
-    cwd: session.cwd!, env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...descriptor!.env },
-    stderr: "pipe",
-  }));
-  return client;
-}
+import { api, connect, dispatch } from "../fixtures/session-control.ts";
 
 test("standalone browser and headerless local HTTP cannot grant session control", async ({ dashboard, daemon }) => {
   const controller = await dispatch(daemon, "Browser controller");
@@ -197,21 +150,27 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await dashboard.reload();
       await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
 
-      // Exercise the native SDK question channel, through the same built MCP tool.
+      // A delegated message makes the target ask, and a dispatched task asks through its own
+      // `request_input` - a review bound to the target - which the controller answers with a
+      // structured choice, through the same built MCP tool.
       expect((await act({ action: "message", text: "ask me which linter to use" })).isError).toBe(false);
-      let requestId: string | undefined;
+      let asked: { id: string; decisions?: Array<{ id: string; options: Array<{ id: string; label: string }> }> } | undefined;
       await expect.poll(async () => {
-        const all: Session[] = await api(daemon, "/api/sessions");
-        requestId = all.find((s) => s.id === target.id)?.paneDialog?.requestId;
-        return !!requestId;
-      }).toBe(true);
-      expect((await act({ action: "submit_options", form: { requestId, answers: [
-        { question: "Which linter?", labels: ["biome"] },
-        { question: "Which checks should run?", labels: ["types", "tests"] },
-      ] } })).isError).toBe(false);
+        const reviews: Array<typeof asked & { sessionId: string | null; status: string }> = await api(daemon, "/api/reviews");
+        asked = reviews.find((r) => r.sessionId === target.id && r.status === "pending");
+        return !!asked;
+      }, { timeout: 30_000 }).toBe(true);
+      const decision = asked!.decisions![0]!;
+      const biome = decision.options.find((o) => o.label === "biome")!;
+      expect((await act({ action: "resolve_review", reviewId: asked!.id, resolution: {
+        action: "answer", response: "biome", selections: [{ decisionId: decision.id, selected: [biome.id] }],
+      } })).isError).toBe(false);
       await expect(dashboard.getByText(`session ${controller.id} answered`, { exact: true }).first()).toBeVisible();
+      // The blocked tool call returns the controller's choice to the target agent.
+      await expect(dashboard.getByText(`request_input answered: Delegated response from session ${controller.id}: biome`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(dashboard.getByLabel("Chosen: biome").first()).toBeVisible();
 
-      // The review channel carries both free-text and structured decisions separately from native asks.
+      // The review channel also carries a free-text answer to a review the target did not ask itself.
       const tokenHeaders = { "content-type": "application/json", "x-harness-token": (await import("node:fs")).readFileSync(join(daemon.home, "token"), "utf8").trim() };
       const reviewResponse = await fetch(`${daemon.baseURL}/mcp/reviews`, { method: "POST", headers: tokenHeaders,
         body: JSON.stringify({ env: {}, sessionId: target.id, cwd: target.cwd, kind: "input", title: "Delegated review", body: "Which direction?" }) });

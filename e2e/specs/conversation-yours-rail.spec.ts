@@ -235,11 +235,12 @@ function row(
 /**
  * Every rail row, in the order the rail draws them.
  *
- * No filter: at rail widths the disclosure caret is `display: none` and so is out of the
- * accessibility tree, which leaves the rows as the only buttons in the column.
+ * Scoped to the tab panel, which holds the rows and nothing else. The column itself is not
+ * a safe scope: its head carries the fold control at rail widths (and the disclosure caret
+ * at narrow ones), and both are buttons.
  */
 function rows(card: ReturnType<Page["locator"]>): ReturnType<Page["locator"]> {
-  return rail(card).getByRole("button");
+  return rail(card).getByRole("tabpanel").getByRole("button");
 }
 
 /**

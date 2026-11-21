@@ -1,5 +1,6 @@
+import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
-import { resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -67,6 +68,7 @@ import {
   tailBounded,
   type CheckRunDeps,
   type CheckScheduler,
+  type CheckSlot,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
 import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
@@ -461,6 +463,13 @@ export class WorkflowEngine {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  /**
+   * One abort controller per check attempt from the moment it is claimed until it settles.
+   * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
+   * signal wherever the attempt has got to: a claim already running is stopped, and one that has
+   * not registered yet is stopped the moment it does.
+   */
+  private readonly checkAttemptAborts = new Map<string, AbortController>();
 
   constructor(
     readonly store: WorkflowStore,
@@ -949,7 +958,9 @@ export class WorkflowEngine {
         const skipCheckLimit = target?.kind === "check"
           && this.checkBudgetAlreadySpent(attempt, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
-        const run = () => this.runAttempt(attempt, checkLimitHeld);
+        // The held check slot goes to the attempt, which gives it up while a dependency claim
+        // runs and takes one again before its Command spawns.
+        const run = (slot?: CheckSlot) => this.runAttempt(attempt, checkLimitHeld, slot);
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
@@ -971,10 +982,11 @@ export class WorkflowEngine {
       const next = this.store.listAttemptsDueAfter(schedulingNow);
       if (next !== null && !this.stopped) {
         if (this.wakeTimer) clearTimeout(this.wakeTimer);
+        // Long vendor waits must not overflow Node timers into a one-millisecond loop.
         this.wakeTimer = setTimeout(() => {
           this.wakeTimer = null;
           this.wake();
-        }, Math.max(1, next - this.now()));
+        }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
       }
     } finally {
       this.pumping = false;
@@ -1031,7 +1043,11 @@ export class WorkflowEngine {
     );
   }
 
-  private async runAttempt(initial: WorkflowNodeAttempt, checkLimitHeld = false): Promise<void> {
+  private async runAttempt(
+    initial: WorkflowNodeAttempt,
+    checkLimitHeld = false,
+    checkSlot?: CheckSlot,
+  ): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
@@ -1049,7 +1065,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, checkSlot);
       return;
     }
     if (!isPersona(node)) return;
@@ -1410,12 +1426,81 @@ export class WorkflowEngine {
     version: WorkflowVersion,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
     checkLimitHeld: boolean,
+    scheduledSlot?: CheckSlot,
   ): Promise<void> {
+    // A sibling may extend the vendor wait after this retry was scheduled or while it
+    // waited for a check slot. Re-read before claiming, probing or reserving an execution.
+    const pending = node.slot === "coderabbit" ? this.store.getAttempt(initial.id) : null;
+    if (pending?.state === "retry_wait" && run.status === "running" && submission.status === "running") {
+      const retryAt = Math.max(pending.retryAt ?? 0, this.codeRabbitRetryAt(submission.id));
+      if (retryAt > this.now()) {
+        this.store.finishAttempt(pending.id, {
+          state: "retry_wait", retryAt, error: pending.error, output: pending.output, verdict: pending.verdict,
+        }, this.now());
+        this.onRunChanged(run.id);
+        return;
+      }
+    }
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
     if (!claimed) return;
+    // Armed in the same synchronous run as the claim, so there is no moment at which the
+    // attempt is running and a run cancel cannot reach it.
+    const abort = new AbortController();
+    this.checkAttemptAborts.set(claimed.id, abort);
+    try {
+      await this.runClaimedCheckAttempt(
+        claimed,
+        submission,
+        run,
+        version,
+        node,
+        checkLimitHeld,
+        scheduledSlot,
+        abort.signal,
+      );
+    } finally {
+      if (this.checkAttemptAborts.get(claimed.id) === abort) this.checkAttemptAborts.delete(claimed.id);
+    }
+  }
 
+  private codeRabbitRetryAt(submissionId: string): number {
+    return this.store.listAttempts(submissionId).reduce((latest, attempt) => {
+      const output = attempt.output;
+      if (!output || typeof output !== "object" || Array.isArray(output)) return latest;
+      const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+      return parsed.success ? Math.max(latest, parsed.data.retryAt ?? 0) : latest;
+    }, 0);
+  }
+
+  /**
+   * Abort these check attempts' work in progress: the dependency claim each is running or is
+   * about to run. A cancelled run calls it with the attempts it was running. Returns how many
+   * of them were check attempts still in flight. The command a check already spawned is not
+   * signalled; its result is recorded as audit-only, as it always was after a cancel.
+   */
+  stopCheckAttempts(attemptIds: readonly string[]): number {
+    let stopped = 0;
+    for (const id of attemptIds) {
+      const abort = this.checkAttemptAborts.get(id);
+      if (!abort) continue;
+      abort.abort("cancelled");
+      stopped += 1;
+    }
+    return stopped;
+  }
+
+  private async runClaimedCheckAttempt(
+    claimed: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+    checkLimitHeld: boolean,
+    scheduledSlot: CheckSlot | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1437,19 +1522,34 @@ export class WorkflowEngine {
       ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
           ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
       : catalogCommand;
+    // On the fallback path the slot is only taken around the executor, after the attempt ref
+    // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
+    let fallbackSlot: CheckSlot | undefined;
+    const checkSlot: CheckSlot | undefined = checkLimitHeld
+      ? scheduledSlot
+      : {
+          release: () => fallbackSlot?.release(),
+          reacquire: () => fallbackSlot?.reacquire() ?? Promise.resolve(),
+        };
     const attemptRef = {
       runId: run.id,
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
+      signal,
+      ...(checkSlot ? { checkSlot } : {}),
     };
     const baseDeps = this.checkDeps(attemptRef);
-    const signal = this.checkShutdown.signal;
+    const shutdown = this.checkShutdown.signal;
+    const gated = <T>(fn: () => Promise<T>): Promise<T> => this.checkLimit((slot) => {
+      fallbackSlot = slot;
+      return fn();
+    });
     const deps = baseDeps.execute ? {
       ...baseDeps,
       execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) => {
-        const execute = () => baseDeps.execute!({...request, signal});
-        return checkLimitHeld ? execute() : this.checkLimit(execute);
+        const execute = () => baseDeps.execute!({...request, signal: shutdown});
+        return checkLimitHeld ? execute() : gated(execute);
       },
     } : baseDeps;
 
@@ -1460,13 +1560,14 @@ export class WorkflowEngine {
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
-          retryAt: this.store.listAttempts(submission.id)
-            .map((attempt) => {
-              const output = attempt.output;
-              if (!output || typeof output !== "object" || Array.isArray(output)) return 0;
-              const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
-              return parsed.success ? parsed.data.retryAt ?? 0 : 0;
-            }).reduce((a, b) => Math.max(a, b), 0),
+          // Carry an unresolved review across submissions. A later complete review clears
+          // it; a skip cannot. The store orders attempts from oldest to newest.
+          incompleteReview: this.store.listAttemptsForRun(submission.runId).reduce((incomplete, attempt) => {
+            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return incomplete;
+            const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
+            return parsed.success && parsed.data.status !== "skipped" ? parsed.data.status === "incomplete" : incomplete;
+          }, false),
+          retryAt: this.codeRabbitRetryAt(submission.id),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
               repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
@@ -1504,6 +1605,8 @@ export class WorkflowEngine {
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
+        publicationTreeOid: context.data.evidence.publication
+          ? workflowPublicationTree(context.data.evidence) : null,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
       }, deps);
@@ -1511,6 +1614,10 @@ export class WorkflowEngine {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (result.kind === "retryable_connection") {
+      this.store.transact(() => this.handleCodeRabbitConnectionFailure(claimed, run.id, result));
       return;
     }
     if (result.kind === "action_required") {
@@ -1715,6 +1822,46 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     this.onRunChanged(runId);
+  }
+
+  /** A provider-confirmed disconnect is not a review verdict or permission to spend more. */
+  private handleCodeRabbitConnectionFailure(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    result: Extract<Awaited<ReturnType<typeof runCheck>>, { kind: "retryable_connection" }>,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: result.reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
+    const allowanceSpent = result.review.remainingRuns === 0;
+    if (exhausted || allowanceSpent) {
+      this.handleCheckActionRequired(attempt, runId,
+        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. ${allowanceSpent ? CODERABBIT_ALLOWANCE_REMEDY : "Inspect retained output and retry after connectivity recovers"}. No additional credits were authorized.`, result);
+      return;
+    }
+    const now = this.now();
+    // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
+    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
+    this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
+      output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
+    if (this.blockedByUnresolvedLease(attempt, runId, result.reason)) return;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, inputFingerprint: attempt.inputFingerprint,
+      retryAt, error: `Automatic retry scheduled: ${result.reason}`, now,
+    });
+    this.store.appendEvent(runId, "command_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt, error: result.reason,
+    }, now);
+    this.onRunChanged(runId);
+    this.wake();
   }
 
   /** Configuration or consent needs a human correction, never an automatic retry or code fix. */

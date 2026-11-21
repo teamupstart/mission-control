@@ -8,7 +8,7 @@ import {
   FOREMAN_SETTINGS_TABS,
   foremanTabForAnchor,
 } from "../src/web/lib/foreman-settings-tabs.ts";
-import { SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
+import { ALL_SETTINGS_CONTROLS as SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 
 const OUTSIDE_TABS = new Set([

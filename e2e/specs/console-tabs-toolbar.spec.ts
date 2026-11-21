@@ -437,6 +437,8 @@ test("a tall session menu scrolls within the space above or below its trigger", 
   for (const height of [440, 540]) {
     const viewport = { width: 1280, height };
     await dashboard.setViewportSize(viewport);
+    // Let the responsive layout settle before the menu measures its trigger.
+    await readRow(dashboard);
     await control.click();
     await expect(menu).toBeVisible();
     const trigger = (await control.boundingBox())!;

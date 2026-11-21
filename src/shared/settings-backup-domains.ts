@@ -38,6 +38,16 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "resident-skill-sources", surface: "residents" },
   // Custom MCP server definitions, without their secret values.
   { id: "resident-mcp-servers", surface: "residents" },
+  // Database backup counts and interval, edited in Settings > Storage. Added after format
+  // v1 shipped.
+  { id: "database-backups", surface: "settings" },
+  // Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget.
+  { id: "storage-limits", surface: "settings" },
+  // Operator choices in Settings > Feature flags.
+  { id: "feature-flags", surface: "settings" },
+  // Task shaping's registered shapers and settings, edited in Settings > Task shaping. It was
+  // `runtime` until that panel landed; the id never changes.
+  { id: "shaping", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

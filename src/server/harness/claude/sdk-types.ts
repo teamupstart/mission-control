@@ -185,6 +185,14 @@ export interface ClaudeSdkQueryOptions {
     excludeDynamicSections?: boolean;
   };
   resume?: string;
+  /**
+   * Tool rules the CLI auto-approves (`--allowedTools`). Adds approval, never narrows the
+   * toolset. The ask channel pre-approves `request_input` on every launch (`sdkAskChannel`),
+   * so calling it raises no permission ask.
+   */
+  allowedTools?: string[];
+  /** Tools removed from the session (`--disallowedTools`); the ask channel removes `AskUserQuestion`. */
+  disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
   /**
    * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
@@ -197,7 +205,7 @@ export interface ClaudeSdkQueryOptions {
    * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
    * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
+  settings?: { disableClaudeAiConnectors?: boolean; env?: Record<string, string>; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,

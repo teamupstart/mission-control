@@ -12,6 +12,15 @@ field schemas and update handler reuse dashboard validation, repository canonica
 workflow selection checks, and `TaskManager.update`. MCP updates additionally require the
 task to remain in the backlog through the final write. These tools create and edit ordinary
 backlog tasks; they do not create recurring-mission schedules or launch agents.
+The MCP `cancel_task` tool posts a validated task id to the token-guarded `/mcp/tasks/cancel`
+route and delegates to `TaskManager.cancel`, the dashboard's cancellation owner. It works
+without a session id, including for stranded `running` rows. It stops task-launched agents,
+preserves archives, and cleans up owned resources; assigned tasks do not kill an existing
+operator session. A cleanup refusal returns an error and keeps remaining resources tracked.
+Cancellation retains the task record, which can then be removed with `delete_task`.
+The MCP request has a 30-second deadline. A timeout or lost connection reports an unknown
+outcome because daemon cancellation may still finish; use `get_task` before retrying.
+
 The MCP `delete_task` tool posts a validated task id to the token-guarded `/mcp/tasks/delete`
 route and delegates to `TaskManager.remove`, the same owner used by dashboard deletion. Active
 tasks are refused, and archive preservation and resource cleanup precede durable removal and
@@ -44,16 +53,43 @@ Read [Dispatch, backlog, and task sources](dispatch-and-backlog.md), [Recurring 
 and [Work queues and backlog autopilot](work-queues.md) for user-facing behavior. The
 binding and cleanup rules remain in the [tasks and worktrees contract](agent-guides/architecture.md#tasks-and-worktrees).
 
+After SDK restoration and the first completed session observation, unchanged running tasks
+that were inherited with a missing session binding settle as failed with a session-ended reason. Discovery can rebind a
+live agent before that check. SDK-owned work, provider-owned Pipeline runs, durable terminal
+handoffs, and pending local-plan recovery retain their existing ownership. Settlement keeps
+worktrees and their resource records for the existing cleanup and retention policy.
+
+A running task with no attached session and no Pipeline run or commission owning it is a
+**lost task**: nothing will finish it, so only the operator can close it. While any exist, the
+fleet pulse in the topbar shows a red **lost** segment with their count on every page.
+Clicking it opens a card that explains the state and offers **Open Sitrep**; Sitrep's
+keyboard shortcut works too. The segment disappears when the last lost task is cancelled or
+settled.
+
+Sitrep lists lost tasks first, under **Lost tasks**, including provisional gaps that cannot
+yet be settled. Each row shows how long ago the task was dispatched and whether it still holds
+a worktree, and offers a confirmed Cancel action using the same task owner as `cancel_task`.
+With more than one lost task, **Cancel all** cancels each in turn after one confirming click
+and reports any refusal by task. Sessionless tasks a Pipeline run still owns are listed apart,
+under **Pipeline runs without sessions**, and do not raise the topbar segment. Cancellation
+errors remain visible in the panel; the copied Markdown report includes both lists. The
+[lost-task predicate](../src/shared/session.ts) is shared by the topbar, Sitrep and the
+report, so the count and the lists cannot disagree.
+
 The [shared task-status policy](../src/shared/task-status.ts) defines whether each
 `TaskStatus` is active. Provisioning (`dispatching`) and execution (`running`) are active;
-`backlog` and terminal statuses are not. Lifecycle guards use `isActiveTask`, and SQL
+`backlog`, `hibernated` and terminal statuses are not. `hibernated` is not terminal either: the
+operator stopped the agent and will resume its conversation (see
+[Hibernate a task](sessions.md#hibernate-a-task-and-resume-it-later)). Lifecycle guards use `isActiveTask`, and SQL
 readers use its derived `ACTIVE_TASK_STATUSES` list. Adding a status to `TASK_STATUSES`
 requires an explicit activity decision and an entry in the
 [lifecycle contract matrix](../test/task-status-contract.test.ts).
 
 Some consumers deliberately ask a broader question. Schedule overlap, startup loading,
-and ensemble submission eligibility include backlog work as well as active tasks. Merge
-reconciliation also considers failed and cancelled tasks that may have shipped. These
+and ensemble submission eligibility include backlog work as well as active tasks; schedule
+overlap and startup loading include hibernated tasks too. Merge reconciliation also
+considers failed and cancelled tasks that may have shipped; it never touches a hibernated
+task, which only the operator's Resume moves on. These
 consumers compose the active policy with their own cases; they do not redefine it.
 
 ## Task-source content refresh

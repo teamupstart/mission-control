@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_SETTINGS_CATEGORY,
+  RETIRED_SETTINGS_CATEGORIES,
   isSettingsCategory,
+  settingsCategoryInBuild,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
 import {
@@ -494,11 +496,19 @@ export function parseMissionRoute(hash: string): MissionRoute {
   if (settings) {
     // A RUNTIME membership check, which is why the registry is imported for its values
     // rather than its type: these hashes are links people keep, and a category this build
-    // no longer has must land on the default panel rather than on a blank pane.
+    // no longer has must land on the default panel rather than on a blank pane. A category
+    // behind a feature flag is kept: the flags are not known until the first snapshot, and
+    // the page withholds it, live, while its flag is off (`settingsCategoryInBuild`).
     const id = segment(settings[1]!);
     return {
       page: "settings",
-      category: id !== null && isSettingsCategory(id) ? id : DEFAULT_SETTINGS_CATEGORY,
+      category: id === null
+        ? DEFAULT_SETTINGS_CATEGORY
+        : isSettingsCategory(id) && settingsCategoryInBuild(id)
+          ? id
+          : Object.hasOwn(RETIRED_SETTINGS_CATEGORIES, id)
+            ? RETIRED_SETTINGS_CATEGORIES[id]!
+            : DEFAULT_SETTINGS_CATEGORY,
     };
   }
   return { page: "fleet" };

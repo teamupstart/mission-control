@@ -10,7 +10,7 @@ import {
   type LaunchFailureOutcome,
 } from "@shared/launch-failure.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import { TASK_KIND_BEHAVIOR, taskHasRepository, taskKindAllowsBacklog } from "@shared/task.ts";
+import { TASK_KIND_BEHAVIOR, taskAllowsBacklog, taskHasRepository } from "@shared/task.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import type { Task } from "@shared/types.ts";
 import { api, fetchRepos } from "../lib/api.ts";
@@ -139,7 +139,7 @@ export function LaunchFailureActions({ group }: { group: LaunchFailureGroup }): 
       )}
       {group.outcome === "not-started" && !resident && (
         <Tooltip
-          label={taskKindAllowsBacklog(latest.kind)
+          label={taskAllowsBacklog(latest)
             ? `Dispatch ${name} again as the same task`
             : `File ${name} again as a new ${latest.kind} with the same settings and dispatch it`}
         >

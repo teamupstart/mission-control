@@ -23,6 +23,7 @@ chmodSync(shim, 0o755);
 process.env.MISSION_GIT_BIN = shim;
 
 const { resolveStackDiffBase } = await import("../src/server/stacking/diff-base.ts");
+const { defaultStackGitHub } = await import("../src/server/stacking/github.ts");
 const { computeStackedDiff } = await import("../src/server/diff.ts");
 const { openDb } = await import("../src/server/db.ts");
 openDb();
@@ -91,7 +92,11 @@ test("a stacked child's review diff never runs git inside the child's worktree, 
   writeFileSync(log, "");
   // The daemon's own path, end to end: refresh the parent at the root, read the child's head,
   // compute the merge base, and capture the diff - every git process through the shim.
-  const base = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, undefined, worktree);
+  const base = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, {
+    ...defaultStackGitHub,
+    prRefs: async () => ({ ok: true, value: { state: "OPEN", isDraft: false, headSha: repaired,
+      headRefName: "feat/parent", baseRefName: "main", defaultBranch: "main", mergeCommitSha: null } }),
+  }, worktree);
   assert.ok(base);
   assert.equal(base.sha, repaired, "the moved parent was refreshed");
   const diff = await computeStackedDiff({

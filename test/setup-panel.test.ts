@@ -5,11 +5,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   HERDR_SERVER_REMEDY,
+  INDEXED_REPOSITORIES_INFO,
+  SETUP_REPOSITORY_ANCHORS,
   homeRelative,
   type SetupChecksSnapshot,
   type SetupRowView,
 } from "../src/shared/setup-catalog.ts";
 import { SetupPanel, familyForAnchor, nextSetupSelection } from "../src/web/components/SetupPanel.tsx";
+import { CONDUCTOR_INTEGRATION_ENABLED, visibleSetupFamilyIds } from "../src/shared/conductor-integration.ts";
 
 const HOME = "/home/operator";
 
@@ -84,9 +87,13 @@ test("the rail lists every family always, and the pane renders only the selected
   const html = render([CLAUDE, CMUX, GH_CLI]);
   // Every family stays reachable even though only one family's rows are mounted - that is
   // what keeps a deep link and the guided tour able to ask for any of them.
-  for (const id of ["agents", "terminals", "github", "extensions", "pipelines"]) {
+  for (const id of visibleSetupFamilyIds()) {
     assert.match(html, new RegExp(`id="setup-family-${id}"`));
     assert.match(html, new RegExp(`data-anchor="setup/family-${id}"`));
+  }
+  // A family emptied by a hidden integration is not drawn at all, rather than drawn empty.
+  if (!CONDUCTOR_INTEGRATION_ENABLED) {
+    assert.doesNotMatch(html, /id="setup-family-pipelines"/);
   }
   assert.equal(html.match(/class="setup-pane"/g)?.length, 1);
   // GitHub holds the only required gap, so the rail opens there rather than on the catalog's
@@ -124,11 +131,63 @@ test("a deep link to a family selects it, which is how the guided tour drives th
 
 test("familyForAnchor resolves both anchor shapes and refuses anything else", () => {
   const rows = [CLAUDE, CMUX, GH_CLI];
-  assert.equal(familyForAnchor("setup/family-pipelines", rows), "pipelines");
+  assert.equal(familyForAnchor("setup/family-extensions", rows), "extensions");
+  // Pipelines is a family only while the ai-conductor integration is offered.
+  assert.equal(
+    familyForAnchor("setup/family-pipelines", rows),
+    CONDUCTOR_INTEGRATION_ENABLED ? "pipelines" : null,
+  );
   assert.equal(familyForAnchor("setup/dependency-cmux", rows), "terminals");
   assert.equal(familyForAnchor("setup/dependency-ghostty", rows), null, "a row this snapshot does not carry");
   assert.equal(familyForAnchor("setup/recheck", rows), null);
   assert.equal(familyForAnchor("setup/family-nonsense", rows), null);
+  // Not a row, but it lives in the Terminals family, so the settings palette lands there.
+  assert.equal(familyForAnchor("setup/external-sessions", rows), "terminals");
+});
+
+test("familyForAnchor resolves an environment-check row the snapshot does not carry yet", () => {
+  // The dispatch form's "Fix in Setup" door links to a warning it read moments ago, while the
+  // panel may still hold the startup snapshot without that row. The family comes from the
+  // catalog so the rail moves and the flash waits for the row to mount.
+  assert.equal(familyForAnchor("setup/environment-check-mission-hook-events", []), "extensions");
+  assert.equal(familyForAnchor("setup/environment-check-mission-hook-script", [CLAUDE]), "extensions");
+  assert.equal(familyForAnchor("setup/environment-check-nonsense", []), null);
+});
+
+const NO_REPOSITORIES: SetupRowView = {
+  ...INDEXED_REPOSITORIES_INFO,
+  status: {
+    state: "needs-setup",
+    why: "None of the 4 indexed directories holds a git repository.",
+    evidence: "~/workspace (0 repositories)",
+  },
+};
+
+test("the Repositories family holds the required check and the directory editor together", () => {
+  const html = render([CLAUDE, NO_REPOSITORIES], "setup/family-repositories");
+  assert.match(html, /<h3 id="setup-family-repositories-title">Repositories<\/h3>/);
+  assert.match(html, /At least one detected repository/);
+  assert.match(html, /None of the 4 indexed directories holds a git repository/);
+  for (const anchor of Object.values(SETUP_REPOSITORY_ANCHORS)) {
+    if (anchor === SETUP_REPOSITORY_ANCHORS.add) continue; // only once the index is read
+    assert.match(html, new RegExp(`data-anchor="${anchor}"`), anchor);
+  }
+  // The verdict counts it like any required gap: setup does not pass without a repository.
+  assert.match(html, /This machine is missing something required\./);
+  // The editor belongs to its family alone.
+  assert.doesNotMatch(render([CLAUDE, NO_REPOSITORIES], "setup/family-agents"), /data-anchor="setup\/repositories-directories"/);
+});
+
+test("with no repository detected, the rail opens on the Repositories family", () => {
+  const html = render([CLAUDE, NO_REPOSITORIES]);
+  assert.match(html, /id="setup-family-repositories"[^>]*aria-current="true"/);
+  assert.match(html, /data-anchor="setup\/repositories-directories"/);
+});
+
+test("a deep link to a directory editor control selects the Repositories family", () => {
+  for (const anchor of Object.values(SETUP_REPOSITORY_ANCHORS)) {
+    assert.equal(familyForAnchor(anchor, []), "repositories", anchor);
+  }
 });
 
 test("a satisfied row states its evidence relative to home and keeps the absolute path", () => {

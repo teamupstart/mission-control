@@ -698,3 +698,198 @@ test("archiving cancels retryable packets and makes an in-flight send uncertain"
     true,
   );
 });
+
+async function pausedPacketRound(k: string, pauseWhile: "before the offer" | "typing") {
+  const { openDb } = await import("../src/server/db.ts");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+  const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+  const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+  const db = openDb();
+  const persona = {
+    sourcePersonaId: "paused-persona",
+    sourceRevision: 1,
+    name: "Paused reviewer",
+    description: "",
+    guidanceMarkdown: "Review.",
+    runner: "claude" as const,
+    model: "fake",
+  };
+  const graph = {
+    nodes: [
+      { id: "paused-node-session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "paused-persona", kind: "persona", persona, position: { x: 100, y: 0 } },
+    ],
+    edges: [
+      { id: "activate", source: "paused-node-session", sourcePort: "submitted", target: "paused-persona", targetPort: "activate" },
+      { id: "repair", source: "paused-persona", sourcePort: "fail", target: "paused-node-session", targetPort: "return_for_changes" },
+    ],
+  };
+  const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "live", maxRepairRounds: 2 });
+  db.prepare(
+    `INSERT INTO workflow_definitions (
+       id, name, normalized_name, description, draft_graph_json, completion_policy_json,
+       binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
+     ) VALUES (?, 'Paused review', ?, '', '{"nodes":[],"edges":[]}', '{"kind":"none"}', ?, 1, ?, NULL, 1, 1)`,
+  ).run(`paused-workflow-${k}`, `paused review ${k}`, defaults, `paused-version-${k}`);
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, workflow_id, version, source_draft_revision, graph_json,
+       completion_policy_json, binding_defaults_json, published_at
+     ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
+  ).run(`paused-version-${k}`, `paused-workflow-${k}`, JSON.stringify(graph), defaults);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: `paused-session-${k}`,
+    agent: "claude",
+    name: "work",
+    nameSource: "process",
+    cwd: "/repo",
+    gitBranch: "feature",
+    gitRoot: "/repo",
+    repoRoot: "/repo",
+    pid: 89,
+    tty: `tty-paused-${k}`,
+    terminals: [],
+    startedAt: 1,
+  } as DiscoveredSession]);
+  const PAUSED = { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: true } as const;
+  const injected: string[] = [];
+  let pausedMidWrite = false;
+  const fakeRunner: LlmRunner = {
+    id: "claude",
+    label: "fake",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run() {
+      return JSON.stringify({
+        verdict: "fail",
+        summary: "One issue",
+        requestedChanges: [{
+          basis: "substantive",
+          title: "Fix it",
+          rationale: "The evidence requires it.",
+          evidence: [{ kind: "diff", quote: "bad line" }],
+        }],
+        confidence: 1,
+      });
+    },
+  };
+  const manager = new WorkflowManager(registry, new WorkflowStore(), {
+    inject: (async (
+      _session: Session,
+      payload: string,
+      _deps?: InjectDeps,
+      beforeWrite?: PromptWriteGuard,
+    ) => {
+      // Paused while this packet was on its way: after the offer's own check, before the write.
+      if (pauseWhile === "typing" && !pausedMidWrite) {
+        pausedMidWrite = true;
+        registry.setSessionPause(`paused-session-${k}`, PAUSED);
+      }
+      const blocked = beforeWrite?.();
+      if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    }) as never,
+    recordInjection: (() => {}) as never,
+    readContextRaw: async (_registry, binding) => {
+      const raw = {
+        primaryGoal: { rawPrompt: "Paused goal", refined: null, sourceNoteKey: binding.noteKey },
+        humanDecisions: [],
+        priorPersonaFeedback: [],
+        session: { agent: "claude", name: "work", cwd: "/repo", branch: "feature" },
+        evidence: {
+          headSha: "head",
+          diffFingerprint: "diff",
+          diff: "patch",
+          diffTruncated: false,
+          workingTreeDirty: true,
+          workingTreeStatus: [],
+          workingTreeStatusTruncated: false,
+          transcript: [],
+          transcriptAnchor: null,
+          transcriptTruncated: false,
+          standards: [],
+          standardsTruncated: false,
+        },
+      };
+      return {
+        raw,
+        context: fallbackWorkflowContext(raw, null),
+        boundary: {
+          noteKey: binding.noteKey,
+          sessionId: binding.sessionId!,
+          headSha: "head",
+          transcriptPath: null,
+          transcriptSize: 0,
+          repositoryFingerprint: "repo",
+        },
+      };
+    },
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test"),
+    engine: {
+      runnerFor: () => fakeRunner,
+      resolveExecution: () => ({
+        runner: { id: "claude", source: "config", unknown: null },
+        model: { id: "fake", source: "config" },
+      }),
+    },
+  });
+  const binding = manager.createBinding({
+    workflowVersionId: `paused-version-${k}`,
+    sessionId: `paused-session-${k}`,
+    triggerMode: "manual",
+    deliveryMode: "live",
+    maxRepairRounds: 2,
+  });
+  assert.equal(binding.ok, true);
+  manager.start();
+
+  // Paused by the operator before the review returns its repair packet.
+  if (pauseWhile === "before the offer") registry.setSessionPause(`paused-session-${k}`, PAUSED);
+  const submitted = await manager.submit(binding.ok ? binding.value.id : "", { requestId: `paused-submit-${k}` });
+  assert.equal(submitted.ok, true);
+  const runId = submitted.ok ? submitted.value.run.id : "";
+  const prepared = Date.now();
+  while (!manager.store.listDeliveries(runId)[0]) {
+    if (Date.now() - prepared > 3_000) throw new Error("timed out waiting for the repair packet");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  // Long enough for the offer that follows preparation to have run and been held.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const held = manager.store.listDeliveries(runId)[0]!;
+  assert.equal(held.state, "prepared", `a packet paused ${pauseWhile} is held, not refused`);
+  assert.equal(held.error, null, "no refusal reason was recorded");
+  assert.deepEqual(injected, [], "nothing was typed into the paused session");
+  const heldRun = manager.store.getRun(runId)!;
+  assert.notEqual(heldRun.status, "blocked", "the run is not blocked on a refused delivery");
+  assert.notEqual(heldRun.currentPhase, "delivery_blocked");
+
+  // Resuming offers the same packet again, on its own, and it is typed exactly once.
+  registry.setSessionPause(`paused-session-${k}`, null);
+  const resumed = Date.now();
+  while (manager.store.getDelivery(held.id)?.state !== "delivered") {
+    if (Date.now() - resumed > 3_000) throw new Error("timed out waiting for delivery after resume");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(injected, [held.payload], "the held packet, unchanged, typed once");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(injected.length, 1, "the resume did not offer it twice");
+  await manager.stop();
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
+}
+
+test("a packet for a paused session stays prepared, unrefused, and is delivered once the session resumes", async () => {
+  await pausedPacketRound("before", "before the offer");
+});
+
+test("a pause that lands while the packet is being typed holds it the same way, and resume delivers it", async () => {
+  await pausedPacketRound("typing", "typing");
+});

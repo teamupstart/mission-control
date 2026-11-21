@@ -38,7 +38,9 @@ reap any remaining utilities before the update helper handles verified survivors
 The daemon stops workflow checks before slower
 session drains. The workflow engine's abort signal also follows a check through lease
 acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
-check shims tear down their own group on loss of the private owner pipe; the daemon remains
+check shims tear down their own group on loss of the private owner pipe. Orderly shutdown also
+closes that pipe, so an unreadable identity or refused group signal
+does not leave the engine waiting for the command's full timeout. The daemon remains
 the only writer of interruption outcomes and lease recovery.
 
 The detached update helper outlives the desktop and drains verified owned processes before
@@ -76,6 +78,15 @@ dropping the layer. Fresh launches and legacy rows without a saved limit still r
 session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
 its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
 
+`get_resident_instructions` and `propose_resident_instruction_changes` attribute the caller the
+same way. A proposal is validated against the current profile and Persona text, stored in
+`resident_instruction_proposals` keyed by the `request_input` review the daemon opens for it
+(`requestInputReview` in `src/shared/request-input.ts`, the tool's own builder),
+and applied by `ResidentInstructionChanges.resolution` (`src/server/residents/instruction-changes.ts`)
+inside the transaction `/api/reviews/:id/resolve` writes the human's answer in. Revisions are
+announced only after that commit. A resident's retro is a packet `runRetro` types into the
+resident's own session (`src/server/residents/retro-packet.ts`), with no skill gate.
+
 ## Executable environment and subprocesses
 
 Every process that can own or launch daemon work initializes `ExecutableLocator`: the direct
@@ -104,8 +115,8 @@ There are two explicit exceptions:
   shared child environment, under the Workflow process supervisor. Their resolved record carries
   `id: null` so it cannot impersonate a built-in catalog entry.
 - Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
-  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, and `/usr/bin/open`.
-  Do not add a bare command to this class.
+  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, `/usr/bin/open` and
+  `/bin/cp`. Do not add a bare command to this class.
 
 ## Session ownership
 
@@ -214,7 +225,10 @@ successfully released resource facts.
 A terminal task that still holds a worktree also carries a durable activity clock. The daemon
 observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
 whole index, tracked worktree changes, and non-ignored untracked files - and records the
-fingerprint plus a 30-day deadline in `task_worktree_retention`. The clock has one boundary per
+fingerprint plus a configurable deadline in `task_worktree_retention`. See the
+[configuration reference](../configuration.md#task-worktree-retention) for the default.
+The daemon reads `worktrees.taskRetentionDays` on each observation. The ledger stores the applied
+window so shortening grants a single six-hour grace period; lengthening preserves existing grace. The clock has one boundary per
 task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
 activity signal and must never be used as one. The observation service reclaims nothing; it is
 structurally incapable of it. The retention cleanup worker consumes the ledger through
@@ -249,7 +263,18 @@ After provisioning, dispatch branches once:
 
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
-A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. A dispatch declaring no tools never spawns the probe and is unaffected.
+A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. An MCP-client dispatch declaring no tools never spawns that probe and is unaffected.
+
+Installed-extension harnesses carry those tools through their extension instead of an MCP
+descriptor. Pi's pre-provisioning health check probes the actual bridge with `tools/list` and
+requires the entire `MISSION_MCP_TOOLS` registry, including every plan and scout requirement.
+An extension that loads but lacks even one registered tool cannot pass dispatch availability.
+
+Managed Pi SDK dispatch requires a healthy extension even for kinds such as `ship` and
+`bugfix` that declare no MCP requirement. Pipeline tasks use a separate provider-owned
+host path instead of the managed Pi SDK dispatcher. Task-backed SDK launch,
+restart restore, and `/new` preserve that policy; an unhealthy replacement preserves the
+current conversation. Direct SDK sessions without a task keep the optional-extension behavior.
 
 Scout report publication is also available on request from other registered sessions. Registry
 observations project signed session capabilities; the archive gateway checks live ownership,
@@ -536,7 +561,14 @@ is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 gra
 v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
 Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
 repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
-readiness before that graph can create its first attempt. Exhausting a round's evidence
+readiness before that graph can create its first attempt. Canonical publication-only criteria may
+carry `fulfilledByAction: pull_request`; the evaluator defers their proof only while a forward
+successful route in the pinned graph still reaches a `pull_request` completion contract.
+Readiness and Persona review inputs preserve `deferredToAction` without marking the criterion
+satisfied or changing its materiality. The annotation survives run-criteria reuse. Existing runs classify missing timing metadata once
+without recompacting their stable rubric; the first successful result, including explicit nulls,
+is persisted on the run. A recovery segment can classify a paused run using its existing evidence.
+Past submission contexts and override records are never rewritten. Exhausting a round's evidence
 refinements advances the final packet with its gaps intact so the judges can evaluate it.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.

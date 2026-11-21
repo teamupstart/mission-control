@@ -220,6 +220,92 @@ test("mock-ups written while the conversation is open are linked and previewed i
   await capture(page, "mockup-image-in-files.png");
 });
 
+/** The prompt `fake-claude.mjs` answers by generating mock-ups, presenting them, then asking. */
+const MOCKUPS_THEN_ASK_TURN = "present the remind-later mock-ups, then ask which to build";
+const REMIND_DIR = "docs/mockups/request-input-remind-later";
+const PRESENTED = ["snooze-chip", "deferred-strip", "reminder-toast"].map((name) => `${REMIND_DIR}/${name}.html`);
+const LINKED = ["inline-menu", "card-footer"].map((name) => `${REMIND_DIR}/${name}.html`);
+
+/**
+ * The session that motivated this: mock-ups written by a script the agent ran through Bash,
+ * presented as the skill says, in an assistant message that ALSO called the blocking
+ * `request_input`. Nothing previewed and nothing linked, because the conversation re-listed
+ * its checkout only between turns and that turn never ended - it was waiting on the very
+ * decision the mock-ups were drawn for. Everything is asserted while the turn is still open.
+ */
+test("mock-ups presented beside a blocking request_input are previewed and linked while it waits", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const live = await session(daemon);
+  await openConversation(page, daemon, live.id);
+
+  const sent = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(live.id)}/inject`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: MOCKUPS_THEN_ASK_TURN, buffer: false }),
+  });
+  expect(sent.ok, `POST /inject answered ${sent.status}: ${await sent.text()}`).toBe(true);
+
+  const card = page.locator(".console-detail");
+  // Blocked on the operator: the question is a pending review and the turn has not ended.
+  await expect(card.getByRole("button", { name: "to review" })).toBeVisible({ timeout: 15_000 });
+  const state = async () => {
+    const rows = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as { id: string; state: string }[];
+    return rows.find((row) => row.id === live.id)?.state;
+  };
+  expect(await state(), "the presenting turn is still open").toBe("working");
+  expect(gitStatus(live.cwd), "git sees no mock-up to commit").toBe("");
+
+  const turn = page.getByRole("article", { name: "claude" })
+    .filter({ hasText: "Here are the remind-later mock-ups." })
+    .last();
+  for (const path of PRESENTED) {
+    await expect(turn.getByRole("link", { name: path, exact: true })).toBeVisible();
+  }
+  for (const [index] of LINKED.entries()) {
+    await expect(turn.getByRole("link", { name: `Alternative ${index + 1}`, exact: true })).toBeVisible();
+  }
+  const first = turn.getByRole("region", { name: `Preview of ${PRESENTED[0]}` });
+  await first.evaluate((element) => {
+    element.scrollIntoView({ block: "center" });
+    element.closest(".transcript-log")!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(first.frameLocator(`iframe[title="Preview of ${PRESENTED[0]}"]`)
+    .getByRole("heading", { name: "Remind me later, option 1" })).toBeVisible();
+  await expect(turn.getByRole("region", { name: /^Preview of / })).toHaveCount(3);
+  // Still blocked when the operator is looking at them, which is the point.
+  expect(await state()).toBe("working");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    await page.setViewportSize({ width: 1280, height: 1500 });
+    await turn.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  }
+  await capture(page, "mockups-beside-request-input.png", card);
+
+  // A Markdown link to one of the other pages opens it in Files.
+  await turn.getByRole("link", { name: "Alternative 2", exact: true }).click();
+  const tabs = page.getByRole("tablist", { name: "Session detail" });
+  await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("option", { name: LINKED[1] })).toHaveAttribute("aria-selected", "true");
+
+  // The decision card is where the operator chooses, and its context names the leading
+  // mock-ups: each opens in Files from there, and the question stays waiting for the answer.
+  await card.getByRole("button", { name: "to review" }).click();
+  const form = page.getByRole("dialog", { name: "Review request" });
+  await expect(form).toContainText("Which remind-later treatment should I build?");
+  for (const path of PRESENTED) {
+    await expect(form.getByRole("link", { name: path, exact: true })).toBeVisible();
+  }
+  await capture(page, "mockup-paths-on-the-review-card.png", form);
+  await form.getByRole("link", { name: PRESENTED[1], exact: true }).click();
+  await expect(form).toBeHidden();
+  await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("option", { name: PRESENTED[1] })).toHaveAttribute("aria-selected", "true");
+  await expect(card.getByRole("button", { name: "to review" })).toBeVisible();
+  expect(await state()).toBe("working");
+});
+
 test("Settings lists the shipped mockups skill, on by default, with the words that trigger it", async ({
   dashboard: page,
   daemon,

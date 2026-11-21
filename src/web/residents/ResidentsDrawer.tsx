@@ -1,6 +1,8 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
+import { questionAgentStatus } from "../lib/async-questions.ts";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
@@ -8,12 +10,19 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { stateDisplay } from "../lib/format.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
 import { reviewAskSummary } from "../lib/reviews.ts";
-import { toggleResidentCardCollapsed, useResidentCardsCollapsed } from "./card-fold.ts";
+import {
+  toggleResidentCardCollapsed,
+  toggleResidentProfilesCollapsed,
+  useResidentCardsCollapsed,
+  useResidentProfilesCollapsed,
+} from "./card-fold.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
 import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
 
 /** One live resident as the drawer lists it, in the dock's order. */
@@ -47,9 +56,29 @@ export function residentDrawerEntries(
   }));
 }
 
-/** A listed resident whose session has started and needs you: the Board's Needs you tone. */
+/**
+ * A listed resident whose session has started and needs you: the Board's Needs you tone, or a
+ * message-mode question still open (`async-input`). A resident is never amber for its questions
+ * alone, because it keeps iterating on its cadence, so its card keeps the working or idle tone
+ * while the group lists it with its asks.
+ */
 function entryNeedsYou(entry: ResidentDrawerEntry): boolean {
-  return entry.session !== null && stateDisplay(entry.session).tone === "attention";
+  return entry.session !== null
+    && (stateDisplay(entry.session).tone === "attention" || openQuestionCount(entry.session) > 0);
+}
+
+/**
+ * Whether a listed resident is drawn in the Needs you colour: the Board's attention tone, or open
+ * questions it has stopped on. A working resident's questions never turn it amber, since it keeps
+ * iterating, but one the operator paused will not wake to act on them (`questionAgentStatus`), so
+ * it is amber like any other session stopped on a question. Read by its card and the edge tab.
+ */
+export function residentEntryAmber(entry: Pick<ResidentDrawerEntry, "run" | "session">): boolean {
+  const session = entry.session;
+  if (!session) return false;
+  if (stateDisplay(session).tone === "attention") return true;
+  return openQuestionCount(session) > 0
+    && questionAgentStatus({ ...session, residentPaused: entry.run.loopState === "paused" }) === "stopped";
 }
 
 /**
@@ -137,7 +166,18 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   const { entries, pinned, selectedId } = props;
   const { bindings } = useKeybindings();
   const collapsed = useResidentCardsCollapsed();
+  // The Profiles fold is a preview: off, the heading is plain text and the list always shows, so
+  // a fold left closed when the preview is switched off never strands the Launch buttons.
+  const profilesFoldable = useFeatureFlag("resident-profiles-fold");
+  const profilesCollapsed = useResidentProfilesCollapsed() && profilesFoldable;
   const rootRef = useRef<HTMLElement | null>(null);
+  // The residents tour spotlights the drawer itself, then its Pin.
+  const tourDrawerRef = useTourTargetRef<HTMLElement>("residents:drawer");
+  const tourPinRef = useTourTargetRef<HTMLButtonElement>("residents:drawer-pin");
+  const setRoot = useCallback((element: HTMLElement | null): void => {
+    rootRef.current = element;
+    tourDrawerRef(element);
+  }, [tourDrawerRef]);
 
   /** The card's head button, when it is mounted and can take focus. */
   const cardHead = (sessionId: string): HTMLButtonElement | null => {
@@ -237,9 +277,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   );
   return (
     <aside
-      ref={(el) => {
-        rootRef.current = el;
-      }}
+      ref={setRoot}
       className="residents-drawer"
       aria-label="Residents"
       onKeyDown={onKeyDown}
@@ -254,6 +292,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
           : "Pin the drawer, so it is still open after a reload or restart"}
         >
           <button
+            ref={tourPinRef}
             type="button"
             className="btn btn-ghost residents-drawer-pin"
             aria-pressed={pinned}
@@ -306,19 +345,36 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
           </>
         )}
       </div>
-      <footer className="residents-drawer-foot">
-        <h3 className="residents-drawer-sec" id="residents-drawer-profiles">Profiles</h3>
-        {props.profiles.length === 0 ? (
-          <p className="residents-drawer-empty">No resident profiles yet. Author one on the Residents page.</p>
-        ) : (
-          <ResidentProfileLaunchList
-            profiles={props.profiles}
-            launches={props.launcher.launches}
-            onLaunch={(profile) => void props.launcher.launch(profile).then((answer) => {
-              if (answer === "needs-repository") props.onOpenLaunch(profile.id);
-            })}
-          />
-        )}
+      <footer className={`residents-drawer-foot${profilesCollapsed ? " is-collapsed" : ""}`}>
+        <h3 className="residents-drawer-sec" id="residents-drawer-profiles">
+          {profilesFoldable ? (
+            <Tooltip label={profilesCollapsed ? "Show the profiles and their Launch buttons" : "Hide the profiles and their Launch buttons"}>
+              <button
+                type="button"
+                className="residents-drawer-sec-toggle"
+                aria-expanded={!profilesCollapsed}
+                aria-controls="residents-drawer-profiles-list"
+                onClick={toggleResidentProfilesCollapsed}
+              >
+                Profiles
+                <RepoGroupCaret />
+              </button>
+            </Tooltip>
+          ) : "Profiles"}
+        </h3>
+        <div id="residents-drawer-profiles-list" className="residents-drawer-profiles" hidden={profilesCollapsed}>
+          {props.profiles.length === 0 ? (
+            <p className="residents-drawer-empty">No resident profiles yet. Author one on the Residents page.</p>
+          ) : (
+            <ResidentProfileLaunchList
+              profiles={props.profiles}
+              launches={props.launcher.launches}
+              onLaunch={(profile) => void props.launcher.launch(profile).then((answer) => {
+                if (answer === "needs-repository") props.onOpenLaunch(profile.id);
+              })}
+            />
+          )}
+        </div>
       </footer>
     </aside>
   );
@@ -343,7 +399,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
-  const needsYou = state.tone === "attention";
+  const needsYou = residentEntryAmber(entry);
   // The tone the Board files this session under, so a working resident's card is edged in the
   // Working column's color and one that needs you in the Needs you column's, in every theme.
   const working = state.tone === "working";

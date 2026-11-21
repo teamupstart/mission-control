@@ -32,7 +32,12 @@
  * append-only tuples in `docs/agent-guides/change-contracts.md`: add at the end, never
  * rename, never reorder.
  */
-export const ENVIRONMENT_CHECK_IDS = ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"] as const;
+export const ENVIRONMENT_CHECK_IDS = [
+  "upstartclaw-core-setup",
+  "mission-hook-script",
+  "pi-extension",
+  "mission-hook-events",
+] as const;
 export type EnvironmentCheckId = (typeof ENVIRONMENT_CHECK_IDS)[number];
 
 /**
@@ -67,6 +72,13 @@ export const ENVIRONMENT_CHECK_INFO: Record<EnvironmentCheckId, EnvironmentCheck
     // looking at a note in a dispatch dialog and needs to know which of their configurations
     // it concerns. The remedy sentence is where our own installer gets named.
     label: "Claude Code hooks",
+  },
+  "mission-hook-events": {
+    id: "mission-hook-events",
+    // Its own subject rather than a second sentence under "Claude Code hooks": that note means
+    // every event is failing, and this one means the bridge works and is missing an event, which
+    // is a different urgency the reader should be able to tell apart at a glance.
+    label: "Claude Code hook events",
   },
 };
 

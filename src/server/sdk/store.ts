@@ -58,6 +58,7 @@ export function recordSdkSessionProcess(id: string, lifetime: SdkProcessLifetime
  *    child, so a restart necessarily stops it, and a shutdown that recorded that as
  *    `exited` would make every clean restart indistinguishable from an agent that finished
  *    - reclaiming worktrees out from under work that was merely interrupted.
+ *  - `hibernated`: the operator stopped it to free its memory and will resume it by hand.
  */
 export const SDK_SESSION_STATUSES = [
   "starting",
@@ -65,6 +66,10 @@ export const SDK_SESSION_STATUSES = [
   "exited",
   "failed",
   "suspended",
+  // The operator hibernated its task: stopped on purpose, its conversation kept, and resumed
+  // only by the operator's Resume (`SdkSupervisor.wake`). Deliberately NOT live, so neither a
+  // restart nor a sweep relaunches it on its own.
+  "hibernated",
 ] as const;
 export type SdkSessionStatus = (typeof SDK_SESSION_STATUSES)[number];
 
@@ -292,6 +297,17 @@ export function recordSdkSessionBinding(
     .run(agentSessionId, modelId, "running" satisfies SdkSessionStatus, now, id);
 }
 
+/**
+ * Put back the conversation a hibernated row reopens. A woken driver that reported another one
+ * wrote it here through `recordSdkSessionBinding`; the task's saved conversation is the one Resume
+ * owes it, so a refused Resume restores it rather than leave the next one to reopen the wrong one.
+ */
+export function setSdkSessionConversation(id: string, agentSessionId: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`)
+    .run(agentSessionId, now, id);
+}
+
 export function setSdkSessionStatus(
   id: string,
   status: SdkSessionStatus,
@@ -300,6 +316,24 @@ export function setSdkSessionStatus(
   openDb()
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
+}
+
+/**
+ * Count one more restore that deferred this row, and return the new count.
+ *
+ * Kept apart from `upsertSdkSession` for the same reason the display name is: that write is
+ * the launch statement, and a relaunch must not reset or carry a count it knows nothing about.
+ */
+export function noteSdkSessionResumeDeferred(id: string, now = Date.now()): number {
+  const row = openDb()
+    .prepare(`UPDATE sdk_sessions SET resume_deferrals = resume_deferrals + 1, updated_at = ? WHERE id = ? RETURNING resume_deferrals`)
+    .get(now, id) as { resume_deferrals: number } | undefined;
+  return row?.resume_deferrals ?? 0;
+}
+
+/** A resume went through, so the count of deferrals before it starts over. */
+export function clearSdkSessionResumeDeferrals(id: string): void {
+  openDb().prepare(`UPDATE sdk_sessions SET resume_deferrals = 0 WHERE id = ? AND resume_deferrals <> 0`).run(id);
 }
 
 /**

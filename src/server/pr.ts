@@ -1,9 +1,15 @@
+import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { pollBranchUpdates } from "./github/branch-update.ts";
 import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
+import { StackMergeWatch } from "./stacking/merges.ts";
+import { checkDetails } from "./github/check-details.ts";
+import { CHECK_CONTEXTS, rollUpChecks } from "./github/check-rollup.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
@@ -25,6 +31,16 @@ import { run } from "./util/exec.ts";
 // still complete - through ONE cadence, because they overlap constantly (the task you are
 // waiting on is usually also a task) and two would poll the same URL twice at two
 // backoffs.
+//
+// A stacked pull request's merge counts only once it reached the default branch. Every merge
+// this poller hands the Registry passes through one gate first (`StackMergeWatch.holds`): a
+// stacked child merged into its parent's branch reads here exactly like a merge whose instant
+// `gh` did not report - not a merge yet - so it marks no work episode merged, completes no task
+// and satisfies no dependency edge. Ordinary pull requests are untouched and cost no extra read.
+// A parent's merge also retargets its open stacked children at once (`retargetChildren`).
+
+/** The stacked-merge state that must outlive one tick: settled verdicts and retargets done. */
+const defaultStackMergeWatch = new StackMergeWatch();
 
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -148,7 +164,9 @@ async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Pr
     const match = open ?? arr.find((p) => prStateOf(p) === "merged")
       ?? arr.find((p) => prStateOf(p) === "closed");
     if (!match) return null;
-    return parsePrCandidate(match, worktreeHeadSha) ?? "error";
+    const candidate = parsePrCandidate(match, worktreeHeadSha);
+    if (!candidate) return "error";
+    return { ...candidate, checks: await confirmRetriedChecks(cwd, candidate, match) };
   } catch {
     return "error";
   }
@@ -163,6 +181,7 @@ function parsePrCandidate(value: unknown, worktreeHeadSha: string | null): PrCan
   if (!state || typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string" ||
     (state === "merged" && !Number.isFinite(mergedAtMs))) return null;
   return { url, number: typeof number === "number" ? number : null, state, checks: checksOf(value),
+    checkDetails: checkDetails((value as Record<string, unknown>).statusCheckRollup),
     createdAt: createdAtMs, mergedAt: state === "merged" ? mergedAtMs : null,
     headSha: headRefOid, worktreeHeadSha };
 }
@@ -215,63 +234,116 @@ function prStateOf(p: unknown): PrState | null {
   return null; // unexpected state
 }
 
-// CheckRun conclusions and StatusContext states that we count as a failed check.
-// SUCCESS / NEUTRAL / SKIPPED are treated as passing; anything unrecognized as
-// passing too, so an unknown value never raises a false alarm.
-const FAIL_CONCLUSIONS = new Set([
-  "FAILURE",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-  "STALE",
-]);
-const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
-const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
-
-type CheckState = "fail" | "pending" | "pass";
-
-/**
- * Classify one `statusCheckRollup` entry. Entries are either a GraphQL `CheckRun`
- * (has a `status` like QUEUED/IN_PROGRESS/COMPLETED plus, once done, a
- * `conclusion`) or a legacy `StatusContext` (has a `state` like SUCCESS/PENDING/
- * FAILURE). Returns null for a shape we don't recognize.
- */
-function checkEntryState(e: unknown): CheckState | null {
-  const o = e as { status?: unknown; conclusion?: unknown; state?: unknown };
-  if (typeof o.status === "string") {
-    if (o.status.toUpperCase() !== "COMPLETED") return "pending";
-    const c = typeof o.conclusion === "string" ? o.conclusion.toUpperCase() : "";
-    return FAIL_CONCLUSIONS.has(c) ? "fail" : "pass";
-  }
-  if (typeof o.state === "string") {
-    const s = o.state.toUpperCase();
-    if (FAIL_STATES.has(s)) return "fail";
-    if (PENDING_STATES.has(s)) return "pending";
-    return "pass";
-  }
-  return null;
+/** A PR's `statusCheckRollup` entries as `gh pr list` printed them, or none. */
+function rollupOf(p: unknown): unknown[] {
+  const rollup = (p as { statusCheckRollup?: unknown })?.statusCheckRollup;
+  return Array.isArray(rollup) ? rollup : [];
 }
 
 /**
- * Roll a PR's `statusCheckRollup` up to a single chip state: any failing check
- * dominates (that's what the card's alert keys off), else pending while any is
- * still running, else passing. Null when the PR carries no checks at all.
+ * Roll a PR's `statusCheckRollup` up to a single chip state, through `rollUpChecks`, which the
+ * merge gate shares. Null when the PR carries no checks at all. `gh pr list` does not say which
+ * app or event each run belongs to, so this reading never retires a failure on its own - see
+ * `confirmRetriedChecks`.
  */
 function checksOf(p: unknown): PrChecks | null {
-  const rollup = (p as { statusCheckRollup?: unknown })?.statusCheckRollup;
-  if (!Array.isArray(rollup) || rollup.length === 0) return null;
-  let sawPending = false;
-  let sawPass = false;
-  for (const e of rollup) {
-    const s = checkEntryState(e);
-    if (s === "fail") return "failing";
-    if (s === "pending") sawPending = true;
-    else if (s === "pass") sawPass = true;
+  return rollUpChecks(rollupOf(p)).checks;
+}
+
+/**
+ * The verdicts `confirmRetriedChecks` already paid a GraphQL read for, by pull request url and
+ * keyed by the exact `gh pr list` rollup they answered: while a pull request's checks stand still
+ * - a stale failure lingers on a commit until the next push - the confirmation is read once, not
+ * on every tick. Bounded, oldest first, because a long-lived daemon sees many pull requests.
+ */
+const confirmedChecks = new Map<string, { fingerprint: string; checks: PrChecks | null }>();
+const CONFIRMED_CHECKS_LIMIT = 256;
+/**
+ * The most checks `gh pr list --json statusCheckRollup` reports for one commit. A rollup that
+ * long may be cut short, so it cannot key a remembered verdict: a check added past the cut
+ * leaves it unchanged.
+ */
+const GH_ROLLUP_PAGE = 100;
+
+/**
+ * The chip state, with a failure that LOOKS re-checked confirmed before it is cleared.
+ *
+ * A failing run followed by a later run with the same workflow and name is usually that check
+ * running again - the title check after the title is edited - and the chip should follow the
+ * later run. But it can also be a different check: the `push` and `pull_request` runs of one job
+ * carry the same workflow and name, and a pass in one must never clear a failure in the other.
+ * `gh pr list` cannot tell those apart, so this asks GitHub for the same commit's checks with
+ * their app and triggering event (`CHECK_CONTEXTS`), and rolls those up instead. Anything short
+ * of a complete answer about the same head commit keeps the failure.
+ */
+export async function confirmRetriedChecks(
+  cwd: string,
+  candidate: Pick<PrCandidate, "url" | "headSha">,
+  raw: unknown,
+): Promise<PrChecks | null> {
+  const rollup = rollUpChecks(rollupOf(raw));
+  if (rollup.checks !== "failing" || !rollup.unconfirmedRetry || !candidate.headSha) return rollup.checks;
+  // A full page may be missing checks, so its fingerprint cannot stand for the head's checks.
+  const cacheable = rollupOf(raw).length < GH_ROLLUP_PAGE;
+  const fingerprint = `${candidate.headSha}\0${JSON.stringify(rollupOf(raw))}`;
+  const known = cacheable ? confirmedChecks.get(candidate.url) : undefined;
+  if (known?.fingerprint === fingerprint) return known.checks;
+  const contexts = await queryHeadChecks(cwd, candidate.url, candidate.headSha);
+  if (!contexts) return rollup.checks;
+  // The merge gate's bar, so the chip never clears what the gate would still hold: an answer
+  // with an unreadable entry or an unrecognised result keeps the failure.
+  // The answer has to account for every failure gh reported: each must be there, retired by a
+  // later run of the same check. A complete page that simply lacks one proves nothing about it.
+  // Not remembered either way: GitHub may give a whole answer on the next tick.
+  const confirmed = rollUpChecks(contexts);
+  const accounted = rollup.failures.every((failure) => confirmed.retiredFailures.includes(failure));
+  if (!confirmed.recognized || confirmed.checks === null || !accounted) return rollup.checks;
+  const checks = confirmed.checks;
+  if (!cacheable) return checks;
+  confirmedChecks.delete(candidate.url);
+  confirmedChecks.set(candidate.url, { fingerprint, checks });
+  if (confirmedChecks.size > CONFIRMED_CHECKS_LIMIT) {
+    const oldest = confirmedChecks.keys().next().value;
+    if (oldest !== undefined) confirmedChecks.delete(oldest);
   }
-  if (sawPending) return "pending";
-  if (sawPass) return "passing";
-  return null;
+  return checks;
+}
+
+const HEAD_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    commits(last:1){ nodes{ commit{ oid statusCheckRollup{ ${CHECK_CONTEXTS} } } } }
+  } }
+}`;
+
+/**
+ * Every check on a pull request's head commit, with its app and event, or null when GitHub's
+ * answer is not a complete one about `headSha`: a failed call, more checks than one page, or a
+ * head that moved since `gh pr list` read it.
+ */
+async function queryHeadChecks(cwd: string, url: string, headSha: string): Promise<unknown[] | null> {
+  const parts = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url);
+  if (!parts) return null;
+  const res = await run(ghBin(), ["api", "graphql", "-f", `query=${HEAD_CHECKS_QUERY}`,
+    "-F", `owner=${parts[1]}`, "-F", `name=${parts[2]}`, "-F", `number=${parts[3]}`], { cwd, timeoutMs: 8000 });
+  if (res.code !== 0) return null;
+  try {
+    const json = JSON.parse(res.stdout) as {
+      errors?: unknown[];
+      data?: { repository?: { pullRequest?: { commits?: { nodes?: Array<{ commit?: {
+        oid?: unknown;
+        statusCheckRollup?: { contexts?: { pageInfo?: { hasNextPage?: unknown }; nodes?: unknown } } | null;
+      } }> } } | null } | null };
+    };
+    if (json.errors?.length) return null;
+    const commit = json.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit;
+    const contexts = commit?.statusCheckRollup?.contexts;
+    if (commit?.oid !== headSha || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) {
+      return null;
+    }
+    return contexts.nodes;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -289,7 +361,14 @@ export async function pollAndReconcilePrs(
   lookupHead: (dir: string, branch?: string) => Promise<string | null> = queryHead,
   /** Seam for the telemetry harvest, so a focused test can drive it without a real store. */
   telemetryTargets: (() => string[]) | null = null,
+  stackMerges: StackMergeWatch = defaultStackMergeWatch,
 ): Promise<void> {
+  const stackGitHub = activeStackGitHub();
+  /** True when a merge must not complete anything yet: see the header. */
+  const holdsMerge = (url: string, cwd: string | null, taskId: string | null): Promise<boolean> =>
+    stackMerges.holds(url, cwd, taskId, registry, stackGitHub);
+  /** Every merge observed this tick, landed or not: a parent's merge retargets its children. */
+  const sawMerged = new Set<string>();
   const targets = registry.prPollTargets();
   const workHeadTargets = registry.dependencyWorkHeadTargets();
   // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
@@ -373,8 +452,27 @@ export async function pollAndReconcilePrs(
     const r = preferredPr(results.get(t.cwd) ?? null);
     if (r === "error") skip.add(t.id);
     else if (r) {
+      if (r.state === "merged") sawMerged.add(r.url);
+      const held = r.state === "merged"
+        ? await stackMerges.held(r.url, t.cwd, registry.taskForSession(t.id, t.cwd)?.id ?? null, registry, stackGitHub)
+        : null;
+      // A merge GitHub cannot place yet says nothing about this session, like a `gh` that
+      // failed: its chip and episode are left exactly as they were.
+      if (held === "unknown") {
+        skip.add(t.id);
+        continue;
+      }
+      // Remembered on the Registry, so the session leaving this branch for its recovery keeps
+      // its task even before the Inspector's next tick records the same merge.
+      if (held === "stray") registry.noteStrayStackedMerge(r.url);
       found.set(t.id, {
         ...r,
+        // A stacked pull request that merged off the default branch is the session's pull
+        // request, but its work is unfinished: it is recorded unmerged, so the card carries it
+        // (the stack's Broken label and Foreman's recovery read it there) and the work episode
+        // holds it (which is what keeps the task when the session starts its recovery branch),
+        // even when this poller never saw it open.
+        ...(held === "stray" ? { state: "open" as const, mergedAt: null } : {}),
         branch: t.branch as string,
         agentSessionId: t.agentSessionId,
         episodeId: t.episodeId,
@@ -398,6 +496,8 @@ export async function pollAndReconcilePrs(
     [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
   );
   const mergedUrls = new Map<string, number>();
+  /** Merged, but held by the stacked-merge gate: nothing records them as a merge. */
+  const heldUrls = new Set<string>();
   const closedUrls = new Set<string>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
@@ -413,7 +513,11 @@ export async function pollAndReconcilePrs(
     PR_URL_CONCURRENCY,
     async (url) => {
       const result = await lookupUrl(url);
-      urlState.record(url, result, now);
+      const merged = result !== "error" && result?.state === "merged" && result.mergedAt !== null;
+      // A held merge keeps its URL on the ordinary backoff rather than being dropped as landed.
+      const held = merged && await holdsMerge(url, null, null);
+      if (held) heldUrls.add(url);
+      urlState.record(url, held ? { state: "open", mergedAt: null } : result, now);
       if (result !== "error" && result?.state === "closed") closedUrls.add(url);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
@@ -430,7 +534,7 @@ export async function pollAndReconcilePrs(
   // carries BOTH reasons is in this set, so its operational reconciliation runs exactly as
   // it did before, under its own eligibility and selection-time rules.
   const operationalMerges = new Map(
-    [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
+    [...mergedUrls].filter(([url]) => operationalUrls.has(url) && !heldUrls.has(url)),
   );
   registry.reconcilePrMerges(operationalMerges);
   registry.reconcileClosedDependencyPrs(new Set([...closedUrls].filter(url => operationalUrls.has(url))));
@@ -450,10 +554,17 @@ export async function pollAndReconcilePrs(
     });
     if (!result || result === "error") return;
     for (const match of Array.isArray(result) ? result : [result]) {
-      for (const target of group) registry.reconcileCompletedDependencyPr(target, {
-        ...match, branch: target.binding.branch!, episodeId: target.binding.episodeId,
-        agentSessionId: target.binding.agentSessionId,
-      });
+      if (match.state === "merged") sawMerged.add(match.url);
+      for (const target of group) {
+        // The completed task's merge evidence passes the same gate: a stacked pull request
+        // merged off the default branch is recorded as no merge (`reconcileCompletedDependencyPr`
+        // refuses a merge without an instant).
+        const held = match.state === "merged" && await holdsMerge(match.url, first.cwd, target.taskId);
+        registry.reconcileCompletedDependencyPr(target, {
+          ...match, mergedAt: held ? null : match.mergedAt, branch: target.binding.branch!,
+          episodeId: target.binding.episodeId, agentSessionId: target.binding.agentSessionId,
+        });
+      }
     }
   });
   // And the observation-only half, which has authority over nothing. It emits the verified
@@ -461,7 +572,13 @@ export async function pollAndReconcilePrs(
   // pull request was first associated rather than whatever the task is bound to today.
   // Delivery is resolved against each observation's current task/session/repository binding.
   // A URL can remain operational for another task or a dependency after this author lost it.
-  recordTelemetryPrMerges(mergedUrls, undefined, now);
+  // A held merge delivered nothing to the default branch, so it is not a delivery either.
+  recordTelemetryPrMerges(new Map([...mergedUrls].filter(([url]) => !heldUrls.has(url))), undefined, now);
+  // Last, so nothing above waits on it: a parent this tick saw merge has its open stacked
+  // children pointed at the default branch now, instead of on the next Inspector tick.
+  for (const url of mergedUrls.keys()) sawMerged.add(url);
+  for (const match of repoFound.values()) if (match.state === "merged") sawMerged.add(match.url);
+  await stackMerges.retargetChildren(sawMerged, stackGitHub, now);
 }
 
 /**
@@ -473,21 +590,31 @@ export function startPrPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const urlState = new PrUrlPollState();
+  let running = false;
+  let wake = false;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
+    if (running) { wake = true; return; }
+    if (timer) clearTimeout(timer);
+    running = true;
+    wake = false;
     try {
       await pollAndReconcilePrs(registry, queryPr, queryPrUrl, urlState);
+      if (!stopped) await pollBranchUpdates(registry, () => !stopped);
     } catch (err) {
       console.error("[pr] poll failed:", err);
     }
+    running = false;
     if (stopped) return;
-    timer = unref(setTimeout(tick, PR_POLL_MS));
+    timer = unref(setTimeout(tick, wake ? 0 : PR_POLL_MS));
   };
 
+  const unsubscribe = onFeatureFlagsChanged(() => { void tick(); });
   void tick();
   return () => {
     stopped = true;
+    unsubscribe();
     if (timer) clearTimeout(timer);
   };
 }

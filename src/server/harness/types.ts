@@ -1,4 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
+import type { HookSubagentSignal } from "./hook-subagents.ts";
 import type {
   AdvisorChoice,
   AgentType,
@@ -377,6 +378,20 @@ export interface TranscriptSpec {
    * poller growing a per-vendor cache - which is where that cache started.
    */
   retain: ((live: ReadonlySet<string>) => void) | null;
+  /**
+   * The id of the tool call that launched the background sub-agent `agentId`, as this file
+   * records it, or null when it records none; `null` for a harness whose transcript does not
+   * tie a launching call to the agent it started.
+   *
+   * Read from the FILE on request, not from any batch of turns the dashboard holds: a launch
+   * and the record naming its agent are written apart, so they can arrive in separate streamed
+   * appends or fall either side of a page edge, and only the file always holds both. It is how
+   * "Jump to launch" finds an agent whose source did not name its launching call.
+   *
+   * Asynchronous, and it must not hold the event loop for a whole file: it is asked on a
+   * request path, and a long-running resident's transcript can be large.
+   */
+  subagentLaunch: ((path: string, agentId: string) => Promise<string | null>) | null;
 }
 
 /** What one ingested hook event says about the session that fired it. */
@@ -467,6 +482,16 @@ export interface HookSpec {
    * name it does not own.
    */
   submittedPromptText(evt: HookIngest): string | null;
+  /**
+   * What this event says about a TERMINAL session's background sub-agents, in the neutral
+   * signals `hook-subagents.ts` reduces - or `[]` for the many events that say nothing.
+   *
+   * The harness's answer for the same reason `toState` is: which event starts, launches, ends
+   * or lists an agent, and which counts as the operator's next turn, is its vocabulary. The
+   * registry applies these only to a terminal-runtime session; an SDK session's driver owns its
+   * own sub-agents.
+   */
+  subagentSignals(evt: HookIngest): HookSubagentSignal[];
 }
 
 /**
@@ -789,6 +814,8 @@ export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
 export interface ResidentMcpLaunch {
   /** From the run's pinned revision. Only a harness with `allNativeSources` is ever handed `all`. */
   nativeSources: ResidentMcpNativeSources;
+  /** Opt-in connector workaround, pinned with the run's profile revision. */
+  disableClaudeAiConnectors?: boolean;
   /** The run's names, for verifying what actually started. Never includes Mission's. */
   names: readonly string[];
   /**
@@ -797,6 +824,12 @@ export interface ResidentMcpLaunch {
    * relaunch - immediately before the harness reads its configuration.
    */
   forStart(): ResidentMcpEntry[];
+  /** Reserve paths for launch flags and issue their single-use tickets after preflight. */
+  prepareStart(): {
+    entries: ResidentMcpEntry[];
+    issue(): void;
+    revoke(): void;
+  };
   /**
    * The same entries without credentials, for configuration that is checked before any server
    * starts. Mints nothing, so a slow check cannot outlive a ticket: a driver that verifies first
@@ -827,6 +860,8 @@ export interface SdkLaunchOptions {
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
   mcp: MissionMcpDescriptor | null;
+  /** Task-backed extension harnesses must retain healthy Mission tools through replacement. */
+  missionToolsRequired?: boolean;
   /**
    * A resident run's pinned MCP set, or absent for every other launch, which keeps the
    * harness's native MCP behaviour. When present the driver starts exactly `mcp` plus these.
@@ -1143,6 +1178,18 @@ export type SdkEvent =
    * decorates the card, which is the scalar this used to carry.
    */
   | { kind: "pr_created"; urls: string[] }
+  /**
+   * The session's background sub-agents, whole: replace semantics, null when there is
+   * nothing to show. Live state only - a driver re-sends it rather than the registry
+   * persisting it, and a driver whose process is replaced starts again from null.
+   */
+  | { kind: "subagents"; subagents: import("@shared/types.ts").SubagentSummary | null }
+  /**
+   * The harness compacted this conversation: its history is now a summary. Emitted for every
+   * compaction the driver observes, whoever asked for it - a maintenance `/compact`, the
+   * harness's own auto-compact or native backstop, or a command the operator typed.
+   */
+  | { kind: "compacted" }
   | { kind: "exited"; reason: string; resumable: boolean };
 
 /**

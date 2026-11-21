@@ -151,3 +151,41 @@ test("a no-change skip with an empty reviewedFiles list matches an empty compari
   const skipped = { ...reviewedFilesComplete, status: "review_skipped", reviewedFiles: [] };
   assert.equal(parse([skipped], 0, true, { required: [], allowed: [] }).status, "skipped");
 });
+
+test("only an explicitly recoverable connection error permits automatic recovery", () => {
+  for (const [errorType, recoverable, expected] of [
+    ["connection", true, true], ["connection", false, undefined],
+    ["connection", "true", undefined], ["authentication", true, undefined],
+    ["rate_limit", true, undefined], ["usage", true, undefined],
+  ] as const) {
+    const result = parse([{ type: "heartbeat", status: "reviewing" },
+      { type: "error", errorType, recoverable, message: "Connection failed: WebSocket closed", retryAfterSeconds: 90 }, complete], 1);
+    assert.equal(result.status, "incomplete");
+    assert.equal(result.retryableConnection, expected);
+    if (expected) assert.match(result.diagnostic, /WebSocket closed/);
+  }
+});
+
+test("auth, credit decisions and malformed output revoke recovery even after a connection failure", () => {
+  const connection = { type: "error", errorType: "connection", recoverable: true };
+  for (const decision of [{ type: "action_required", action: "use-credits" }, { type: "auth" }, { type: "error", errorType: "usage" }]) {
+    for (const events of [[connection, decision], [decision, connection]]) {
+      const result = parse(events, 1);
+      assert.equal(result.status, "incomplete");
+      assert.equal(result.retryableConnection, undefined);
+    }
+  }
+  for (const invalid of [Buffer.from("invalid\n"), Buffer.from([0xff]), Buffer.from("x".repeat(CODERABBIT_RESULT_LIMITS.recordBytes + 1)), Buffer.from("null\n")]) {
+    const parser = new CodeRabbitResultParser("bad", "major", null);
+    parser.push(Buffer.from(JSON.stringify(connection) + "\n"));
+    parser.push(invalid);
+    assert.equal(parser.finish(1, false).retryableConnection, undefined);
+  }
+});
+
+test("connection recovery preserves the longest vendor wait, including waits over a day", () => {
+  const before = Date.now();
+  const result = parse([172800, 60].map(retryAfterSeconds => ({ type: "error", errorType: "connection", recoverable: true, retryAfterSeconds })), 1);
+  assert.ok(result.retryAt! >= before + 172800000);
+  assert.equal(result.retryableConnection, true);
+});

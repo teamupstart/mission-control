@@ -192,10 +192,22 @@ export function writeConductorProjects(
 /** The version the fake installation reports, through its `VERSION` file. */
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
 
+/** Quote one word for a POSIX shell: inside single quotes nothing is special but `'` itself. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /**
  * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
- * actually executes fixture scripts. Every invocation other than the read-only version probe
- * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ * actually executes fixture scripts. Every invocation other than the installer's two
+ * read-only probes is `exec`ed into the real Node binary, so fake CLIs with
+ * `#!/usr/bin/env node` keep working.
+ *
+ * A shell script, not a Node one. The installer's runtime check gives each of its two probes
+ * five seconds, and a shim that was itself a Node process paid a cold Node start per probe:
+ * under the full unit suite's concurrency that ran out the budget, and the route reported no
+ * runtime at all. The shell answers both probes without starting Node, and `exec` hands every
+ * other call to the real binary with no second process in between.
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
@@ -204,19 +216,11 @@ export function writeConductorNodeRuntime(home: string, version: string): string
   writeFileSync(
     nextBin,
     [
-      `#!${process.execPath}`,
-      'const { spawnSync } = require("node:child_process");',
-      `const reported = ${JSON.stringify(version)};`,
-      'if (process.argv.length === 3 && process.argv[2] === "--version") {',
-      '  process.stdout.write(`v${reported}\\n`);',
-      "  process.exit(0);",
-      "}",
-      'if (process.argv.length === 4 && process.argv[2] === "-p" && process.argv[3] === "process.execPath") {',
-      '  process.stdout.write(`${process.argv[1]}\\n`);',
-      "  process.exit(0);",
-      "}",
-      "const child = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
-      "process.exit(child.status ?? 1);",
+      "#!/bin/sh",
+      `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf 'v%s\\n' ${shellWord(version)}; exit 0; fi`,
+      // `$0` is this shim's own path: what `process.execPath` names for the runtime probed.
+      `if [ "$#" -eq 2 ] && [ "$1" = "-p" ] && [ "$2" = "process.execPath" ]; then printf '%s\\n' "$0"; exit 0; fi`,
+      `exec ${shellWord(process.execPath)} "$@"`,
       "",
     ].join("\n"),
   );

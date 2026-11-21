@@ -183,7 +183,7 @@ test("the legacy commands import once, as overrides, with no global default inve
   assert.equal(policy.checksEnabled, true);
   assert.equal(policy.liveEnabled, false);
   assert.deepEqual(policy.repoAllowlist, ["/repo"]);
-  assert.equal(policy.defaultWorkflowId, "workflow-legacy");
+  assert.deepEqual(policy.kindWorkflowDefaults, { ship: "workflow-legacy" }, "the legacy default migrates to the Ship row");
   assert.deepEqual(policy.retention, {
     rawEvidenceDays: 7,
     completedRunDays: 60,

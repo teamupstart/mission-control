@@ -34,8 +34,13 @@ export async function pollOnce(
   refresh: (registry: Registry) => void = refreshDriverGit,
 ): Promise<void> {
   try {
-    const { sessions, terminals } = await find();
-    registry.applyDiscovery(sessions, terminals);
+    // The admission policy is read once per tick, before the sweep, so every candidate in it
+    // is judged against one setting and one view of tasks, invites, and pipeline runs.
+    // What it hid travels with the sweep, not through the registry, so only this sweep's
+    // `applyDiscovery` can commit it.
+    const { admit, hiddenCwds } = registry.discoveryAdmission();
+    const { sessions, terminals } = await find(admit);
+    registry.applyDiscovery(sessions, terminals, hiddenCwds);
   } catch (err) {
     console.error("[poller] sweep failed:", err);
   }

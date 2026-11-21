@@ -173,32 +173,13 @@ test("every control the search index points at is on the panel", () => {
   }
 });
 
-test("the settings panel offers active published Workflows as the dispatch default", () => {
-  const html = renderToStaticMarkup(
-    withOverlayHost(createElement(WorkflowSettingsPanel, {
-      state: state(ANSWERED),
-      onNavigate: () => {},
-      foremanEnabled: true,
-      workflows: [{
-        id: "workflow-review",
-        name: "Release review",
-        description: "",
-        draftRevision: 2,
-        currentVersionId: "version-2",
-        publishedVersion: 2,
-        archivedAt: null,
-        updatedAt: 1,
-        errorCount: 0,
-        warningCount: 0,
-        nodeCount: 3,
-        personaCount: 1,
-        builtin: false,
-      }],
-    })),
-  );
-  assert.match(html, /Dispatch default/);
-  assert.match(html, /Default after-work Workflow for dispatched tasks/);
-  assert.match(html, /Release review · v2/);
+// The per-kind rows moved to Settings › Tasks (`test/task-settings-panel.test.ts`). One home
+// only: a second copy here would be a second editor of the same map.
+test("the Workflows panel no longer carries the per-kind dispatch defaults", () => {
+  const html = render(ANSWERED);
+  assert.doesNotMatch(html, /Dispatch defaults/);
+  assert.doesNotMatch(html, /Default after-work Workflow for/);
+  assert.doesNotMatch(html, /data-anchor="workflows\/dispatch-default"/);
 });
 
 // The anchors have to survive the pre-poll render too: `settings-sidebar-render.test.ts`
@@ -633,7 +614,6 @@ test("policy sits in the control column and every live reading in the readings c
   const controls = html.slice(boundary + CONTROLS.length);
 
   for (const anchor of [
-    "workflows/dispatch-default",
     "workflows/live-delivery",
     "workflows/checks",
     "workflows/allowlist",

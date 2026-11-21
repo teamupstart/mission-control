@@ -93,6 +93,10 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     // are siblings in the checklist rather than one container.
     const heading = panel.getByRole("heading", { name: "Conversation header" });
     const lastRow = panel.getByRole("checkbox", { name: "Git branch", exact: true });
+    // Scrolled to the top of its scroller BEFORE measuring: `boundingBox` is in viewport
+    // coordinates and `clip` must lie inside the viewport, so a section that panels above it
+    // push below the fold would otherwise be clipped from outside the image.
+    await heading.evaluate((el) => el.scrollIntoView({ block: "start" }));
     const top = await heading.boundingBox();
     const bottom = await lastRow.boundingBox();
     // The first checklist, which holds this section: the Working indicator brings its own.

@@ -31,10 +31,8 @@ import type {
 /**
  * Pi's own model object, derived from the runtime that hands them out.
  *
- * Named from `ModelRuntime` rather than imported from `@earendil-works/pi-ai`, which is a
- * TRANSITIVE dependency of the pinned package rather than one this repository declares -
- * reaching for it directly would make the driver depend on a package `npm ls` says we do
- * not have, and which a future Pi release is free to move.
+ * Derived from `ModelRuntime` so model types stay coupled to the coding-agent SDK. The direct pi-ai dependency is used
+ * only for its public OAuth bundling registration.
  */
 type PiVendorModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
@@ -86,6 +84,10 @@ export const PI_SDK_MODULE_ENV = "MISSION_PI_SDK_MODULE";
  */
 async function importPi(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
   try {
+    // Register Pi's literal imports before any runtime can derive OAuth auth. Its default
+    // variable imports resolve beside index.mjs, where no provider sidecars are shipped.
+    const { registerLazyOAuthFlows } = await import("@earendil-works/pi-ai/lazy-oauth");
+    registerLazyOAuthFlows();
     return await import("@earendil-works/pi-coding-agent");
   } catch (err) {
     throw new PiSdkError(
@@ -419,6 +421,16 @@ export async function createRuntime(
   // clear replaces them, rather than closing over the one this launch happened to build.
   let services: AgentSessionServices | null = null;
   const factory: CreateAgentSessionRuntimeFactory = async (target) => {
+    // Keep machine/state resolution out of this adapter's import graph: pure server
+    // policies also import the harness registry before a state home has been selected.
+    const { piExtensionHealthyForDispatch, piExtensionLinkPath } = await import("../../environment/pi-extension.ts");
+    // A custom Mission home owns an extension link outside Pi's normal discovery tree.
+    // Add only the checked integration, and keep Pi's ordinary discovery and trust rules.
+    // Re-entering this factory on /new must load the integration again too.
+    const missionExtension = await piExtensionHealthyForDispatch() ? piExtensionLinkPath() : null;
+    if (!missionExtension && options.missionToolsRequired) {
+      throw new PiSdkError("provider-error", "Pi requires a healthy Mission Control extension for this task. Repair the integration in Settings > Setup before retrying.");
+    }
     const created = await pi.createAgentSessionServices({
       cwd: target.cwd,
       agentDir: target.agentDir,
@@ -432,6 +444,7 @@ export async function createRuntime(
         return trusted;
       } },
       resourceLoaderOptions: {
+        ...(missionExtension ? { additionalExtensionPaths: [missionExtension] } : {}),
         // The operator's standing instructions, through the option `--append-system-prompt`
         // itself routes into (`main.ts` hands the flag straight to this field). Passed on
         // EVERY runtime creation rather than only the first, so the rules survive a clear:

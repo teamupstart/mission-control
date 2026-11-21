@@ -37,6 +37,7 @@ const {
   ASK_TOOL,
   DISALLOWED_TOOL,
 } = await import("../src/server/ask-channel.ts");
+const { DECISION_CONTEXT_RULE } = await import("../src/shared/decision-asks.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -62,37 +63,59 @@ test("the disallow never ships without the replacement, the pre-approval and the
   assert.doesNotMatch(String(redirect), /^\S*\/\S*$/, "the prompt itself, never a path to it");
   assert.match(String(redirect), /NEVER ask a question as ordinary prose and end your turn/);
   assert.match(String(redirect), new RegExp(ASK_TOOL), "and names the tool it is redirecting to");
+  assert.ok(
+    String(redirect).includes(DECISION_CONTEXT_RULE),
+    "and says a decision carries its context and tradeoffs, in the shared wording",
+  );
+  assert.match(String(redirect), /context: "/, "and its example passes context");
 });
 
-test("a missing MCP bundle disarms the whole channel, not half of it", async () => {
+test("a missing MCP bundle disarms the whole channel, not half of it, and says why", async () => {
   const prior = process.env.HARNESS_MCP_SERVER;
   process.env.HARNESS_MCP_SERVER = join(home, "does-not-exist.mjs");
   try {
-    const args = await askChannelArgs("claude");
-    // The direction matters: keeping the built-in is the status quo, whereas removing it
-    // with nothing behind it is the failure this whole module exists to prevent.
-    assert.ok(!args.includes("--disallowed-tools"), "must not gag an agent it cannot equip");
-    assert.deepEqual(args, [], "no bundle means no ask channel, never a partial one");
+    const contribution = await askChannelContribution("claude");
+    // Removing the built-in with nothing behind it is the failure this module exists to
+    // prevent, so no flag at all ships...
+    assert.ok(!contribution.args.includes("--disallowed-tools"), "must not gag an agent it cannot equip");
+    assert.deepEqual(contribution.args, [], "no bundle means no ask channel, never a partial one");
+    assert.equal(contribution.redirect, null);
+    // ...and the launch is refused with this reason, because a session that kept the built-in
+    // would ask its decisions outside request_input.
+    assert.match(String(contribution.unavailable), /request_input/);
+    assert.match(String(contribution.unavailable), /does-not-exist\.mjs/, "names where it looked");
+    assert.match(String(contribution.unavailable), /npm run build/);
   } finally {
     process.env.HARNESS_MCP_SERVER = prior;
   }
 });
 
-test("a filesystem failure skips the channel instead of failing the dispatch", async () => {
-  // `askChannelArgs` is called inside `Dispatcher.dispatch`'s try block, so a throw here
-  // would not merely skip the ask channel - it would mark a task `failed` that had nothing
-  // else wrong with it, and a session that would have launched fine never launches.
+test("a filesystem failure is a stated refusal, never a throw into dispatch", async () => {
+  // `askChannelContribution` is called inside `Dispatcher.dispatch`'s try block, so the
+  // failure must come back as the one reason the task did not start, not as a stray error.
   await askChannelArgs("claude"); // create the dir and its file
   // Make the next call actually WANT to write: `writeIfChanged` is a no-op on equal content,
   // so an unwritable directory alone would prove nothing.
   writeFileSync(askChannelPaths.mcpConfig, "stale, forces a rewrite");
   chmodSync(askChannelPaths.dir, 0o500); // readable, not writable: the temp file cannot be made
   try {
-    const args = await askChannelArgs("claude");
-    assert.deepEqual(args, [], "degrade to no channel rather than throwing into dispatch");
+    const contribution = await askChannelContribution("claude");
+    assert.deepEqual(contribution.args, [], "no partial channel");
+    assert.match(String(contribution.unavailable), /ask channel could not be set up/);
   } finally {
     chmodSync(askChannelPaths.dir, 0o700);
   }
+});
+
+test("an agent the ask channel does not apply to is never refused by it", async () => {
+  for (const agent of ["codex", "pi"] as const) {
+    const contribution = await askChannelContribution(agent);
+    assert.deepEqual(contribution, { args: [], redirect: null, missionMcp: false, unavailable: null });
+  }
+});
+
+test("a healthy channel carries no refusal", async () => {
+  assert.equal((await askChannelContribution("claude")).unavailable, null);
 });
 
 test("exactly ONE --append-system-prompt is ever emitted, carrying every contributor", async () => {
@@ -128,12 +151,18 @@ test("the standing instruction still ships when the ask channel bails entirely",
   // is correct for what it guards - an agent with `AskUserQuestion` removed and no
   // replacement is worse than one with the built-in intact. But a standing instruction has
   // nothing to do with the MCP bundle, and folding it inside that function would mean an
-  // unbuilt `dist` silently dropped the operator's own words too.
+  // unbuilt `dist` silently dropped the operator's own words too. (A Claude dispatch in this
+  // state is now refused on `unavailable`; the composition below is what keeps the two
+  // concerns separate wherever the channel is off.)
   const prior = process.env.HARNESS_MCP_SERVER;
   process.env.HARNESS_MCP_SERVER = join(home, "does-not-exist.mjs");
   try {
     const contribution = await askChannelContribution("claude");
-    assert.deepEqual(contribution, { args: [], redirect: null, missionMcp: false }, "the channel is fully off");
+    assert.deepEqual(
+      { args: contribution.args, redirect: contribution.redirect, missionMcp: contribution.missionMcp },
+      { args: [], redirect: null, missionMcp: false },
+      "the channel is fully off",
+    );
     assert.deepEqual(
       [...contribution.args, ...systemPromptAppendArgs([contribution.redirect, "Never force-push."])],
       ["--append-system-prompt", "Never force-push."],

@@ -355,6 +355,8 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     // letter the bare `conversation` chord uses, which is the point of deriving this set
     // from real keydowns: the modifier has to survive or the two would be one chord.
     chordFromEvent(key("g", { ctrl: true })),
+    // `[`, fold the session rail. Uncased, so it is spelled as typed with no shift token.
+    chordFromEvent(key("[")),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });

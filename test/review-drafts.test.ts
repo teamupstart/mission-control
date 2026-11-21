@@ -110,6 +110,13 @@ test("a review the daemon reports resolved takes its draft with it", () => {
   assert.deepEqual(readReviewDraft("still-open"), typed);
 });
 
+test("a snoozed review keeps its draft for when it comes back", () => {
+  writeReviewDraft("snoozed", typed);
+  settleReviewDrafts({ type: "review_upsert", review: review("snoozed", "snoozed") } as ServerEvent);
+  settleReviewDrafts({ type: "snapshot", reviews: [review("snoozed", "snoozed")] } as unknown as ServerEvent);
+  assert.deepEqual(readReviewDraft("snoozed"), typed);
+});
+
 test("a removed review takes its draft with it", () => {
   writeReviewDraft("gone", typed);
   settleReviewDrafts({ type: "review_remove", id: "gone" } as ServerEvent);

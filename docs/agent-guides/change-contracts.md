@@ -133,6 +133,18 @@ The daemon is the sole database writer. Foreman and MCP reach it through HTTP.
 
 ## Persisted identifiers
 
+Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never reused. The
+`feature-flags` settings backup domain id is also persisted and final; its surface is
+`settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
+
+The work unit id format and its four carrier names are final, because other services
+query them by exact value: the format `wu_` and a ULID, checked by
+`^wu_[0-9A-HJKMNP-TV-Z]{26}$` (Agent Platform's check); the environment variable
+`WORK_UNIT_ID`; the HTTP header `x-work-unit-id`; the MCP `params._meta` key `work_unit_id`;
+and the span attribute `work_unit_id`. They are spelled once, in `src/shared/work-unit.ts`,
+and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
+choose one. See [Work units](../work-units.md).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -179,6 +191,15 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
+  transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
+  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
+  recorded with launches. A stored shaper whose stage or transport this build does not know is
+  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
+  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -308,8 +329,13 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   (`RESIDENT_LAUNCH_STATES` in `src/shared/residents.ts`, written into
   `resident_runs.launch_state`), the profile section keys (`RESIDENT_PROFILE_SECTIONS`, the JSON
   keys every stored revision carries), the `resident-profiles` and `resident-mcp-servers`
-  settings-backup domains, the MCP server reference sources (`global`, `custom`) and the secret
-  field kinds (`env:`, `header:`, `query:`). Append, never rename or reorder. See
+  settings-backup domains, the MCP server reference sources (`global`, `custom`), the secret
+  field kinds (`env:`, `header:`, `query:`), and an instruction proposal's vocabulary in
+  `src/shared/resident-instructions.ts`: its targets (`RESIDENT_INSTRUCTION_TARGETS`) and its
+  outcome statuses (`RESIDENT_INSTRUCTION_OUTCOME_STATUSES`), stored in
+  `resident_instruction_proposals`. Its answer is read through the `request_input` decision and
+  option ids (`REQUEST_INPUT_DECISION_ID`, `o<n>` in `src/shared/request-input.ts`), which every
+  answered `request_input` review row stores. Append, never rename or reorder. See
   [Resident profiles](#resident-profiles)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
@@ -826,11 +852,11 @@ A SessionAction is a durable side effect, not an evaluator:
 
 ### The `pull_request` adapter
 
-- Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
-  repository root and branch as the bound checkout, whose last observed remote head is the
-  exact commit the continuation captured. That commit's resolved Git tree must also equal the
-  `contentTreeOid` captured on the parent judged submission. `Session.prUrl` is a lookup hint and satisfies
-  nothing; neither does a branch name, nor a pull request merely existing.
+- New publication requires a durable adoption in Mission Control's ledger. Repository,
+  branch, head and content comparisons are advisory for a newly opened PR; differences are
+  recorded as warnings. Earlier open adoptions use the existing session/checkout checks.
+  `Session.prUrl` alone proves nothing. Earlier merged publication follows the stricter
+  content proof below.
 - It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
@@ -845,19 +871,41 @@ A SessionAction is a durable side effect, not an evaluator:
   expectation the immutable child can never satisfy, and the action waits forever while the
   head keeps moving.
 - Commit identity is not content identity. A packaging commit may differ from the reviewed
-  commit while preserving the accepted tree. A different published tree blocks with the
-  append-only `published_content_changed` code and must not reach End on the prior verdict.
-  Missing historical tree proof blocks as `capture_failed`; absence is never treated as
-  equivalence.
-- Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
-  including a provider that could not be reached: waiting is recoverable and a block is not.
+  commit while preserving the accepted publication tree. Historical merge satisfaction uses
+  that tree and refuses missing proof. If continuation capture discovers unpublished changes
+  or a different tree, `published_content_changed` exposes the existing resubmit recovery.
+- A historical merge can satisfy a later action only with a known matching repository,
+  branch and reviewed publication tree. The continuation persists `mergedContentTreeOid` and
+  rechecks that tree plus unpublished changes. Ordinary new-PR adoption keeps its advisory
+  comparison policy; historical publication never borrows that looser fallback.
+  A PR observed merging during the action wait retains the ordinary earlier-adoption path;
+  adoption time alone does not establish that its merge predates delivery.
+  Ledger reads require an explicit adoption-time/key cursor and use bounded pages. Git lookups run
+  sequentially per action so branch history cannot create an unbounded subprocess burst.
+  Every page remains eligible; a matching historical publication is never truncated away.
+  Successful immutable tree resolutions are cached by repository identity and commit in a
+  bounded manager cache. Unknown objects retry after a one-minute cooldown, held separately
+  until expiry so cache eviction cannot trigger immediate retries. Missing accepted trees
+  skip these lookups.
+  Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
+- Rolled-over task settlement requires the latest terminal run's confirmed action delivery
+  to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
+  receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
+  the Registry records the episode. The receipt includes the human Goal revision so an
+  operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
+  fail closed; retained text labels alone never establish ownership after restart.
+  Driver state events without a prompt hook do not roll an episode; an unchanged merged
+  episode retains the ordinary settlement path. Blocked runs still own recovery and keep
+  the task running until the run completes, fails, or is cancelled.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
-  tick the adapter needed to see it closed - and the one state that blocks becomes unreachable,
-  leaving a durable contradiction reported as an ordinary missing-PR wait for ever. Read through
-  `loadAdoptedInspectorPrsSince(deliveredAt)`, which keeps retired rows visible for exactly the
-  window this action has been waiting. Widening that bound is not free: the caller resolves a
-  repository identity per distinct root, and each one is a git subprocess.
+  tick the adapter needed to see its final state, leaving a completed publication reported
+  as an ordinary missing-PR wait. Read through
+  `loadAdoptedInspectorPrsSince(deliveredAt, branch, null)` for the first page, then pass the
+  preceding page's last row as the cursor. This keeps retired rows visible for exactly the
+  window this action has been waiting, plus older merged observations on its branch. The
+  caller resolves repository identity per distinct root and resolves merged content only
+  inside the matching repository and branch. Closed-unmerged history stays outside the window.
 - A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
   and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
   produced one somewhere else", which look identical from the ledger and are opposite problems.
@@ -1173,6 +1221,15 @@ through App's `detailSession` lookup (passed as `SessionViewProps.detailSession`
 added to a fleet list. The dock and the Residents drawer share one launch state,
 `src/web/residents/useResidentLaunches.ts`.
 
+Blocked placement has one owner too. `orderSessions` (`src/web/lib/fleet-order.ts`) takes idle
+and unconfirmed sessions with `hasBlocker` out of their tone groups into `FleetOrder.blocked`,
+before the pinned, held, repository and run partitions, and lays the result out as
+`FleetOrder.columns` for the `blockedPlacement` UI preference. App's `boardColumns`, the
+⌘-numbers, `BoardView` and `ConsoleView` (through `fleetRailSections`) all read those columns, and
+all three call sites pass the same stored placement. A new placement is an entry in
+`BLOCKED_PLACEMENTS` and a case in `fleetColumns`; it never adds a second ordering. A column id
+that is not a tone (`"blocked"`) is a `FleetColumnId`, never a `Tone`.
+
 Compose surfaces:
 
 | Surface | Draft kind | Images |
@@ -1188,11 +1245,16 @@ Human conversation composer submissions enter the durable pending-turn outbox. O
 
 Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
+Trust and Feature flags share the `settings-pane-*`, `settings-search`, and `settings-grant`
+CSS leaves. Keep Trust-specific states and layout in Trust; do not fork the shared rules.
+
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
 
 A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
+
+Backdrop clicks stop at the overlay, including when it is nested in a clickable tile. Modal overlays (`ariaModal`) move focus inside, contain Tab and Shift+Tab while topmost, and restore their connected opener on dismissal. Existing autofocus inside the panel is preserved. Use the shared behavior instead of adding a separate focus trap to a dialog.
 
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
@@ -1223,7 +1285,19 @@ Extend existing registries instead of adding parallel lists:
   its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
   does not add or remove navigation. A local visibility check is how a panel becomes
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
-  falls back to Display
+  falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
+  runtime probe for installed software. A feature flag must feed one shared availability gate
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
+  its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
+  stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already
@@ -1333,6 +1407,16 @@ These rules hold across phases:
    Every surface that offers profiles as choices names a built-in through
    `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
 
+8. **Only an operator's answer edits a profile or Persona from a resident's conversation.**
+   `propose_resident_instruction_changes` asks a `request_input` question, built by
+   `requestInputReview` exactly as the `request_input` tool builds one, and stores the proposal
+   beside that review; it writes nothing. `ResidentInstructionChanges.resolution` is the one path that applies one, and
+   only for a `human` answer, through `updateResidentProfile` and the Persona store's
+   compare-and-set against the revisions the proposal was made against, in the review's own
+   transaction. Foreman and `session:` actors are refused before the answer settles. Never add an
+   agent-facing route or tool that writes `resident_profile_revisions` or a Persona's guidance
+   directly; a live run still reads only its pinned revision (rule 2).
+
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
 keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
@@ -1365,7 +1449,7 @@ profile is authoring state, and a launched resident reaches the Line as its task
 The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
 with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
 session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
-revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority` and `loop`), not the whole
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority`, `loop` and `schedule`), not the whole
 revision: the profile instructions, Persona id, execution and workspace choices stay on the
 daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
 shows its own pinned section in the browser appends that section id to the list, in one line,

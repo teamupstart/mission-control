@@ -1,6 +1,8 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
 import {
   expectedStackBase,
+  parentMergedOffDefault,
+  strayMergeUndecided,
   stackPrNumber,
   type Ancestry,
   type StackObservation,
@@ -45,7 +47,7 @@ export interface StackLifecycleContext {
  */
 export async function observeStackLifecycle(
   pr: InspectorPr,
-  snapshot: Pick<PrSnapshot, "state" | "headSha" | "baseRefName" | "defaultBranch">,
+  snapshot: Pick<PrSnapshot, "state" | "headSha" | "baseRefName" | "defaultBranch" | "mergeCommitSha" | "mergedAt">,
   dir: string,
   github: StackGitHub,
   ctx: StackLifecycleContext,
@@ -68,6 +70,7 @@ export async function observeStackLifecycle(
       childHeadSha: snapshot.headSha || null,
       baseRefName: snapshot.baseRefName || null,
       defaultBranch: snapshot.defaultBranch || null,
+      ...childMergeFacts(snapshot),
     };
     // With nothing known about THIS parent yet - the first read failed, or a replacement just
     // took over - the parent is recorded as unknown, so the row says it is checking rather than
@@ -191,6 +194,11 @@ export async function observeStackLifecycle(
     baseBehindBy,
     parentTaskStopped: parentTaskStoppedFor(parentTask, parentEpisodeId),
     parentTaskId,
+    ...childMergeFacts(snapshot),
+    ...(parent.state === "MERGED" && typeof parent.mergedAt === "number" ? { parentMergedAt: parent.mergedAt } : {}),
+    // Only when the parent's own merge missed the default branch, so every other observation
+    // keeps its shape. Base reconciliation above left the child where it is in that case.
+    ...(parentMergedOffDefault(parent, defaultBranch) ? { parentMergedInto: parent.baseRefName } : {}),
     // A replacement parent comes from the same episode as the one it replaced, so the
     // recorded episode carries over a transition unchanged.
     parentEpisodeId,
@@ -198,6 +206,21 @@ export async function observeStackLifecycle(
   };
   recordStackObservation(pr.key, observation, now);
   return observation;
+}
+
+/**
+ * The child's own merge, once it merged: the commit and instant a stray merge into its parent's
+ * branch is recovered from and dated by. Only the facts GitHub reported, and nothing for a child
+ * that has not merged, so an unmerged stack's observation keeps its shape.
+ */
+function childMergeFacts(
+  snapshot: Pick<PrSnapshot, "state" | "mergeCommitSha" | "mergedAt">,
+): Pick<StackObservation, "childMergeCommitSha" | "childMergedAt"> {
+  if (snapshot.state !== "MERGED") return {};
+  return {
+    ...(snapshot.mergeCommitSha ? { childMergeCommitSha: snapshot.mergeCommitSha } : {}),
+    ...(typeof snapshot.mergedAt === "number" ? { childMergedAt: snapshot.mergedAt } : {}),
+  };
 }
 
 /** How many closed stacked children one sweep reads, and where the next sweep resumes. */
@@ -228,11 +251,17 @@ export async function observeClosedStackChildren(
     const o = lineage?.observation ?? null;
     if (!lineage) continue;
     // Closed by the ledger's own reading, or by the last observation: either is enough, so a row
-    // retired on a tick whose observation still said OPEN is not lost.
-    if (row.observedState !== "CLOSED" && o?.childState !== "CLOSED") continue;
-    // A confirmed MERGED parent is terminal: the offered action (Reopen against main) cannot
-    // change, so reading it again buys nothing and spends the shared gh rate limit.
-    if (o?.parentState === "MERGED" && !o.parentUnreadSince && o.parentUrl === lineage.parentPrUrl) continue;
+    // retired on a tick whose observation still said OPEN is not lost. A merged child is read
+    // again only while something that decides its landing is unread: its parent (which decides
+    // whether it needs a recovery), the branch it merged into and the default branch, or - for a
+    // merge into a finished parent's branch - the merge commit and times the recovery needs.
+    const mergedUnread = o?.childState === "MERGED"
+      && (Boolean(o.parentUnreadSince) || !o.baseRefName || !o.defaultBranch || strayMergeUndecided(o));
+    if (row.observedState !== "CLOSED" && o?.childState !== "CLOSED" && !mergedUnread) continue;
+    // A confirmed MERGED parent is terminal for a closed child: the offered action (Reopen
+    // against main) cannot change, so reading it again buys nothing and spends the shared gh
+    // rate limit. A merged child whose landing is still unread is read regardless.
+    if (!mergedUnread && o?.parentState === "MERGED" && !o.parentUnreadSince && o.parentUrl === lineage.parentPrUrl) continue;
     const latest = latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);
     if (latest && latest.key !== row.key) continue;
     const dir = dirOf(row);
@@ -244,6 +273,8 @@ export async function observeClosedStackChildren(
       headSha: child.value.headSha,
       baseRefName: child.value.baseRefName,
       defaultBranch: child.value.defaultBranch,
+      mergeCommitSha: child.value.mergeCommitSha,
+      mergedAt: child.value.mergedAt ?? null,
     }, dir, github, ctx, now);
   }
 }

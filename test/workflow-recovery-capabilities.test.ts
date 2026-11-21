@@ -108,3 +108,26 @@ test("a clean-review wait keeps the Inspector recheck available", () => {
   assert.equal(d.summary.recovery?.phaseKnown, true);
   assert.equal(runNextMove(d)?.kind, "recheck-inspector");
 });
+
+// Reported as a dead end: an open pull request blocked as closed offered only cancel and a full
+// restart, and a recheck was refused. Recheck is now the block's one non-destructive move,
+// beside - never instead of - the destructive pair it used to be stranded with.
+test("a closed-PR block offers the Inspector recheck as its next move", () => {
+  const gate = { waitReason: "pr_closed" } as WorkflowRecoveryContext["gate"];
+  const completionPolicy = {
+    kind: "inspector", onFindings: "inspector_only", missingPrAction: "offer_prepare_pr",
+  } as const;
+  for (const mode of ["full_workflow", "inspector_only"] as const) {
+    const d = detail(context({
+      status: "blocked", phase: "inspector_pr_closed", gate, completionPolicy,
+      latest: { ...context().latest!, mode, status: "completed" }, attempts: [],
+    }));
+    const recovery = d.summary.recovery!;
+    assert.ok(recovery.operations.includes("recheck-inspector"), mode);
+    assert.ok(recovery.operations.includes("cancel"), mode);
+    assert.equal(recovery.operations.includes("restart-full"), mode === "inspector_only", mode);
+    assert.equal(recovery.primary, "recheck-inspector", mode);
+    assert.equal(runNextMove(d)?.label, "Check again", mode);
+    assert.ok(inspectorGateActions(d).some((action) => action.kind === "recheck-inspector"), mode);
+  }
+});

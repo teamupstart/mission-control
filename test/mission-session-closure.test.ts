@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -279,7 +280,7 @@ test("concluding a mission run closes its terminal session and clears the ledger
 test("concluding a mission run stops its embedded driver and lets eviction remove it", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps, supervisor);
   const { schedule, occurrenceId, taskId } = filedRun();
@@ -975,7 +976,7 @@ test("a late prompt on the SDK path leaves no driver that could finish the turn"
   // The runtime an approval mission actually runs on, and the one where the boundary is
   // absolute: an embedded session has no pane, so the only way in is this daemon's own routes.
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps, supervisor);
   const { schedule, occurrenceId, taskId } = filedRun();
@@ -1502,7 +1503,7 @@ test("SDK restart closes a concluded run without launching another generation", 
     taskId, model: null, effort: null, permissionMode: null, status: "suspended",
     turnInProgress: true,
   });
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const tasks = new TaskManager(registry, killRecorder().deps, supervisor);
   const removed: string[] = [];
   registry.subscribe((event) => { if (event.type === "session_remove") removed.push(event.id); });

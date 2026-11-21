@@ -67,6 +67,12 @@ export const PULL_REQUEST_SKILL = "pull-request";
  */
 export const RETRO_SKILL = "retro";
 
+/**
+ * The interview skill the Grill session action requires, and so every Grill me first task.
+ * Durable like `RETRO_SKILL`: the dispatch gate and both delivery seams resolve it by this id.
+ */
+export const GRILL_SKILL = "grill";
+
 /** The directory name a catalog id gets when we install it fresh. */
 export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;

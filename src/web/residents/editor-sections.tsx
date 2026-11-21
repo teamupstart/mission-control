@@ -1,8 +1,20 @@
-import { Fragment, useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import {
+  RESIDENT_WEEKDAYS,
+  RESIDENT_WORKDAYS,
+  residentActiveWindowAt,
+  residentNextActiveAt,
+  residentScheduleSummary,
+  residentWakeOpeningLabel,
+  type ResidentScheduleSection,
+} from "@shared/resident-schedule.ts";
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
   RESIDENT_AGENTS,
   RESIDENT_LIMITS,
@@ -12,6 +24,7 @@ import {
   residentMarkerColor,
   residentMcpRefKey,
   type ResidentAgent,
+  type ResidentMcpNativeSources,
   type ResidentMcpServerRef,
   type ResidentProfileRevision,
   type ResidentProfileSectionId,
@@ -19,17 +32,27 @@ import {
 import type { ThinkingLevel } from "@shared/types.ts";
 import { personasForDisplay, type PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentAccentStyle } from "./marker.ts";
 import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
-/** What every section editor is handed. Each writes only its own slice of the draft. */
+/**
+ * What Compaction focus adds to, and what every compaction is followed by. The daemon sends a
+ * built-in focus with each resident `/compact` (`residentCompactionFocus`) and restates the
+ * standing task on the first wake after any compaction, so an empty field is not "no focus".
+ */
+const RESIDENT_COMPACTION_FOCUS_HINT = "Added to the built-in focus, which asks the summary to keep the standing task and your instructions word for word. Claude Code uses it; Codex compacts without one. After any compaction, the next wake restates the standing task in full.";
+
+/** What every section editor is handed. Harness changes also set the native MCP mode. */
 export interface ResidentEditorSectionProps {
   draft: ResidentProfileRevision;
   update: <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]) => void;
+  changeHarness: (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources) => void;
   personas: readonly PersonaView[];
   disabled: boolean;
   /** Resolved by the editor using the same default ladder as launch. */
@@ -57,6 +80,8 @@ export interface ResidentEditorSection {
   /** One line under the heading saying what the section decides. */
   blurb: string;
   Body: (props: ResidentEditorSectionProps) => React.JSX.Element;
+  /** A preview section: drawn only while this feature flag is on. Its stored settings stay either way. */
+  featureFlag?: FeatureFlagId;
 }
 
 function IdentitySection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
@@ -148,10 +173,28 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   );
 }
 
-function ExecutionSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
+function residentNativeMcpSources(agent: ResidentAgent, flags: FeatureFlagsConfig) {
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  return capability?.previewFlag && !resolveFeatureFlag(capability.previewFlag, flags) ? null : capability;
+}
+
+function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const { agent, model, effort } = draft.execution;
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const levels = capabilitiesFor(agent).effort?.levels ?? [];
+  const flags = useContext(FeatureFlagsContext);
+  const [pendingHarness, setPendingHarness] = useState<ResidentAgent | null>(null);
+  const pendingSources = pendingHarness && capabilitiesFor(pendingHarness).mcpSelection?.allNativeSources;
+  const pendingAvailable = pendingHarness && residentNativeMcpSources(pendingHarness, flags);
+  const pendingFlag = FEATURE_FLAGS.find((flag) => flag.id === pendingSources?.previewFlag);
+  const chooseHarness = (next: ResidentAgent): void => {
+    if (next === agent) return;
+    if (draft.mcp.nativeSources === "all" && residentNativeMcpSources(next, flags)) {
+      setPendingHarness(next);
+    } else {
+      changeHarness(next, "pinned");
+    }
+  };
   return (
     <div className="resident-fields resident-fields-row">
       <label className="field">
@@ -161,8 +204,7 @@ function ExecutionSection({ draft, update, disabled, spendUnavailable }: Residen
             className="field-input"
             value={agent}
             disabled={disabled}
-            onChange={(event) =>
-              update("execution", { agent: event.target.value as ResidentAgent, model: null, effort: null })}
+            onChange={(event) => chooseHarness(event.target.value as ResidentAgent)}
           >
             {RESIDENT_AGENTS.map((id) => (
               <option key={id} value={id}>{AGENT_IDENTITY[id].label}</option>
@@ -209,6 +251,21 @@ function ExecutionSection({ draft, update, disabled, spendUnavailable }: Residen
         {spendUnavailable}
       </p>}
       <ModelCatalogNotice agent={agent} />
+      {pendingHarness && pendingSources && (
+        <McpAllSourcesConfirm
+          harness={AGENT_IDENTITY[pendingHarness].label}
+          sources={pendingSources.sources}
+          changingHarness
+          unavailableReason={pendingAvailable ? undefined
+            : `The ${pendingFlag?.label ?? "native MCP"} preview is off. Enable it in Settings > Feature flags to continue.`}
+          onClose={() => setPendingHarness(null)}
+          onConfirm={() => {
+            if (disabled || !pendingAvailable) return;
+            changeHarness(pendingHarness, "all");
+            setPendingHarness(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -224,6 +281,12 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
       live = false;
     };
   }, []);
+  const { defaultRepoRoot, additionalRepoRoots } = draft.workspace;
+  // Attached repositories need a primary, so clearing the primary detaches them in the same
+  // write rather than leaving a profile the daemon would refuse to save.
+  const setPrimary = (value: string | null): void =>
+    update("workspace", { defaultRepoRoot: value, additionalRepoRoots: value ? additionalRepoRoots : [] });
+  const canAttach = capabilitiesFor(draft.execution.agent).multiRepoDispatch !== null;
   return (
     <div className="field">
       <label className="field-label" htmlFor="resident-default-repo">
@@ -233,13 +296,56 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
         placeholder="No repository"
         id="resident-default-repo"
         repos={repos}
-        value={draft.workspace.defaultRepoRoot ?? ""}
+        value={defaultRepoRoot ?? ""}
         disabled={disabled}
-        onChange={(value) => update("workspace", { defaultRepoRoot: value.trim() ? value : null })}
+        onChange={(value) => setPrimary(value.trim() ? value : null)}
       />
       <Tooltip label="Clear the default repository for this resident profile">
-        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => update("workspace", { defaultRepoRoot: null })}>No repository</button>
+        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => setPrimary(null)}>No repository</button>
       </Tooltip>
+      {defaultRepoRoot && (canAttach || additionalRepoRoots.length > 0) && (
+        <AttachedRepoChips
+          primary={defaultRepoRoot}
+          attached={additionalRepoRoots}
+          repos={repos}
+          canAttach={canAttach}
+          disabled={disabled}
+          attachLabel="Attach this repo to every launch of this profile"
+          onChange={(next) => update("workspace", { defaultRepoRoot, additionalRepoRoots: next })}
+        />
+      )}
+      {additionalRepoRoots.length > 0 && (
+        <span className="field-hint">
+          Each launch gets one worktree per repo, with write access to all of them. Each repo the
+          resident changes gets its own pull request.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The board card this profile's next launch draws: its glow, its chip, and where it sorts. A pinned
+ * resident sits above its neighbours, so the preview shows the pin as an order, not only a glyph.
+ */
+function ResidentBoardPreview({ draft }: { draft: ResidentProfileRevision }): React.JSX.Element {
+  const { board, execution } = draft;
+  const label = board.label?.trim() || defaultResidentMarkerLabel(draft.identity.name);
+  const neighbour = <div className="resident-board-preview-ghost" aria-hidden />;
+  return (
+    <div className="resident-board-preview" role="group" aria-label="Board card preview">
+      {!board.pin && neighbour}
+      <div className="resident-board-preview-card" style={residentAccentStyle(residentMarkerColor(board.colorId))}>
+        <span className="resident-chip">
+          {board.pin && <span className="resident-chip-pin" aria-label="pinned">⤒</span>}
+          {label}
+        </span>
+        <strong className="resident-board-preview-name">{draft.identity.name.trim() || "New resident"}</strong>
+        <span className="resident-board-preview-meta">
+          {AGENT_IDENTITY[execution.agent].label} · {execution.model ?? "harness default"}
+        </span>
+      </div>
+      {neighbour}
     </div>
   );
 }
@@ -296,13 +402,8 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
         </label>
       </div>
       <ResidentDrawerInertNote what="Pin to top of column" />
-      <p className="field-hint">
-        Preview: <span className="resident-chip" style={residentAccentStyle(colorId)} aria-hidden>
-          {board.pin && <span className="resident-chip-pin">⤒</span>}
-          {board.label?.trim() || derived}
-        </span>{" "}
-        Running residents keep the marker they launched with.
-      </p>
+      <ResidentBoardPreview draft={draft} />
+      <p className="field-hint">Running residents keep the marker they launched with.</p>
     </div>
   );
 }
@@ -339,9 +440,12 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   const label = AGENT_IDENTITY[agent].label;
   const mcp = draft.mcp;
   const selectable = residentMcpSelectable(catalog, agent);
-  // Whether this harness can start a resident on everything it loads natively. A profile that
-  // chose it on another harness still shows the choice, so the operator can see and undo it.
-  const allSources = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  // A saved native profile still shows the choice when its preview is off, so it can be undone.
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  const flags = useContext(FeatureFlagsContext);
+  const allSources = residentNativeMcpSources(agent, flags);
+  const previewOff = capability?.previewFlag && !allSources;
+  const claudeConnectors = allSources?.mechanism === "lift-strict-mcp-config";
   const importsAll = mcp.nativeSources === "all";
   const chosen = new Set(mcp.selected.map(residentMcpRefKey));
   const harness = catalog?.harnesses.find((row) => row.agent === agent) ?? null;
@@ -407,19 +511,39 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           </label>
         </fieldset>
       )}
+      {importsAll && claudeConnectors && (
+        <div>
+          <label className="alert-row">
+            <Tooltip label="Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident">
+              <input
+                type="checkbox"
+                checked={mcp.disableClaudeAiConnectors === true}
+                disabled={locked}
+                onChange={(event) => set({ ...mcp, disableClaudeAiConnectors: event.target.checked })}
+              />
+            </Tooltip>
+            <span>Disable claude.ai connectors</span>
+          </label>
+          <p className="field-hint">
+            Use this if plugin MCP tools disappear because they duplicate claude.ai connectors.
+            Installed plugin servers still load. All claude.ai connectors are disabled for this
+            resident, including Claude Docs. Applies on the next launch.
+          </p>
+        </div>
+      )}
       {importsAll ? (
         allSources ? (
           <p className="field-hint">
-            {label} loads its own {allSources.sources} at every start, as a terminal session does, so
-            the global servers it configures need no inheriting or selecting. Mission Control's own
-            server and the custom servers below are always attached, and only they must connect
-            before the resident starts. The set is not pinned: a native change reaches a running
-            resident at its next start or resume.
+            {label} loads native MCP servers and their saved logins at every start.
+            {claudeConnectors && " The connector preference above applies."} Mission Control's server
+            and the custom servers below are required. The set is not pinned: native changes reach
+            the resident at its next start or resume.
           </p>
         ) : (
           <p role="alert" className="field-hint resident-problem resident-mcp-unavailable">
-            {label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch
-            to save this profile.
+            {previewOff
+              ? "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch."
+              : `${label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch to save this profile.`}
           </p>
         )
       ) : (
@@ -442,6 +566,13 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
             Mission Control's own server is always attached. A running resident keeps the set it
             launched with.
           </p>
+          {capability?.mechanism === "codex-native-home" && (
+            <p className="field-hint">
+              {previewOff
+                ? "Enable Codex resident native MCP in Settings > Feature flags to use Codex's saved MCP logins."
+                : "Choose All native sources to use Codex's saved MCP logins."}
+            </p>
+          )}
         </>
       )}
       <ul className="resident-mcp-selected" aria-label="Selected MCP servers">
@@ -523,10 +654,6 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   );
 }
 
-/**
- * The editor's sections, in order. Phase 1 registers the core five; later phases append
- * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
- */
 function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const loop = draft.loop;
   const numeric = [
@@ -534,37 +661,254 @@ function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: Resi
     ["maxDelaySeconds", "Maximum requested delay (seconds)"], ["iterationCap", "Iterations per 24 hours"],
     ["spendCapUsd", "Spend per 24 hours (USD)"], ["contextThreshold", "Compact at context (%)"],
   ] as const;
-  return <div className="resident-fields">
-    <label className="field"><span className="field-label">Loop prompt</span>
-      <textarea className="field-input" value={loop.prompt} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
-    </label>
-    {numeric.map(([key, label]) => <Fragment key={key}><label className="field">
-      <span className="field-label">{label}</span>
-      <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
-        id={key === "spendCapUsd" ? "resident-spend-cap" : undefined}
-        aria-describedby={key === "spendCapUsd" && spendUnavailable ? "resident-cap-spend" : undefined}
-        aria-invalid={key === "spendCapUsd" && !!spendUnavailable && loop.spendCapUsd !== null}
-        value={loop[key] ?? ""} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
-    </label>
-    {key === "spendCapUsd" && spendUnavailable && <div className="field">
+  return <div className="resident-fields resident-loop">
+    <div className="resident-loop-text">
+      <label className="field"><span className="field-label">Loop prompt</span>
+        <textarea className="field-input" value={loop.prompt} disabled={disabled}
+          onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
+      </label>
+      <label className="field"><span className="field-label">Compaction focus</span>
+        <input className="field-input" value={loop.compactionFocus} disabled={disabled} aria-describedby="resident-compaction-focus-hint"
+          onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
+      </label>
+      <p id="resident-compaction-focus-hint" className="field-hint">{RESIDENT_COMPACTION_FOCUS_HINT}</p>
+      <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
+      <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
+    </div>
+    <div className="resident-loop-limits">
+      {numeric.map(([key, label]) => <label className="field resident-loop-limit" key={key}>
+        <span className="field-label">{label}</span>
+        <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
+          id={key === "spendCapUsd" ? "resident-spend-cap" : undefined}
+          aria-describedby={key === "spendCapUsd" && spendUnavailable ? "resident-cap-spend" : undefined}
+          aria-invalid={key === "spendCapUsd" && !!spendUnavailable && loop.spendCapUsd !== null}
+          value={loop[key] ?? ""} disabled={disabled}
+          onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
+      </label>)}
+    </div>
+    {spendUnavailable && <div className="field resident-loop-spend">
       <p id="resident-cap-spend" className="field-hint resident-problem" role="status">{spendUnavailable}</p>
       {loop.spendCapUsd !== null && <Tooltip label="Disable the spend guardrail for future launches; keep the selected model">
         <button type="button" className="btn btn-ghost" disabled={disabled}
           onClick={() => update("loop", { ...loop, spendCapUsd: null })}>Clear spend cap</button>
       </Tooltip>}
     </div>}
-    </Fragment>)}
-    <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
-    <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
-    <label className="field"><span className="field-label">Compaction focus</span>
-      <input className="field-input" value={loop.compactionFocus} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
-    </label>
   </div>;
 }
 
+/**
+ * The browser's zone: what turning active hours on stores, explicitly, so the zone that governs
+ * the windows is the one the operator sees. A stored null means the daemon's zone, which this
+ * browser cannot read and so never names.
+ */
+function browserTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+}
+
+/**
+ * The schedule after Sleep outside active hours is switched. Turning it on names a zone, the
+ * browser's, so the clock that governs the windows is stored and shown rather than implied;
+ * a zone already chosen is kept, and turning it off changes nothing else.
+ */
+export function residentScheduleToggled(schedule: ResidentScheduleSection, enabled: boolean, browserZone: string | null): ResidentScheduleSection {
+  return { ...schedule, enabled, timeZone: enabled && schedule.timeZone === null ? browserZone : schedule.timeZone };
+}
+
+/** How a stored null zone is named: the daemon's clock, with no browser-derived claim. */
+const DAEMON_ZONE_LABEL = "the Mission Control daemon's time zone";
+
+/** Every zone this browser can name, or just the common ones where the list is unavailable. */
+function timeZoneChoices(): string[] {
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
+  // Chromium's canonical list leaves out plain UTC, the zone a schedule most often wants.
+  try { if (supported) return ["UTC", ...supported("timeZone").filter((zone) => zone !== "UTC")]; } catch { /* fall through */ }
+  return ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Australia/Sydney"];
+}
+
+function minutesOf(time: string): number {
+  const [hours, minutes] = time.split(":").map(Number);
+  return (hours ?? 0) * 60 + (minutes ?? 0);
+}
+
+/**
+ * Each weekday's awake spans, as [from, to] minutes of that day, Monday first. A window that runs
+ * past midnight draws its tail on the following day, so a night shift reads as it will run.
+ */
+export function residentWeekSpans(schedule: Pick<ResidentScheduleSection, "days" | "start" | "end">): Map<number, Array<[number, number]>> {
+  const spans = new Map<number, Array<[number, number]>>(RESIDENT_WEEKDAYS.map((entry) => [entry.day, []]));
+  const start = minutesOf(schedule.start);
+  const end = minutesOf(schedule.end);
+  for (const day of schedule.days) {
+    if (end > start) { spans.get(day)?.push([start, end]); continue; }
+    spans.get(day)?.push([start, 1440]);
+    if (end > 0) spans.get((day + 1) % 7)?.push([0, end]);
+  }
+  return spans;
+}
+
+/**
+ * Where a sleeping resident's schedule stands right now, in one sentence, on the schedule's own
+ * clock: a window chosen as 09:00 UTC reads as 09:00 UTC, not as the browser's local hour.
+ */
+function scheduleNowLine(schedule: ResidentScheduleSection, now: number): string {
+  if (!schedule.enabled) return "Always awake: the loop wakes it on its cadence, day and night.";
+  if (schedule.days.length === 0) return "Choose at least one day.";
+  const zone = schedule.timeZone;
+  // This browser's clock may not be the daemon's, so it cannot say where a null zone stands.
+  if (zone === null) return `Times follow ${DAEMON_ZONE_LABEL}. Choose a zone to preview the next window.`;
+  const at = (instant: number) => `${residentWakeOpeningLabel(instant, now, zone)}${zone ? ` ${zone}` : ""}`;
+  const window = residentActiveWindowAt(schedule, now);
+  if (window) return `Awake now, until ${at(window.end)}.`;
+  const next = residentNextActiveAt(schedule, now);
+  return next === null ? "Asleep." : `Asleep now. Next window opens ${at(next)}.`;
+}
+
+function ActiveHoursSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  const schedule = draft.schedule;
+  const set = (patch: Partial<ResidentScheduleSection>) => update("schedule", { ...schedule, ...patch });
+  const off = disabled || !schedule.enabled;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const browserZone = browserTimeZone();
+  const zones = timeZoneChoices();
+  const toggleDay = (day: number) => set({
+    days: schedule.days.includes(day) ? schedule.days.filter((d) => d !== day) : [...schedule.days, day].sort((a, b) => a - b),
+  });
+  const spans = residentWeekSpans(schedule);
+  const overnight = minutesOf(schedule.end) <= minutesOf(schedule.start);
+  return (
+    <div className={`resident-fields resident-schedule${schedule.enabled ? "" : " is-off"}`}>
+      <label className="alert-row resident-schedule-toggle">
+        <Tooltip label="Hold the loop's wakes outside the days and hours below; the resident keeps running and sleeps until its next window">
+          <input
+            type="checkbox"
+            checked={schedule.enabled}
+            disabled={disabled}
+            onChange={(event) => update("schedule", residentScheduleToggled(schedule, event.target.checked, browserZone))}
+          />
+        </Tooltip>
+        <span>Sleep outside active hours</span>
+      </label>
+      <div className="resident-schedule-grid">
+        <div className="resident-schedule-controls">
+          <div className="field">
+            <span className="field-label" id="resident-schedule-days-label">Active days</span>
+            <div className="resident-schedule-days" role="group" aria-labelledby="resident-schedule-days-label">
+              {RESIDENT_WEEKDAYS.map((entry) => {
+                const on = schedule.days.includes(entry.day);
+                return (
+                  <Tooltip key={entry.day} label={`${on ? "Stop waking" : "Wake"} this resident on ${entry.label}s`}>
+                    <button
+                      type="button"
+                      className={`resident-schedule-day${on ? " active" : ""}`}
+                      aria-pressed={on}
+                      aria-label={entry.label}
+                      disabled={off}
+                      onClick={() => toggleDay(entry.day)}
+                    >
+                      {entry.short}
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+            <div className="resident-schedule-presets">
+              <Tooltip label="Monday to Friday">
+                <button type="button" className="btn btn-ghost" disabled={off} onClick={() => set({ days: [...RESIDENT_WORKDAYS] })}>Weekdays</button>
+              </Tooltip>
+              <Tooltip label="All seven days">
+                <button type="button" className="btn btn-ghost" disabled={off} onClick={() => set({ days: [0, 1, 2, 3, 4, 5, 6] })}>Every day</button>
+              </Tooltip>
+            </div>
+          </div>
+          <div className="resident-fields-row resident-schedule-hours">
+            <label className="field">
+              <span className="field-label">Wakes at</span>
+              <Tooltip label="When each active day's window opens and held wakes are sent">
+                <input
+                  className="field-input"
+                  type="time"
+                  value={schedule.start}
+                  disabled={off}
+                  onChange={(event) => { if (event.target.value) set({ start: event.target.value }); }}
+                />
+              </Tooltip>
+            </label>
+            <label className="field">
+              <span className="field-label">
+                Sleeps at {overnight && <span className="field-hint">{schedule.start === schedule.end ? "24 hours" : "next day"}</span>}
+              </span>
+              <Tooltip label="When the window closes; at or before Wakes at, it runs into the next day">
+                <input
+                  className="field-input"
+                  type="time"
+                  value={schedule.end}
+                  disabled={off}
+                  onChange={(event) => { if (event.target.value) set({ end: event.target.value }); }}
+                />
+              </Tooltip>
+            </label>
+          </div>
+          <div className="field">
+            {/* Labelled by id, not by wrapping: a wrapping label would read every zone into its name. */}
+            <label className="field-label" htmlFor="resident-schedule-zone">Time zone</label>
+            <Tooltip label="The clock the wake and sleep times are read on">
+              <select
+                id="resident-schedule-zone"
+                className="field-input"
+                value={schedule.timeZone ?? ""}
+                disabled={off}
+                onChange={(event) => set({ timeZone: event.target.value || null })}
+              >
+                <option value="">{DAEMON_ZONE_LABEL[0]!.toUpperCase() + DAEMON_ZONE_LABEL.slice(1)}</option>
+                {schedule.timeZone && !zones.includes(schedule.timeZone) && <option value={schedule.timeZone}>{schedule.timeZone}</option>}
+                {zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+              </select>
+            </Tooltip>
+          </div>
+        </div>
+        <div className="resident-schedule-week" role="img" aria-label={`Weekly active hours: ${residentScheduleSummary(schedule, DAEMON_ZONE_LABEL)}`}>
+          {RESIDENT_WEEKDAYS.map((entry) => (
+            <div key={entry.day} className="resident-schedule-week-row">
+              <span className="resident-schedule-week-day">{entry.short}</span>
+              <span className="resident-schedule-week-track">
+                {spans.get(entry.day)!.map(([from, to]) => (
+                  <span
+                    key={`${from}-${to}`}
+                    className="resident-schedule-week-span"
+                    style={{ left: `${(from / 1440) * 100}%`, width: `${((to - from) / 1440) * 100}%` }}
+                  />
+                ))}
+              </span>
+            </div>
+          ))}
+          <div className="resident-schedule-week-row resident-schedule-week-axis" aria-hidden="true">
+            <span className="resident-schedule-week-day" />
+            <span className="resident-schedule-week-ticks"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></span>
+          </div>
+        </div>
+      </div>
+      <p className="field-hint resident-schedule-now" role="status">{scheduleNowLine(schedule, now)}</p>
+      <p className="field-hint">
+        While asleep the resident keeps running but gets no loop prompt and spends no tokens. A wake
+        that falls due waits for the next window. Your messages and Run now still reach it. Running
+        residents keep the hours they launched with.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The editor's sections, in reading order. Phase 1 registered the core five; later phases append
+ * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
+ *
+ * The editor lays these out as a card grid, and this order is the grid's reading and tab order:
+ * each band reads its wide left card before its narrow right one. A section the grid does not
+ * place spans the full width after the rest, so appending one needs no layout change.
+ */
 export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "identity",
@@ -577,6 +921,12 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     title: "Persona",
     blurb: "Who the agent is, if a Library Persona says it. Its guidance arrives as standing instructions, never as a message.",
     Body: PersonaSection,
+  },
+  {
+    id: "board",
+    title: "Board presence",
+    blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
+    Body: BoardSection,
   },
   {
     id: "instructions",
@@ -596,23 +946,24 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     blurb: "Choose a repository for a task worktree, or no repository for a private directory removed when the run ends.",
     Body: WorkspaceSection,
   },
+  { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
   {
-    id: "board",
-    title: "Board presence",
-    blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
-    Body: BoardSection,
+    id: "schedule",
+    title: "Active hours",
+    blurb: "The days and hours the loop may wake this resident. Outside them it stays running but sleeps.",
+    Body: ActiveHoursSection,
+    featureFlag: "resident-active-hours",
+  },
+  {
+    id: "mcp",
+    title: "MCP servers",
+    blurb: "Which MCP servers the resident starts with: a pinned set from its harness's global servers and your custom ones, or, where the harness offers it, everything it loads natively.",
+    Body: McpSection,
   },
   {
     id: "authority",
     title: "Authority",
     blurb: "What this resident may do beyond its own session.",
     Body: AuthoritySection,
-  },
-  { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
-  {
-    id: "mcp",
-    title: "MCP servers",
-    blurb: "Which MCP servers the resident starts with: a pinned set from its harness's global servers and your custom ones, or, where the harness offers it, everything it loads natively.",
-    Body: McpSection,
   },
 ];

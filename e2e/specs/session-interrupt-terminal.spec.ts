@@ -45,7 +45,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  */
 
 /** Discovery, on and brisk - this file's daemon only. See the header for why that is safe. */
-test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
 
 const INTERRUPT = "Control+c";
 const EVIDENCE = artifactsDir("session-interrupt-terminal");

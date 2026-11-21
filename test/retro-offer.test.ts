@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { InspectorSummary, Session } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import {
+  residentRetroOffer,
   retroBackstopOffer,
   retroCallView,
   retroOffer,
@@ -12,7 +13,7 @@ import {
 } from "../src/web/lib/retro-offer.ts";
 import { ActionBar } from "../src/web/components/ActionBar.tsx";
 import { CompleteModal } from "../src/web/components/CompleteModal.tsx";
-import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { hasTooltipStarting, tooltipLabels } from "./helpers/markup.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -273,4 +274,67 @@ test("the Complete dialog offers a retro before completing, and never instead of
     ),
   );
   assert.doesNotMatch(unworthy, /complete-retro/);
+});
+
+// A resident's retro improves its standing instructions rather than repository memory. It is
+// offered where a resident ends - the Complete dialog - for any resident that can take a turn,
+// steered or not, and never on its card.
+const resident = (over: Partial<Session> = {}): Session =>
+  mkSession({
+    runtime: "sdk",
+    prUrl: null,
+    inspector: null,
+    task: mkTaskSummary({ id: "resident-task", kind: "resident" }),
+    ...over,
+  });
+
+test("a live resident is offered its retro at completion, steered or not, and never on its card", () => {
+  const unsteered = retroBackstopOffer(resident());
+  assert.equal(unsteered?.label, "Run a retro first");
+  assert.match(unsteered!.tooltip, /^Ask this resident to review its conversation and propose changes to its standing instructions or its Persona\./);
+  assert.match(unsteered!.tooltip, /nothing changes until you do/);
+  assert.doesNotMatch(unsteered!.tooltip, /Offered because/);
+  assert.deepEqual(unsteered!.reasons, []);
+
+  const steered = retroBackstopOffer(resident({ retro: { reasons: ["corrections"] } }));
+  assert.match(steered!.tooltip, /Offered because you steered it during the work\./);
+  assert.deepEqual(residentRetroOffer(resident()), unsteered);
+
+  // The card's memory retro is not a resident's, even at the moment a memory retro would be.
+  const reviewedResident = resident({ prUrl: "https://github.example/o/r/pull/1", inspector: inspector(), retro: { reasons: ["corrections"] } });
+  assert.equal(retroOffer(reviewedResident, run({ gate: "clean" })), null);
+});
+
+test("a resident that cannot take a turn, or whose profile is built in, is offered no retro", () => {
+  assert.equal(retroBackstopOffer(resident({ state: "exited" })), null);
+  assert.equal(retroBackstopOffer(resident(), { builtin: true }), null);
+  assert.equal(retroBackstopOffer(resident(), { builtin: false })?.label, "Run a retro first");
+});
+
+test("the Complete dialog offers a resident its instruction retro beside Complete & close", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(CompleteModal, {
+        session: resident(),
+        tasks: [],
+        resident: { builtin: false },
+        onClose: () => {},
+      }),
+    ),
+  );
+  assert.match(html, /complete-retro/, html);
+  assert.ok(hasTooltipStarting(html, "Ask this resident to review its conversation"));
+  assert.match(html, /Complete &amp; close/);
+
+  const builtin = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(CompleteModal, {
+        session: resident(),
+        tasks: [],
+        resident: { builtin: true },
+        onClose: () => {},
+      }),
+    ),
+  );
+  assert.doesNotMatch(builtin, /complete-retro/);
 });

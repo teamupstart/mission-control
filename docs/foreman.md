@@ -58,10 +58,10 @@ A session is invited when any of these is true:
 
 | Invite | Which sessions |
 |--------|----------------|
-| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition. |
+| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition - except [residents](residents.md#lifecycle). |
 | `dispatch` | **Dispatched** terminal sessions. Recorded automatically once the spawn is confirmed. |
 | `operator` | Sessions **you** invited, explicitly. |
-| *(none)* | Everything else - every session merely discovered on your machine, and any session whose invite you withdrew. |
+| *(none)* | Everything else - every session merely discovered on your machine, every resident session until you invite Foreman, and any session whose invite you withdrew. |
 
 In an uninvited session Foreman does nothing at all: no Purpose note, no decision brief, no
 queue tick, no wrap-up prompt, no pull-request follow-through, and no backlog assignment. It
@@ -222,6 +222,13 @@ workflow evidence registration is not required, including when an older prompt o
 asked for it. Manually attaching a Persona workflow makes registration applicable, and removing
 it retires that obligation. Implementation and verification remain required in either case.
 
+Registration includes evidence still staged and evidence reserved by this conversation's own
+workflow submissions. Capture does not unregister that proof or require the agent to register
+it again for the same intent episode. The dashboard staging tray still shows only editable,
+staged items. Foreman rechecks the admitted evidence after verification; a change in identity,
+content, or eligibility discards the stale verdict without consuming the work generation or
+sending recovery gaps.
+
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work
@@ -271,6 +278,12 @@ settled-idle work cycle. A human ask, a work-queue item, a pending turn, an acti
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
+
+Prompted completion is also refused while the session has an outstanding `request_input`
+question, pending or snoozed, under the `async-input` preview flag's
+[completion rules](sessions.md#asking-without-stopping); the same generation is consumed once
+the question is answered or dismissed. Foreman's answer to a question filed without stopping
+reaches the agent as a message, like yours.
 
 When prompted completion records a real held verdict for an eligible managed ship task, Foreman
 does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
@@ -402,6 +415,10 @@ Only one worker drives the sessions at a time. A manually started worker beside 
 app is safe: the second process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
+
+Foreman can answer a question filed without stopping the agent. See
+[Asking without stopping](sessions.md#asking-without-stopping) for answer delivery and the
+question lifecycle.
 
 ### Its standing instructions (`FOREMAN.md`)
 
@@ -692,6 +709,10 @@ Foreman control: those are the things you reach for while watching the fleet, an
 panel is the durable posture.
 
 ### Mechanical pipeline triage
+
+Temporarily unavailable with the rest of the ai-conductor integration (see
+[Pipelines](pipelines.md)): the daemon reports pipeline triage as disabled and the worker does
+nothing for it, whatever the stored permission says.
 
 **Settings → Conductor → Foreman triage** is a separate, default-off permission for external
 pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its

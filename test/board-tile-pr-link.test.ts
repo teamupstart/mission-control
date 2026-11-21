@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createElement } from "react";
+import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
@@ -123,11 +123,12 @@ test("a PR whose url carries no parsable number still draws, as a bare PR flag",
   assert.match(html, />PR</);
 });
 
-test("a failing check still rides along on the link rather than needing its own click", () => {
+test("a CI warning has its own results button beside the PR link", () => {
   const html = render({ ...withPr, prChecks: "failing" });
   const anchor = html.match(/<a [^>]*class="tile-flag tile-flag-link[^"]*"[^>]*>([^<]*)<\/a>/)?.[1];
   assert.ok(anchor != null, "expected the PR anchor");
-  assert.match(anchor, /⚠/);
+  assert.doesNotMatch(anchor, /⚠/);
+  assert.match(html, /<button[^>]*class="pr-checks-alert"/);
 });
 
 // The flag's tooltip is delivered by the shared `Tooltip` component rather than a native
@@ -135,12 +136,18 @@ test("a failing check still rides along on the link rather than needing its own 
 // only be asserted against the un-rendered element tree, not the rendered markup. See
 // `session-leaf-parity.test.ts` for why a rendered-markup assertion here couldn't catch a
 // regression back to a native `title`.
-test("the failing-check tooltip explains itself, not just the healthy case", () => {
+test("the PR tooltip describes its own destination independently of CI", () => {
   const session = mkSession({ ...withPr, prChecks: "failing" });
   const flagEl = PrTileFlag({ session });
-  assert.equal(flagEl?.type, Tooltip, "expected the PR flag to be wrapped in the shared Tooltip");
+  assert.ok(flagEl, "expected a PR flag for this session");
+  const tooltip = Children.toArray((flagEl.props as { children: ReactNode }).children)
+    .find(child => isValidElement(child) && child.type === Tooltip);
+  assert.ok(isValidElement<{ label: string; children: ReactElement<{ href: string }> }>(tooltip),
+    "expected the PR flag to be wrapped in the shared Tooltip");
+  assert.equal(tooltip.props.children.type, "a");
+  assert.equal(tooltip.props.children.props.href, withPr.prUrl);
   assert.equal(
-    (flagEl?.props as { label: string }).label,
-    "A CI check failed on this pull request - open on GitHub",
+    tooltip.props.label,
+    `Open pull request #${withPr.prNumber} - open on GitHub`,
   );
 });

@@ -1,4 +1,15 @@
+import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { OpenQuestionLimitError } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import type { PauseManager } from "./pause/manager.ts";
+import { registerPauseRoutes } from "./pause/routes.ts";
+import { HibernationManager } from "./hibernation/manager.ts";
+import { registerHibernationRoutes } from "./hibernation/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -10,22 +21,25 @@ import {
 } from "@shared/resident-mcp.ts";
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
-import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
-import { paneToken } from "@shared/pane.ts";
+import { canMessage, paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
   localPlanAuthorityContext,
@@ -53,7 +67,16 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { TASK_KIND_BEHAVIOR, taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import {
+  HARNESS_LAUNCHED_TASK_KINDS,
+  TASK_KIND_BEHAVIOR,
+  TASK_KIND_INFO,
+  isShippingTaskKind,
+  kindsDefaultingToWorkflow,
+  taskHasRepository,
+  taskAllowsBacklog,
+  taskKindCreator,
+} from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
 import {
   dismissLaunchFailures,
@@ -92,6 +115,8 @@ import {
   CostConfigPatchSchema,
   CreateReviewSchema,
   DetachReviewWaitSchema,
+  ListOpenQuestionsSchema,
+  WithdrawQuestionSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
@@ -134,6 +159,7 @@ import {
   type McpCreateTaskV3,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpCancelTaskSchema,
   McpListTasksSchema,
   McpGetTaskSchema,
   type UpdateTask,
@@ -152,6 +178,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -163,6 +190,7 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  SnoozeReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
   CreateResidentProfileSchema,
@@ -275,7 +303,8 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -303,7 +332,8 @@ import type {
   Task,
   WorkItem,
 } from "@shared/types.ts";
-import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
+import { ReviewResolutionError, SnoozeActorRefusal, type ReviewManager } from "./reviews.ts";
+import { reviewSnoozeDelay } from "@shared/review-snooze.ts";
 import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
@@ -312,13 +342,16 @@ import {
   TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
+  type TaskWorkUnitSource,
 } from "./tasks.ts";
+import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
+import { grillFirstDispatchBlock } from "./grill-first.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
@@ -328,7 +361,7 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
@@ -358,6 +391,7 @@ import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./ins
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
@@ -389,6 +423,19 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
+import {
+  getDatabaseBackupsConfig,
+  setDatabaseBackupsConfig,
+  StaleBackupPreviewError,
+} from "./database-backups/config.ts";
+import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { IdleCachePlanUnavailable, StorageView } from "@shared/storage-health.ts";
+import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
+import { getStorageLimitsConfig, setStorageLimitsConfig } from "./storage-limits.ts";
+import { planIdleCache } from "./storage-pools.ts";
+import type { StorageUsageMonitor } from "./storage-usage.ts";
+import { DatabaseBackupsSaveRequestSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -456,6 +503,8 @@ import {
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
 import {
   pipelineEpisodeKey,
   pipelineEpisodeWrite,
@@ -466,7 +515,12 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  RepoIndexConfigPatchSchema,
+} from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
@@ -600,6 +654,7 @@ import {
   formDelivered,
   type PaneDeps,
   submitPaneForm,
+  writeHold,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -608,6 +663,9 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  isScanUnavailable,
+  listReposScan,
+  repoIndexIdentity,
   resolveRepoPath,
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
@@ -631,6 +689,8 @@ import {
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
 import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { systemDefaultEmulator } from "./terminal/system-default.ts";
+import type { EmulatorId } from "@shared/terminal.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -978,6 +1038,9 @@ function foremanWriteRefusal(
   if (!structuredAnswer && hasBlocker(session)) {
     return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
   }
+  // No structured-answer exemption here: a paused session is the operator's to resume, and
+  // Foreman answering its menu would start the very turn the pause is holding back.
+  if (session.pause) return { error: PAUSED_SESSION_REASON, status: 409 };
   return null;
 }
 
@@ -1308,6 +1371,11 @@ export interface RouteDeps {
    */
   keepAwake?: KeepAwakeManager;
   /**
+   * The one owner of pausing (`src/server/pause/manager.ts`). Absent, the pause routes answer
+   * 503 rather than building a second owner of the same frozen processes.
+   */
+  pauses?: PauseManager;
+  /**
    * The archive library owner. Absent means the archive routes answer 503 rather than
    * constructing a manager here. A route-built twin would be a second owner of one filesystem
    * library and one reconciler - two background walks over the same directory, two writers of
@@ -1339,6 +1407,14 @@ export interface RouteDeps {
   fileCommentWalkthrough?: FileCommentWalkthrough;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
+  /** The daemon's full-database backup owner. Its routes return 503 without it. */
+  databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
+  /**
+   * The state directory's measurer. Measure now and the pool-cache plan return 503 without it.
+   */
+  storageUsage?: StorageUsageMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1353,6 +1429,11 @@ export interface RouteDeps {
    * preference is read through the real composition.
    */
   focusTerminals?: TerminalDeps;
+  /**
+   * The emulator macOS hands a shell to, which terminal pickers start on. Injected so a route
+   * test does not read the machine's own LaunchServices preferences.
+   */
+  systemDefaultTerminal?: () => Promise<EmulatorId | null>;
 }
 
 /**
@@ -1385,6 +1466,7 @@ export const ROUTE_DEP_NAMES = [
   "pendingTurns",
   "paneDeps",
   "keepAwake",
+  "pauses",
   "archives",
   "workflowCommands",
   "worktrees",
@@ -1394,9 +1476,13 @@ export const ROUTE_DEP_NAMES = [
   "fileComments",
   "fileCommentWalkthrough",
   "settingsBackups",
+  "databaseBackups",
+  "storageHealth",
+  "storageUsage",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
+  "systemDefaultTerminal",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1647,6 +1733,44 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
+/**
+ * The answer for a route that needed a workspace scan and could not get one: the walk timed
+ * out or is refused over one still stuck (a stalled mount), and no earlier scan of these
+ * directories is held to answer from. 503 with the reason, rather than a bare 500 - the
+ * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
+ * error is not this and is rethrown.
+ */
+/**
+ * Tell every window the indexed directories changed, after a save that already succeeded.
+ *
+ * Never throws: the write is persisted, and a failure here must not be reported to the caller
+ * as a failed save. If the new identity cannot be computed, windows are told it is unknown -
+ * which still makes them drop their lists, the point of the event - and the cause is logged.
+ */
+function announceRepoIndexChanged(registry: Registry): void {
+  let identity: string;
+  try {
+    identity = repoIndexIdentity();
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not compute its identity; telling windows it is unknown: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    identity = REPO_INDEX_IDENTITY_UNKNOWN;
+  }
+  try {
+    registry.emitRepoIndexChanged(identity);
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not announce it to open windows: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function scanUnavailableAnswer(c: Context, error: unknown): Response {
+  if (!isScanUnavailable(error)) throw error;
+  return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
+}
+
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // JavaScript would discard these in silence. The count is named because it is what locates
   // the mistake for the caller.
@@ -1678,6 +1802,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     pendingTurns,
     paneDeps,
     keepAwake,
+    pauses,
     archives,
     workflowCommands,
     worktrees,
@@ -1687,9 +1812,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileComments,
     fileCommentWalkthrough,
     settingsBackups,
+    databaseBackups,
+    storageHealth,
+    storageUsage,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
+    systemDefaultTerminal,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -1724,6 +1853,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.subscribe?.((e) => {
     if (e.type === "session_remove") agentResumeClaims.delete(e.id);
   });
+  // A resident's proposed changes to its own standing instructions. Built from the managers
+  // already here: the review it opens is an ordinary review, and the human's answer to it is
+  // applied by the resolve route below, inside the transaction that records the answer.
+  // Guarded because route tests build the app with a null or stub `reviews`, as the
+  // `registry.subscribe?.` call above documents for the registry.
+  const residentInstructions = personas && reviews
+    ? new ResidentInstructionChanges({
+      registry,
+      reviews,
+      persona: (id) => personas.store.getPersona(id),
+      writePersonaGuidance: (id, expectedRevision, guidance, at) =>
+        personas.writeGuidance(id, expectedRevision, guidance, at),
+      publishPersona: (persona) => {
+        personas.announce(persona);
+        workflows?.refreshSummaries();
+      },
+    })
+    : null;
+  // A resident whose proposal call timed out learns what the answer applied in the continuation.
+  if (residentInstructions) {
+    reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
+  }
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -1738,8 +1889,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  // Headless mode (FR-05): every `/dispatch/*` route, gated by the `headless-mode` flag.
+  registerHomeDispatchRoutes(app, deps, requireLoopback);
+
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
+
+  // The ai-conductor integration is hidden (`shared/conductor-integration.ts`). While it is,
+  // nothing here may reach the engine: no probe, registration, installer, control verb,
+  // console, run-detail read, plugin push, or Engineer host callback. The two reads a live
+  // surface polls answer "nothing is observed" instead of an error - the Dispatch form and the
+  // Runs page ask for the observed repositories, and the Foreman worker asks for halts - so
+  // neither logs a failure every cycle for a feature nobody can see.
+  const conductorHidden: MiddlewareHandler = async (c, next) => {
+    if (conductorIntegrationEnabled()) return next();
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/repos") {
+      return c.json({ repos: [], launchRuntime: getPipelinesConfig().launchRuntime });
+    }
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/foreman") {
+      return c.json({ enabled: false, items: [] } satisfies PipelineForemanView);
+    }
+    return c.json({ error: CONDUCTOR_UNAVAILABLE_DETAIL }, 404);
+  };
+  app.use("/api/pipelines/*", conductorHidden);
+  app.use("/ingest/conductor", conductorHidden);
+  app.use("/mcp/pipelines/*", conductorHidden);
 
   app.get("/api/health", (c) =>
     c.json({
@@ -1747,7 +1921,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 
@@ -1869,10 +2043,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1885,6 +2072,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
@@ -2001,6 +2197,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       : c.json({ error: "no failed worktree operation has that id" }, 404);
   });
 
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
+  });
+
   app.post("/api/worktrees/:slotId/open", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     const parsed = await parseBody(c, OpenWorktreeSchema);
@@ -2028,6 +2238,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Pausing sessions: one session, Pause all, and the priority session ---
+  registerPauseRoutes(app, pauses);
+
+  // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
+  registerHibernationRoutes(
+    app,
+    new HibernationManager(registry, sdkSessions ?? null, {
+      workflows,
+      pause: pauses,
+      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+    }),
+  );
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -2426,6 +2649,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
+  // Reset an editable built-in (the Grill action) to its shipped instruction.
+  app.post("/api/session-actions/:id/reset", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.reset(c.req.param("id"), parsed.data.expectedRevision);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
   app.delete("/api/session-actions/:id", bodyLimit({
     maxSize: REVISION_ONLY_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "session action request is too large" }, 413),
@@ -2490,6 +2726,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list(raw === "true"));
   });
   const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   /**
    * The legacy config shape, COMPOSED rather than stored.
    *
@@ -2526,14 +2767,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.defaultWorkflowId) {
-      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = parsed.data.kindWorkflowDefaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
       if (
         !detail
         || detail.workflow.archivedAt !== null
         || detail.workflow.currentVersionId === null
       ) {
-        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+        return c.json({
+          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
+        }, 409);
       }
     }
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -2670,9 +2915,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before archiving this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
       }, 409);
     }
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
@@ -2697,9 +2943,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before deleting this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
       }, 409);
     }
     const result = manager.remove(id, parsed.data.expectedDraftRevision);
@@ -2844,7 +3091,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    const staged = manager.stagedEvidenceForSession(
+      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
+    );
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(
@@ -3935,8 +4184,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) =>
-    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  const readSystemDefaultTerminal = systemDefaultTerminal ?? (() => systemDefaultEmulator({
+    platform: process.platform,
+    home: process.env.HOME || homedir(),
+    run: (bin, args, opts) => runCommand(bin, args, opts),
+    emulators: configuredTerminalTargetDeps.emulators,
+  }));
+  app.get("/api/terminal-targets", async (c) => {
+    // try/await, not `.catch`: a reader that throws before returning a promise must still
+    // leave the catalog answering, just without a default marked.
+    let systemDefault: EmulatorId | null = null;
+    try {
+      systemDefault = await readSystemDefaultTerminal();
+    } catch {
+      systemDefault = null;
+    }
+    const targets = terminalTargetViews(configuredTerminalTargetDeps).map((view) =>
+      view.id === systemDefault ? { ...view, systemDefault: true } : view);
+    return c.json({ targets });
+  });
   // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
   app.get("/api/sessions/:id/launch", (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -4145,8 +4411,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
   });
-  // Git repos under the workspace roots - the pickable bases for a new dispatch.
-  app.get("/api/repos", async (c) => c.json(await listRepos()));
+  // Git repos under the workspace roots - the pickable bases for a new dispatch. Answers
+  // from the last scan and rescans behind it; `?rescan=1` waits for a scan started after the
+  // request instead. The header orders scans, so a browser holding two answers keeps the
+  // newer one rather than whichever arrived last.
+  app.get("/api/repos", async (c) => {
+    try {
+      const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+      c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+      c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+      return c.json(repos);
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+  });
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
@@ -4162,13 +4440,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
-      return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
     }
+    // The save is persisted from here on, so nothing below may answer as if it failed - a
+    // client told "rejected" would keep showing the directories it just replaced.
+    announceRepoIndexChanged(registry);
+    return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
     invalidateReposCache();
@@ -4190,8 +4471,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
-  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
-  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+  // Read by a person, so built from the snapshot as the dashboard sees it: agent-written
+  // lines with task ids shown as titles (`task-titles.ts`).
+  const reportSnapshot = () => taskTitlePresenter(registry).snapshot(registry.snapshot());
+  app.get("/api/report", (c) => c.json(buildReport(reportSnapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(reportSnapshot()))));
 
   const backupUnavailable = (c: Context) => c.json({
     error: "service_unavailable" as const,
@@ -4375,6 +4659,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // reason, and it chains: each page reports the `start` the next call passes back. The
   // panel is the only caller, but it belongs on this route rather than the SSE stream
   // because it is a request for history, not a subscription to new turns.
+  /**
+   * The tool call that launched one of this session's background sub-agents, as its
+   * transcript file records it: `{ toolUseId }`, null when it records none.
+   *
+   * Asked by "Jump to launch" for an agent whose source did not name its launching call. The
+   * answer comes from the file because only the file always holds both halves of a launch -
+   * the call and the result naming its agent are written apart, so the dashboard can receive
+   * them in separate appends or on separate pages. The browser then finds the call by its id
+   * among the turns it holds, paging older ones in, exactly as for an agent the source named.
+   */
+  app.get("/api/sessions/:id/subagents/:agentId/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const agentId = c.req.param("agentId");
+    if (!agentId || agentId.length > 256) return c.json({ error: "agentId must be a sub-agent id" }, 400);
+    const spec = transcriptFor(session);
+    // A harness whose transcript ties no call to its agents answers "none", as does a file
+    // that has not appeared yet: both read as a launch this transcript does not record.
+    const path = spec?.subagentLaunch ? spec.locate(session) : null;
+    return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
+  });
+
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -4401,13 +4707,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // enough to reach the launch turn must not make it reappear in full.
       return c.json({
         ...page,
-        messages: attributeTranscript(
+        // The same task-title projection the live stream applies (`task-titles.ts`).
+        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
-        ),
+        )),
       });
     }
     const since = Number(c.req.query("since"));
@@ -4872,7 +5179,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
     try {
@@ -4916,9 +5223,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
-      return c.json({ id: review.id, sessionId: session.id });
-    } catch (error) { return planFailure(c, error); }
+      // How this ask waits, decided here and said in the response (`async-input`). Read per ask
+      // so the flag takes effect without a restart. `call` is today's long poll; `message`
+      // returns the receipt for the MCP child to hand the agent at once.
+      const wait = decideWaitMode({
+        flagOn: featureEnabled(ASYNC_INPUT_FLAG),
+        kind,
+        snoozable: snoozable === true,
+        asyncCapable: parsed.data.asyncCapable === true,
+        messageable: canMessage(session),
+      });
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, {
+        snoozable,
+        ...(wait === "message" ? { waitMode: "message" as const } : {}),
+        meanwhile: parsed.data.meanwhile || null,
+        callerPolls: parsed.data.asyncCapable !== true,
+      });
+      // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
+      // answer names the row's own mode rather than the one this ask would have had.
+      return review.waitMode === "message"
+        ? c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: asyncInputReceipt(review) })
+        : c.json({ id: review.id, sessionId: session.id, wait: "call" });
+    } catch (error) {
+      if (error instanceof OpenQuestionLimitError) return c.json({ error: error.message }, 409);
+      return planFailure(c, error);
+    }
   }
   app.post("/mcp/reviews", (c) => createMcpReview(c, false));
   app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
@@ -4999,6 +5328,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const blocked = manager.workflowSelectionBlock(workflowId);
       if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
+    // Resolved on every call, not only for plan inputs: a plan task's session shares its work
+    // unit with the tasks it creates (decision D1). A caller that resolves to no session is not
+    // an error unless it asked to inherit.
+    const caller = registry.findSessionByEnv(env, sessionId, cwd);
+    const callerTask = caller ? registry.taskForSession(caller.id, caller.cwd) ?? null : null;
+    const workUnit = mcpCreateWorkUnitSource(data.workUnit, callerTask);
+    if (!workUnit.ok) return c.json({ error: workUnit.error }, 409);
 
     try {
       const task = tasks.create({
@@ -5018,7 +5354,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         labels: data.labels,
         backlog: true,
         dependencies, planInputs,
-      }, undefined, undefined, creationPolicy);
+      }, undefined, undefined, creationPolicy, workUnit.source);
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
@@ -5118,12 +5454,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return updateTask(c, id, validated.data, true);
   });
 
+  app.post("/mcp/tasks/cancel", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCancelTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.cancel(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
   app.post("/mcp/tasks/delete", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpDeleteTaskSchema);
     if (!parsed.ok) return parsed.res;
     const r = await tasks.remove(parsed.data.taskId);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"), "agent");
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -5136,6 +5486,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await tasks.completeRetroNoChange(session.id, cwd);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
+  });
+
+  app.post("/mcp/questions/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, ListOpenQuestionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    return c.json({ questions: reviews.openQuestions(session.id).map(({ id, title, createdAt, meanwhile, status }) =>
+      ({ id, title, createdAt, meanwhile: meanwhile ?? null, status })) });
+  });
+
+  app.post("/mcp/questions/:id/withdraw", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    if (!featureEnabled(ASYNC_INPUT_FLAG)) return c.json({ error: "async-input is disabled" }, 403);
+    const parsed = await parseBody(c, WithdrawQuestionSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, reason } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const review = reviews.withdrawQuestion(session.id, c.req.param("id"), reason);
+      return c.json({ id: review.id, status: review.status });
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
@@ -5720,6 +6099,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         assertStandingApprovalGrantable(c.req.param("id"));
       } catch (error) { return planFailure(c, error); }
     }
+    // A resident's proposed instruction changes: only a person's answer applies them, and the
+    // write commits with the answer. Refused before anything settles when the answer is not
+    // the operator's, so the question stays open for them.
+    const instructionChange = residentInstructions?.resolution(
+      c.req.param("id"),
+      parsed.data.action,
+      by,
+      parsed.data.selections ?? null,
+    ) ?? null;
+    if (instructionChange && "refusal" in instructionChange) {
+      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
+    }
+    if (grant && instructionChange) {
+      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
+    }
     try {
       // An answer to the questions left beside an auto-approved bundle tells the agent the
       // bundle is already approved, because this form no longer asked about it.
@@ -5734,15 +6128,65 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         by,
         parsed.data.selections,
         // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant ? () => grantStandingBundleApproval(c.req.param("id")) : undefined,
+        grant
+          ? () => grantStandingBundleApproval(c.req.param("id"))
+          : instructionChange?.persist,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
+      instructionChange?.publish();
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
       if (error instanceof PlanStoreError) return planFailure(c, error);
       throw error;
     }
+  });
+
+  // Who is asking to snooze or wake a question: the operator, a session acting through session
+  // control, or null for a caller that is neither. "Human" is never the default. It is granted
+  // only when the request carries none of the marks of an agent - the machine token, a signed
+  // agent credential, an agent-labelled operation, a page from another origin - which is the
+  // same test that guards the operator's session-control grant (`sessionControlCallerRefusal`).
+  const reviewOperatorActor = (c: Context): ReviewActor | null =>
+    sessionControlActor(c.req.raw) ?? (sessionControlCallerRefusal(c) === null ? "human" : null);
+  const ONLY_THE_OPERATOR = "Only the operator can choose Remind me later";
+
+  // "Remind me later" on a request_input question. The operator's alone: a session driving
+  // another through session control may answer its questions, but parking one tells its agent
+  // to carry on without a person, which is not a call one agent makes for another. Session
+  // control offers no snooze command today; the manager refuses any other actor regardless.
+  app.post("/api/reviews/:id/snooze", async (c) => {
+    const parsed = await parseBody(c, SnoozeReviewSchema);
+    if (!parsed.ok) return parsed.res;
+    const by = reviewOperatorActor(c);
+    if (!by) return c.json({ error: ONLY_THE_OPERATOR }, 403);
+    try {
+      const updated = reviews.snooze(
+        c.req.param("id"),
+        reviewSnoozeDelay(parsed.data.delay).ms,
+        parsed.data.meanwhile,
+        Date.now(),
+        by,
+      );
+      if (!updated) return c.json({ error: "no such review" }, 404);
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof SnoozeActorRefusal) return c.json({ error: error.message }, 403);
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+
+  // Answer now: bring a snoozed question back to the operator before its time. The operator's
+  // too, by the same test: it reopens a question the operator chose to set aside.
+  app.post("/api/reviews/:id/wake", (c) => {
+    if (reviewOperatorActor(c) !== "human") return c.json({ error: "Only the operator can bring back a snoozed question" }, 403);
+    const current = registry.getReview(c.req.param("id"));
+    if (!current) return c.json({ error: "no such review" }, 404);
+    if (current.status !== "snoozed") return c.json({ error: "This question is not snoozed" }, 409);
+    const updated = reviews.wake(current.id);
+    if (!updated) return c.json({ error: "This question is not snoozed" }, 409);
+    return c.json(updated);
   });
 
   // --- session actions (localhost only) ---
@@ -5870,7 +6314,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data, panes);
+    // Re-read at the Enter: the walk to the row takes captures, and a pause can freeze the
+    // agent in between. `session` is the snapshot from before it.
+    const r = await selectPaneOption(session, parsed.data, panes, () => writeHold(registry.getSession(session.id) ?? session));
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
     observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
@@ -5924,7 +6370,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         409,
       );
     }
-    const r = await submitPaneForm(session, options, panes);
+    const r = await submitPaneForm(session, options, panes, () => writeHold(registry.getSession(session.id) ?? session));
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
@@ -6093,7 +6539,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
-        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
           const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
           if (changed) return changed;
         }
@@ -6115,7 +6561,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
-      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+      if (!isStackPromptKind(stackRequest.kind)) {
         const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
         if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
         stackParentRead = recheck.parent;
@@ -6399,7 +6845,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
-    const r = await requestSessionStop(session, sdkSessions);
+    const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
     if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
@@ -6437,7 +6883,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
     observeSessionOperation({
       session,
       operation: "interrupt",
@@ -6668,6 +7114,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      pauses,
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -7226,7 +7673,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Written by the worker (which never touches the DB) and read by the board. `null`
   // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
   // state, not an error, and both readers already branch on it.
-  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  // The reasons and note are model prose the board prints, so they are served with every task
+  // id shown as its title (`task-titles.ts`). The stored plan keeps the model's own words; the
+  // worker reads only its ids and logs the note.
+  app.get("/api/backlog/plan", (c) => c.json(taskTitlePresenter(registry).plan(getBacklogPlan())));
   app.put("/api/backlog/plan", async (c) => {
     const parsed = await parseBody(c, BacklogPlanSchema);
     if (!parsed.ok) return parsed.res;
@@ -7345,6 +7795,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       commitPlanHtml: cfg.commitPlanHtml,
       alwaysDraftPr: cfg.alwaysDraftPr,
       planStorage: cfg.planStorage,
+      grillFirstKinds: cfg.grillFirstKinds,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -7870,7 +8321,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!isPipelineProviderId(provider)) {
       return c.json({ error: "no such pipeline provider" }, 400);
     }
-    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    try {
+      return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   /**
@@ -7884,7 +8339,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     const body = parsed.data;
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
+    // from a scan that predates a removal. The candidate list above is a picker and stays instant.
+    let catalog: string[];
+    try {
+      catalog = await listRepos({ fresh: true });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, catalog);
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,
@@ -8448,6 +8911,147 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(setTerminalsConfig(parsed.data));
   });
 
+  // --- Database backups: how many full recovery points of each kind are kept ---
+  //
+  // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  const storageUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Storage health service is unavailable",
+  }, 503);
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
+  app.put("/api/storage/backups/config", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const { expectRemove, ...patch } = parsed.data;
+    // No save deletes a copy its caller did not name. A request without `expectRemove` is taken
+    // to expect no deletions: one that deletes nothing (an interval, a raised count) goes through
+    // as before, and one that would delete copies is refused with the exact list, which the
+    // caller confirms by sending it back. That refusal is the preview for any API caller.
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk, or
+    // a list the copies no longer match.
+    let saved;
+    try {
+      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
+    } catch (error) {
+      if (error instanceof StaleBackupPreviewError) {
+        return c.json(expectRemove === undefined
+          ? {
+              error: "preview_required" as const,
+              message: `Saving these limits deletes ${error.remove.length} ${error.remove.length === 1 ? "copy" : "copies"}. Nothing was saved or deleted; send them as expectRemove to confirm.`,
+              remove: error.remove,
+            }
+          : { error: "stale_preview" as const, message: error.message, remove: error.remove }, 409);
+      }
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
+  });
+
+  app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
+  app.put("/api/feature-flags", async (c) => {
+    const parsed = await parseBody(c, FeatureFlagIntentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = applyFeatureFlagIntent(parsed.data);
+      if (!result.ok) return c.json({ error: result.error }, 400);
+      return c.json({ config: result.config });
+    } catch (error) {
+      return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+
+  // Task shaping, behind its preview flag. See docs/task-shaping.md.
+  registerShapingRoutes(app);
+
+  // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
+  // idle-cache budget only chooses what a cleanup preview offers.
+  app.put("/api/storage/limits", async (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    let limits;
+    try {
+      limits = setStorageLimitsConfig(parsed.data);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
+    // to every open dashboard.
+    storageHealth.recompute();
+    return c.json({ limits });
+  });
+
+  // Measure now. The walk runs in the background and can take minutes; the answer is the state
+  // it started, and the finished measurement arrives through `storage_health`.
+  app.post("/api/storage/usage/measure", (c) => {
+    if (!storageUsage || !storageHealth) return storageUnavailable(c);
+    void storageUsage.measure();
+    void storageUsage.checkVolume();
+    return c.json({ usage: storageUsage.usage() }, 202);
+  });
+
+  // What the idle-cache budget would remove right now. On demand rather than in the aggregate,
+  // because it observes every native slot through Git.
+  app.get("/api/storage/pool-caches", async (c) => {
+    if (!storageUsage || !worktreeOperations) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: "Native worktree pools are unavailable",
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+    const limits = getStorageLimitsConfig();
+    try {
+      const status = await worktreeOperations.manager.status();
+      return c.json(planIdleCache({
+        status,
+        slotBytes: (path) => storageUsage.slotBytes(path),
+        sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+        budgetBytes: limits.poolIdleBudgetBytes,
+        keepWarm: limits.poolKeepWarm,
+        now: Date.now(),
+      }));
+    } catch (error) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  });
+
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
   //
   // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
@@ -8502,18 +9106,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
-    const result = await executeSetupInstall(parsed.data, {
-      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
-      homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
-      listProviderInstallers:
-        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
-      prepareProviderInstaller:
-        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
-      resolveExecutable:
-        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
-      launchTerminal: terminalLauncher,
-    });
+    let result: Awaited<ReturnType<typeof executeSetupInstall>>;
+    try {
+      result = await executeSetupInstall(parsed.data, {
+        catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        // `homedir()` reads this process's HOME, the same effective home the daemon's own
+        // probes run under, so a sign-in pinned to it stores credentials where they are read.
+        homeDir: setupInstallDeps?.homeDir ?? homedir(),
+        // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+        // the catalog rather than offering it.
+        listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
+        listProviderInstallers:
+          setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+        prepareProviderInstaller:
+          setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+        resolveExecutable:
+          setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        ...(setupInstallDeps?.conductorIntegration
+          ? { conductorIntegration: setupInstallDeps.conductorIntegration }
+          : {}),
+        launchTerminal: terminalLauncher,
+      });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 
@@ -8541,6 +9157,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    */
   async function createTaskFromDispatch(
     data: TypeOf<typeof DispatchSchema>,
+    workUnit?: TaskWorkUnitSource,
   ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
     const prepared = await prepareTaskRepositories({
       primary: data.repoRoot,
@@ -8558,7 +9175,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
-    const { workflowId } = creationPolicy;
+    const { workflowId, grillFirst } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -8579,7 +9196,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!data.backlog) {
-      const planBlock = planDispatchBlock({ ...data, agent });
+      const planBlock = planDispatchBlock({ ...data, agent })
+        ?? grillFirstDispatchBlock({ kind: data.kind, agent, grillFirst });
       if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
     try {
@@ -8590,6 +9208,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           undefined,
           MANUAL_DISPATCH_TASK_CREATE,
           creationPolicy,
+          workUnit,
         ),
       };
     } catch (error) {
@@ -8742,7 +9361,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (taskKindCreator(task.kind) === "resident-launch") {
       return c.json({ error: "launch this resident again from its profile" }, 409);
     }
-    if (taskKindAllowsBacklog(task.kind)) {
+    if (taskAllowsBacklog(task)) {
       const refused = taskWorkflowDispatchRefusal(task);
       if (refused) return c.json(refused.body, refused.status);
       // A failure that kept a worktree cannot be dispatched over it; re-file it first, which
@@ -8751,7 +9370,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const filed = await tasks.reschedule(task.id);
         if (!filed.ok) return c.json({ error: filed.error }, 409);
       }
-      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
+      // Only the operator's: an agent calling this route is held like any other launch.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: mayOverridePauseHold(c) });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
     const workKey = launchWorkKey(task);
@@ -8781,11 +9402,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
+      grillFirst: task.grillFirst ?? false,
       priority: task.priority,
       labels: task.labels,
     });
     if (!input.success) return c.json({ error: input.error.issues[0]?.message ?? "this task cannot be filed again" }, 400);
-    const created = await createTaskFromDispatch(input.data);
+    // The same piece of work tried again, so the same work unit.
+    const created = await createTaskFromDispatch(input.data, { inherit: [task.id] });
     if (!created.ok) return c.json(created.body, created.status);
     // A report session filed again is still a report session.
     const filed = task.launchReportFor
@@ -8795,6 +9418,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
+  if (residentInstructions) registerResidentInstructionRoutes(app, { registry, changes: residentInstructions });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -8992,6 +9616,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
+      // A tour the operator started: theirs to launch whatever is paused. Not a token caller's.
+      overridePauseHold: mayOverridePauseHold(c),
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -9066,7 +9692,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resumable: false,
         });
       } else {
-        const stopped = await requestSessionStop(session, sdkSessions);
+        const stopped = await requestSessionStop(session, sdkSessions, undefined, pauses);
         if (!stopped.ok) {
           return c.json(
             { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
@@ -9208,18 +9834,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  /**
+   * Whether this request may lift the operator's launch hold (`overridePauseHold`): only the
+   * operator's own, by the same test the pause routes apply. An agent holding the daemon token
+   * can call any of these routes directly, so a flag in the body is never trusted on its own.
+   */
+  const mayOverridePauseHold = (c: Context): boolean => sessionControlCallerRefusal(c) === null;
+
+  async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
-    const r = await tasks.dispatch(id, parsed.data);
+    // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set. Checked at
+    // this boundary, not only on the MCP route: the dashboard route is reachable with the token.
+    const operator = caller === "dashboard" && mayOverridePauseHold(c);
+    const options = operator ? parsed.data : { ...parsed.data, overridePauseHold: false };
+    const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
     const r = await tasks.recheckPipelineReadiness(c.req.param("id"));
@@ -9328,6 +9967,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
+      overridePauseHold: parsed.data.overridePauseHold === true && mayOverridePauseHold(c),
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
@@ -9588,29 +10228,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   return app;
 }
 
-/** True when the Host header names a loopback address (defeats DNS-rebinding). */
-export function hostIsLoopback(host: string | undefined): boolean {
-  if (!host) return false;
-  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
-  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
-
-/** Guard browser-write routes that accept an otherwise empty JSON object. */
-function trustedLoopbackJsonRequest(c: Context): boolean {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return false;
-  }
-  const origin = c.req.header("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
+export { hostIsLoopback } from "./loopback.ts";
 
 /**
  * What a write into somebody's session is attributed to.

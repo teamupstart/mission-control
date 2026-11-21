@@ -85,14 +85,63 @@ inner tmux pane as the most specific identity, then prefers a persistent Herdr w
 outer self-hosting cmux surface when more than one backend can describe a process.
 
 cmux needs two things from the machine beyond its CLI, both checked and repairable in
-**Settings > Setup**: its app has to be running, since the control socket exists only while it
-is, and `automation.socketControlMode` has to be `allowAll` rather than the shipped `cmuxOnly`,
+**Settings > Setup**: its app has to be running and listening on its control socket. Choose
+**Open cmux** after installing or quitting it, including when an exit left a stale socket
+reporting “Connection refused”. Separately, `automation.socketControlMode` has to be `allowAll`
+rather than the shipped `cmuxOnly`,
 which admits only processes cmux started itself. It is also the one backend whose paste submits.
 cmux's typing method writes a leading ESC in a terminal write of its own, so bracketed-paste
 markers written by hand reach the agent as an Escape keypress and the literal text `[200~`; its
 real paste verb delivers them correctly and appends a carriage return that no parameter
 suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
 Enter, which is why the paste result carries the fact rather than the caller assuming it.
+
+## Background sub-agents from terminal hooks
+
+A terminal session has no driver to read its background sub-agents from, so its hooks are the
+source. Each harness's `HookSpec.subagentSignals` translates its own events into neutral signals
+(started, launched, ended, the in-flight set, fold, reset), and
+[`hook-subagents.ts`](../src/server/harness/hook-subagents.ts) reduces them into the same
+`Session.subagents` summary an SDK driver produces. The registry applies them only to the
+terminal runtime; an SDK session's driver owns its summary and its hooks' sub-agent signals are
+ignored.
+
+- **Claude.** `SubagentStart` names an agent's type and when it started, but cannot say whether
+  it is in the background, so it is remembered and not counted. The Agent tool's `PostToolUse`
+  with status `async_launched` counts it, with the short description the model gave the launch.
+  `SubagentStop` ends it. `Stop` and `SubagentStop` also carry `background_tasks`, the session's
+  whole in-flight set: a sub-agent entry no hook announced is added, and a counted agent missing
+  from it was stopped. Shells, monitors and workflows in that list are not agents. The bridge
+  forwards these as bounded `agentType`, `agentTool` and `backgroundTasks` fields, and never the
+  agent's prompt. It forwards at most 50 in-flight tasks; when it has to cut the list it also
+  sends `backgroundTasksTruncated`, and the daemon reads that list as a partial set that adds the
+  agents it names and stops none it omits. `SubagentStart` is in the installed event list; hooks
+  installed before it was added lack it until reinstalled, and Settings > Setup says so.
+- **Codex.** Every child runs asynchronously, and no hook reports the `wait` that would make one
+  foreground, so every child counts from its `SubagentStart` to its `SubagentStop`. The Codex
+  bridge forwards `agent_id` and `agent_type` on those two events only. Its hooks are
+  launch-scoped, so a new dispatch always carries both events.
+- **Pi** has no sub-agent signal and never shows the indicator.
+
+Both Claude and Codex fold finished agents on a `UserPromptSubmit`, and start again on a
+`SessionStart` with source `startup` or `resume`. For Claude, a prompt raised inside a sub-agent
+carries `agent_id` and does not fold. The Codex bridge forwards `agent_id` only on
+`SubagentStart` and `SubagentStop`, so every Codex `UserPromptSubmit` folds. Hooks are separate processes that can land out
+of order: an ended agent is remembered so a late launch or a late in-flight list cannot revive
+it, an in-flight list only stops agents counted before it was taken, and a real `SubagentStop`
+overrides a stop that was only inferred. The newest complete in-flight list is also remembered,
+so a delayed launch or an older list cannot add an agent that list left out, and a
+`SubagentStart` that lands after its launch still moves the agent's start time earlier. A
+signal stamped before the newest process start or resume belongs to the previous process and is
+ignored, so a late `Stop` or launch from it cannot bring its agents back. A `SessionStart` that
+lands late forgets only what was stamped before it, so agents the new process already reported
+stay listed. A stop stamped before the operator's latest prompt folds straight into the
+"N finished" count when it lands, since that turn has already begun; a prompt that lands late
+folds only agents that had finished by its own stamp.
+
+Hooks carry an agent's type, state and timing, and for Claude its launch description, but no tool
+or token counters and no last tool, so a terminal row omits those. See
+[Background sub-agents](sessions.md#background-sub-agents) for what a session shows.
 
 ## Managed terminal resumes
 
@@ -201,6 +250,16 @@ Which rows carry a chooser is the adapter's answer, not the panel's: a multiplex
 its own window declares no attach argv, and its row reads **Needs no terminal** instead. cmux is
 the shipped example. A multiplexer that is not installed keeps the control, disabled, since
 there is nothing to set a preference for yet.
+
+## Sessions started outside Mission Control
+
+**Settings > Setup > Terminals** also holds **Show sessions started outside Mission Control**,
+below the multiplexer rows. It is off by default for every install, including upgrades. On, it
+also shows Claude, Codex, and Pi sessions started by hand in any terminal. The warning under the
+switch is always shown, because those cards rely on the least reliable reads discovery makes.
+It is stored in the `terminals` blob (`externalSessions`) and recorded in settings backups under
+the `terminals` domain. Which sessions are shown while it is off is defined in
+[sessions started outside Mission Control](sessions.md#sessions-started-outside-mission-control).
 
 ## Herdr
 
@@ -542,9 +601,20 @@ in `mcpServers` exactly as above, but without `strictMcpConfig` or `disableClaud
 Claude Code also loads its user, local, project and plugin servers and the account's claude.ai
 connectors at every start. That is the MCP launch every other Agent SDK session makes, so there is
 no isolation to probe. The post-start `mcpServerStatus` check still requires Mission's server and
-every snapshot server to connect, and no longer refuses a server outside the snapshot. Codex
-records `null`: lifting its overlay would load a trusted project's servers without the layer check
-below, and it has no account connectors.
+every snapshot server to connect, and no longer refuses a server outside the snapshot.
+
+Codex uses `codex-native-home` when the preview is enabled and the profile opts in. The app-server
+stays on the normal Codex home, so native MCP configuration and OAuth remain owned by Codex.
+Mission Control's server and the snapshot's custom servers ride launch-only overrides and are marked
+required. Custom definitions use a TOML table with quoted names so dotted names stay intact.
+Every custom server is represented by a scoped launcher entry, keeping its definition out of
+the app-server arguments.
+`config/read` checks active layers for custom name collisions and for fields that would merge into
+Mission Control's registration. A standard Setup registration can coexist because launch flags
+provide its command, arguments and environment. Native servers outside the snapshot are allowed to
+start. Codex reads native configuration again when the run resumes.
+Mission Control checks registrations and active layer versions before and after thread startup.
+If the checks observe a change during startup, the resident stops before its first turn.
 
 Checked on 2026-11-09 against Claude Code 2.1.319 and a real account's configuration, through the
 production driver and without sending a prompt: a pinned launch reported only Mission's server.
@@ -558,8 +628,32 @@ repository.
 An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's
 `.codex/config.toml` both adds servers and merges fields into a server of the same name, and
 thread-level `config` overrides split keys on every dot, so they cannot address a server named
-`foo.bar`. The Codex check therefore:
+`foo.bar`.
 
+Resident launches and resumes pass `project_root_markers=[]` to the app-server,
+making the resident's working directory (its worktree root or private workspace) the project
+discovery boundary. This is the resident launch contract: an ancestor's `~/.codex` must not
+reenter as a project layer, even when trusted and containing Setup's registration. The overlay still
+carries the operator's non-MCP configuration and linked user instructions. Workspace-local
+`.codex` settings and instructions remain available; ancestor project settings and instructions
+are outside this resident boundary in both MCP modes. Ordinary sessions keep native project discovery.
+
+This ancestor exclusion was verified separately on **2026-11-17 (America/New_York)** with
+**Codex 0.166.0**. The configuration-only native probe captured the production SDK's launch and
+resume arguments and read `config/read` in disposable repository-free and worktree directories,
+including a symlinked `CODEX_HOME`. The trusted home layer was absent with the boundary; user and
+workspace settings survived, and workspace-local MCP conflicts still refused the start. The probe
+started no threads, model calls or MCP servers. This measurement covers that Codex version.
+The exact command was
+`node --import tsx --input-type=module < e2e/.artifacts/codex-active-home-round-1/native-probe.txt`.
+The source and output are retained as workflow evidence `codex-active-home-native-source-round-1`
+and `codex-active-home-native-round-1` in run `6c8ae404-82a5-4870-8478-be9dff7649cd`;
+the probe file is gitignored evidence, not a checked-in script.
+
+The Codex check then:
+
+- ignores layers with a nonempty `disabledReason`, which Codex reports for diagnostics but
+  excludes from the effective configuration;
 - switches off, from the overlay, a server that only another layer defines (written as
   `[mcp_servers."name"] enabled = false`), then reads the layers again;
 - refuses the start when another layer adds a field to one of the run's servers, or sets
@@ -574,7 +668,10 @@ remaining window; the startup-status watch catches any server it would add.
 Reproduce with `npm run build:resident-mcp-launcher && node --import tsx scripts/probe-resident-mcp.ts`.
 It drives the production drivers against the real binaries, with every home disposable, both model
 APIs answered by loopback mocks and every agent environment built from scratch, so it spends no
-tokens and reads no operator configuration. Measured on 2026-10-30 on Claude Code 2.1.310 and
+tokens and reads no operator user configuration. Machine-managed policy still applies to the CLI.
+Use a disposable test host or container whose policy permits the fixture MCP servers. [Claude Code settings precedence](https://code.claude.com/docs/en/settings#settings-precedence)
+
+Measured on 2026-10-30 on Claude Code 2.1.310 and
 Codex 0.160.0, at launch and on resume, 75 of 75 checks passing; the output is
 [retained on pull request #1269](https://github.com/teamupstart/mission-control/pull/1269#issuecomment-6532974173).
 Measured again on 2026-11-03 on Claude Code 2.1.317 and Codex 0.166.0, 75 of 75 passing, after
@@ -603,6 +700,37 @@ that made the change. A later harness release is not covered until the probe is 
   linked to the operator's home, and created no database inside the overlay.
 
 The probe definitions are source code; captured output belongs in workflow evidence, never Git.
+Run `node --import tsx scripts/probe-resident-mcp.ts --codex-native` after building the launcher
+to check native Codex launch and resume against disposable user and workspace configuration,
+including a pre-existing Setup registration, custom servers and loopback fixtures. A separate
+Codex app-server completes a synthetic OAuth login and saves it in the fixture home's file store.
+The protected endpoint rejects an anonymous request and requires the saved bearer for successful
+MCP initialization and tool listing in both fresh and resumed resident processes.
 Not measured: system and managed Codex configuration, which a fixture cannot place without
 administrator rights, and Claude Code's managed MCP file. The layer check and the startup watch
 cover both at runtime by refusing a start rather than trusting them.
+
+## Codex SDK background sub-agents
+
+Codex app-server sessions report children from their native `thread/started`,
+`subAgentActivity`, and `collabAgentToolCall` frames. The adapter projects only children
+proven to belong to the current thread tree into the shared `Session.subagents` summary,
+so the existing sub-agent display reads the same source as other harnesses. A child is
+background work except while an in-progress `wait` names it. Overlapping waits keep it
+hidden until all finish; a completed or interrupted sender turn also releases its waits.
+The parent's own completion does not finish its children.
+
+Role or nickname, spawn prompt or preview, and reported completion state populate the
+rows. Receipt time supplies elapsed time; tokens, tool counts, last tool and launch links
+stay absent because these frames do not provide them. `notFound` does not invent an end
+state. Finished rows fold after the next accepted send, including steering, but not on an
+unsolicited parent turn or a refused send. The send snapshots each finished child's run;
+a child that restarts and finishes again before acknowledgement keeps its new result visible
+until the following send. Context clearing drops the old summary, and
+late frames from retired trees cannot repopulate it.
+
+The summary lists at most 12 agents, running first, then newest finished; overflow finished
+rows fold into the count. Adapter bookkeeping retains at most 512 child identities and
+512 waits, forgetting the oldest beyond those limits. Summaries use the shared emitter's
+immediate membership/state and five-second counter-change policy. This adds no persisted
+state and changes no Codex frame routing, notification muting, or PR attribution.

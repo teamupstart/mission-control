@@ -82,16 +82,21 @@ export type ColumnMode =
  * column is empty (a drawer resident, or a session a filter hides), no rail is drawn and
  * the detail takes the board, carrying its own way back. See BoardView.
  */
-export function boardColumnModes(
-  groups: readonly ToneGroup[],
+export function boardColumnModes<Id extends string>(
+  /**
+   * The Board's columns by id, each with every session it draws: a tone column, or the Blocked
+   * column (`FleetColumn`). A Needs you column holding a Blocked lane counts the lane's sessions
+   * too, so it is drawn while either lane has a card and hidden only when both are empty.
+   */
+  columns: readonly { id: Id; sessions: readonly unknown[] }[],
   /** Provisioning tasks whose placeholders live in the Working column. */
   pending = 0,
-): Map<Tone, ColumnMode> {
-  const out = new Map<Tone, ColumnMode>();
-  for (const g of groups) {
-    if (g.sessions.length > 0) out.set(g.tone, "sessions");
-    else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else out.set(g.tone, "hidden");
+): Map<Id, ColumnMode> {
+  const out = new Map<Id, ColumnMode>();
+  for (const c of columns) {
+    if (c.sessions.length > 0) out.set(c.id, "sessions");
+    else if (c.id === "working" && pending > 0) out.set(c.id, "sessions");
+    else out.set(c.id, "hidden");
   }
   return out;
 }

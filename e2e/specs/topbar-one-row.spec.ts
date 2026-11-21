@@ -94,7 +94,7 @@ async function seedCost(daemon: DaemonHandle): Promise<void> {
   expect(res.ok, `/v1/metrics answered ${res.status}`).toBe(true);
 }
 
-/** The prompt `fake-claude.mjs` answers by raising an `AskUserQuestion` and blocking. */
+/** The prompt `fake-claude.mjs` answers by asking a question and blocking on it. */
 const ASK_TURN = "ask me which linter to use";
 
 /**
@@ -107,9 +107,10 @@ const ASK_TURN = "ask me which linter to use";
  * exact ladder this change replaced.
  *
  * A dispatched agent is only `working` for as long as the fake takes to answer, which is not
- * long enough to assert against. Parking it on its own `AskUserQuestion` is stable: the
- * session sits in an attention tone with the question outstanding for as long as nobody
- * answers it, which holds `need you` and `to answer` on the readout indefinitely.
+ * long enough to assert against. Parking it on a question is stable: a dispatched task asks
+ * through `request_input`, which blocks on a review, and the session sits in an attention
+ * tone with the review outstanding for as long as nobody answers it, which holds `need you`
+ * and `to answer` on the readout indefinitely.
  */
 async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -135,11 +136,11 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);
   await composer.press("Enter");
-  await expect(card.locator(".pane-dialog")).toBeVisible({ timeout: 15_000 });
+  await expect(card.getByRole("button", { name: "to review" })).toBeVisible({ timeout: 15_000 });
 
-  // `live · 1 session · 1 need you · 1 to answer` - four segments. A session parked on a
-  // pane dialog raises both amber figures since the attention pills were reconciled: `need
-  // you` counts the session, `to answer` counts the dialog the inbox can now drain. That is
+  // `live · 1 session · 1 need you · 1 to answer` - four segments. A session parked on an
+  // open question raises both amber figures since the attention pills were reconciled: `need
+  // you` counts the session, `to answer` counts the question the inbox can drain. That is
   // wider still than the three-segment readout this spec was first measured against, and
   // ~300px wider than the two-segment idle readout every threshold in the old ladder had been
   // measured against. Asserted so the rest of the spec cannot quietly degrade into measuring

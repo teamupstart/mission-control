@@ -16,6 +16,7 @@ export function writeNativeTerminalProbe(binDir: string, name: "cmux" | "herdr",
 const cmuxProbe = `if [ "$1" = capabilities ]; then
   case "$MC_E2E_CMUX_CONTROL" in
     stopped) printf 'Error: Socket not found at %s/cmux.sock\\n' "\${MISSION_HOME:-/tmp}" >&2; exit 1 ;;
+    stale) printf 'Error: Failed to connect to socket at %s/cmux.sock (Connection refused, errno 61)\\n' "\${MISSION_HOME:-/tmp}" >&2; exit 1 ;;
     refused) printf '%s\\n' 'Error: ERROR: Access denied - only processes started inside cmux can connect' >&2; exit 1 ;;
     *) printf '%s\\n' '{"access_mode":"allowAll","methods":[]}'; exit 0 ;;
   esac

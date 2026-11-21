@@ -165,6 +165,8 @@ export interface PiRuntimeOptions {
    */
   readonly projectTrust: boolean | (() => Promise<boolean>);
   signal?: AbortSignal;
+  /** Refuse launch or replacement rather than drop tools required by a managed task. */
+  readonly missionToolsRequired?: boolean;
   /**
    * The operator's REPOSITORY STANDING INSTRUCTIONS, as Pi's own system-prompt append.
    *

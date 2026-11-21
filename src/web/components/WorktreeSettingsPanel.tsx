@@ -1,3 +1,4 @@
+import { TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "@shared/worktree-retention.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreesConfigPatch } from "@shared/protocol.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
@@ -12,6 +13,7 @@ import type {
 import { worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { relativeTime } from "../lib/format.ts";
 import { openWorktreeTerminal } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
@@ -19,7 +21,7 @@ import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-function bytes(value: number | null): string {
+export function bytes(value: number | null): string {
   if (value === null) return "size unknown";
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KiB`;
   if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
@@ -38,8 +40,10 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   return: "Return",
   prune: "Prune",
   reconcile: "Reconcile",
+  recover: "Recover",
   destroy: "Destroy",
   legacyReturn: "Legacy return",
+  trimIdle: "Remove idle",
 };
 
 /**
@@ -198,6 +202,35 @@ function CapacityLegend({ geometry }: { geometry: CapacityGeometry }): React.JSX
   );
 }
 
+/**
+ * Why a slot is quarantined, when it entered, and whether Reconcile can bring it back. The time
+ * is the moment of the transition, never of a later observation, so an operator can tell a
+ * quarantine from this morning's process-listing outage apart from one that is days old.
+ */
+function QuarantineDetail({ slot, reason }: { slot: NativeWorktreeSlotView; reason: string }): React.JSX.Element {
+  const at = slot.quarantinedAt;
+  return (
+    <div className="wt-quarantine">
+      <p className="wt-diagnostic">{reason}</p>
+      <p className="wt-quarantine-meta">
+        {at !== null
+          ? (
+            <span>
+              Quarantined{" "}
+              <Tooltip label={new Date(at).toLocaleString()}>
+                <time dateTime={new Date(at).toISOString()}>{relativeTime(at)}</time>
+              </Tooltip>
+            </span>
+          )
+          : <span>Quarantine time not recorded</span>}
+        {slot.quarantineRecoverable !== null && (
+          <span>{slot.quarantineRecoverable ? "Reconcile returns it once re-proven" : "Needs operator action"}</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SlotCard({
   slot,
   pending,
@@ -265,6 +298,7 @@ function SlotCard({
         <StateChip label={slot.state} tone={tone} />
         {pending && <StateChip label={`${ACTION_VERBS[pending.request.action].toLowerCase()} ${pending.state === "running" ? "in progress" : "queued"}`} tone="working" />}
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
+        {slot.orphaned && <StateChip label="not a Git worktree" tone="danger" />}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
       </div>
@@ -278,8 +312,16 @@ function SlotCard({
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
-      {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
-        <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
+      {slot.owner?.cleanupDueAt != null && <p className="wt-diagnostic">Automatic cleanup due: <time dateTime={new Date(slot.owner.cleanupDueAt).toISOString()}>{new Date(slot.owner.cleanupDueAt).toLocaleString()}</time></p>}
+      {slot.processes.reason && <p className="wt-diagnostic">{slot.processes.reason}</p>}
+      {slot.quarantineReason
+        ? <QuarantineDetail slot={slot} reason={slot.quarantineReason} />
+        : slot.diagnostic && <p className="wt-diagnostic">{slot.diagnostic}</p>}
+      {slot.orphaned && (
+        <p className="wt-diagnostic">
+          Git no longer recognizes this slot, usually because the main checkout was re-cloned or
+          moved. It cannot be recovered. Destroy removes it, and its files cannot be checked first.
+        </p>
       )}
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
@@ -306,6 +348,11 @@ function SlotCard({
             <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "return", slotId: slot.id }, event.currentTarget)}>
               Return
             </button>
+          </Tooltip>
+        )}
+        {!pending && slot.actions.includes("recover") && (
+          <Tooltip label="Preview all safety checks before returning this quarantined slot to warm capacity">
+            <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "recover", slotId: slot.id }, event.currentTarget)}>Recover</button>
           </Tooltip>
         )}
         {!pending && slot.actions.includes("destroy") && (
@@ -504,6 +551,10 @@ function PoolSkeleton(): React.JSX.Element {
 
 function dialogTitle(request: WorktreeActionRequest): string {
   if (request.action === "legacyReturn") return "Return legacy worktree";
+  if (request.action === "trimIdle") {
+    const count = request.slotIds.length;
+    return `Remove ${count} idle ${count === 1 ? "slot" : "slots"}`;
+  }
   if (request.action === "destroy" && request.target.kind === "slots") {
     const count = request.target.slotIds.length;
     return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
@@ -511,7 +562,7 @@ function dialogTitle(request: WorktreeActionRequest): string {
   return `${ACTION_VERBS[request.action]} worktree`;
 }
 
-function ActionDialog({
+export function ActionDialog({
   preview,
   error,
   changed,
@@ -571,6 +622,13 @@ function ActionDialog({
           {changed && <div className="wt-changed"><strong>State changed after this preview.</strong><p>{error}</p><Tooltip label="Discard the stale token and build a new safety preview"><button className="btn btn-secondary" type="button" onClick={onRefresh}>Refresh preview</button></Tooltip></div>}
           {!changed && error && <p className="settings-error">{error}</p>}
           {preview.affected.length > 0 && <section><h4>Affected paths</h4><ul className="wt-affected">{preview.affected.map((item) => <li key={`${item.provider}:${item.id}`}><code>{item.path}</code><span>{item.owner?.label ?? item.provider} · {bytes(item.diskBytes)}</span></li>)}</ul></section>}
+          {preview.recovery && <section>
+            <h4>Original quarantine</h4>
+            <p>{preview.recovery.reason ?? "Reason not recorded"}</p>
+            <p>Category: {preview.recovery.category ?? "legacy (uncategorized)"} · Quarantined: {preview.recovery.quarantinedAt === null ? "Time not recorded" : new Date(preview.recovery.quarantinedAt).toLocaleString()}</p>
+            <h4>Recovery checks</h4>
+            <ul>{preview.recovery.checks.map((check) => <li key={check.label}><strong>{check.label}: {check.status}</strong><span> · {check.detail}</span></li>)}</ul>
+          </section>}
           {preview.blockers.length > 0 && <section className="wt-blockers"><h4>Cannot execute</h4><ul>{preview.blockers.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}
@@ -582,6 +640,35 @@ function ActionDialog({
 }
 
 const LEGACY_KINDS = ["ownedExact", "identityUnverifiable", "foreign", "unreadable"] as const;
+
+function RetentionSettings({ days, save }: { days: number; save: WorktreesState["updateConfig"] }): React.JSX.Element {
+  const [draft, setDraft] = useState(String(days));
+  const [saving, setSaving] = useState(false);
+  const value = Number(draft);
+  const valid = Number.isInteger(value) && value >= TASK_RETENTION_MIN_DAYS && value <= TASK_RETENTION_MAX_DAYS;
+  return (
+    <section className="wt-group" data-anchor="worktrees/retention" aria-label="Task worktree retention">
+      <h4>Task worktree retention</h4>
+      <p className="settings-hint">Done, failed and cancelled tasks retain their worktrees for this many days without a Git-visible change. Applies to all providers. Default: 30 days; allowed: 7–90 days. Retention cannot be disabled.</p>
+      <p className="settings-hint" id="retention-warning">At the deadline, automatic cleanup deletes staged changes, unstaged changes, untracked files, local commits and unpushed commits. Push and pull-request state are not checked.</p>
+      <div className="kb-row">
+        <div className="kb-row-text">
+          <label className="kb-row-label" htmlFor="task-retention-days">Retention window (days)</label>
+          <span className="kb-row-desc">Saving never deletes a tree. Deadlines update on the next successful observation. Shortening brings cleanup closer, with at least six hours of grace after that observation. Lengthening recomputes unclaimed deadlines but keeps a later grace deadline unchanged.</span>
+        </div>
+        <div className="kb-row-controls">
+          <input id="task-retention-days" className="wt-number" type="number" min={TASK_RETENTION_MIN_DAYS} max={TASK_RETENTION_MAX_DAYS} step={1} value={draft} aria-describedby="retention-warning" onChange={(event) => setDraft(event.target.value)} disabled={saving} />
+          <Tooltip label="Save the retention window; deadlines update on the next successful observation without deleting worktrees immediately">
+            <button className="btn btn-secondary" type="button" disabled={saving || !valid || value === days} onClick={() => {
+              setSaving(true);
+              void save({ taskRetentionDays: value }).finally(() => setSaving(false));
+            }}>{saving ? "Saving…" : "Save retention"}</button>
+          </Tooltip>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): React.JSX.Element {
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
@@ -655,7 +742,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   return (
     <section className="settings-section wt-settings">
       <p className="settings-hint settings-blurb">
-        Mission Control owns these checkouts, and only these. Every cleanup is{" "}
+        Mission Control owns these checkouts, and only these. Every manual cleanup is{" "}
         <strong>previewed and rechecked</strong> against task, check, manual lease, Git, and
         process ownership before it can mutate a path. Executed cleanups run in the background,
         one after another, so you can keep queueing more.
@@ -765,6 +852,8 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
         </div>
         <p className="settings-hint">A repository with its own override ignores both of these. Open its pool above to see or clear that override.</p>
       </section>
+
+      {config && <RetentionSettings key={config.taskRetentionDays} days={config.taskRetentionDays} save={state.updateConfig} />}
 
       <section className="wt-group" data-anchor="worktrees/legacy-drain">
         <div className="settings-section-head wt-group-head">

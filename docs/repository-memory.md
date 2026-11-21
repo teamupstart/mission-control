@@ -225,6 +225,11 @@ opens a pull request, so it never reaches that moment at all, and Complete is th
 anybody is looking at it. It sends the retro and leaves the task open and the session alive,
 because the retro is a turn that session still has to take.
 
+A resident is the exception to all of this. Its card never offers the memory retro, and its
+Complete dialog offers a different one, which proposes changes to the resident's own standing
+instructions rather than repository memories; the route sends a resident that one instead. See
+[Retro before completing](residents.md#retro-before-completing).
+
 Clicking reports which arm the route took - typed into this session, filed as a backlog task,
 started as a linked post-merge task, or left recoverably queued - rather than a bare success,
 because those are different next moves. The post-merge messages state that the original task

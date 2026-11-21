@@ -12,6 +12,7 @@ import {
 } from "../src/web/tour/content.ts";
 import { TOUR_DEFINITIONS } from "../src/web/tour/definitions.ts";
 import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integration.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const toursDir = join(root, "tours");
@@ -25,11 +26,11 @@ test("the generated module is exactly what the authored tour Markdown regenerate
   );
   assert.deepEqual(
     TOUR_CONTENT_SOURCES.map((source) => source.slug),
-    ["library", "see-work", "setup", "workflows"],
+    ["library", "residents", "see-work", "setup", "workflows"],
   );
   assert.deepEqual(
     readdirSync(toursDir).filter((entry) => entry.endsWith(".md")).sort(),
-    ["README.md", "library.md", "see-work.md", "setup.md", "workflows.md"],
+    ["README.md", "library.md", "residents.md", "see-work.md", "setup.md", "workflows.md"],
   );
   for (const source of TOUR_CONTENT_SOURCES) {
     assert.equal(source.markdown, readFileSync(join(toursDir, `${source.slug}.md`), "utf8"));
@@ -87,6 +88,54 @@ test("the Markdown shape supports wrapped prose and a human-readable definition 
       },
     },
   });
+});
+
+test("an entry that requires an integration is shown only while that integration is offered", () => {
+  const markdown = [
+    "# Example tour",
+    "",
+    "## Kinds",
+    "<!-- stage: kinds -->",
+    "",
+    "Pick one.",
+    "",
+    "- **Ship:** Deliver a change.",
+    "- **Pipeline:** Start an engine workflow <!-- requires: ai-conductor -->",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseTourContent("example", markdown, { "ai-conductor": false }).stages.kinds!.details, [
+    { label: "Ship", description: "Deliver a change." },
+  ]);
+  // Offered: the entry returns with its copy intact and the marker stripped.
+  assert.deepEqual(parseTourContent("example", markdown, { "ai-conductor": true }).stages.kinds!.details, [
+    { label: "Ship", description: "Deliver a change." },
+    { label: "Pipeline", description: "Start an engine workflow" },
+  ]);
+  // A requirement no build defines is an authoring mistake, not a silently hidden entry.
+  assert.throws(
+    () => parseTourContent("broken", markdown.replace("ai-conductor", "no-such-thing"), { "ai-conductor": true }),
+    /requires unknown integration no-such-thing/,
+  );
+  // Including a name every object inherits: it is not a requirement this build defines.
+  for (const inherited of ["constructor", "to-string"]) {
+    assert.throws(
+      () => parseTourContent("broken", markdown.replace("ai-conductor", inherited), { "ai-conductor": true }),
+      new RegExp(`requires unknown integration ${inherited}`),
+    );
+  }
+});
+
+test("the shipped tour follows the Conductor switch: the Pipeline kind is authored, shown only when on", () => {
+  const source = TOUR_CONTENT_SOURCES.find((entry) => entry.slug === "see-work")!;
+  assert.match(source.markdown, /- \*\*Pipeline:\*\* .*<!-- requires: ai-conductor -->/, "the copy stays authored");
+  const labels = (stages: ReturnType<typeof tourContent>["stages"]) =>
+    stages["dispatch-kind"]!.details!.map((detail) => detail.label);
+  const hidden = ["Chat", "Scout", "Plan", "Ship"];
+  const offered = [...hidden, "Pipeline"];
+  assert.deepEqual(labels(parseTourContent("see-work", source.markdown, { "ai-conductor": false }).stages), hidden);
+  assert.deepEqual(labels(parseTourContent("see-work", source.markdown, { "ai-conductor": true }).stages), offered);
+  // The tour the dashboard ships follows the constant, so flipping it is the only edit needed.
+  assert.deepEqual(labels(tourContent("see-work").stages), CONDUCTOR_INTEGRATION_ENABLED ? offered : hidden);
 });
 
 test("malformed authored copy fails before a tour can start", () => {

@@ -177,7 +177,11 @@ test("resident is launched only from a profile: Dispatch does not offer it and i
   assert.equal(taskKindForcedRuntime("chat"), null);
   assert.equal(taskKindLaunchesHarness("resident"), false, "the profile, not a per-kind default, owns its launch");
   assert.equal(allowsBacklogAutopilot("resident"), false);
-  assert.equal(taskDefaultWorkflowId("resident", null), null);
+  assert.equal(TASK_KIND_BEHAVIOR.resident.foremanInvite, false, "a resident launches with Foreman out of its session");
+  for (const kind of TASK_KINDS.filter((k) => k !== "resident")) {
+    assert.equal(TASK_KIND_BEHAVIOR[kind].foremanInvite, true, `${kind} keeps the launch-time Foreman invite`);
+  }
+  assert.equal(taskDefaultWorkflowId("resident", {}), null);
   assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
   assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
 });
@@ -200,6 +204,10 @@ test("chat has the approved conversational copy", () => {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
+    // A chat is a piece of work, and the tasks its session files are their own.
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   });
 });
@@ -209,6 +217,9 @@ test("pipeline is provider-owned work and never backlog autopilot work", () => {
     repoAvailability: "pipeline-enabled",
     launch: "pipeline",
     autopilot: false,
+    foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });

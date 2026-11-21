@@ -6,7 +6,7 @@ import { PlanView } from "./PlanView.tsx";
 import { ChatGlyph, DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
-import { reviewDecisions, showsBody } from "../lib/reviews.ts";
+import { inputBody, reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -22,6 +22,12 @@ import {
 import { Tooltip } from "./Tooltip.tsx";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
+import { canSnoozeReview } from "@shared/review-snooze.ts";
+import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
+import { CheckoutPathText } from "./CheckoutPathText.tsx";
+import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
+import { useNow } from "../useNow.ts";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -41,6 +47,8 @@ export function ReviewModal({
   dialog = null,
   onClose,
   onMovedToChat,
+  files,
+  onOpenPath,
 }: {
   session: Session;
   reviews: ReviewItem[];
@@ -52,7 +60,22 @@ export function ReviewModal({
   onClose: () => void;
   /** A question was moved to the conversation; the caller takes the operator there. */
   onMovedToChat?: (sessionId: string) => void;
+  /**
+   * The session files store, for the checkout listing that decides which paths a question's
+   * text names. The question is often a choice between files the agent just wrote - mock-ups
+   * above all - and this card is where the operator makes it.
+   */
+  files?: SessionFilesController;
+  /** Open one checkout file in the session's Files tab. */
+  onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
+  const openPath = onOpenPath
+    ? (path: string) => {
+        onClose();
+        onOpenPath(session.id, path);
+      }
+    : undefined;
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   const pending = reviews.length + (dialog ? 1 : 0);
   // Close automatically once the session has nothing left pending: no review and no menu.
@@ -84,7 +107,15 @@ export function ReviewModal({
       <div className="modal-body">
         {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
         {reviews.map((r) => (
-          <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
+          <ReviewCard
+            key={r.id}
+            review={r}
+            session={session}
+            note={session.note}
+            onMovedToChat={onMovedToChat}
+            checkoutPaths={checkoutPaths}
+            onOpenPath={openPath}
+          />
         ))}
       </div>
     </Overlay>
@@ -101,11 +132,23 @@ export function ReviewModal({
  */
 export function ReviewCard({
   review,
+  session = null,
   note: sessionNote,
   onMovedToChat,
+  checkoutPaths = null,
+  onOpenPath,
 }: {
   review: ReviewItem;
+  /**
+   * The session that asked, live. A message-mode question (`async-input`) reads it for its status
+   * line: whether the agent is still working past the question or has stopped on it. Every other
+   * review ignores it.
+   */
+  session?: Pick<Session, "id" | "state" | "stateConfirmed" | "task"> | null;
   note?: SessionNoteSummary | null;
+  /** Paths in the session's checkout; a question naming one links it to Files. */
+  checkoutPaths?: ReadonlySet<string> | null;
+  onOpenPath?: (path: string) => void;
   /**
    * Called once an answer that moved at least one question to chat has been delivered, so the
    * surface can close and focus the session's message box: the conversation is where the
@@ -123,6 +166,14 @@ export function ReviewCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
+  // "Remind me later" opens a sheet in place of the answer form. Local to this mount on
+  // purpose: closing the modal mid-choice drops the half-made snooze, never the draft answer.
+  const [snoozing, setSnoozing] = useState(false);
+  const snoozable = canSnoozeReview(review);
+  // How the agent waits right now, so Remind me later says what is true of it (`QUESTION_ACTION_COPY`).
+  // The asking session, marked when it is a resident the operator paused (`questionAgentStatus`).
+  const agent = useQuestionAgent(session);
+  const wait = questionWait(review, agent);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -192,6 +243,10 @@ export function ReviewCard({
     void resolve("answer", formatResponse(asked, selections, decisionLead(review.kind)), selections);
   }
 
+  const laterButton = snoozable ? (
+    <RemindLaterButton disabled={busy} onClick={() => setSnoozing(true)} wait={wait} />
+  ) : null;
+
   const dismissButton = (
     <Tooltip label="Dismiss this review without sending an answer">
       <button
@@ -210,6 +265,7 @@ export function ReviewCard({
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
         </span>
+        {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
         <h3>{review.title}</h3>
         {foremanAvailable && (
           <ForemanRecommendationButton
@@ -223,25 +279,32 @@ export function ReviewCard({
       {/*
         An `input` shows its body only when it SAYS something the header does not.
 
-        `request_input` sends a clipped question as the title and the whole question as the
-        body, so the two are equal whenever the question fit in a heading - and printing both
-        then put the same sentence on screen twice, once as the `<h3>` and again as a paragraph
-        directly beneath, with a third copy possible as the form's legend.
+        `request_input` sends a clipped question as the title and the whole question, then any
+        `context`, as the body. When the question fit in a heading its paragraph equals the
+        title, and printing it again put the same sentence on screen twice - so `inputBody`
+        drops that leading paragraph and only the context is printed beneath the heading.
 
-        But suppressing it unconditionally would flatten a long or multi-line free-text
-        question into a bold heading with its newlines collapsed. So the test is
-        `body !== title` rather than the kind: past the clip the body says something the header
-        does not, and it is rendered as the readable paragraph it should be. The whole block is
+        But suppressing the body outright would flatten a long or multi-line free-text
+        question into a bold heading with its newlines collapsed. Past the clip the body says
+        something the header does not, and it is rendered in full as the readable paragraph it
+        should be. The whole block is
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
+      <QuestionStatus review={review} session={agent} />
+      <ReminderBanner review={review} />
+
       {showsBody(review) && (
         <div className="review-content">
           {review.kind === "diff" && <DiffView diff={review.body} />}
           {(review.kind === "plan" || review.kind === "plan-decisions") && (
             <PlanView markdown={review.body} />
           )}
-          {review.kind === "input" && <p className="question">{review.body}</p>}
+          {review.kind === "input" && (
+            <p className="question">
+              <CheckoutPathText text={inputBody(review)} paths={checkoutPaths} onOpen={onOpenPath} />
+            </p>
+          )}
         </div>
       )}
 
@@ -253,7 +316,9 @@ export function ReviewCard({
         `plan-decisions` with no decisions cannot be created (the schema forbids it); an
         `input` with none is the open-ended ask, and still gets the textarea.
       */}
-      {decisions ? (
+      {snoozing && snoozable ? (
+        <SnoozeSheet review={review} wait={wait} onBack={() => setSnoozing(false)} />
+      ) : decisions ? (
         <DecisionForm
           decisions={decisions}
           busy={busy}
@@ -275,7 +340,9 @@ export function ReviewCard({
             updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
           }
           besideSubmit={
-            finalBundle && (
+            // A snoozable question is a `request_input` ask, never a plan bundle, so at
+            // most one of the two ever fills this slot.
+            laterButton ?? (finalBundle && (
               <label className="decisions-standing-approval">
                 <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
                   <input
@@ -287,7 +354,7 @@ export function ReviewCard({
                 </Tooltip>
                 <span>Approve all future bundles for this task</span>
               </label>
-            )
+            ))
           }
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
@@ -308,6 +375,7 @@ export function ReviewCard({
               {CHAT_ABOUT_IT}
             </button>
           </Tooltip>
+          {laterButton}
           <Tooltip
             label={answer.trim() ? "Send this answer back to the agent" : "Write an answer first"}
           >
@@ -362,5 +430,33 @@ export function ReviewCard({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * Under a message-mode question's title (`async-input`): whether its agent is still working past
+ * it, with the agent's own meanwhile line, or has stopped on it, and how long ago it was asked.
+ * Nothing for a question its agent waits on inside the call, which reads exactly as it always has.
+ */
+function QuestionStatus({
+  review,
+  session,
+}: {
+  review: ReviewItem;
+  session: QuestionAgent | null;
+}): React.JSX.Element | null {
+  const now = useNow(review.waitMode === "message", 10_000);
+  const line = questionStatusLine(review, session, now);
+  if (!line) return null;
+  return (
+    <p className={`review-wait review-wait-${line.status}`}>
+      <span className="review-wait-state">{line.label}</span>
+      {line.meanwhile && (
+        <span className="review-wait-meanwhile">
+          <span className="review-wait-tag">Meanwhile</span> {line.meanwhile}
+        </span>
+      )}
+      <span className="review-wait-asked">{line.asked}</span>
+    </p>
   );
 }

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
+import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
+import { TaskShapingPanel } from "./TaskShapingPanel.tsx";
+import type { ShapingSettings } from "../useShapingSettings.ts";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -8,22 +14,24 @@ import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { TelemetrySettingsPanel } from "./TelemetrySettingsPanel.tsx";
 import { useTelemetry } from "../useTelemetry.ts";
 import { RestoreSettingsPanel } from "./RestoreSettingsPanel.tsx";
+import { StorageSettingsPanel } from "./StorageSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
-import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { StandingInstructionsPanel } from "./StandingInstructionsPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
+import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
+import { BlockedPlacementPanel } from "./BlockedPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
@@ -35,7 +43,6 @@ import { SetupPanel } from "./SetupPanel.tsx";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
-import { useRepoIndex } from "../useRepoIndex.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useStandingInstructions } from "../useStandingInstructions.ts";
 import { useConductor } from "../useConductor.ts";
@@ -45,17 +52,20 @@ import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { SettingsStatus } from "@shared/types.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
-  SETTINGS_CATEGORIES,
+  visibleSettingsCategories,
   SETTINGS_GROUPS,
   SETTINGS_SCOPES,
+  DEFAULT_SETTINGS_CATEGORY,
   settingsCategoriesIn,
+  settingsCategoryAvailable,
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
-import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
+import { settingsRailDot, storageDotTone, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES } from "../tour/entries.ts";
@@ -123,10 +133,12 @@ function dotLabel(
       return "GitHub Inspector is live - reviews post to GitHub";
     }
     case "armed":
+      if (category === "storage") return "Mission Control is near its storage limit";
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"
         : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
+      if (category === "storage") return "Storage needs attention: free space is low or a backup failed";
       if (category === "telemetry") {
         return "A telemetry destination stopped or is not getting through";
       }
@@ -205,6 +217,8 @@ export function SettingsPage({
   layout,
   onLayoutChange,
   settingsStatus,
+  storageHealth = null,
+  storageConfigRevision = 0,
   harnessesRevision = 0,
   worktreesRevision = 0,
   workflowSummaries = [],
@@ -212,8 +226,13 @@ export function SettingsPage({
   onStartTour,
   onBrowseTours,
   onOpenForemanProfile,
+  featureFlagsSettings,
+  shapingSettings,
   jump = null,
 }: {
+  featureFlagsSettings?: FeatureFlagsSettings;
+  /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
+  shapingSettings?: ShapingSettings;
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -269,6 +288,10 @@ export function SettingsPage({
    * NOT come from here: it derives from the App-owned `foreman` prop above.
    */
   settingsStatus: SettingsStatus | null;
+  /** `MissionState.storageHealth`, the live aggregate Settings > Storage draws. */
+  storageHealth?: StorageHealth | null;
+  /** `MissionState.storageConfigRevision`: Settings > Storage re-reads its config when it moves. */
+  storageConfigRevision?: number;
   /**
    * `MissionState.harnessesRevision` - bumped whenever the daemon announces a change to the
    * per-harness dispatch defaults. Handed to `useHarnesses` so this page reflects an edit
@@ -301,7 +324,12 @@ export function SettingsPage({
    */
   jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
-  const shown = category;
+  // A category this build does not offer (Conductor, while the ai-conductor integration is
+  // hidden), or one whose feature flag is off, renders the default panel, so no caller can
+  // mount it by naming it directly. The flags are the event stream's, so a category behind one
+  // appears and disappears here the moment it changes in any window.
+  const flags = useContext(FeatureFlagsContext);
+  const shown = settingsCategoryAvailable(category, flags) ? category : DEFAULT_SETTINGS_CATEGORY;
   // The Setup rail row, for the tour that teaches where Setup is. One row of the same
   // registry-driven loop below, so it is registered from that loop's ref callback rather
   // than by lifting Setup out of the list it belongs to.
@@ -315,7 +343,6 @@ export function SettingsPage({
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
   const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
-  const repoIndex = useRepoIndex(shown === "repositories");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();
@@ -516,7 +543,7 @@ export function SettingsPage({
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
   function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
-    const walk = SETTINGS_CATEGORIES;
+    const walk = visibleSettingsCategories(flags);
     const last = walk.length - 1;
     const idx = walk.findIndex((c) => c.id === shown);
     let next: number;
@@ -566,6 +593,7 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
             <ResidentPlacementPanel />
+            <BlockedPlacementPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -574,6 +602,9 @@ export function SettingsPage({
                 live card, so it belongs at the bottom of the scroll rather than pushing
                 the three one-line choices below the fold. */}
             <BoardCardPanel />
+            {/* Beside the card panel: which pause controls those cards and the console draw,
+                each with its own preview. */}
+            <PauseControlsPanel />
             {/* After the card, because it is the one panel here about the chrome around every
                 page rather than about sessions - and it carries a whole bar as its preview. */}
             <TopbarPanel />
@@ -602,14 +633,25 @@ export function SettingsPage({
             />
           </>
         );
+      case "feature-flags":
+        return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
+      case "task-shaping":
+        return <TaskShapingPanel state={shapingSettings} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
+      case "tasks":
+        return (
+          <TaskSettingsPanel
+            state={workflowSettings}
+            workflows={workflowSummaries}
+            foremanEnabled={foreman.config?.enabled ?? false}
+            skills={skills}
+          />
+        );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
-      case "repositories":
-        return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
       case "standing-instructions":
@@ -643,7 +685,6 @@ export function SettingsPage({
           <WorkflowSettingsPanel
             state={workflowSettings}
             workflows={workflowSummaries}
-            foremanEnabled={foreman.config?.enabled ?? false}
             onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />
@@ -652,6 +693,17 @@ export function SettingsPage({
         return <CostSettingsPanel state={cost} />;
       case "telemetry":
         return <TelemetrySettingsPanel state={telemetry} />;
+      case "storage":
+        return (
+          <StorageSettingsPanel
+            health={storageHealth}
+            configRevision={storageConfigRevision}
+            worktreesRevision={worktreesRevision}
+            onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
+          />
+        );
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":
@@ -739,7 +791,7 @@ export function SettingsPage({
                 {group.label}
                 <ScopeBadge scope={group.scope} />
               </p>
-              {settingsCategoriesIn(group.id).map((c) => (
+              {settingsCategoriesIn(group.id, flags).map((c) => (
                 <Tooltip key={c.id} label={c.blurb}>
                   <button
                     id={tabDomId(c.id)}
@@ -767,6 +819,7 @@ export function SettingsPage({
                         foremanEnabled,
                         trustBlindSpot,
                         trustCheckExecution,
+                        storageTone: storageDotTone(storageHealth),
                       })}
                       status={settingsStatus}
                       category={c.id}

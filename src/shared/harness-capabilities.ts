@@ -13,6 +13,7 @@ import type {
 // Phase 0 collapsed.
 import { AGENT_IDENTITY } from "./agent.ts";
 import type { StandingInstructionsMechanism } from "./standing-instructions.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
 
 // The Harness axis' PURE half: what an agent can do, spelled as data, with no `node:`
 // imports and no filesystem.
@@ -135,13 +136,16 @@ export interface McpSelectionSpec {
  * - `lift-strict-mcp-config`: the launch leaves out `strictMcpConfig` and
  *   `disableClaudeAiConnectors`, so Claude Code loads its own configuration and connectors at
  *   every start, as a terminal session does, beside Mission's server and the snapshot of the
- *   profile's custom servers in `mcpServers`. That is the MCP launch every other Agent SDK
- *   session already makes, so there is no isolation to probe.
+ *   profile's custom servers in `mcpServers`. A profile may opt out of cloud connectors with
+ *   a launch-scoped environment setting while retaining these native sources.
+ * - `codex-native-home`: the app-server uses the normal Codex home and adds the
+ *   profile's custom servers through launch overrides.
  */
 export interface AllNativeMcpSourcesSpec {
-  mechanism: "lift-strict-mcp-config";
+  mechanism: "lift-strict-mcp-config" | "codex-native-home";
   /** What the harness then loads on its own, as the editor and its confirmation name it. */
   sources: string;
+  previewFlag?: FeatureFlagId;
 }
 
 /**
@@ -576,6 +580,14 @@ export type ModelDiscoverySpec =
  * vocabulary to learn.
  */
 interface HarnessCapabilitiesBase {
+  /**
+   * Whether this harness's Agent SDK driver is a process of its own that a pause can stop
+   * (`src/server/pause/freezer.ts` freezes the daemon's child). False for a driver that runs
+   * inside the daemon, which has nothing to stop: pausing it holds the session - nothing new is
+   * sent and its current turn finishes - but freezes nothing, and its network stays in use
+   * until that turn ends. Only the `sdk` runtime is asked; a terminal agent is always a process.
+   */
+  sdkDriverStoppable: boolean;
   /** Measured resident maintenance layers. Claude native threshold failed the 2.1.310 probe. */
   residentCompaction: { betweenIterations: boolean; nativeBackstop: boolean } | null;
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -679,6 +691,7 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
 export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   claude: {
     id: "claude",
+    sdkDriverStoppable: true,
     // The list declares what the harness supports; dispatch takes the configured runtime.
     // `"sdk"` here and `HARNESSES.claude.sdk` are one fact in two files
     // (`harness-sdk.test.ts`).
@@ -829,6 +842,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
+    sdkDriverStoppable: true,
     // `codex app-server` JSON-RPC, behind `HARNESSES.codex.sdk` - one fact in two files
     // (`harness-sdk.test.ts`). This list declares support, not a preference order.
     runtimes: ["terminal", "sdk"],
@@ -883,9 +897,15 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
     // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
     // so every start also verifies the layers and disables foreign servers before they load.
-    // No `allNativeSources`: Codex has no account connectors, and skipping the overlay would
-    // load a trusted project's servers unverified, which nothing has measured yet.
-    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher", allNativeSources: null },
+    mcpSelection: {
+      mechanism: "codex-home-overlay",
+      secrets: "scoped-launcher",
+      allNativeSources: {
+        mechanism: "codex-native-home",
+        sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
+        previewFlag: "codex-resident-native-mcp",
+      },
+    },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -987,6 +1007,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   pi: {
     id: "pi",
+    // Pi's `AgentSessionRuntime` runs inside the daemon (`SdkSupervisor.driverProcessId` is null).
+    sdkDriverStoppable: false,
     // Both, since Pi's own SDK landed behind `HARNESSES.pi.sdk`. ONE fact in two files
     // (`harness-sdk.test.ts`), and the driver is the package's `AgentSessionRuntime` rather
     // than the `--mode rpc` transport an older phase proposed - see the note on that slot.

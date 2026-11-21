@@ -267,6 +267,8 @@ export const SCHEDULE_STALE_CLAIM_MS = 5 * 60 * 1000;
 export const SCHEDULE_OVERLAP_BLOCKING_TASK_STATUSES: readonly TaskStatus[] = [
   "backlog",
   ...ACTIVE_TASK_STATUSES,
+  // Parked by the operator, not finished: the previous run still owns its conversation.
+  "hibernated",
 ];
 
 // ---- the template ----

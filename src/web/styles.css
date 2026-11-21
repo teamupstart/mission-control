@@ -68,6 +68,19 @@
      member before it. */
   --held: var(--purple);
 
+  /* A session the operator paused (`Session.pause`). Slate, and each neighbour was ruled out
+     for the reason `--held` gives: `--working` blue would read as an agent burning tokens,
+     `--idle` green as free to take, `--held` purple as a run owning it. Colour is never the
+     only cue - every paused surface also prints the two-bar glyph and the word. */
+  --paused: #9aaecb;
+
+  /* A hibernated task (`Task.hibernation`): its agent stopped on purpose, its conversation kept.
+     Periwinkle, a step bluer than `--paused` slate - the two are the same family of "the
+     operator stopped this", and distinguishable because only this one has no process at all.
+     Kept off `--working` blue and `--held` purple for `--paused`'s reasons. Never the only cue:
+     every hibernated surface prints the moon and the word. */
+  --hibernated: #8f9be0;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -1148,6 +1161,18 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 .wt-diagnostic { color: var(--wt-attention); }
+
+/* Always stacked, so every quarantined card reads the same whether or not the pair would fit. */
+.wt-quarantine-meta {
+  color: var(--dim);
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+
+.wt-quarantine-meta time { color: var(--muted); }
 
 /* ---- Treehouse ---- */
 .wt-legacy-totals {
@@ -3822,15 +3847,25 @@ button.wf-run-version:focus-visible {
    rows its component asks for, grows with wrapped or explicit lines, and keeps five lines
    visible before it becomes its own scroller. `field-sizing` also reacts to imperative
    value changes, which matters when a queued turn is recalled into an uncontrolled
-   composer without a React render. Unsupported browsers keep the native rows-based size
-   and the existing vertical resize handle. */
+   composer without a React render. Unsupported browsers keep the native rows-based size.
+
+   Where a field shows the corner handle, dragging it gives the field the height the person
+   chose, past the five-line cap. The cap describes how far a field GROWS ON ITS OWN, so it
+   must never clamp a drag - when it did, a drag stopped at five lines, and a field already
+   at the cap or held at a taller `min-height` did not move at all. The browser records a
+   drag as an inline `height` on the element, and that is the one signal the cap yields to;
+   no component here writes an inline height of its own. The handle is vertical only,
+   because these fields fill their column and a sideways drag pushes them out of it. */
 :where(textarea) {
   --textarea-min-content-height: 2lh;
   --textarea-block-chrome: 18px;
   field-sizing: content;
   min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
-  max-height: calc(5lh + var(--textarea-block-chrome));
   overflow-y: auto;
+  resize: vertical;
+}
+:where(textarea:not([style*="height"])) {
+  max-height: calc(5lh + var(--textarea-block-chrome));
 }
 textarea[rows="1"] { --textarea-min-content-height: 1lh; }
 textarea[rows="2"] { --textarea-min-content-height: 2lh; }
@@ -4062,6 +4097,9 @@ body {
    spend popover it opens entirely inside the drag rectangle - and its whole point is a
    switch the OS must not eat. */
 .is-desktop .ka-pop,
+/* The lost-tasks card hangs off the pulse's trailing segment IN the bar; its Open Sitrep
+   button is its whole point. */
+.is-desktop .lost-pop,
 /* The Residents dock hangs off its button IN the bar, and on a narrow window it spans the
    window directly under it; its Launch and Open buttons are its whole point. */
 .is-desktop .residents-pop,
@@ -4087,6 +4125,12 @@ body {
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
 .is-desktop .session-toolbar-menu,
+/* Pause all's confirm hangs straight off the title bar, so it is IN the bar's rectangle. */
+.is-desktop .fleet-pause-pop,
+/* The background sub-agents popover a board card's chip opens. It is fixed to the viewport
+   and opens ABOVE a chip in the lower half of the window, clamped to the top - which is the
+   bar. An eaten click would leave it unable to take focus or be dismissed by a press inside. */
+.is-desktop .subagent-popover,
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
@@ -7168,6 +7212,386 @@ a.btn {
   .restore-retry .btn { width: 100%; }
   .app-banner-restore { align-items: stretch; }
 }
+/* Settings > Storage. The status tiles and copies table follow Restore's, beside which the
+   category sits; the config row follows the Workflows retention row. */
+.storage-settings h3,
+.storage-problems h3 { margin: 0 0 6px; }
+.storage-config-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.storage-config-row label {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.storage-config-row input {
+  width: 92px;
+  min-width: 0;
+  padding: 7px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.storage-status-grid article {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-status-grid span,
+.storage-status-grid strong,
+.storage-status-grid small { display: block; overflow-wrap: anywhere; }
+.storage-status-grid span { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.storage-status-grid strong { font-size: 14px; }
+.storage-status-grid small { color: var(--muted); font-size: 12px; margin-top: 5px; }
+.storage-status-grid small.storage-failure { color: var(--danger); }
+.storage-primary-action { display: flex; justify-content: flex-end; margin: 12px 0; }
+.storage-copies {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.storage-copies caption { text-align: left; color: var(--muted); font-size: 12px; padding-bottom: 6px; }
+.storage-copies th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.storage-copies th,
+.storage-copies td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.storage-copies tr:last-child td { border-bottom: 0; }
+.storage-problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.storage-problem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: 10px;
+}
+.storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
+.storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+   tab's bands stack with the same air as two settings sections. */
+.storage-panel { display: grid; gap: 0; }
+.storage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.storage-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 8px 12px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.storage-tab:hover { color: var(--fg); }
+.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
+.storage-tab small.storage-green { color: var(--idle); }
+.storage-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.storage-band h3 { margin: 0 0 6px; }
+.storage-band + .storage-band { margin-top: 22px; }
+.storage-band .settings-blurb + .storage-config-row { margin-top: 4px; }
+.storage-muted { color: var(--muted); }
+.storage-red { color: var(--danger); }
+.storage-amber { color: var(--attention); }
+.storage-green { color: var(--idle); }
+.storage-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-meter { margin: 12px 0 6px; }
+.storage-meter-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.storage-meter-head strong { color: var(--fg); font-size: 13px; }
+.storage-meter-head strong.storage-red { color: var(--danger); }
+.storage-meter-head strong.storage-amber { color: var(--attention); }
+.storage-meter-head code { font-size: 11px; color: var(--dim); }
+.storage-bar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--border) 80%, transparent) 5px 7px);
+}
+.storage-bar > i { display: block; height: 100%; min-width: 2px; }
+.storage-bar > i:first-child { border-radius: 6px 0 0 6px; }
+.storage-bar > i:last-of-type { border-radius: 0 6px 6px 0; }
+.storage-tick {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.storage-tick.is-danger { background: var(--danger); }
+/* One hue per category, all from the resident palette or a role token, none a session state,
+   so a bar segment never reads as a card's tone. */
+.storage-seg-mine, .storage-seg-pools { background: var(--working); }
+.storage-seg-others { background: color-mix(in srgb, var(--border) 85%, var(--panel)); }
+.storage-seg-free { background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--idle) 55%, transparent) 4px 6px); }
+.storage-seg-backups { background: var(--purple); }
+.storage-seg-updates { background: var(--resident-cyan); }
+.storage-seg-database { background: var(--resident-rose); }
+.storage-seg-evidence { background: var(--resident-lime); }
+.storage-seg-worktrees { background: var(--resident-teal); }
+.storage-seg-archives { background: var(--resident-orange); }
+.storage-seg-other { background: var(--neutral); }
+.storage-seg-over { background: repeating-linear-gradient(135deg, var(--attention) 0 3px, transparent 3px 6px); }
+.storage-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+.storage-table { margin-top: 12px; }
+/* Row headers sit in a `.storage-copies` table, whose header cells are small caps labels. A row
+   header names a thing, so it reads as body text. */
+.storage-table th[scope="row"] {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--fg);
+}
+.storage-table th small,
+.storage-table td small {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.storage-table td small.storage-red,
+.storage-table td small.storage-muted { font-family: var(--sans); font-size: 11px; }
+.storage-table td small.storage-red { color: var(--danger); }
+.storage-table td { vertical-align: top; }
+.storage-table tr.storage-total > * { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+.storage-measure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.storage-policy { width: 100%; margin: 10px 0 4px; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--border); }
+.storage-policy th,
+.storage-policy td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.storage-policy thead th { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.storage-policy tbody th { font-weight: 560; }
+.storage-policy tr:last-child > * { border-bottom: 0; }
+.storage-policy td.storage-num { text-align: right; }
+.storage-field { display: inline-flex; align-items: center; gap: 6px; }
+.storage-field em { font-style: normal; font-size: 11px; color: var(--dim); }
+.storage-input,
+.storage-config-row .storage-input {
+  width: 92px;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-keep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--idle) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--idle) 5%, var(--panel));
+  font-size: 12px;
+}
+.storage-keep p { flex-basis: 100%; margin: 2px 0 0; font-size: 11.5px; color: var(--dim); }
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--idle) 35%, var(--border));
+  border-radius: 20px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.storage-effect {
+  margin: 12px 0 0;
+  padding: 10px 13px;
+  border-left: 3px solid var(--attention);
+  border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.storage-effect strong { color: var(--fg); }
+.storage-effect ul { margin: 4px 0; padding-left: 18px; }
+.storage-note {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.storage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.storage-strip > i { width: 12px; height: 20px; border-radius: 3px; }
+.storage-strip-scheduled { background: color-mix(in srgb, var(--purple) 70%, var(--panel)); }
+.storage-strip-preMigration { background: color-mix(in srgb, var(--resident-cyan) 70%, var(--panel)); }
+.storage-strip-manual { background: color-mix(in srgb, var(--resident-blue) 70%, var(--panel)); }
+.storage-strip > i.is-go { background: transparent; border: 1.5px dashed var(--danger); }
+.storage-strip > i.is-always { box-shadow: 0 0 0 2px var(--idle); }
+.storage-status-grid article.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+.storage-status-grid article.is-danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.storage-slots { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0 4px; }
+.storage-slots > i { width: 11px; height: 11px; border-radius: 3px; }
+.storage-slots > .is-leased { background: var(--working); }
+.storage-slots > .is-idle { background: color-mix(in srgb, var(--working) 35%, var(--panel)); }
+.storage-slots > .is-go { border: 1.5px solid var(--idle); }
+.storage-slots > .is-quarantined {
+  background: repeating-linear-gradient(135deg, var(--attention) 0 2px, transparent 2px 4px);
+  border: 1px solid color-mix(in srgb, var(--attention) 50%, var(--border));
+}
+.storage-slots > .is-other { background: var(--neutral); }
+.storage-slots > .is-room { border: 1px dashed var(--border); }
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, auto) 1fr;
+  gap: 10px 26px;
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-summary span { display: block; margin-bottom: 2px; font-size: 11px; color: var(--muted); }
+.storage-summary strong { font-size: 15px; }
+.storage-group { margin-top: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
+.storage-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.storage-group > summary span { font-size: 11.5px; color: var(--muted); }
+.storage-group > summary em { margin-left: auto; font-family: var(--mono); font-size: 12px; font-style: normal; }
+.storage-group.is-blocked { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.storage-group.is-blocked > summary strong { color: var(--danger); }
+.storage-group > .settings-hint { margin: 8px 12px 10px; }
+.storage-rows { max-height: 300px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.storage-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.storage-rows li.is-blocked { box-shadow: inset 3px 0 0 var(--danger); }
+/* The exact copies a backup save deletes, listed inside its warning before the save. */
+.storage-delete-list {
+  margin: 8px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--attention) 30%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.storage-delete-list li:first-child { border-top: 0; }
+.storage-copies tr.is-going td { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.storage-rows code { font-size: 11px; overflow-wrap: anywhere; }
+.storage-why { font-size: 11.5px; color: var(--dim); }
+.storage-size { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.storage-plain { margin: 0; padding: 8px 12px 10px 30px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.storage-plain b { font-weight: 560; color: var(--fg); }
+.storage-preview-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.storage-preview-foot > span { flex: 1; font-size: 11.5px; color: var(--dim); }
+.storage-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 4px 0 0; padding: 0; border: 0; font-size: 12px; color: var(--muted); }
+.storage-checks legend { float: left; margin-right: 6px; padding: 0; font-size: 11px; color: var(--muted); }
+.storage-checks label { display: inline-flex; align-items: center; gap: 6px; }
+.app-banner-storage {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--border));
+  background: color-mix(in oklab, var(--danger) 7%, var(--panel));
+}
+.app-banner-storage.is-warn {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--panel));
+}
+@media (max-width: 760px) {
+  .storage-status-grid { grid-template-columns: 1fr; }
+  .storage-problem-list li { align-items: stretch; flex-direction: column; }
+  .storage-summary { grid-template-columns: 1fr 1fr; }
+  .storage-rows li { grid-template-columns: 1fr; gap: 2px; }
+}
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
    so the one control and the thing it opened read as the same object. */
@@ -7760,6 +8184,291 @@ a.btn {
   cursor: pointer;
 }
 
+/* ---- "Remind me later" on a request_input question ----
+   The snooze is its own path, distinct from answering, so it wears the "not now" blue the
+   Chat-about-it path already wears rather than the gold of a question still owed. Left of the
+   footer beside Dismiss: the two ways to leave a question without answering it sit together,
+   and Submit keeps the far edge. The disabled button is wrapped in a tooltip anchor, so the
+   push is applied to whichever of the two is the flex item. */
+.clock-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.btn-later {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.decisions-actions > .btn-later,
+.decisions-actions > .tt-anchor:has(> .btn-later) {
+  margin-right: auto;
+}
+.btn-snooze {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--on-accent);
+  background: color-mix(in oklab, var(--working) 78%, var(--bg));
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn-snooze:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--working) !important;
+  border-color: transparent !important;
+}
+.snooze-sheet {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--working) 40%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--working) 6%, var(--bg-2));
+}
+.snooze-sheet-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 640;
+}
+.snooze-sheet-title .clock-glyph,
+.reminder-banner .clock-glyph,
+.review-snoozed-foot .clock-glyph {
+  color: var(--working);
+}
+.snooze-sheet-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.snooze-sheet-label {
+  padding: 0;
+  margin-bottom: 7px;
+  font: 600 10.5px/1.2 var(--sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.snooze-delays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.snooze-delay {
+  position: relative;
+  cursor: pointer;
+}
+/* The radio is the control and the pill is its paint: kept in the accessibility tree and
+   focusable, drawn as nothing, so a keyboard user arrows through the delays as a group. */
+.snooze-delay input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.snooze-delay span {
+  display: block;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--working) 32%, var(--border));
+  background: var(--panel-2);
+  color: var(--fg);
+  font: 600 11.5px/1 var(--sans);
+}
+.snooze-delay:hover span {
+  border-color: color-mix(in oklab, var(--working) 60%, var(--border));
+}
+.snooze-delay.is-picked span {
+  background: color-mix(in oklab, var(--working) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--working) 65%, var(--border));
+}
+.snooze-delay input:focus-visible + span {
+  outline: 2px solid color-mix(in oklab, var(--working) 70%, transparent);
+  outline-offset: 2px;
+}
+.snooze-meanwhile {
+  display: grid;
+  gap: 6px;
+}
+.snooze-meanwhile-option input {
+  accent-color: var(--working);
+}
+.snooze-meanwhile-option.is-picked {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+}
+.snooze-sheet-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.snooze-sheet-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+.kind-reminder {
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 15%, transparent);
+}
+.reminder-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  background: color-mix(in oklab, var(--working) 8%, var(--bg-2));
+}
+.reminder-banner .clock-glyph {
+  margin-top: 2px;
+}
+.reminder-banner strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* A message-mode question's status line (`async-input`): whether its agent is still working past
+   it, in the working blue, or has stopped on it, in the attention gold. Wraps rather than clips,
+   so a long meanwhile line on a narrow inbox card stays readable in full. */
+.review-wait {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: -4px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-wait-state {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.review-wait-working .review-wait-state {
+  color: var(--working);
+}
+.review-wait-stopped .review-wait-state {
+  color: var(--attention);
+}
+.review-wait-meanwhile {
+  min-width: 0;
+  color: var(--fg);
+}
+.review-wait-tag {
+  color: var(--muted);
+}
+.review-wait-asked {
+  font: 500 11px/1.5 var(--mono);
+  white-space: nowrap;
+}
+/* A filed question in the conversation (`async-input`): the answer card's shape, in the working
+   blue while it is open, quieter once it has ended. Scoped like `.review-snoozed`, because
+   `.review-answer-who` paints the byline gold further down this file. */
+.review-asked {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 94%, var(--working) 6%);
+}
+.review-asked:not(.is-open) {
+  border-left-color: var(--border);
+  background: var(--panel-2);
+}
+.review-asked .review-asked-who {
+  color: var(--working);
+}
+.review-asked:not(.is-open) .review-asked-who {
+  color: var(--muted);
+}
+.review-asked-question {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-asked-meanwhile {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.review-asked-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.review-asked-outcome {
+  font-weight: 600;
+}
+.review-asked.is-open .review-asked-outcome {
+  color: var(--working);
+}
+.review-asked-status::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--muted);
+}
+.review-asked-detail {
+  overflow-wrap: anywhere;
+}
+/* A snoozed question in the conversation: the answer card's shape, in the blue of "not now". */
+.review-snoozed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 92%, var(--working) 8%);
+}
+/* Scoped under the card: `.review-answer-who` paints the byline gold further down this file. */
+.review-snoozed .review-snoozed-who {
+  color: var(--working);
+}
+.review-snoozed-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.snooze-when {
+  font: 500 11px/1.2 var(--mono);
+  color: var(--working);
+  white-space: nowrap;
+}
+.inbox-snoozed {
+  border-left: 3px solid color-mix(in oklab, var(--working) 70%, var(--border));
+}
+.inbox-snoozed-question {
+  color: var(--fg);
+}
+
 /* ---- diff ---- */
 .diffview {
   font-size: 12px;
@@ -7893,13 +8602,16 @@ a.btn {
    paragraph naming six files would otherwise become six pieces of link chrome. The colour
    arrives on hover and focus, where it says "this one is clickable" about one path rather
    than all of them. */
-.markdown a.workspace-path {
+.markdown a.workspace-path,
+.question a.workspace-path {
   color: inherit;
   text-decoration: none;
   border-bottom: 1px dotted color-mix(in oklab, var(--working) 55%, transparent);
 }
 .markdown a.workspace-path:hover,
-.markdown a.workspace-path:focus-visible {
+.markdown a.workspace-path:focus-visible,
+.question a.workspace-path:hover,
+.question a.workspace-path:focus-visible {
   color: var(--working);
   border-bottom-color: var(--working);
 }
@@ -8384,7 +9096,8 @@ kbd {
   }
 }
 .turn.is-flashed,
-.pty-entry.is-flashed {
+.pty-entry.is-flashed,
+.pty-toolrun.is-flashed {
   outline: 2px solid transparent;
   outline-offset: 3px;
   border-radius: 9px;
@@ -8395,7 +9108,8 @@ kbd {
    a static ring that the class coming off removes. */
 @media (prefers-reduced-motion: reduce) {
   .turn.is-flashed,
-  .pty-entry.is-flashed {
+  .pty-entry.is-flashed,
+  .pty-toolrun.is-flashed {
     animation: none;
     outline-color: color-mix(in oklab, var(--find) 85%, transparent);
   }
@@ -9246,19 +9960,19 @@ mark.find-hit.is-current {
   outline: 2px solid var(--find);
   outline-offset: -2px;
 }
-.activity-count {
+/* The head's right-hand cluster holds the right edge as one unit, so the count, the narrow
+   caret and the wide fold never have to agree among themselves on which is last. */
+.activity-head-end {
   margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.activity-count {
   font: 500 11.5px/1 var(--mono);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-/* Whichever of the two ends up last holds the head's right edge: the count when there is
-   one, the caret when the tab is empty and the count is not drawn at all. */
-.activity-toggle {
-  margin-left: auto;
-}
-.activity-count + .activity-toggle {
-  margin-left: 0;
 }
 /* The narrow layout's disclosure. Hidden here at rail widths - the list simply shows -
    and added to the head by the container query below. */
@@ -9288,6 +10002,68 @@ mark.find-hit.is-current {
   flex: none;
   font-size: 9px;
   color: var(--dim);
+}
+.activity-collapse {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font: 600 12px/1 var(--sans);
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-collapse:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.activity-collapse:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+}
+/* Shown only by the wide `@container` block below, when the fold is on. */
+.activity-strip {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-strip:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+.activity-strip:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.activity-strip-caret {
+  font: 600 12px/1 var(--sans);
+}
+.activity-strip-label {
+  writing-mode: vertical-rl;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.activity-strip-count {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 /* Its own overflow region, independent of the log's: the two scroll separately, and
    `overscroll-behavior` keeps a rail that has reached its end from scrolling the page
@@ -9454,6 +10230,105 @@ mark.find-hit.is-current {
   color: var(--muted);
 }
 
+/* ---- the Agents tab: background sub-agents on the rail ----
+   The conversation half of Chip and popover, offered only while there are agents. A row
+   lists and controls nothing, so it is not a button. State hues are the board tree's:
+   running `--working`, done `--idle`, failed `--danger`, stopped `--exited`. */
+.activity-tab-count {
+  margin-left: 4px;
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0;
+  color: var(--working);
+  font-variant-numeric: tabular-nums;
+}
+/* Three tabs share the head with the fold in 244px (the head drops its count for them), and
+   give up a little padding and tracking too, so a wider system face still leaves them room
+   rather than wrapping or pushing the fold out of the column. */
+.activity-rail[data-tabs="3"] .activity-tab {
+  padding: 3px 4px;
+  letter-spacing: 0.02em;
+}
+.activity-rail[data-tabs="3"] .activity-tab-count {
+  margin-left: 3px;
+}
+.activity-rail[data-tabs="3"] .activity-head {
+  gap: 4px;
+}
+.agents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.agents-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  min-width: 0;
+}
+.agents-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.agents-row.is-completed .agents-pip {
+  background: var(--idle);
+}
+.agents-row.is-failed .agents-pip {
+  background: var(--danger);
+}
+.agents-row.is-stopped .agents-pip {
+  background: var(--exited);
+}
+.agents-row.is-completed,
+.agents-row.is-failed,
+.agents-row.is-stopped {
+  opacity: 0.55;
+}
+.agents-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agents-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font: 12px/1.35 var(--sans);
+  color: var(--fg);
+}
+.agents-type {
+  font: 600 10.5px/1.4 var(--mono);
+  color: var(--muted);
+}
+.agents-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents-detail {
+  font: 10px/1.4 var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.agents-folded {
+  padding: 3px 6px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
 /* Below this panel width a 244px column would leave too little conversation to read,
    so the rail RELOCATES under the log and takes its space from the log's height
    instead of its width. It is still visible whenever find is open - that is the
@@ -9493,6 +10368,9 @@ mark.find-hit.is-current {
   .find-split .activity-rail .activity-toggle {
     display: flex;
   }
+  .find-split .activity-rail .activity-collapse {
+    display: none;
+  }
   .find-split .activity-rail[data-open="false"] .activity-body {
     display: none;
   }
@@ -9501,6 +10379,39 @@ mark.find-hit.is-current {
      section was not asked for - the transcript keeps the larger share. */
   .find-split .activity-rail[data-open="true"] {
     max-height: 33%;
+  }
+}
+
+/* The wide fold. Scoped to the containers the narrow block above does NOT match, so the
+   two can never both apply: narrow, the rail is a disclosure row whatever this preference
+   says; wide, the preference folds the 244px column to a 30px strip and the log takes the
+   rest. Find replaces this rail outright while open, so a fold never hides find's results. */
+@container (width > 560px) {
+  .activity-rail[data-collapsed="true"] {
+    width: 30px;
+  }
+  .activity-rail[data-collapsed="true"] > :not(.activity-strip) {
+    display: none;
+  }
+  .activity-rail[data-collapsed="true"] > .activity-strip {
+    display: flex;
+  }
+  /* The terminal legend is pinned to the rail's 244px column so Send shares the rail's
+     edge. Folded, that column is 30px, which no legend fits. Sat beside Send at its own
+     width instead, it is wider than the column it left (one line of it is ~340px), so
+     folding would have NARROWED the box - the opposite of what a fold is for. It takes its
+     own line under Send instead: the box and Send get the whole row, and the legend, which
+     wrapped to two lines in its column, reads as one. Keyed on the rail being mounted AND
+     folded: while find owns the column the rail is unmounted and the legend keeps its 244px
+     under find's rail. */
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .compose-row {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .pty-sendkey {
+    flex: 1 0 100%;
+    width: auto;
+    text-align: right;
   }
 }
 
@@ -10040,6 +10951,7 @@ mark.find-hit.is-current {
   background: color-mix(in oklab, var(--panel) 60%, var(--bg-2));
 }
 .transcript[data-view="terminal"] .activity-rail .activity-tab,
+.transcript[data-view="terminal"] .activity-rail .activity-strip-label,
 .transcript[data-view="terminal"] .activity-rail .activity-tool {
   font-family: var(--mono);
 }
@@ -10571,6 +11483,51 @@ span.task-outcome:hover {
    heading, and the alternative was measured: folding `repoPrs` into `taskPillParts`'s
    silence test draws a 14px empty stub above this row. `test/task-pill.test.ts` and
    `e2e/specs/console-header-identity.spec.ts` both pin the headless case. */
+/* A failed dependency claim, on the session's task band: one disclosure per failing tree. */
+.task-claim-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px;
+}
+.task-claim-warning {
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg);
+}
+.task-claim-warning summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.task-claim-command {
+  display: block;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.task-claim-tail {
+  margin: 6px 0 2px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-claim-note {
+  margin: 6px 0 2px;
+  color: var(--muted);
+}
+
 .task-repo-prs {
   display: flex;
   flex-wrap: wrap;
@@ -10778,6 +11735,9 @@ span.task-outcome:hover {
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
    merged. A merged chip lingers until the session leaves the PR's branch. */
+.detail-pr-update { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 22px; border-bottom: 1px solid var(--border); }
+.pr-branch-update { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.pr-branch-update-reason { max-width: 28em; overflow-wrap: anywhere; }
 .pr-chip {
   flex: none;
   display: inline-flex;
@@ -10831,8 +11791,7 @@ span.task-outcome:hover {
   border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
-/* "A CI check failed" alert - sits right after the PR chip and links to the same
-   PR. Same pill recipe as the chip, in the danger tone so it reads as an alarm. */
+/* CI warning opens individual conclusions and job links. */
 .pr-checks-alert {
   flex: none;
   display: inline-flex;
@@ -11018,6 +11977,140 @@ span.task-outcome:hover {
 }
 .dispatch-crew-hint {
   font-size: 11.5px;
+}
+/* Settings -> Tasks: one card per setting, stacked. Grill me first is a row of kind chips;
+   After work is one row per kind, its name in a fixed column and its select beside it. */
+.task-kind-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  max-width: 720px;
+}
+.grill-chips-hint {
+  margin: 0 0 10px;
+}
+.grill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.task-kind-settings {
+  display: grid;
+  gap: 10px;
+}
+.task-kind-setting {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.task-kind-setting-name {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.task-kind-setting-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* InfoTip: the "i" whose tooltip explains the control beside it. */
+button.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  min-width: 0;
+  height: 15px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: help;
+}
+button.info-tip:hover,
+button.info-tip:focus-visible {
+  color: var(--fg);
+}
+
+/* Grill me first's toggle chip: a kind's default on Settings -> Tasks, and a task's own choice
+   in the bar under the dispatch form's Task box. Pressed reads as a stronger border, a lifted
+   surface and a check rather than a hue: every tone in the palette already means a session
+   state, and this is neither. */
+.grill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: 500 12px/1.4 var(--sans);
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.grill-chip:hover:not(:disabled) {
+  color: var(--fg);
+}
+.grill-chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.grill-chip[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: var(--panel-2);
+}
+.grill-chip[aria-pressed="mixed"] {
+  border-style: dashed;
+}
+.grill-chip-mark {
+  font-size: 11px;
+}
+.dispatch-grill-chip {
+  text-transform: none;
+}
+.dispatch-grill-chip svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.dispatch-grill-chip svg circle {
+  fill: currentColor;
+}
+/* Changed from the kind's default for this task only. */
+.grill-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+/* The bar under the Task box that holds the chip, with where its value came from opposite. */
+.dispatch-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -6px 0 2px;
+}
+.dispatch-composer-status {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--dim);
 }
 /* Which advisor this launch gets. Read-only - the advisor is chosen on Settings ->
    Harnesses - so it is a sentence under the crew row rather than a fifth select in it. */
@@ -11647,6 +12740,9 @@ button.dispatch-guided-rung .dispatch-guided-num {
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
 }
+.dispatch-more-body[hidden] {
+  display: none;
+}
 
 /* The task-level scheduling choice belongs with the backlog metadata, but it is not another
    text field. A bounded row gives the copy and the same switch used on stored backlog cards
@@ -11862,6 +12958,13 @@ button.dispatch-guided-rung .dispatch-guided-num {
   font: 11px var(--mono);
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+/* The door to the Setup row that repairs the warning, on its own line after the evidence so
+   it is the last thing read and never wraps into the middle of a path. */
+.dispatch-env-fix {
+  display: inline-block;
+  margin-top: 6px;
+  font-weight: 600;
 }
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */
@@ -12203,6 +13306,20 @@ select:not([multiple]) option:focus-visible {
 .tour-picker-row strong { display: block; font-size: 14px; }
 .tour-picker-row small { display: block; margin-top: 6px; color: var(--muted); }
 .tour-picker-recommended { display: block; margin-top: 10px; color: var(--select); font-size: 11px; }
+/* A tour this opening announces. A filled tag rather than the recommendation's plain text, so
+   the two read as different statements when they sit on neighbouring rows. */
+.tour-picker-new {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--select);
+  color: var(--panel);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .tour-picker-preview { min-width: 0; padding: 22px; }
 .tour-picker-preview h3 { margin: 18px 0 10px; font-size: 22px; }
 .tour-picker-preview p { color: var(--muted); line-height: 1.6; margin: 0; }
@@ -12228,6 +13345,7 @@ select:not([multiple]) option:focus-visible {
   .tour-picker-row { padding-block: 10px; margin-bottom: 4px; }
   .tour-picker-row small { display: inline; margin-right: 10px; }
   .tour-picker-recommended { display: inline-block; margin-top: 5px; }
+  .tour-picker-new { margin: 5px 6px 0 0; }
   .tour-picker-preview { padding: 18px; }
 }
 
@@ -12638,6 +13756,38 @@ select:not([multiple]) option:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Beside the drawer, a Board whose columns do not fit scrolls sideways - but a scroller clips at
+   its padding edge, so the overview's 20px right padding scrolled away and a cut-off column ran
+   flush into the drawer's border. With macOS's overlay scrollbar hidden at rest, that read as
+   the drawer laid over the Board (#1579). The gutter moves outside the scrollport, as a margin,
+   so a column is cut a gutter short of the drawer, the way the window's left edge already
+   holds one. A Board that fits is laid out exactly as before: 20px either way. Overview only:
+   the drill-in runs edge to edge, up to the drawer. */
+.residents-pinned-row > .board[data-focus="none"] {
+  padding-right: 0;
+  margin-right: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .residents-pinned-row > .board[data-focus="none"] {
+    transition: padding 0.34s ease, margin 0.34s ease;
+  }
+}
+/* And a visible track: declaring `::-webkit-scrollbar` opts out of the overlay scrollbar, so an
+   overflowing Board says it scrolls (as `.wf-pipeline-strip` does). Chromium reserves the track
+   only while the columns overflow, so a Board that fits is untouched. */
+.residents-pinned-row > .board::-webkit-scrollbar {
+  height: 10px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
 .residents-drawer-head {
   flex: none;
   display: flex;
@@ -13012,6 +14162,34 @@ select:not([multiple]) option:focus-visible {
   text-transform: uppercase;
   color: var(--muted);
 }
+.residents-drawer-sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.residents-drawer-sec-toggle .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-sec-toggle:hover,
+.residents-drawer-sec-toggle:hover .brh-chevron {
+  color: var(--fg);
+}
+.residents-drawer-sec-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.residents-drawer-foot.is-collapsed {
+  padding-block: 8px;
+}
 /* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
    the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
 .residents-edge-tab {
@@ -13138,6 +14316,36 @@ select:not([multiple]) option:focus-visible {
 }
 .report-section-title.tone-attention {
   color: var(--attention);
+}
+.report-section-title.tone-danger {
+  color: var(--danger-text);
+}
+/* Heading and an optional section-wide action on one row. The heading keeps its own
+   bottom margin when it stands alone, so the row takes it over instead. */
+.report-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.report-section-head > .report-section-title {
+  flex: 1;
+  margin: 0;
+}
+/* The section the topbar's `lost` segment opens Sitrep for: a red band, so the reason the
+   operator came is the first thing their eye lands on. */
+.report-section-lost {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--border));
+  border-left: 3px solid var(--danger);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.report-section-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
 }
 .report-count {
   font-size: 10.5px;
@@ -16818,6 +18026,281 @@ select.ensemble-judge-persona {
 }
 .resident-instructions {
   min-height: 140px;
+}
+
+/* ---- The profile editor's card grid ----
+   Each registered section is one card. Narrow, they stack in registry order; from 860px of
+   workspace they form two bands of a wide left and a narrow right column around a full-width
+   loop card. The registry order is the reading order, so the DOM and the tab order match what
+   the grid shows. A section the areas do not name spans the full width after the rest. */
+.residents-workspace {
+  container: residents-workspace / inline-size;
+}
+.resident-editor.resident-profile-editor {
+  max-width: 1180px;
+}
+.resident-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.resident-cards > .resident-editor-card {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+@container residents-workspace (min-width: 860px) {
+  .resident-cards {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-identity { grid-area: identity; }
+  .resident-cards > .resident-editor-card-persona { grid-area: persona; }
+  .resident-cards > .resident-editor-card-board { grid-area: board; }
+  .resident-cards > .resident-editor-card-instructions { grid-area: instructions; }
+  .resident-cards > .resident-editor-card-execution { grid-area: execution; }
+  .resident-cards > .resident-editor-card-workspace { grid-area: workspace; }
+  .resident-cards > .resident-editor-card-loop { grid-area: loop; }
+  .resident-cards > .resident-editor-card-mcp { grid-area: mcp; }
+  .resident-cards > .resident-editor-card-authority { grid-area: authority; }
+  .resident-cards > .resident-editor-card-state { grid-area: state; }
+  /* The narrow runtime card: the harness takes the line, model and effort share the next. */
+  .resident-editor-card-execution .resident-fields-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .resident-editor-card-execution .resident-fields-row > .field:first-child {
+    grid-column: 1 / -1;
+  }
+  .resident-loop {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
+  .resident-loop .resident-loop-limits {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  /* Active hours is a preview section: it takes its full-width band under the loop only while
+     its flag draws it, so a profile without it keeps the original grid and no empty row. */
+  .resident-cards:has(> .resident-editor-card-schedule) {
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "schedule schedule"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-schedule { grid-area: schedule; }
+  .resident-schedule .resident-schedule-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
+}
+/* The board card's label and pin each take a line: its three-column row is the runtime card's. */
+.resident-editor-card-board .resident-fields-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The instructions card grows with the rows beside it rather than leaving a gap under them. */
+.resident-editor-card-instructions .resident-instructions {
+  flex: 1;
+}
+.resident-editor-card-instructions > .field {
+  flex: 1;
+}
+
+/* The next launch's board card, between two plain neighbours: pinned, it sorts above them. */
+.resident-board-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-board-preview-ghost {
+  height: 30px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.resident-board-preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklab, var(--resident) 70%, var(--border));
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--resident) 45%, transparent),
+    0 0 18px color-mix(in oklab, var(--resident) 26%, transparent);
+}
+.resident-board-preview-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.resident-board-preview-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Loop and guardrails: the prose on the left, the six limits as tiles on the right. */
+.resident-loop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-loop-text textarea {
+  min-height: 96px;
+}
+.resident-loop-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.resident-loop-limit {
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-loop-limit .field-input {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.resident-loop-spend {
+  grid-column: 1 / -1;
+}
+
+/* Active hours: the controls on the left, a week strip of the awake spans on the right. With
+   the toggle off the controls read as dormant, and the strip shows what turning it on would do. */
+.resident-schedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+.resident-schedule-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.resident-schedule-day {
+  min-width: 46px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.resident-schedule-day.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--idle) 16%, var(--bg));
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border));
+}
+.resident-schedule-day:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.resident-schedule-day:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.resident-schedule-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.resident-schedule-hours {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.resident-schedule-week {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-self: start;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-schedule.is-off .resident-schedule-week {
+  opacity: 0.55;
+}
+.resident-schedule-week-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.resident-schedule-week-day {
+  font-size: 11px;
+  color: var(--dim);
+}
+.resident-schedule-week-track {
+  position: relative;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.resident-schedule-week-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in oklab, var(--idle) 70%, transparent);
+}
+.resident-schedule-week-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.resident-schedule-now {
+  margin: 0;
+  color: var(--fg);
+}
+
+/* Authority widens what the resident can reach, so the granted state reads as a warning. */
+.resident-editor-card .resident-authority {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-editor-card .resident-authority:has(input:checked) {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg));
 }
 .resident-error {
   margin: 0;
@@ -21308,6 +22791,9 @@ button.wf-carried.is-link:focus-visible {
 
 /* ---- repository index directories ----
    One removable row per root, with the filesystem reading kept beside the path. */
+.setup-repositories {
+  margin-top: 14px;
+}
 .ri-panel .settings-section-head {
   align-items: flex-start;
   gap: 20px;
@@ -23275,17 +24761,6 @@ select.foreman-model-input {
 .wf-judge-passes input {
   accent-color: var(--working);
 }
-.wf-default-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.wf-default-flow {
-  flex: none;
-  color: color-mix(in oklab, var(--working) 72%, var(--muted));
-  font: 10px var(--mono);
-  letter-spacing: 0.02em;
-}
 .wf-default-select {
   width: min(100%, 390px);
 }
@@ -25135,7 +26610,7 @@ button.sc-row:focus-visible {
   overflow: hidden;
   background: var(--bg);
 }
-.trust-pane-head {
+.settings-pane-head {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -25148,12 +26623,12 @@ button.sc-row:focus-visible {
   align-items: center;
   gap: 10px;
 }
-.trust-pane-title-row {
+.settings-pane-title-row {
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
-.trust-pane-title {
+.settings-pane-title {
   margin: 0;
   font-size: 11px;
   font-weight: 640;
@@ -25161,16 +26636,16 @@ button.sc-row:focus-visible {
   letter-spacing: 0.05em;
   color: var(--dim);
 }
-.trust-pane-count {
+.settings-pane-count {
   font-size: 11.5px;
   color: var(--dim);
   white-space: nowrap;
 }
-.trust-pane-title-row .trust-pane-count,
+.settings-pane-title-row .settings-pane-count,
 .trust-picked-count {
   margin-left: auto;
 }
-.trust-search,
+.settings-search,
 .trust-path {
   font: inherit;
   font-size: 12px;
@@ -25182,13 +26657,13 @@ button.sc-row:focus-visible {
   width: 100%;
   min-width: 0;
 }
-.trust-search:focus,
+.settings-search:focus,
 .trust-path:focus {
   outline: none;
   border-color: var(--working);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 22%, transparent);
 }
-.trust-matrix-head .trust-search {
+.trust-matrix-head .settings-search {
   flex: 1;
   width: auto;
 }
@@ -25265,7 +26740,7 @@ button.sc-row:focus-visible {
   color: var(--muted);
 }
 /* The same pill the cells wear, as a legend of what an add will write - never a control. */
-.trust-grant.trust-default {
+.settings-grant.trust-default {
   padding: 1px 8px;
   font-size: 10.5px;
   cursor: default;
@@ -25362,7 +26837,7 @@ button.sc-row:focus-visible {
 .trust-c.is-trap {
   background: color-mix(in oklab, var(--attention) 7%, transparent);
 }
-.trust-grant {
+.settings-grant {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -25375,52 +26850,52 @@ button.sc-row:focus-visible {
   cursor: pointer;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
-.trust-grant-dot {
+.settings-grant-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex: none;
 }
-.trust-grant.is-on {
+.settings-grant.is-on {
   color: var(--idle);
   border-color: color-mix(in oklab, var(--idle) 35%, transparent);
   background: color-mix(in oklab, var(--idle) 8%, transparent);
 }
-.trust-grant.is-on .trust-grant-dot {
+.settings-grant.is-on .settings-grant-dot {
   background: var(--idle);
 }
-.trust-grant.is-off {
+.settings-grant.is-off {
   color: var(--dim);
   border-color: var(--border-soft);
   background: color-mix(in oklab, var(--dim) 6%, transparent);
 }
-.trust-grant.is-off .trust-grant-dot {
+.settings-grant.is-off .settings-grant-dot {
   background: var(--exited);
 }
-.trust-grant.is-trapped {
+.settings-grant.is-trapped {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 45%, transparent);
   background: color-mix(in oklab, var(--attention) 9%, transparent);
 }
-.trust-grant.is-trapped .trust-grant-dot {
+.settings-grant.is-trapped .settings-grant-dot {
   background: var(--attention);
 }
 /* Armed check execution. The same amber as a trapped cell, and deliberately so: both mean
    "read the footnote", and giving this a colour of its own would make the matrix teach two
    alert vocabularies for one glance. It stays a granted pill - `is-on`'s green dot would
    contradict the wash, so the dot moves with it. */
-.trust-grant.is-armed {
+.settings-grant.is-armed {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 45%, transparent);
   background: color-mix(in oklab, var(--attention) 9%, transparent);
 }
-.trust-grant.is-armed .trust-grant-dot {
+.settings-grant.is-armed .settings-grant-dot {
   background: var(--attention);
 }
-.trust-grant:hover:not(:disabled) {
+.settings-grant:hover:not(:disabled) {
   border-color: var(--dim);
 }
-.trust-grant:disabled {
+.settings-grant:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -26385,6 +27860,88 @@ button.sc-row:focus-visible {
   background: var(--danger);
 }
 
+/* The pulse's `lost` segment. Never the leading segment (Keep awake always is), so it
+   restates the hairline `.pulse-seg + .pulse-seg` would have drawn had it not been wrapped. */
+.lost-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-left: 1px solid var(--border-soft);
+}
+.lost-wrap .pulse-btn[aria-expanded="true"] {
+  background: var(--panel-2);
+}
+/* Anchored RIGHT because its trigger trails the pulse, and red-bordered like the failed
+   Keep awake card: the segment opening to explain itself. */
+.lost-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, var(--border));
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* Focused programmatically on open so Tab starts inside it; the red border already says
+   where it is, so no second ring. */
+.lost-pop:focus {
+  outline: none;
+}
+.lost-pop-head {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--danger-text);
+}
+.lost-pop-body {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.lost-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.lost-pop-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* The keycap's dim ink and border are tuned for a panel surface and vanish on the filled
+   button, so on this one it takes the button's own ink. */
+.lost-pop-open .kb-hint {
+  color: inherit;
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+
+/* A dispatch waiting on a pool's dependency claim: the step, its elapsed time, and Stop. It
+   takes the skeleton bars' place on the tile and a third line on the rail row. */
+.pend-claim {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pend-rail .pend-claim {
+  grid-column: 2 / span 2;
+}
+.pend-claim-step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pend-seg.is-live {
     animation: none;
@@ -26873,6 +28430,12 @@ button.sc-row:focus-visible {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+/* The Backlog drawer's Hibernated section, inset to the drawer's own 14px gutter. */
+.line-drawer-body > .bl-hib {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
 }
 /* A failed remedy, said between the header and the rows rather than inside them. Outside the
    capped body because the body scrolls: an alert in there is scrolled away by the same list
@@ -27872,7 +29435,31 @@ span.line-run-prov {
 .board-all-sessions > .console {
   min-width: 0;
 }
+/* The rail folded to its strip: the same 40px a folded Board column takes, and every other
+   pixel goes to the detail - the conversation, its terminal and the composer all widen with it,
+   because each sizes itself to `.console-detail`. */
+.console[data-rail="folded"] {
+  grid-template-columns: var(--board-col-collapsed) 1fr;
+}
+/* A head that stays put over rows that scroll: the fold control (and, drilled in from the
+   Board, the way back) is never scrolled out of reach. */
 .console-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  /* The containing block for every absolutely positioned descendant, above all Tooltip's 1px
+     `.tt-desc` - the head's controls carry one too. See `.console-rail-rows`. */
+  position: relative;
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.console-rail-head {
+  flex: none;
+}
+.console-rail-rows {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   /* The containing block for every absolutely positioned row descendant, above all
      Tooltip's 1px `.tt-desc`. Unpositioned, those resolved to the nearest positioned
@@ -27881,8 +29468,195 @@ span.line-run-prov {
      Board computes its vertical overflow to `auto`, so that drew a second, useless
      scrollbar beside the session detail (#1393). */
   position: relative;
-  border-right: 1px solid var(--border-soft);
-  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+/* The Line's drawer stages, carried by the Console rail while the Line is switched off.
+   The strip's stage buttons in the rail's register: the same tones with the same small colour
+   budget (blue for machines moving, amber for you), and the same ring for the stage whose
+   drawer is open. Every button draws a glyph, a count and a name whatever it is saying, so the
+   band never changes height when a stage goes quiet. Under the head and outside the scroller,
+   so it is never scrolled out of reach. */
+.line-dock {
+  container: line-dock / inline-size;
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.line-dock-stage {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 2px 4px;
+  font: inherit;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.line-dock-stage:hover {
+  border-color: var(--dim);
+  background: var(--panel-2);
+}
+.line-dock-stage:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.ld-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+.ld-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--dim);
+}
+.ld-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-family: var(--font-label);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--dim);
+}
+.line-dock-stage.tone-working .ld-count {
+  color: var(--working);
+}
+.line-dock-stage.tone-idle .ld-count {
+  color: var(--fg);
+}
+.line-dock-stage.tone-attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.line-dock-stage.tone-attention .ld-glyph,
+.line-dock-stage.tone-attention .ld-count,
+.line-dock-stage.tone-attention .ld-name {
+  color: var(--attention);
+}
+/* A ring, not a tone, for the strip's reason: repainting an amber stage blue to say "open"
+   would throw away the one signal it exists to give. */
+.line-dock-stage.is-open {
+  border-color: var(--working);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 30%, transparent);
+}
+/* A rail dragged near its 260px floor keeps every glyph and count; the names go first, and
+   stay in each button's accessible name and tooltip. */
+@container line-dock (max-width: 250px) {
+  .ld-name {
+    display: none;
+  }
+}
+/* The folded rail's 40px strip: the same buttons stacked at its foot, glyph over count. */
+.line-dock.is-column {
+  flex-direction: column;
+  padding: 6px 4px 8px;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 0;
+}
+.line-dock.is-column .line-dock-stage {
+  flex: none;
+  padding: 5px 0;
+}
+/* A Console with nothing to arrange draws no rail, so the dock sits where the strip would. */
+.line-dock-loose {
+  flex: none;
+  width: min(340px, calc(100% - 44px));
+  margin: 12px 22px 0;
+}
+.line-dock-loose .line-dock {
+  padding: 0;
+  border-bottom: 0;
+}
+/* The fold control, at the right of whichever head the rail has. Drawn like the head's back
+   button so the two read as one pair of controls. */
+.session-rail-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* A count already holds the auto margin in a Board rail head, so the fold sits after it. */
+.board-col-n ~ .session-rail-fold {
+  margin-left: 2px;
+}
+.session-rail-fold:hover {
+  color: var(--fg);
+  background: var(--panel);
+  border-color: var(--border);
+}
+.session-rail-fold:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* The folded rail: one button, the whole strip, in a folded Board column's register - a glyph
+   that says which way it opens, a count per state group in that group's colour, and the
+   rail's name set vertically. */
+.session-rail-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 0;
+  padding: 11px 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.session-rail-strip:hover {
+  background: color-mix(in oklab, var(--neutral) 7%, transparent);
+}
+.session-rail-strip:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -3px;
+}
+.session-rail-strip-glyph {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+}
+.session-rail-strip:hover .session-rail-strip-glyph {
+  color: var(--fg);
+}
+.session-rail-strip .session-rail-strip-n {
+  margin-left: 0;
+  padding: 1px 6px;
+  color: var(--tone-color, var(--dim));
+  border-color: color-mix(in oklab, var(--tone-color, var(--border)) 45%, var(--border));
+  background: color-mix(in oklab, var(--tone-color, var(--panel)) 12%, var(--panel));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .session-rail-strip-n.is-pulsing {
+    animation: board-strip-pulse 0.9s ease-out 2;
+  }
 }
 .rail-group {
   position: sticky;
@@ -29815,6 +31589,14 @@ span.line-run-prov {
     width: calc(100cqw - var(--board-rail-width));
   }
 }
+/* The drill-in rail folded to its strip (`UiConfig.sessionRailFolded`): the rail track and the
+   reader's width both read the strip's 40px instead of the rail's. After the container query
+   above and more specific than its rule, so a narrow Board folds to the strip too rather than
+   holding the rail's 200px floor open. */
+.board[data-rail="folded"] .board-col,
+.board[data-rail="folded"] .board-detail {
+  --board-rail-width: var(--board-col-collapsed);
+}
 /* The open session's column had no card, so no rail is drawn (BoardView's `railHidden`): the
    reader takes the whole Board instead of the Board less a rail that is not there. After the
    container query above, and more specific than its rule, so it wins at every width. */
@@ -29893,6 +31675,7 @@ span.line-run-prov {
    `~` and not `+`: each pill is wrapped in `Tooltip`, which emits a visually-hidden `.tt-desc`
    span as its NEXT SIBLING. The adjacent combinator therefore never matched, and the reset
    silently did nothing. */
+.board-col-n.n-blocked ~ .board-col-n,
 .board-col-n.n-free ~ .board-col-n {
   margin-left: 0;
 }
@@ -29954,6 +31737,19 @@ span.line-run-prov {
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
+.workflow-action-wait {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+.workflow-action-wait strong { color: var(--fg); }
+.rail-row > .workflow-action-wait { grid-column: 1 / -1; }
+
 .fleet-section-why {
   font-size: 10px;
   line-height: 1.45;
@@ -30315,6 +32111,103 @@ span.line-run-prov {
 .board-repo-head .brh-swatch {
   display: none;
 }
+/* ---- Blocked sessions placement (Settings → Display → Blocked sessions) ----
+   Idle blocked sessions drawn as one group, in one of three places. The cards are the blocked
+   tiles (`.tile.is-blocked`), unchanged; these rules only build the lane, the frame and the
+   column around them. `--danger` only, which every skin defines. */
+.tone-blocked {
+  --tone-color: var(--danger);
+}
+.board-col.tone-blocked {
+  border-color: color-mix(in oklab, var(--danger) 32%, var(--border));
+  background: color-mix(in oklab, var(--danger) 4%, transparent);
+}
+/* In Needs you: the column's own cards take the height the Blocked lane leaves, so the lane
+   sits at the bottom of the column whatever Needs you holds. */
+.board-col.has-blocked-lane > .board-col-body {
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* The lane: sized to its content, between one card (the measured `--blocked-lane-floor`, see
+   `BlockedLane`) and 45% of the column, with its own scrollport below its own head. Alone, with
+   no Needs you cards above it, it takes the whole column. */
+.board-lane-blocked {
+  --tone-color: var(--danger);
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: max(45%, var(--blocked-lane-floor, 0px));
+  border-top: 1px solid color-mix(in oklab, var(--danger) 40%, var(--border));
+  background: color-mix(in oklab, var(--danger) 5%, transparent);
+}
+.board-lane-blocked.is-alone {
+  flex: 1 1 auto;
+  max-height: none;
+  border-top: 0;
+}
+.board-lane-blocked > .board-lane-body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.board-lane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-lane-head h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.board-lane-oldest,
+.rail-blocked-oldest {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.board-lane-head .board-col-n,
+.board-col.tone-blocked .board-col-head .board-col-n,
+.board-col-n.n-blocked,
+.board-col-strip-blocked {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 12%, var(--panel));
+}
+.board-col-strip .board-col-strip-blocked {
+  margin-left: 0;
+  padding: 1px 6px;
+}
+.board-blocked {
+  --repo-c: var(--danger);
+}
+.board-blocked-head .bch-title {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.board-blocked-head .bch-meta {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, var(--panel));
+}
+/* The drill-in rail draws the frame as a rail heading inside the column's own scrollport,
+   where a sticky heading would stay pinned over the idle rows below it. */
+.board-col-body > .rail-blocked > .rail-group {
+  position: static;
+}
+
 /* The saturated end of the repository's colour, and the only place it runs at full strength: a
    7px dot can carry a hue a surface could not without competing with the card tones beside it.
    Same size as `.board-swatch` in the column head, deliberately - they answer the same kind of
@@ -31152,6 +33045,165 @@ span.line-run-prov {
   font-style: italic;
 }
 
+/* The Backlog's Hibernated section (issue #1547): tasks whose agent the operator stopped to
+   free its memory. Above the queued cards, compact, dashed - "no process" - and in the
+   hibernated tone, with Resume on every row. Not a `.bl-card`: it is neither dragged, selected
+   nor reordered, and nothing that orders the backlog may see it. */
+.bl-hib {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+.bl-hib-head,
+.bl-queued-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 2px 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bl-hib-head {
+  color: var(--hibernated);
+}
+.bl-hib-n {
+  color: var(--dim);
+  font-weight: 600;
+}
+.bl-queued-head {
+  margin-top: 6px;
+}
+.bl-hib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bl-hib-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 7px 12px;
+  background: color-mix(in oklab, var(--hibernated) 6%, var(--panel));
+  border: 1px dashed color-mix(in oklab, var(--hibernated) 36%, var(--border));
+  border-radius: 9px;
+}
+.bl-hib-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 9px 0 0 9px;
+  background: repeating-linear-gradient(180deg, var(--hibernated) 0 4px, transparent 4px 7px);
+}
+.bl-hib-card.is-failed {
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.bl-hib-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+.bl-hib-row > .agent-dot {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 5px;
+}
+/* Wraps, up to two lines: a narrow Backlog column must still say which task this is. */
+.bl-hib-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.bl-hib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.bl-hib-resume {
+  flex: none;
+  padding: 1px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--fg);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--hibernated) 24%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--hibernated) 58%, var(--border));
+  border-radius: 999px;
+}
+.bl-hib-resume:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--hibernated) 34%, var(--panel));
+}
+.bl-hib-resume:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.bl-hib-blocker {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.bl-hib-blocker-kind {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.bl-hib-blocker-reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.bl-hib-meta > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta > .moon-glyph {
+  flex: none;
+  color: var(--hibernated);
+}
+.bl-hib-failure {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
 /* The way OUT of a dead prerequisite - a dependency that was cancelled or failed and
    will never finish on its own. Unlike the marks above it this one IS an alarm, so the
    button wears the danger tone the PR "checks failed" alert uses; the popover it opens
@@ -31506,6 +33558,606 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--held) 13%, transparent);
   color: var(--held);
   cursor: help;
+}
+/* ---- pausing sessions (`PauseControls.tsx`, `FleetPauseControl.tsx`) ----
+   One look for a paused session wherever it is drawn: the slate `--paused` tone, a hatched
+   spine, the two-bar glyph and the word. Priority keeps the fleet's brightest ink rather than
+   a new hue. Which CONTROLS appear is the operator's choice; this look is not. */
+.pause-glyph {
+  flex: none;
+  display: inline-block;
+  vertical-align: -1px;
+}
+.tile.is-paused {
+  --tone-color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 34%, var(--border));
+  background: linear-gradient(color-mix(in oklab, var(--paused) 6%, var(--panel)), var(--panel-2));
+}
+/* Hatched rather than solid, so a paused spine never reads as a solid tone at a glance. The
+   card's text and its runtime controls are NOT dimmed: the border, the tint, this spine and the
+   flag say paused, and faded text would take the muted lines under 4.5:1 contrast. */
+.tile.is-paused::before {
+  background: repeating-linear-gradient(180deg, var(--paused) 0 5px, transparent 5px 8px);
+}
+.tile.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 46%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--fg) 22%, transparent),
+    0 0 26px color-mix(in oklab, var(--working) 20%, transparent);
+}
+.tile.is-priority::before {
+  background: linear-gradient(var(--fg), var(--working));
+}
+.tile-flag.tf-paused,
+.tile-flag.tf-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+}
+.tile-flag.tf-paused {
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 14%, transparent);
+  color: var(--paused);
+}
+.tile-flag.tf-priority {
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, transparent);
+  color: var(--fg);
+}
+.tile-activity.pause-frozen-line,
+.tile-activity.pause-frozen-line .ta-glyph {
+  color: var(--paused);
+}
+/* The conversation's in-progress row, frozen: slate and still. */
+.turn-progress.is-frozen,
+.turn-progress.is-frozen .turn-progress-glyph {
+  color: var(--paused);
+}
+.turn-progress.is-frozen .turn-progress-glyph {
+  animation: none;
+  letter-spacing: -1px;
+}
+/* The ticker's glyph spins to say "working"; a frozen agent's must stand still. */
+.tile-activity.pause-frozen-line .ta-glyph {
+  display: inline-flex;
+  animation: none;
+}
+/* Card controls ride above the stretched open button, like the PR flag. */
+.pause-card-control {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* Card A: corner buttons. Drawn on the card you point at or have the cursor on; a paused or
+   priority card keeps its one button, because the way back must never hide. */
+.pause-corner {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tile:hover .pause-corner,
+.tile:focus-within .pause-corner,
+.tile.selected .pause-corner,
+.pause-corner.is-set,
+.pause-card-preview .pause-corner {
+  opacity: 1;
+}
+.pause-corner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* Only an idle button takes the hover ink. A paused or priority one keeps its own: `--fg` on
+   the priority button's `--fg` fill would erase the glyph. Those brighten their ring instead. */
+.pause-corner-btn:not(.is-paused):not(.is-priority):hover:not(:disabled),
+.pause-corner-btn:not(.is-paused):not(.is-priority):focus-visible {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+.pause-corner-btn:is(.is-paused, .is-priority):hover:not(:disabled),
+.pause-corner-btn:is(.is-paused, .is-priority):focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--fg) 35%, transparent);
+}
+.pause-corner-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.pause-corner-btn.is-priority {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+/* Card B: the run chip, the same size as the mode and effort chips beside it. */
+.pause-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--working);
+  border: 1px solid color-mix(in oklab, var(--working) 38%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+}
+.pause-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+.pause-chip-caret {
+  font-size: 9px;
+  color: var(--dim);
+}
+.pause-chip.is-paused,
+.pause-chip.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-chip.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-chip:focus-visible,
+.pause-more:focus-visible,
+.pause-pill:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* Card E: the ⋯ menu, and the Resume pill a paused card carries in its flag row. */
+.pause-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0 0 4px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pause-more:hover,
+.pause-more[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.pause-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.4;
+  padding: 1px 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.pause-pill:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+/* The shared menu's rows: a label and the sentence of what it does. */
+.session-toolbar-option.pause-menu-row {
+  align-items: flex-start;
+}
+.pause-menu-row > .pause-glyph {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.pause-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.session-toolbar-option > .pause-menu-text:last-child {
+  margin-left: 0;
+}
+.pause-menu-label {
+  color: var(--fg);
+}
+.pause-menu-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+/* Console B: the toolbar button, beside session control. */
+.pause-toolbar-btn.is-paused,
+.pause-toolbar-btn.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-toolbar-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-toolbar-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Console C: the button beside Send, and Send saying Queue while paused. */
+.composer-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  color: var(--muted);
+}
+.composer-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.btn-send.is-queue {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+}
+/* Console D: the state badge's pause half, flush against the badge. */
+.badge.is-paused {
+  color: var(--paused);
+  background: color-mix(in oklab, var(--paused) 15%, transparent);
+}
+.badge.is-paused .badge-dot {
+  background: var(--paused);
+  animation: none;
+}
+.badge-split {
+  display: inline-flex;
+  align-items: stretch;
+  flex: none;
+}
+/* In the console header the half is the badge's own sibling, not wrapped with it, so the
+   header's rung-7 allowlist (which keeps `.badge`) sheds the half by itself and can never take
+   the review button with it. A paused session's band still offers Resume there, and the toolbar
+   button and the board card still offer Pause. The margin closes the header's 10px gap; the
+   badge squares its end only while the half is drawn beside it. */
+.detail-head > .badge-pause-half,
+.detail-head > .tt-anchor:has(> .badge-pause-half) {
+  flex: none;
+  margin-left: -10px;
+}
+.badge-split > .badge,
+.badge-split > .tt-anchor > .badge,
+.detail-head:not([data-rung~="7"]) > .badge:has(+ .badge-pause-half, + .tt-anchor > .badge-pause-half) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.badge-pause-half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  /* The badge's own vertical metrics, plus a zero-width line of its text below, so the half is
+     exactly the badge's height on its own: in the console header it is the badge's sibling,
+     with no wrapper to stretch it. */
+  padding: 3px 0;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+  border: 1px solid transparent;
+  border-left-color: var(--border);
+  border-radius: 0 999px 999px 0;
+}
+.badge-pause-half::before {
+  content: "\200b";
+}
+.badge-pause-half:hover:not(:disabled),
+.badge-pause-half:focus-visible {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+}
+.badge-pause-half.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-left-color: var(--paused);
+}
+/* The paused band, under the console header (Console D) or above the reply box (Console C). */
+.pause-band {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
+  padding: 9px 22px;
+  font-size: 12.5px;
+  color: var(--fg);
+  border-bottom: 1px solid color-mix(in oklab, var(--paused) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+}
+.pause-band > .pause-glyph,
+.pause-band-lead {
+  color: var(--paused);
+}
+.pause-band-lead {
+  font-weight: 650;
+}
+.pause-band-sub {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--muted);
+}
+.pause-band.is-inline {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--paused) 35%, var(--border-soft));
+  border-radius: 10px;
+}
+.pause-band.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.pause-band.is-priority > .pause-glyph,
+.pause-band.is-priority .pause-band-lead {
+  color: var(--fg);
+}
+.pause-band-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pause-band-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+/* The rail's paused and priority rows. */
+.rail-row.is-paused {
+  --tone-color: var(--paused);
+}
+.rail-row.is-paused .rail-state {
+  color: var(--paused);
+}
+.rail-row.is-priority .rail-state {
+  color: var(--fg);
+}
+.rail-pause-mark {
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  color: var(--paused);
+}
+.rail-pause-mark.is-priority {
+  color: var(--fg);
+}
+/* Pause all, in the title bar. Glyph-only at rest; the count rides on it once engaged.
+   It gives way at the last rung, with the pulse's words, so the narrowest bar fits exactly as
+   it did before the control joined it: the glyph is about 44px, and on Linux font metrics that
+   stacked a busy bar at widths where every rung had already been spent. While Pause all or
+   priority is on, its banner carries Resume all and End priority at every width. */
+.topbar[data-rung~="5"] .fleet-pause-wrap {
+  display: none;
+}
+.fleet-pause-wrap {
+  position: relative;
+  display: flex;
+}
+.fleet-pause-btn {
+  gap: 5px;
+}
+.fleet-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 8%, transparent);
+}
+.fleet-pause-count {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-pause-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.fleet-pause-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fleet-pause-sub {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.fleet-pause-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fleet-pause-check small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.fleet-pause-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.fleet-pause-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.fleet-pause-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fleet-pause-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-confirm.is-priority {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+.fleet-pause-confirm:disabled {
+  opacity: 0.55;
+}
+.app-banner.fleet-pause-banner {
+  justify-content: flex-start;
+  border-color: color-mix(in oklab, var(--paused) 40%, var(--border));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+  font-size: 12.5px;
+}
+.fleet-pause-banner > .pause-glyph,
+.fleet-pause-banner-lead {
+  color: var(--paused);
+}
+.fleet-pause-banner-lead {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.fleet-pause-banner-sub {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+/* Partial: something Pause all took is still running, so the banner takes the attention tone. */
+.app-banner.fleet-pause-banner.is-partial {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.fleet-pause-banner.is-partial .fleet-pause-banner-lead {
+  color: var(--attention);
+}
+.app-banner.fleet-pause-banner.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 35%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.fleet-pause-banner.is-priority > .pause-glyph,
+.fleet-pause-banner.is-priority .fleet-pause-banner-lead {
+  color: var(--fg);
+}
+/* Settings > Display > Pause controls: one row per control, its checkbox beside a preview of
+   that control on a running and a paused session. */
+.pause-controls-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 8px 0 18px;
+}
+.pause-control-option {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 14px;
+  align-items: start;
+}
+/* The card panel's stage, restated rather than shared: a selector for that panel's preview
+   must not also find these. */
+.pause-control-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.pause-control-stage .tile,
+.pause-control-stage .tile *,
+.pause-control-stage button {
+  cursor: default;
+}
+.pause-control-stage .tile:hover {
+  transform: none;
+}
+.pause-control-stage.is-console {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pause-console-preview {
+  flex: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--bg-2) 72%, transparent);
+}
+.pause-console-preview .detail-head {
+  padding: 10px 14px 8px;
+}
+.pause-console-preview .detail-tabs {
+  padding: 0 14px;
+  align-items: center;
+}
+.pause-console-preview .pause-band {
+  padding-inline: 14px;
+}
+.pause-preview-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pause-preview-spacer {
+  flex: 1;
+}
+.pause-preview-compose {
+  padding: 10px 14px;
+}
+@media (max-width: 900px) {
+  .pause-control-option {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .tile-head {
   display: flex;
@@ -32234,7 +34886,8 @@ span.line-run-prov {
   background: color-mix(in oklab, var(--attention) 13%, transparent);
   color: var(--attention);
 }
-.tile-flag.tf-pending {
+.tile-flag.tf-pending,
+.tile-flag.tf-question {
   border-color: color-mix(in oklab, var(--working) 48%, var(--border));
   background: color-mix(in oklab, var(--working) 12%, transparent);
   color: var(--working);
@@ -32328,6 +34981,417 @@ span.line-run-prov {
 @media (prefers-reduced-motion: reduce) {
   .tile-activity .ta-glyph {
     animation: none;
+  }
+}
+
+/* ---- board tile: background sub-agents ----
+   Hangs beneath the tile, outside its border, on a spine: the tile keeps its own height and
+   click target, and these rows read as belonging to the card above rather than as cards of
+   their own. Drawn only when the session has background agents. State hues are the board's
+   own - running is `--working`, done `--idle`, failed `--danger`, stopped `--exited` - so no
+   new colour has to be learned. */
+.subagent-tree {
+  /* Pulled up into the column gap so the spine reads as leaving the tile. */
+  margin: -4px 0 0 14px;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in oklab, var(--working) 35%, var(--border-soft));
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+/* Inside a repository or run frame the tile is inset, so the spine follows it. */
+.board-repo > .subagent-tree,
+.board-cluster > .subagent-tree {
+  margin-left: 21px;
+  margin-right: 7px;
+}
+.subagent-tree .st-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.subagent-tree .st-head:hover {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+/* The repository head's own caret, placed before the words rather than pushed to the end. */
+.subagent-tree .st-head .brh-chevron {
+  order: -1;
+  margin-left: 0;
+}
+:is(.subagent-tree, .subagent-popover) .st-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+:is(.subagent-tree, .subagent-popover) .st-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 7px;
+  background: color-mix(in oklab, var(--panel) 80%, transparent);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+}
+/* The branch from the spine to each row. */
+.subagent-tree .st-row::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 11px;
+  width: 10px;
+  border-top: 1px solid color-mix(in oklab, var(--working) 35%, var(--border-soft));
+}
+:is(.subagent-tree, .subagent-popover) .st-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--working);
+}
+:is(.subagent-tree, .subagent-popover) .st-row.is-completed .st-pip {
+  background: var(--idle);
+}
+:is(.subagent-tree, .subagent-popover) .st-row.is-failed .st-pip {
+  background: var(--danger);
+}
+:is(.subagent-tree, .subagent-popover) .st-row.is-stopped .st-pip {
+  background: var(--exited);
+}
+/* Finished agents stay listed until the next turn (or until a full list folds the oldest to
+   make room), dimmed so the running ones lead. */
+:is(.subagent-tree, .subagent-popover) .st-row.is-completed,
+:is(.subagent-tree, .subagent-popover) .st-row.is-failed,
+:is(.subagent-tree, .subagent-popover) .st-row.is-stopped {
+  opacity: 0.55;
+}
+:is(.subagent-tree, .subagent-popover) .st-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+:is(.subagent-tree, .subagent-popover) .st-title {
+  display: flex;
+  gap: 0;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+}
+:is(.subagent-tree, .subagent-popover) .st-type {
+  flex: none;
+  font-weight: 600;
+}
+:is(.subagent-tree, .subagent-popover) .st-sep {
+  flex: none;
+  white-space: pre;
+}
+:is(.subagent-tree, .subagent-popover) .st-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+:is(.subagent-tree, .subagent-popover) .st-end {
+  flex: none;
+  margin-left: auto;
+  padding-left: 6px;
+  color: var(--muted);
+}
+:is(.subagent-tree, .subagent-popover) .st-detail {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-tree .st-more-row,
+:is(.subagent-tree, .subagent-popover) .st-folded {
+  padding: 2px 7px;
+  background: none;
+  border-style: dashed;
+}
+.subagent-tree .st-more {
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.subagent-tree .st-more:hover {
+  color: var(--fg);
+}
+:is(.subagent-tree, .subagent-popover) .st-folded {
+  color: var(--dim);
+}
+
+/* ---- board tile: the background sub-agents chip and its popover ----
+   The Chip and popover treatment: one chip in the tile's flags, so the card keeps its height,
+   opening a portalled list with the tree's own rows. Pips use the tree's state hues. */
+.tile-flag.tf-agents {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.tile-flag.tf-agents.is-running {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  color: var(--working);
+}
+.tile-flag.tf-agents:hover,
+.tile-flag.tf-agents[aria-expanded="true"] {
+  border-color: var(--working);
+}
+.tile-flag.tf-agents:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.tf-agents-pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.tf-agents-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.tf-agents-pip.is-completed {
+  background: var(--idle);
+}
+.tf-agents-pip.is-failed {
+  background: var(--danger);
+}
+.tf-agents-pip.is-stopped {
+  background: var(--exited);
+}
+.subagent-popover {
+  position: fixed;
+  z-index: 40;
+  /* Width and max-height are set inline from the visible area; border-box keeps the padding
+     and border inside them, stated here rather than left to the global rule. */
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 11px;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink) calc(100% / 3), transparent);
+}
+.subagent-popover:focus {
+  outline: none;
+}
+.subagent-popover:focus-visible {
+  outline: 1px solid var(--select);
+  outline-offset: -1px;
+}
+.subagent-popover .sp-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.subagent-popover .sp-glyph {
+  color: var(--working);
+}
+.subagent-popover .st-list {
+  margin: 0;
+}
+
+/* ---- conversation: the Background agents tray ----
+   Docked between the log and the reply box, as a sibling of both, so it stays in view
+   whatever the rail shows and wherever the log is scrolled. `flex: none` like the composer:
+   the log is the one region that yields height. The list is capped and scrolls on its own,
+   so twelve agents cost the log a few rows rather than the pane. State hues are the board
+   tree's - running `--working`, done `--idle`, failed `--danger`, stopped `--exited`. */
+.bg-tray {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid color-mix(in oklab, var(--working) 55%, var(--border-soft));
+  border-radius: 9px;
+}
+.bg-tray-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+}
+.bg-tray-head:hover {
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+.bg-tray-head .brh-chevron {
+  order: -1;
+  margin-left: 0;
+  flex: none;
+}
+.bg-tray-glyph {
+  flex: none;
+  color: var(--working);
+}
+.bg-tray-headline {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bg-tray-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 112px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.bg-tray-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+.bg-tray-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.bg-tray-row.is-completed .bg-tray-pip {
+  background: var(--idle);
+}
+.bg-tray-row.is-failed .bg-tray-pip {
+  background: var(--danger);
+}
+.bg-tray-row.is-stopped .bg-tray-pip {
+  background: var(--exited);
+}
+/* Finished agents stay listed until the next turn, dimmed so the running ones lead. */
+.bg-tray-row.is-completed,
+.bg-tray-row.is-failed,
+.bg-tray-row.is-stopped {
+  opacity: 0.55;
+}
+.bg-tray-title {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.bg-tray-type {
+  flex: none;
+  font-weight: 600;
+}
+.bg-tray-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bg-tray-detail {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.bg-tray-jump {
+  padding: 1px 6px;
+  font: inherit;
+  color: var(--working);
+  white-space: nowrap;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.bg-tray-jump:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.bg-tray-jump.is-searching {
+  color: var(--muted);
+  cursor: progress;
+}
+/* A search that ended without a turn: the link stays (it says why), but no longer reads as live. */
+.bg-tray-jump.is-missing,
+.bg-tray-jump.is-error {
+  color: var(--muted);
+}
+.bg-tray-folded {
+  display: block;
+  color: var(--dim);
+  padding-left: 18px;
+}
+/* The terminal rendering: a band of the frame rather than a card inside it, set in the
+   frame's monospace like everything else between the title bar and the status line. */
+.pty-frame > .bg-tray {
+  margin: 0 10px;
+  font-family: var(--mono);
+  border-radius: 0;
+  border-width: 1px 0 0;
+  border-left: 0;
+  background: var(--panel);
+}
+/* A narrow conversation stacks each row's detail and link under its title, so the
+   description keeps the width it needs to be read at all. */
+@container (max-width: 560px) {
+  .bg-tray-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    row-gap: 0;
+  }
+  .bg-tray-detail {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .bg-tray-jump {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  .bg-tray-list {
+    max-height: 96px;
   }
 }
 
@@ -32897,6 +35961,14 @@ span.line-run-prov {
 .board-card-preview-stage .tile:hover {
   transform: none;
 }
+/* The preview's sub-cards: the stage has no column gap for the tree's pull-up to eat, so it
+   sits where the board's gap would leave it. Inert like the tile, so it advertises no fold. */
+.board-card-preview-stage > .subagent-tree {
+  margin-top: 4px;
+}
+.board-card-preview-stage > .subagent-tree * {
+  cursor: default;
+}
 /* Display > Top bar's preview: the real `Topbar`, drawn at its natural one-row width and
    zoomed down to fit the stage (`TopbarPreview` measures the ratio), so the operator compares
    the whole bar at once rather than scrolling along it. Every rule `.topbar` carries for its
@@ -33063,11 +36135,36 @@ span.line-run-prov {
 /* Below this the console's rail and the board's columns stop being a layout and start
    being a squeeze. Both collapse to one column rather than pretending. */
 @media (max-width: 760px) {
-  .console {
+  /* The folded Console too: its 40px strip track is more specific than `.console` and would
+     otherwise survive here, leaving the detail in a 40px column beside a hidden rail. */
+  .console,
+  .console[data-rail="folded"] {
     grid-template-columns: 1fr;
   }
   .console-rail {
     display: none;
+  }
+  /* Except with the Line off: the rail is then the only door to the stage drawers, so it
+     stays as a band holding just its stage dock, above the session. The folded rail's column
+     dock lies down into the same row. */
+  .console:has(> .console-rail > .line-dock) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .console-rail:has(> .line-dock) {
+    display: flex;
+    border-right: 0;
+  }
+  .console-rail:has(> .line-dock) > :not(.line-dock) {
+    display: none;
+  }
+  .console-rail > .line-dock.is-column {
+    flex-direction: row;
+    padding: 7px 10px;
+    border-top: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .console-rail > .line-dock.is-column .line-dock-stage {
+    flex: 1 1 0;
   }
   .board {
     grid-auto-flow: row;
@@ -34735,8 +37832,9 @@ body.foreman-sidecar-open .modal-backdrop {
   font-weight: 640;
 }
 
-/* Health pills and inline status badges. No --healthy/--paused tokens exist, so healthy
-   maps to --idle, paused to --exited, attention to --attention, neutral to --neutral. */
+/* Health pills and inline status badges. No --healthy token exists, and a paused schedule is
+   not a paused session (`--paused` is the session's), so healthy maps to --idle, paused to
+   --exited, attention to --attention, neutral to --neutral. */
 .rm-pill,
 .rm-badge-inline {
   display: inline-flex;
@@ -37534,6 +40632,11 @@ body.foreman-sidecar-open .modal-backdrop {
   padding-left: 16px;
 }
 
+/* The Terminals family's outside-sessions switch, below the multiplexer rows. */
+.setup-external-sessions {
+  margin-top: 14px;
+}
+
 .setup-rows .setup-row:first-child {
   border-top: 0;
 }
@@ -37727,6 +40830,15 @@ body.foreman-sidecar-open .modal-backdrop {
     left: 0;
     right: auto;
   }
+}
+
+/* Sits inside the already-inset remedy block, so it carries no inset of its own. */
+.setup-remedy-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin: 0 0 6px;
+  max-width: 760px;
 }
 
 .setup-provider-checkout {
@@ -38190,6 +41302,29 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-note { margin: 0; padding: 4px 8px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
+
+/* A session's own ask for Control other sessions (SessionControlRequestCard.tsx). It borrows
+   the review card's head, body and action row so it reads like a `request_input` question,
+   inside its own attention-framed panel because it sits in the conversation, not a modal.
+   Like the blocker band it never shrinks under the transcript. Only the agent's reason
+   scrolls, inside its own capped box: capping the card instead scrolled Accept and Decline
+   out of view on a short window, and the decision is the one thing this card exists for. */
+.session-control-request {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.detail-conv > .session-control-request { flex: none; }
+.session-control-request .review-content {
+  margin-bottom: 10px;
+  max-height: min(9.5em, 16dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.session-control-request-note { margin: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.session-control-request .review-actions + .session-control-request-note { margin: 10px 0 0; }
 
 /* Resident skill sources share the profile editor's typography and spacing. */
 .resident-source-add, .resident-skill-filters { display: flex; gap: 12px; align-items: end; }
@@ -38656,6 +41791,8 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
 .resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-tag.is-asleep { color: var(--purple); border-color: color-mix(in oklab, var(--purple) 40%, var(--border)); }
+.resident-loop-tag.is-queued { color: var(--working); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
 .resident-loop-reason { color: var(--muted); }
 .resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }
 .resident-loop-tags > .resident-compaction-layers b { font-weight: 550; color: var(--muted); }
@@ -38905,3 +42042,131 @@ body.foreman-sidecar-open .modal-backdrop {
   background: color-mix(in oklab, var(--find) 40%, transparent);
   color: inherit;
 }
+
+/* Stop for a running dependency claim, on the slot card and on the waiting task's card. */
+.claim-stop {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+}
+.claim-stop-btn {
+  padding: 2px 9px;
+  font-size: 11px;
+}
+.claim-stop-error {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.feature-flags { display: flex; flex-direction: column; gap: 16px; }
+.feature-flag-list { border: 1px solid var(--border-soft); border-radius: 11px; overflow: hidden; background: var(--bg); }
+.feature-flag-row { display: flex; align-items: center; gap: 16px; padding: 14px 12px; border-top: 1px solid var(--border-soft); }
+.feature-flag-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.feature-flag-copy strong { font-size: 13px; font-weight: 600; }
+.feature-flag-copy p, .feature-flag-empty { font-size: 12px; color: var(--dim); line-height: 1.6; margin: 4px 0 0; }
+.feature-flag-copy [role="alert"] { color: var(--attention); }
+.feature-flag-empty { padding: 12px; margin: 0; }
+.feature-flag-row .settings-grant { flex: none; }
+.feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
+
+/* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
+   add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
+.task-shaping { display: flex; flex-direction: column; gap: 16px; }
+.task-shaping > .settings-hint { margin: 0; }
+.shaping-settings { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--bg); }
+.shaping-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.shaping-field > label, .shaping-field > span { font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-field .settings-hint { margin: 0; }
+.shaping-field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 14px; }
+.shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
+.shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+/* Inset like the rows below it, so the text never meets the list border. */
+.shaping-list-outcome { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px 2px; overflow-wrap: anywhere; }
+.shaping-list-outcome [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Baseline: the Dismiss label lines up with the first line of the message beside it. */
+.shaping-orphan-outcome { display: flex; align-items: baseline; gap: 12px; }
+.shaping-revisions-missing { font-size: 12px; color: var(--attention); }
+.shaping-orphan-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* The shaper's id, as its row would show it, at its own width rather than the column's. */
+.shaping-orphan-copy > .shaping-row-id { align-self: flex-start; }
+.shaping-outcome-dismiss { flex: none; }
+.shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
+.shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
+.shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
+.shaping-stage-head p { margin: 0; font-size: 11.5px; color: var(--dim); }
+.shaping-stage .feature-flag-empty { padding: 4px 12px 12px; }
+.shaping-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px; border-top: 1px solid var(--border-soft); }
+.shaping-stage-head + .shaping-row { border-top: 0; }
+.shaping-row-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 4px; }
+.shaping-row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.shaping-row-title strong { font-size: 13px; font-weight: 600; }
+.shaping-row-id { font-size: 11.5px; color: var(--dim); }
+.shaping-chip { font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 999px; border: 1px solid var(--border-soft); color: var(--dim); background: var(--panel-2); }
+/* pre-wrap: an argument with two spaces must not look like one with one. */
+.shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
+   gap, yet stays in the accessibility tree, which display: none would not. */
+.shaping-earlier-live:empty { position: absolute; }
+/* Older outcomes, apart from the current one: the same warning colour, quieter, one per line. */
+.shaping-earlier-outcomes { margin: 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.shaping-earlier-outcomes li { font-size: 11.5px; color: var(--attention); opacity: 0.85; overflow-wrap: anywhere; }
+.shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+.shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
+.shaping-env li.is-set span { color: var(--idle); }
+.shaping-env li.is-unset span { color: var(--attention); }
+.shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
+.shaping-move { min-width: 30px; }
+.shaping-dialog { width: min(720px, 100%); }
+.shaping-dialog .modal-head h3 { margin: 0; font-size: 14px; }
+.shaping-dialog .modal-body { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+.shaping-dialog-lede { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--dim); }
+.shaping-manifest { font-family: var(--mono); font-size: 12px; }
+.shaping-file { align-self: flex-start; cursor: pointer; }
+.shaping-refusal { margin: 0; font-size: 12px; color: var(--attention); overflow-wrap: anywhere; }
+.shaping-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-review { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg); }
+.shaping-review dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.shaping-review-line { display: contents; }
+.shaping-review dt { font-size: 11.5px; color: var(--dim); }
+.shaping-review dd { margin: 0; font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-review dd code { white-space: pre-wrap; }
+.shaping-receives h4 { margin: 0 0 4px; font-size: 12px; font-weight: 640; }
+.shaping-receives ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.shaping-receives p { margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+.shaping-result { display: flex; flex-direction: column; gap: 8px; }
+.shaping-result h4 { margin: 4px 0 0; font-size: 12.5px; font-weight: 640; }
+.shaping-outcome { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-outcome strong { color: var(--fg); }
+.shaping-outcome.is-ok strong { color: var(--idle); }
+.shaping-outcome:not(.is-ok) strong { color: var(--attention); }
+.shaping-reason { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.shaping-entry { border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; }
+.shaping-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 10px; background: var(--panel-2); font-size: 12px; }
+.shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
+.shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
+.pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
+.pr-check-results li { margin-block: 8px; }
+
+/* Exact pin changes sit inside the backlog field, using the editor's existing controls. */
+.pinned-plan-change {
+  min-inline-size: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pinned-plan-change legend { padding: 0 6px; font-weight: 600; color: var(--muted); }
+.pinned-plan-change .field { margin: 10px 0; }
+.pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.pinned-plan-change p { margin: 10px 0; }

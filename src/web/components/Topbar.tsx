@@ -1,5 +1,6 @@
 import type { Ref, RefObject } from "react";
 
+import { FleetPauseControl } from "./FleetPauseControl.tsx";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AwayBufferSummary } from "@shared/away-buffer.ts";
 import type { FleetCost, KeepAwakeStatus } from "@shared/types.ts";
@@ -19,6 +20,7 @@ import { AlertBar } from "./AlertBar.tsx";
 import { ForemanBar } from "./ForemanBar.tsx";
 import { ResidentsDock, type ResidentsDockProps } from "../residents/ResidentsDock.tsx";
 import { KeepAwakeControl } from "./KeepAwakeControl.tsx";
+import { LostTasksControl } from "./LostTasksControl.tsx";
 import { Keycap } from "./Keycap.tsx";
 import { SpendChip } from "./SpendChip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -54,6 +56,12 @@ export interface TopbarProps {
   attention: number;
   working: number;
   inbox: number;
+  /**
+   * Questions the operator chose "Remind me later" on that have not come back yet. Counted
+   * apart from `inbox`, which is what is waiting on them NOW, and opening the same inbox, whose
+   * Snoozed section lists them. Optional so a caller without the feature draws no segment.
+   */
+  snoozed?: number;
   onOpenInbox: () => void;
   /**
    * The attention inbox cannot be shown yet: the dashboard's read of the operator's dismissals
@@ -67,6 +75,12 @@ export interface TopbarProps {
    */
   didNotStart?: number;
   onShowDidNotStart?: () => void;
+  /**
+   * Running tasks with no agent session attached - nothing will finish them, so they wait on
+   * the operator to cancel them from Sitrep. Optional for the same reason as `didNotStart`.
+   */
+  lostTasks?: number;
+  onOpenLostTasks?: () => void;
   launcherFocusError?: string | null;
   fleetCost: FleetCost | null;
   costView: "usd" | "plan";
@@ -195,10 +209,13 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         attention={isTopbarItemShown(layout, "needYou") ? props.attention : 0}
         working={isTopbarItemShown(layout, "working") ? props.working : 0}
         inbox={props.inbox}
+        snoozed={props.snoozed ?? 0}
         inboxUnavailable={props.inboxUnavailable ?? false}
         onOpenInbox={props.onOpenInbox}
         didNotStart={props.didNotStart ?? 0}
         onShowDidNotStart={props.onShowDidNotStart ?? (() => {})}
+        lostTasks={props.lostTasks ?? 0}
+        onOpenLostTasks={props.onOpenLostTasks ?? (() => {})}
       />
       {props.launcherFocusError && (
         <span className="launch-flash is-error" role="status">
@@ -248,6 +265,9 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
           </Tooltip>
         </div>
         <div className="tb-group">
+          {/* First among the controls that act on the whole fleet, and glyph-only so it costs
+              the bar its glyph at every width. Hidden with the rest of the optional items. */}
+          {isTopbarItemShown(layout, "pauseAll") && <FleetPauseControl />}
           <ForemanBar
             state={props.foreman}
             compact={isTopbarItemCompact(layout, "foreman")}
@@ -412,10 +432,13 @@ function FleetPulse({
   attention,
   working,
   inbox,
+  snoozed,
   inboxUnavailable,
   onOpenInbox,
   didNotStart,
   onShowDidNotStart,
+  lostTasks,
+  onOpenLostTasks,
 }: {
   connected: boolean;
   /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
@@ -440,6 +463,8 @@ function FleetPulse({
    * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
    */
   inbox: number;
+  /** See `TopbarProps.snoozed`. */
+  snoozed: number;
   /** See `TopbarProps.inboxUnavailable`. */
   inboxUnavailable: boolean;
   onOpenInbox: () => void;
@@ -450,6 +475,9 @@ function FleetPulse({
    */
   didNotStart: number;
   onShowDidNotStart: () => void;
+  /** See `TopbarProps.lostTasks`. Last, so its card hangs off the pulse's trailing edge. */
+  lostTasks: number;
+  onOpenLostTasks: () => void;
 }): React.JSX.Element {
   return (
     <div className={`pulse${connected ? "" : " is-down"}`}>
@@ -497,6 +525,15 @@ function FleetPulse({
           tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
         />
       )}
+      {snoozed > 0 && (
+        <PulseStat
+          n={snoozed}
+          label="snoozed"
+          tone="neutral"
+          onClick={onOpenInbox}
+          tip={`${snoozed} question${snoozed === 1 ? "" : "s"} you chose Remind me later on, coming back on their own. Open the inbox to see when, or answer now`}
+        />
+      )}
       {didNotStart > 0 && (
         <PulseStat
           n={didNotStart}
@@ -506,6 +543,7 @@ function FleetPulse({
           tip={`${didNotStart} dispatch${didNotStart === 1 ? "" : "es"} did not start. Show the newest`}
         />
       )}
+      {lostTasks > 0 && <LostTasksControl count={lostTasks} onOpenSitrep={onOpenLostTasks} />}
     </div>
   );
 }

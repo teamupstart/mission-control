@@ -120,14 +120,15 @@ test("a revision fills every later section with its defaults and round-trips unc
     persona: { personaId: PERSONA.id },
     instructions: { markdown: "" },
     execution: { agent: "claude", model: null, effort: null },
-    workspace: { defaultRepoRoot: null },
+    workspace: { defaultRepoRoot: null, additionalRepoRoots: [] },
     board: { colorId: "cyan", label: null, pin: true },
-    loop: { prompt: "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.", delaySeconds: 300, minDelaySeconds: 60, maxDelaySeconds: 3600, iterationCap: 200, spendCapUsd: 20, contextThreshold: 70, compactionFocus: "" },
+    loop: { prompt: "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Before asking the operator anything, check whether your earlier questions were answered, and do not ask again a question that is still open. Call `schedule_next_iteration` if you need to wake sooner or later than usual.", delaySeconds: 300, minDelaySeconds: 60, maxDelaySeconds: 3600, iterationCap: 200, spendCapUsd: 20, contextThreshold: 70, compactionFocus: "" },
     authority: { controlOtherSessions: false },
     mcp: { nativeSources: "pinned", inheritDefaults: true, selected: [] },
+    schedule: { enabled: false, days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00", timeZone: null },
   });
   assert.deepEqual(ResidentProfileRevisionSchema.parse(JSON.parse(JSON.stringify(parsed))), parsed);
-  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board", "authority", "loop", "mcp"]);
+  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board", "authority", "loop", "mcp", "schedule"]);
   // A stored revision from a newer build, carrying a section this build does not know, still reads.
   assert.equal(ResidentProfileRevisionSchema.safeParse({ ...parsed, marker: { color: "cyan" } }).success, true);
   // A request body may not smuggle one in.

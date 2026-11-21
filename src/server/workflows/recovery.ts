@@ -72,6 +72,7 @@ export const WORKFLOW_PHASE_RECOVERY = {
   inspector_round_limit: "dismiss",
   inspector_unadopted_pr: "resume",
   inspector_working_tree_not_pushed: "resume",
+  inspector_reviewed_tree_changed: "resume",
   evidence_reconciliation_error: "resume",
 } satisfies Record<WorkflowRunPhase, PhaseRecovery>;
 
@@ -90,16 +91,26 @@ export interface WorkflowRecoveryContext {
   gate: WorkflowInspectorGateState | null;
   completionPolicy: WorkflowCompletionPolicy | null;
   bindingHasOtherRun: boolean;
+  /** The current block owns a prepared, unsent Inspector feedback packet. */
+  recoverableInspectorFeedback?: boolean;
 }
 
-export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "status" | "phase">): boolean {
+export function inspectorRecoveryCanRecheck(
+  run: Pick<WorkflowRecoveryContext, "status" | "phase" | "recoverableInspectorFeedback">,
+): boolean {
   if (!workflowRunPhaseRecognized(run.phase)) return false;
   return run.status === "waiting_for_pr"
     || run.status === "waiting_for_inspector"
     || run.status === "waiting_for_new_head"
     || (run.status === "waiting_for_session"
       && (run.phase === "pr_handoff" || run.phase === "inspector_head_mismatch"))
-    || (run.status === "blocked" && run.phase === "inspector_disabled");
+    || (run.status === "blocked" && run.phase === "inspector_disabled")
+    // Reopens only on a GitHub read that saw the pull request open, so a recheck of one that
+    // really closed changes nothing. See `reopenClosedInspectorGate`.
+    || (run.status === "blocked" && run.phase === "inspector_pr_closed")
+    // The manager reconciles only positively unsent feedback; other packets stay held.
+    || (run.status === "blocked" && run.phase === "delivery_blocked"
+      && run.recoverableInspectorFeedback === true);
 }
 
 export function infrastructureRecoveryAvailable(
@@ -149,6 +160,13 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
       recovery.primary = recovery.operations.includes("prepare-pr") ? "prepare-pr"
         : recovery.operations.includes("recheck-inspector") ? "recheck-inspector" : null;
       return recovery;
+    }
+    // The one non-destructive move a closed-PR block has. Without it the run page offered
+    // only cancel and a full restart, which re-spends every review on an unchanged head - and
+    // the block was not always true. It stays a decision: no resubmission is offered.
+    if (["inspector_pr_closed", "delivery_blocked"].includes(c.phase)
+        && recovery.operations.includes("recheck-inspector")) {
+      recovery.primary = "recheck-inspector";
     }
   }
   if (c.status !== "blocked" && c.status !== "waiting_for_session") return recovery;

@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -39,7 +39,9 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 1024,
 });
 
-after(() => db.exec("DELETE FROM task_repos; DELETE FROM tasks; DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
+// Per test, not once at the end: every observation re-reads every pool and slot left in the
+// database with git, so one test's leftovers cost every test after it.
+afterEach(() => db.exec("DELETE FROM task_repos; DELETE FROM tasks; DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
 
 test("inventory skips recursive disk walks and a preview measures only its fixed target", async () => {
   const { clone } = mkOriginAndClone("mission-worktree-lazy-size-");

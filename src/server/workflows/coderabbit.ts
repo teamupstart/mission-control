@@ -11,6 +11,7 @@ import { workflowLog } from "./log.ts";
 import { CODERABBIT_OPERATOR_ACTION, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
 
 export const CODERABBIT_SETUP = "Settings > Setup";
+export const CODERABBIT_ALLOWANCE_REMEDY = "Inspect retained output and explicitly raise the run allowance in Library > Commands, then submit a new round to capture it";
 export const CODERABBIT_MANAGED_ENV = { CODERABBIT_CLI_DISABLE_AUTO_UPDATE: "true", CR_CLI_AUTH_TIMEOUT: "5000" };
 
 export function codeRabbitVersionCompatible(output: string): boolean {
@@ -18,19 +19,82 @@ export function codeRabbitVersionCompatible(output: string): boolean {
   return !!m && (Number(m[1]) > 0 || Number(m[2]) > 9 || Number(m[2]) === 9 && Number(m[3]) >= 1);
 }
 
+/**
+ * What `coderabbit --version` says, kept three ways apart. `obsolete` only for a version that
+ * was read and is older than 0.9.1; a failed, timed-out, overflowing or unparseable answer is
+ * `unreadable`, which says nothing about the version and must not be reported as too old.
+ */
+export type CodeRabbitVersionReading =
+  | { state: "compatible"; version: string }
+  | { state: "obsolete"; version: string }
+  | { state: "unreadable" };
+
+export async function codeRabbitVersionReading(execute: (argv: string[]) => Promise<RunResult>): Promise<CodeRabbitVersionReading> {
+  const result = await execute(["--version"]);
+  if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return { state: "unreadable" };
+  const version = /(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(result.stdout.trim())?.[1];
+  if (!version) return { state: "unreadable" };
+  return codeRabbitVersionCompatible(version) ? { state: "compatible", version } : { state: "obsolete", version };
+}
+
+/** The CLI version gate alone. Null when compatible; never echoes stderr. */
+export async function codeRabbitVersionProblem(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
+  const reading = await codeRabbitVersionReading(execute);
+  if (reading.state !== "compatible") return "CodeRabbit CLI >=0.9.1 is required. Install or upgrade the CLI";
+  onVersion?.(reading.version);
+  return null;
+}
+
 /** Never returns account identifiers, credentials or arbitrary stderr in fleet diagnostics. */
 export async function codeRabbitReadiness(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
-  const version = await execute(["--version"]);
-  if (version.code !== 0 || version.outcomeUnknown || version.overflowed || !codeRabbitVersionCompatible(version.stdout)) return "CodeRabbit CLI >=0.9.1 is required. Install or upgrade the CLI";
-  onVersion?.(/(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(version.stdout.trim())![1]!);
+  return await codeRabbitVersionProblem(execute, onVersion) ?? await codeRabbitAuthProblem(execute);
+}
+
+const AUTH_UNAVAILABLE_DIAGNOSTIC = "CodeRabbit authentication is unavailable";
+const AUTH_UNCONFIRMED_DIAGNOSTIC = "CodeRabbit stored authentication could not be confirmed";
+const AUTH_LOGIN_ADVICE = "Run coderabbit auth login using the daemon's effective HOME";
+const AUTH_UNAVAILABLE = `${AUTH_UNAVAILABLE_DIAGNOSTIC}. ${AUTH_LOGIN_ADVICE}`;
+const AUTH_UNCONFIRMED = `${AUTH_UNCONFIRMED_DIAGNOSTIC}. ${AUTH_LOGIN_ADVICE}`;
+
+/**
+ * What `coderabbit auth status --agent` says, kept three ways apart.
+ *
+ * `signed-out` only when the CLI answered cleanly and its own events say so - a status of
+ * `authenticated: false` or an `action_required` - so Setup can ask for a sign-in. A failed,
+ * timed-out, overflowing or unparseable answer, or an `error` event, is `unverified`: the
+ * probe could not tell, and telling the operator they are signed out would send them through
+ * a login that repairs nothing. Never carries account identifiers or arbitrary stderr.
+ */
+/**
+ * `problem` is the workflow gate's full message, login advice included. `diagnostic` is the
+ * same reading without that advice, for a surface that must not tell an operator to log in
+ * when the sign-in state was never read.
+ */
+export type CodeRabbitAuthReading =
+  | { state: "ready" }
+  | { state: "signed-out"; problem: string; diagnostic: string }
+  | { state: "unverified"; problem: string; diagnostic: string };
+
+export async function codeRabbitAuthReading(execute: (argv: string[]) => Promise<RunResult>): Promise<CodeRabbitAuthReading> {
   const auth = await execute(["auth", "status", "--agent"]);
-  if (auth.code !== 0 || auth.outcomeUnknown || auth.overflowed) return "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME";
+  const unavailable = { problem: AUTH_UNAVAILABLE, diagnostic: AUTH_UNAVAILABLE_DIAGNOSTIC };
+  const unconfirmed = { problem: AUTH_UNCONFIRMED, diagnostic: AUTH_UNCONFIRMED_DIAGNOSTIC };
+  if (auth.code !== 0 || auth.outcomeUnknown || auth.overflowed) return { state: "unverified", ...unavailable };
+  let events: Record<string, unknown>[];
   try {
-    const events = auth.stdout.trim().split(/\r?\n/).map((s) => JSON.parse(s) as Record<string, unknown>);
-    if (!events.some((e) => e.type === "status" && e.authenticated === true)
-      || events.some((e) => e.type === "error" || e.type === "action_required")) throw new Error();
-  } catch { return "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME"; }
-  return null;
+    events = auth.stdout.trim().split(/\r?\n/).map((s) => JSON.parse(s) as Record<string, unknown>);
+  } catch { return { state: "unverified", ...unconfirmed }; }
+  if (events.some((e) => e?.type === "error")) return { state: "unverified", ...unconfirmed };
+  const signedIn = events.some((e) => e?.type === "status" && e.authenticated === true);
+  if (signedIn && !events.some((e) => e?.type === "action_required")) return { state: "ready" };
+  const signedOut = events.some((e) => e?.type === "action_required" || (e?.type === "status" && e.authenticated === false));
+  return signedOut ? { state: "signed-out", ...unconfirmed } : { state: "unverified", ...unconfirmed };
+}
+
+/** The stored-authentication gate alone, for a CLI already known to be compatible. */
+export async function codeRabbitAuthProblem(execute: (argv: string[]) => Promise<RunResult>): Promise<string | null> {
+  const reading = await codeRabbitAuthReading(execute);
+  return reading.state === "ready" ? null : reading.problem;
 }
 
 export async function probeCodeRabbit(): Promise<{ command: string; env: NodeJS.ProcessEnv; error: string | null } | { error: string }> {
@@ -148,6 +212,9 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
   reservation = input.reserveRun?.();
+  if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
+    "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
+    `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
   if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
   try {
     if (input.coderabbit?.retryAt && input.coderabbit.retryAt > Date.now()) return block(`CodeRabbit vendor wait is active until ${new Date(input.coderabbit.retryAt).toISOString()}. Retry after that time`);
@@ -171,11 +238,17 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     failureStage = "execution";
     const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
-    started = execution.kind !== "unavailable" && (execution.kind !== "infrastructure" || execution.started !== false);
-    if (execution.kind === "unavailable") return block(execution.note);
+    started = execution.kind !== "unavailable" && execution.kind !== "decided"
+      && (execution.kind !== "infrastructure" || execution.started !== false);
+    // A review takes its tree without a dependency claim, so it is never decided by one.
+    if (execution.kind === "unavailable" || execution.kind === "decided") return block(execution.note);
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
     failureStage = "result";
     const review = execution.review;
+    if (review?.status === "incomplete" && review.retryableConnection) return {
+      kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
+      review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) },
+    };
     if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts,
       !review || review.diagnostic === CODERABBIT_OPERATOR_ACTION);
     const skipped = review.status === "skipped";

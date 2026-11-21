@@ -24,6 +24,7 @@ const catalog = await import("../src/server/residents/mcp-catalog.ts");
 const launch = await import("../src/server/residents/mcp-launch.ts");
 const sharedMcp = await import("../src/shared/resident-mcp.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
@@ -334,7 +335,7 @@ test("a Codex answer missing its layers is a failed read, so an inherit-on launc
   assert.ok(!inherited.ok && /could not read Codex's global MCP servers: Codex did not report its configuration layers/.test(inherited.error));
 });
 
-test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and env references", () => {
+test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and HTTP env references", () => {
   const table = catalog.codexUserMcpTable({ config: {}, layers: [
     { name: { type: "project" }, config: { mcp_servers: { projectonly: { command: "x" } } } },
     { name: { type: "user", file: "/u/config.toml" }, config: { mcp_servers: {
@@ -349,7 +350,7 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
   assert.ok(typeof table !== "string");
   assert.deepEqual(Object.keys(table), ["fs", "web", "oauth", "refs", "bearer", "off"], "only the user layer");
   const auth = new Map([["web", "bearer_token"], ["oauth", "o_auth"], ["bearer", "bearer_token"]]);
-  const servers = Object.entries(table).map(([name, entry]) => catalog.parseCodexServer(name, entry, auth.get(name) ?? null));
+  const servers = Object.entries(table).map(([name, entry]) => catalog.parseCodexServer(name, entry, auth.get(name) ?? null, {}));
   const [fs, web, oauth, refs, bearer, off] = servers;
   assert.equal(fs!.summary.unavailable, null);
   assert.deepEqual(fs!.options, { codex: { startupTimeoutSec: 12, toolTimeoutSec: 30, enabledTools: ["read"] } });
@@ -357,11 +358,76 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
   assert.equal(web!.summary.unavailable, null);
   assert.equal(web!.secrets.get("header:Authorization"), `Bearer ${SECRET}`);
   assert.match(oauth!.summary.unavailable!, /OAuth login held by Codex/);
-  assert.match(refs!.summary.unavailable!, /env_vars/);
+  assert.equal(refs!.summary.unavailable, null);
   assert.match(bearer!.summary.unavailable!, /bearer_token_env_var/);
   assert.equal(off!.summary.enabled, false);
   assert.ok(!JSON.stringify(servers.map((server) => server.summary)).includes(SECRET));
   assert.match(catalog.parseCodexServer("web", { url: "https://x" }, undefined).summary.unavailable!, /could not say how it authenticates/);
+});
+
+test("Codex env_vars are pinned privately for inherited and selected servers, including resume", async () => {
+  const env: NodeJS.ProcessEnv = { NODE_REPL_TOKEN: SECRET, OVERRIDE: "ambient", EMPTY: "" };
+  const entry = { command: "node-repl", env_vars: ["NODE_REPL_TOKEN", "OVERRIDE", "EMPTY", "UNSET", "NODE_REPL_TOKEN"], env: { OVERRIDE: "explicit" } };
+  const definition = catalog.parseCodexServer("node_repl", entry, null, env);
+  assert.equal(definition.summary.unavailable, null);
+  assert.deepEqual(definition.summary.envNames, ["NODE_REPL_TOKEN", "OVERRIDE", "EMPTY"]);
+  assert.deepEqual(Object.fromEntries(definition.secrets), { "env:NODE_REPL_TOKEN": SECRET, "env:OVERRIDE": "explicit", "env:EMPTY": "" });
+  assert.ok(!JSON.stringify(definition.summary).includes(SECRET));
+  const globals: GlobalRead = { agent: "codex", servers: [definition], problem: null, readAt: 1 };
+  for (const settings of [profile({ agent: "codex" }), profile({ agent: "codex", inheritDefaults: false, selected: [{ source: "global", agent: "codex", name: "node_repl" }] })]) {
+    const resolved = await resolve(settings, globals);
+    assert.ok(resolved.ok && resolved.servers);
+    assert.deepEqual(resolved.servers.map((server) => server.name), ["node_repl"]);
+    const runId = crypto.randomUUID();
+    seedRun(runId, resolved.servers);
+    for (const changed of [false, true]) {
+      if (changed) env.NODE_REPL_TOKEN = "changed-after-launch";
+      const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
+      assert.ok(!JSON.stringify(entries).includes(SECRET), "neither argv nor generated MCP entries carry the resolved value");
+      const server = entries[0]!;
+      assert.equal(server.shape, "launcher");
+      if (server.shape !== "launcher") throw new Error("expected scoped launcher");
+      const { ticket } = JSON.parse(readFileSync(server.args.at(-1)!, "utf8"));
+      const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "node_repl" });
+      assert.ok(redeemed.ok && redeemed.definition.transport === "stdio");
+      assert.deepEqual(redeemed.definition.env, { NODE_REPL_TOKEN: SECRET, OVERRIDE: "explicit", EMPTY: "" }, "resume uses the saved values");
+    }
+  }
+  const unset = catalog.parseCodexServer("optional", { command: "srv", env_vars: ["UNSET"] }, null, {});
+  assert.equal(unset.summary.unavailable, null);
+  assert.equal(unset.secrets.size, 0, "Codex omits unset optional variables");
+  for (const env_vars of ["TOKEN", [1], [{ name: "TOKEN", source: "remote" }]]) {
+    assert.match(catalog.parseCodexServer("bad", { command: "srv", env_vars }, null, env).summary.unavailable!, /env_vars/);
+  }
+});
+
+for (const key of ["MISSION_HOME", "CODEX_HOME"]) test(`Codex does not pin the catalog probe's process-scoped ${key}`, async () => {
+  const { agentSubprocessEnv } = await import("../src/server/agent-subprocess-env.ts");
+  const probeHome = join(home, "catalog-probe");
+  const operatorCodexHome = join(home, "operator-codex");
+  const env = agentSubprocessEnv({ MISSION_HOME: join(home, "operator"), CODEX_HOME: operatorCodexHome, FLEET_HOME: join(home, "legacy"), MCP_TOKEN: SECRET }, { stateHome: probeHome });
+  assert.equal(env.MISSION_HOME, probeHome);
+  assert.equal(env.CODEX_HOME, operatorCodexHome);
+  assert.equal(env.FLEET_HOME, undefined, "the catalog probe remains isolated");
+  const entry = { command: "server", env_vars: ["MCP_TOKEN", key] };
+  const reason = new RegExp(`${key}.*cannot be pinned`);
+  const definition = catalog.parseCodexServer("state-server", entry, null, env);
+  assert.match(definition.summary.unavailable!, reason);
+  assert.equal(definition.transport, null);
+  assert.equal(definition.secrets.size, 0, "a rejected reference binds no values, including preceding names");
+  const globals: GlobalRead = { agent: "codex", servers: [definition], problem: null, readAt: 1 };
+  for (const settings of [profile({ agent: "codex" }), profile({ agent: "codex", inheritDefaults: false, selected: [{ source: "global", agent: "codex", name: "state-server" }] })]) {
+    const resolved = await resolve(settings, globals);
+    assert.ok(!resolved.ok && reason.test(resolved.error));
+    assert.ok(!JSON.stringify(resolved).includes(probeHome));
+    assert.ok(!JSON.stringify(resolved).includes(operatorCodexHome));
+  }
+  const stable = catalog.parseCodexServer("state-server", { ...entry, env: { [key]: "/explicit/server-state" } }, null, env);
+  assert.equal(stable.summary.unavailable, null, "an explicit value overrides the lifecycle-bound reference");
+  assert.deepEqual(Object.fromEntries(stable.secrets), { "env:MCP_TOKEN": SECRET, [`env:${key}`]: "/explicit/server-state" });
+  const ordinary = catalog.parseCodexServer("ordinary", { command: "server", env_vars: ["MCP_TOKEN", "FLEET_HOME"] }, null, env);
+  assert.equal(ordinary.summary.unavailable, null);
+  assert.deepEqual(Object.fromEntries(ordinary.secrets), { "env:MCP_TOKEN": SECRET }, "other names still use the isolated probe environment");
 });
 
 test("a global server named __proto__ is listed as unavailable on either harness, never silently dropped", () => {
@@ -409,7 +475,7 @@ test("a harness without a global reader offers no global servers, never another 
 function globalsOf(agent: "claude" | "codex", servers: Record<string, unknown>): GlobalRead {
   const parse = agent === "claude"
     ? (name: string, entry: unknown) => catalog.parseClaudeServer(name, entry, {})
-    : (name: string, entry: unknown) => catalog.parseCodexServer(name, entry, null);
+    : (name: string, entry: unknown) => catalog.parseCodexServer(name, entry, null, {});
   return { agent, servers: Object.entries(servers).map(([name, entry]) => parse(name, entry)), problem: null, readAt: 1 };
 }
 
@@ -461,6 +527,7 @@ test("an inherited server residents cannot represent refuses the launch, naming 
 
 test("a profile saved before the choice existed, and a new one, keep the pinned set", () => {
   assert.equal(profile().mcp.nativeSources, "pinned");
+  assert.equal(profile().mcp.disableClaudeAiConnectors, undefined, "legacy profiles do not opt out");
   const stored = ResidentProfileRevisionSchema.parse({
     identity: { name: "Older" }, persona: { personaId: "p" }, mcp: { inheritDefaults: false, selected: [] },
   });
@@ -505,9 +572,28 @@ test("importing all native sources snapshots only the custom servers: global ser
   assert.ok(!refused.ok && /same name as Claude Code's global server/.test(refused.error), JSON.stringify(refused));
 });
 
-test("a harness that offers no all-sources launch refuses the choice at launch", async () => {
+test("Codex native MCP is opt-in; native launches snapshot custom servers without reading Codex's global catalog", async () => {
   const result = await resolve(profile({ agent: "codex", nativeSources: "all" }), globalsOf("codex", {}));
-  assert.ok(!result.ok && /Codex cannot start a resident on all of its native MCP sources/.test(result.error), JSON.stringify(result));
+  assert.ok(!result.ok && /Enable Codex resident native MCP/.test(result.error), JSON.stringify(result));
+
+  const id = "codex-resident-native-mcp";
+  const flag = (enabled: boolean) => assert.ok(applyFeatureFlagIntent({ kind: "flag", id, enabled }).ok);
+  flag(true);
+  try {
+    const custom = create({ name: "notes.custom", harnesses: ["codex"], transport: { type: "stdio", command: "notes" } });
+    const resolved = await launch.resolveResidentMcpSet(profile({
+      agent: "codex", nativeSources: "all", selected: [{ source: "custom", id: custom.id }],
+    }), {
+      globals: async () => assert.fail("Codex native mode checks for name collisions in the actual launch workspace"),
+      custom: mcpStore.listResidentMcpServers,
+      customSecrets: mcpStore.customSecretValues,
+    });
+    assert.ok(resolved.ok && resolved.servers);
+    assert.deepEqual(resolved.servers.map((server) => [server.source, server.name]), [["custom", "notes.custom"]]);
+    assert.equal(resolved.servers[0]?.launcher, true, "even secretless custom definitions stay out of native Codex's argv");
+  } finally {
+    flag(false);
+  }
 });
 
 test("secrets under one field name stay bound to their own (source, name)", async () => {
@@ -703,6 +789,38 @@ test("entries carry no secret: global and secret-bearing servers are launcher en
   // Each start mints its own tickets.
   const again = resident.forStart();
   assert.notEqual(again[0]!.shape === "launcher" && again[0]!.args.at(-1), credential);
+});
+
+test("prepared launcher paths stay empty through slow preflight and receive fresh, single-use tickets", (t) => {
+  const runId = crypto.randomUUID();
+  seedRun(runId, [HTTP_SERVER]);
+  t.mock.timers.enable({ apis: ["Date"] });
+  const resident = launch.residentMcpLaunchForRun(runId, "all")!;
+  const start = resident.prepareStart();
+  const entry = start.entries[0]!;
+  assert.equal(entry.shape, "launcher");
+  const path = entry.args.at(-1)!;
+  assert.equal(existsSync(path), false);
+  t.mock.timers.tick(launch.RESIDENT_MCP_TICKET_TTL_MS + 1);
+  start.issue();
+  const { ticket, expiresAt } = JSON.parse(readFileSync(path, "utf8")) as { ticket: string; expiresAt: number };
+  assert.equal(expiresAt, Date.now() + launch.RESIDENT_MCP_TICKET_TTL_MS);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.throws(() => start.issue(), /already issued/);
+  const request = { ticket, runId, server: "web" };
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, true);
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, false);
+
+  const retry = resident.prepareStart();
+  const retryEntry = retry.entries[0]!;
+  assert.equal(retryEntry.shape, "launcher");
+  const retryPath = retryEntry.args.at(-1)!;
+  assert.notEqual(retryPath, path);
+  retry.issue();
+  const retryTicket = (JSON.parse(readFileSync(retryPath, "utf8")) as { ticket: string }).ticket;
+  retry.revoke();
+  assert.equal(existsSync(retryPath), false);
+  assert.equal(launch.redeemResidentMcpTicket({ ...request, ticket: retryTicket }).ok, false);
 });
 
 test("a ticket is redeemed once, by its own server, before it expires, for that server's definition alone", () => {
@@ -908,7 +1026,7 @@ test("a profile cannot save a selection another harness owns or a custom server 
   assert.ok(!notApplicable.ok && /does not apply to Claude Code/.test(notApplicable.error));
 });
 
-test("a profile on all native sources launches with its pinned revision's choice, and Codex cannot save it", async () => {
+test("a Claude profile on all native sources launches, and a Codex profile needs the preview to save it", async () => {
   const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" }, helper: { type: "http", url: "https://x", headersHelper: "h" } }));
   const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
     identity: { name: "All Sources" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
@@ -926,13 +1044,13 @@ test("a profile on all native sources launches with its pinned revision's choice
     // No spend cap, so the MCP check is the one that answers.
     loop: { spendCapUsd: null },
   }));
-  assert.ok(!codex.ok && /Codex cannot start a resident on all of its native MCP sources, so a profile on it must keep a pinned set/.test(codex.error), JSON.stringify(codex));
+  assert.ok(!codex.ok && /Enable Codex resident native MCP/.test(codex.error), JSON.stringify(codex));
 });
 
 test("a running resident keeps its launch revision's source mode after the profile is edited back to pinned", async () => {
   const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" } }));
   const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
-    identity: { name: "Mode Keeper" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
+    identity: { name: "Mode Keeper" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all", disableClaudeAiConnectors: true },
   }));
   assert.ok(created.ok, JSON.stringify(created));
   const launched = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-mode-keeper" });
@@ -940,11 +1058,12 @@ test("a running resident keeps its launch revision's source mode after the profi
   assert.equal(launched.result.run.profileRevision, 1);
   const task = registry.getTask(launched.result.taskId)!;
   assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");
+  assert.equal(residents.mcpLaunchForTask(task)?.disableClaudeAiConnectors, true);
 
   // The operator edits the profile back to a pinned set while the resident runs.
   const revised = residents.updateProfile(created.profile.id, 1, {
     ...created.profile.settings,
-    mcp: { ...created.profile.settings.mcp, nativeSources: "pinned" },
+    mcp: { ...created.profile.settings.mcp, nativeSources: "pinned", disableClaudeAiConnectors: false },
   });
   assert.ok(revised.ok && revised.profile.revision === 2, JSON.stringify(revised));
   assert.equal(revised.profile.settings.mcp.nativeSources, "pinned");
@@ -954,6 +1073,7 @@ test("a running resident keeps its launch revision's source mode after the profi
   // only, never the edited setting.
   const next = residents.mcpLaunchForTask(task);
   assert.equal(next?.nativeSources, "all");
+  assert.equal(next?.disableClaudeAiConnectors, true, "resume reads the original revision, not the edited preference");
   assert.deepEqual(next?.names, []);
 
   // The edit reaches the next launch, which pins revision 2 and its inherited global server.
@@ -962,6 +1082,7 @@ test("a running resident keeps its launch revision's source mode after the profi
   assert.equal(relaunched.result.run.profileRevision, 2);
   const pinned = residents.mcpLaunchForTask(registry.getTask(relaunched.result.taskId)!);
   assert.equal(pinned?.nativeSources, "pinned");
+  assert.equal(pinned?.disableClaudeAiConnectors, false);
   assert.deepEqual(pinned?.names, ["github"]);
   // And the first run still has not moved.
   assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");

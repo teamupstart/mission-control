@@ -5,8 +5,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { CreateReviewSchema, inputQuestionProblem } from "../src/shared/protocol.ts";
 import { decisionLead } from "../src/shared/review-item.ts";
-import { reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
+import { inputBody, reviewAskSummary, reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
+import { inputReviewBody } from "../src/shared/decision-asks.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
+import { CheckoutPathText } from "../src/web/components/CheckoutPathText.tsx";
 import { titleLine, TITLE_MAX_CHARS } from "../src/shared/title.ts";
 
 // What is at stake: the question has to arrive as ARGUMENTS, not as a picture of a menu.
@@ -170,6 +172,16 @@ test("what request_input actually sends reaches showsBody both ways", () => {
     true,
     "the full question still reaches the human as the readable paragraph",
   );
+
+  // A question with `context`: the short question is the heading, so the body still has
+  // something to say - its context - and that alone is what the card prints beneath it.
+  const withContext = review({ title: short, body: inputReviewBody(short, "Option a is faster; b is safer.") });
+  assert.equal(showsBody(withContext), true, "context is shown");
+  assert.equal(inputBody(withContext), "Option a is faster; b is safer.", "without repeating the heading");
+  assert.deepEqual(reviewAskSummary(review({ title: short, body: inputReviewBody(short, "Line 1\nLine 2") })), {
+    kind: "input",
+    detail: "Line 1",
+  });
 });
 
 test("two forms in one document do not share a radio group", () => {
@@ -226,4 +238,21 @@ test("an input review a human could not answer on its card is refused before it 
   // The rule belongs to `input`: plan-decisions keep their own contract.
   assert.ok(CreateReviewSchema.safeParse({ ...base, kind: "plan-decisions",
     decisions: [{ ...decision, options: [{ id: "o0", label: "x" }, { id: "o1", label: "x" }] }] }).success);
+});
+
+test("a question's real checkout paths open in Files, and nothing else becomes a link", () => {
+  const page = "docs/mockups/remind/snooze-chip.html";
+  const text = `The leading option is ${page}. See also docs/mockups/remind/missing.html.`;
+  const render = (paths: ReadonlySet<string> | null, onOpen?: (path: string) => void) =>
+    renderToStaticMarkup(createElement(CheckoutPathText, { text, paths, onOpen }));
+  const linked = render(new Set([page]), () => {});
+  assert.equal(linked.match(/<a /g)?.length, 1, "only the listed path links");
+  assert.match(linked, new RegExp(`<a class="workspace-path" href="${page}"[^>]*>${page}</a>`));
+  // Described for hover and assistive tech, like every other control (tooltip-coverage).
+  assert.match(linked, /aria-describedby="[^"]+"/);
+  assert.match(linked, /Open in Files; the question stays pending/);
+  assert.match(linked, /missing\.html\.$/);
+  // No listing yet, or nowhere to open it: the text the agent wrote, unchanged.
+  assert.equal(render(null, () => {}), text);
+  assert.equal(render(new Set([page])), text);
 });

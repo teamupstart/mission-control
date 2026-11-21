@@ -13,6 +13,7 @@ import { getAwayConfig } from "../away/config.ts";
 import { getAppConfig } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { getHarnessesConfig } from "../harnesses.ts";
+import { getInspectorConfig } from "../inspector/config.ts";
 import { standingInstructionsConfig } from "../instructions/config.ts";
 import { getUiConfig } from "../ui-config.ts";
 
@@ -31,6 +32,7 @@ export function logicalConfigValue(entry: AppConfigEntry): unknown {
     case "away": return getAwayConfig();
     case "harnesses": return getHarnessesConfig();
     case "foreman": return getForemanConfig();
+    case "inspector": return getInspectorConfig();
     case "ui": return getUiConfig(false);
     case "standing": return standingInstructionsConfig();
     case "generic": {
@@ -62,10 +64,16 @@ export function settingPayloadForEntry(entry: AnyAppConfigEntry, logicalValue: u
 /** Validate a persisted logical payload against its descriptor and exact setting key set. */
 export function parseSettingPayload(entry: AnyAppConfigEntry, value: unknown): unknown {
   if (entry.classification.kind === "whole") return settingPayloadForEntry(entry, value);
-  const record = boundedRecord(z.string(), z.unknown(), Object.keys(entry.classification.fields).length).parse(value);
-  const allowed = new Set(Object.entries(entry.classification.fields)
-    .filter(([, valueClass]) => valueClass === "setting")
-    .map(([field]) => field));
+  const legacyFields = entry.classification.legacyFields ?? [];
+  const record = boundedRecord(
+    z.string(), z.unknown(), Object.keys(entry.classification.fields).length + legacyFields.length,
+  ).parse(value);
+  const allowed = new Set([
+    ...Object.entries(entry.classification.fields)
+      .filter(([, valueClass]) => valueClass === "setting")
+      .map(([field]) => field),
+    ...legacyFields,
+  ]);
   const unexpected = Object.keys(record).filter((field) => !allowed.has(field));
   if (unexpected.length > 0) {
     throw new TypeError(`Snapshot domain ${entry.backupDomain} has unexpected setting fields`);

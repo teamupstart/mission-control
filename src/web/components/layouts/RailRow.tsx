@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef } from "react";
+import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, uptime } from "../../lib/format.ts";
@@ -7,6 +8,7 @@ import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   InspectorRailMark,
   PrRailMark,
   ScheduleOriginRailMark,
@@ -124,6 +126,9 @@ export function RailRow({
   // past it, and a reader wondering why Focus is missing should find it immediately.
   const runtime = runtimeRailMark(session);
   if (runtime) marks.push(runtime);
+  // Paused or priority: the rail's glyph for the card's flag. The state word beside it
+  // already reads "paused", so the glyph is what survives a scan down a narrow rail.
+  const priority = isPrioritySession(useFleetPause(), session.id);
   if (session.note) marks.push("◆");
   if (session.queue && session.queue.openCount > 0) marks.push(`≡${session.queue.openCount}`);
   // Cost is the one signal the rail states as a GLYPH rather than a figure, and only once
@@ -137,10 +142,15 @@ export function RailRow({
   // The card's `residentMarker` item governs the rail's accent edge and chip too, the way
   // `cardShortcut` governs both keycaps: one resident marker, drawn on both surfaces.
   const residentMark = useDisplayItems()("residentMarker") ? resident : null;
-  const description = `${session.name || "(unnamed)"} - ${st.label}${
+  // The priority mark is aria-hidden, and the state word says only "working", so the priority
+  // session is named here, or a screen reader cannot tell it from the rest of the rail.
+  const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }`;
   const descriptionId = useId();
+  const actionWaitId = useId();
+  const actionWaitRuns = (workflowRuns ?? (workflowRun ? [workflowRun] : []))
+    .filter(run => run.status === "waiting_for_action" && run.actionWait);
 
   return (
     <>
@@ -148,10 +158,11 @@ export function RailRow({
         ref={setRef}
         className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}${
           residentMark ? " is-resident" : ""
-        }`}
+        }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
         aria-current={selected}
-        aria-describedby={descriptionId}
+        aria-label={session.name || "(unnamed)"}
+        aria-describedby={[descriptionId, ...actionWaitRuns.map(run => `${actionWaitId}-${run.id}`)].join(" ")}
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
            the rail is the row itself rather than a button stretched over a card. */
@@ -195,6 +206,14 @@ export function RailRow({
             <span className="rail-state">{st.label}</span>
           </span>
           <span className="rail-meta">
+            {/* Its own element rather than one more entry in the marks string, which is drawn
+                in the attention colour: a pause is the operator's choice, not something asking
+                for them. */}
+            {(priority || session.pause) && (
+              <span className={`rail-pause-mark${priority ? " is-priority" : ""}`} aria-hidden>
+                {priority ? "★" : "❚❚"}
+              </span>
+            )}
             {marks.length > 0 && <span className="rail-marks">{marks.join(" ")}</span>}
             <PrRailMark session={session} />
             {/* The rail is glyph-and-count only - it has one line of room and a name to fit
@@ -243,6 +262,7 @@ export function RailRow({
             </span>
           </span>
         </span>
+        <WorkflowActionWait runs={actionWaitRuns} idPrefix={actionWaitId} />
       </button>
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>

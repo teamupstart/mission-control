@@ -1,9 +1,10 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
@@ -99,13 +100,7 @@ let seq = 0;
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return repo;
 }
 
@@ -161,7 +156,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
     let launchedModel: string | null | undefined;
     const dispatcher = new Dispatcher(registry, async () => {}, {
       resolveRuntime: () => "terminal",
-      missionMcpDescriptor: async () => null,
+      ...MISSION_TEST_MCP_DEPS,
       spawn: async (_label, _short, cwd, _bin, args = []) => {
         const modelFlag = args.indexOf("--model");
         launchedModel = modelFlag < 0 ? null : args[modelFlag + 1];
@@ -296,7 +291,7 @@ test("an embedded launch reports the SDK runtime, from the resolution and not th
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "sdk",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     supervisor: supervisor as never,
     // Reaching a pane at all would mean the embedded branch did not take.
     inject: async () => assert.fail("an embedded dispatch must never type at a pane"),
@@ -338,7 +333,7 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async () => {
       // The operator cancels while the launch is in flight. The dispatch then fails, but the
       // task's terminal state is the operator's and the dispatcher must not overwrite it.
@@ -380,7 +375,7 @@ test("a failure after resolution carries the model that launch resolved", async 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     // Thrown at the SPAWN, which is after the model and effort ladder has been walked. That
     // ordering is the point: the facts below are the ones this launch resolved, carried
     // forward to an exit three scopes away from where they were computed.

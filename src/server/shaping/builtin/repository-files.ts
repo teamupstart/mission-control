@@ -107,9 +107,9 @@ function pathIsConfinable(configured: string): boolean {
 }
 
 /**
- * Bytes to text: invalid UTF-8 replaced, a byte order mark dropped, and at most `cap` bytes of
- * UTF-8, cut at the last line boundary that fits. `exceeded` says the bytes are a prefix of the
- * file, so the line they end in is incomplete even when it fits.
+ * Bytes to text: invalid UTF-8 replaced, and at most `cap` bytes of UTF-8, cut at the last line
+ * boundary that fits. `exceeded` says the bytes are a prefix of the file, so the line they end in
+ * is incomplete even when it fits. A byte order mark is already gone (`contentWithinCap`).
  */
 export function fileText(bytes: Buffer, cap: number, exceeded: boolean): { text: string; truncated: boolean } {
   // At a cut, a whole-character decode: the read stopped inside the file, so an incomplete
@@ -118,10 +118,23 @@ export function fileText(bytes: Buffer, cap: number, exceeded: boolean): { text:
   // there is malformed input and is replaced like any other: dropping it could turn a facts file
   // with trailing garbage into valid JSON. Each U+FFFD is three bytes, so the cap is applied to
   // the decoded text rather than to the bytes that were read.
-  let text = exceeded ? decodeUtf8Whole(bytes) : bytes.toString("utf8");
-  if (text.startsWith("﻿")) text = text.slice(1);
+  const text = exceeded ? decodeUtf8Whole(bytes) : bytes.toString("utf8");
   if (!exceeded && utf8Length(text) <= cap) return { text, truncated: false };
   return { text: cutAtLastLine(text, cap), truncated: true };
+}
+
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+
+/**
+ * A bounded read's content: a leading byte order mark dropped, then at most `cap + 1` bytes, and
+ * whether the content is longer than `cap`. The mark is removed before the cap applies, so it
+ * never counts against a file's limit: the read that feeds this allows `cap` plus the mark's
+ * three bytes, and a facts file of exactly 64 KiB behind a mark is whole. The extra byte past
+ * `cap` is kept so the line cut can see whether the cap fell exactly on a line's end.
+ */
+export function contentWithinCap(bytes: Buffer, cap: number): { bytes: Buffer; exceeded: boolean } {
+  const content = bytes.subarray(0, UTF8_BOM.length).equals(UTF8_BOM) ? bytes.subarray(UTF8_BOM.length) : bytes;
+  return { bytes: content.subarray(0, cap + 1), exceeded: content.length > cap };
 }
 
 /**
@@ -199,8 +212,9 @@ export async function readWorktreeFile(
     }
 
     // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off.
+    // The read allows a byte order mark on top of the cap, which `contentWithinCap` removes first.
     let bounded: { bytes: Buffer; exceeded: boolean };
-    try { bounded = await readFileWithinCap(handle, cap); }
+    try { bounded = contentWithinCap((await readFileWithinCap(handle, cap + UTF8_BOM.length)).bytes, cap); }
     catch { return { ok: false, skip: "unreadable" }; }
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
     // `empty` is a claim about the whole decoded file, so only text that was neither a prefix of

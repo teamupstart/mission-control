@@ -440,8 +440,8 @@ worktree file can be replaced while shaping runs.
    looked up again, must still be free of links, inside the worktree, and name the same file as
    the one opened. A file moved or hard-linked into the worktree is a worktree file.
 4. **Read.** At most the file's cap is read from the opened file, so one that grows meanwhile is
-   still cut off. Invalid UTF-8 is replaced, a byte order mark is dropped, and the text is cut at
-   the last line boundary within the cap.
+   still cut off. A byte order mark is dropped before the cap applies, so it never counts against
+   it. Invalid UTF-8 is replaced, and the text is cut at the last line boundary within the cap.
 
 These checks prove that no file outside the worktree is read while the worktree's directories
 are not being rearranged during the read. A process running as you that swaps a directory on

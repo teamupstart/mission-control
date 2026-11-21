@@ -3,19 +3,20 @@
 // driven through the filesystem seam the reader takes as an argument. Then the engine and the
 // `builtin` transport around it. Nothing here starts a shaper process.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
-  appendFileSync, chmodSync, closeSync, constants, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
+  appendFileSync, chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import {
   ShaperSchema, ShapingConfigSchema, SHAPING_LIMITS, SHAPING_PROTOCOL, ShapingRequestSchema, ShapingResultSchema, utf8Length,
   type Shaper, type ShapingRequest,
 } from "../src/shared/shaping.ts";
 import {
-  callRepositoryFiles, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
+  callRepositoryFiles, contentWithinCap, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
   type RepositoryFilesFs,
 } from "../src/server/shaping/builtin/repository-files.ts";
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
@@ -247,6 +248,31 @@ test("the limits: at most 16 includes of at most 16 KiB each, and notes stay wit
   assert.deepEqual(skipNotes(many), [many.join(" ")]);
 });
 
+test("a byte order mark never counts against a file's cap", async () => {
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  // A facts object of exactly 64 KiB of JSON, every value within its own limit.
+  const facts: Record<string, string> = Object.fromEntries(Array.from({ length: SHAPING_LIMITS.facts }, (_, i) => [`k${String(i).padStart(2, "0")}`, ""]));
+  let room = 64 * 1024 - Buffer.byteLength(JSON.stringify(facts));
+  for (const name of Object.keys(facts)) {
+    const take = Math.min(room, SHAPING_LIMITS.factValueChars);
+    facts[name] = "v".repeat(take);
+    room -= take;
+  }
+  const json = JSON.stringify(facts);
+  assert.equal(Buffer.byteLength(json), 64 * 1024);
+  const { root } = fixture({
+    "facts.json": Buffer.concat([bom, Buffer.from(json)]),
+    "ten.md": Buffer.concat([bom, Buffer.from("0123456789")]),
+    "eleven.md": Buffer.concat([bom, Buffer.from("01234\n56789")]),
+  });
+  const result = await gatherRepositoryFiles(root, options({ facts: "facts.json" }), never);
+  assert.equal(result?.notes, undefined, "64 KiB of JSON behind a mark is whole");
+  assert.deepEqual(result?.repo?.facts, facts);
+  assert.deepEqual(await readWorktreeFile(root, "ten.md", 10), { ok: true, text: "0123456789", truncated: false });
+  assert.deepEqual(await readWorktreeFile(root, "eleven.md", 10), { ok: true, text: "01234", truncated: true }, "one byte over the cap is still cut");
+  assert.deepEqual(contentWithinCap(Buffer.concat([bom, Buffer.from("abc")]), 3), { bytes: Buffer.from("abc"), exceeded: false });
+});
+
 test("an incomplete UTF-8 sequence at the true end of a file is replaced, and one at a cut is dropped", async () => {
   // é is 0xC3 0xA9: a file ending in a lone 0xC3 is malformed, not cut.
   const object = Buffer.from(JSON.stringify({ language: "python" }));
@@ -382,40 +408,55 @@ test("a file that grows past the limit while it is read is cut off at the limit"
   assert.ok(utf8Length(read.text) <= 100);
 });
 
-test("a named pipe with no writer is skipped at once, there from the start or swapped in after the lookup", async (t) => {
+/**
+ * Both named-pipe reads, run in a child process. An open that waits for a writer never returns,
+ * and nothing in the process that made it can release it, so the reads run where the test can
+ * kill them: the child is killed at its timeout, and the test fails instead of hanging. Nothing
+ * is decided by timing inside the reads themselves.
+ */
+const FIFO_CHILD = `
+const m = await import(process.env.SHAPING_READER_URL);
+const { unlinkSync } = await import("node:fs");
+const { execFileSync } = await import("node:child_process");
+const { join } = await import("node:path");
+const root = process.env.SHAPING_FIFO_ROOT;
+const base = m.NODE_REPOSITORY_FILES_FS;
+const counting = (opened, hooks = {}) => ({
+  ...base,
+  async lstat(target) { const info = await base.lstat(target); hooks.afterLstat?.(target); return info; },
+  async open(target, flags) { opened.push(target); return base.open(target, flags); },
+});
+const presentOpened = [];
+const present = await m.readWorktreeFile(root, "pipe", 1024, counting(presentOpened));
+const target = join(root, "notes.md");
+let lstats = 0;
+const swappedOpened = [];
+const swapped = await m.readWorktreeFile(root, "notes.md", 1024, counting(swappedOpened, {
+  afterLstat(at) { if (++lstats === 1 && at === target) { unlinkSync(target); execFileSync("mkfifo", [target]); } },
+}));
+process.stdout.write(JSON.stringify({ present, presentOpened: presentOpened.length, swapped, swappedOpened: swappedOpened.length }));
+`;
+
+test("a named pipe with no writer is skipped at once, there from the start or swapped in after the lookup", async () => {
   const { root } = fixture({ "notes.md": "regular\n" });
   mkfifo(join(root, "pipe"));
-  // The watchdog that makes a regression fail rather than hang: an open that waits for a writer
-  // never returns by itself, so from the deadline on the test becomes that writer, which releases
-  // the open, and records that it had to. Opening the write end non-blocking succeeds only while
-  // a reader is waiting, so it is harmless when nothing blocked. It keeps trying until the test
-  // ends, so an open that a busy machine starts only after the deadline is still released.
-  let rescued = false;
-  let watching: ReturnType<typeof setInterval> | undefined;
-  const release = () => {
-    for (const fifo of [join(root, "pipe"), join(root, "notes.md")]) {
-      try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); rescued = true; } catch { /* no reader waiting */ }
-    }
-  };
-  const deadline = setTimeout(() => { release(); watching = setInterval(release, 50); }, 3_000);
-  const stopWatching = () => { clearTimeout(deadline); clearInterval(watching); };
-  t.after(stopWatching);
-  const before = seam({});
-  assert.deepEqual(await readWorktreeFile(root, "pipe", 1024, before), { ok: false, skip: "not-a-regular-file" });
-  assert.equal(before.opened.length, 0, "never opened: the lookup alone skips it");
-
-  const target = join(root, "notes.md");
-  const swapped = seam({
-    afterLstat(at, call) {
-      if (call !== 1 || at !== target) return;
-      unlinkSync(target);
-      mkfifo(target);
-    },
+  const reader = new URL("../src/server/shaping/builtin/repository-files.ts", import.meta.url).href;
+  const run = await new Promise<{ stdout: string; stderr: string; error: (Error & { killed?: boolean }) | null }>((done) => {
+    execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", FIFO_CHILD], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: { ...process.env, SHAPING_READER_URL: reader, SHAPING_FIFO_ROOT: root },
+      // Generous for a busy runner starting tsx: the reads themselves take milliseconds.
+      timeout: 30_000, killSignal: "SIGKILL",
+    }, (error, stdout, stderr) => done({ stdout, stderr, error }));
   });
-  assert.deepEqual(await readWorktreeFile(root, "notes.md", 1024, swapped), { ok: false, skip: "not-a-regular-file" });
-  assert.equal(swapped.opened.length, 1, "opened without blocking, then refused on the handle");
-  stopWatching();
-  assert.equal(rescued, false, "neither open waited for a writer");
+  assert.equal(run.error?.killed, undefined, "an open waited for a writer, so the child was killed at its timeout");
+  assert.equal(run.error, null, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), {
+    present: { ok: false, skip: "not-a-regular-file" },
+    presentOpened: 0,
+    swapped: { ok: false, skip: "not-a-regular-file" },
+    swappedOpened: 1,
+  }, "a pipe there from the start is never opened; one swapped in is opened without blocking and refused on the handle");
 });
 
 test("a signal stops the run between files", async () => {

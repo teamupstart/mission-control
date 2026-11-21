@@ -3,6 +3,7 @@ import { getInspectorPr } from "./db.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { resolveCommitTree } from "./workflows/commit-id.ts";
 import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
+import { WorkflowStore } from "./workflows/store.ts";
 import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
@@ -713,6 +714,8 @@ interface CompletionInput {
    * status write cannot leave questions closed behind a task that is still running.
    */
   joinCompletion?: { persist: () => void; publish: () => void };
+  /** Auto-settlement must revalidate publication after archive I/O and state at the write. */
+  finishGuard?: { verify: () => Promise<boolean>; current: () => boolean };
 }
 
 /**
@@ -976,25 +979,29 @@ function closureRefusal(result: ActionResult): string {
 }
 
 /** A rolled-over episode can settle only if its current checkout still matches the merge. */
-export async function mergedPublicationCoversCheckout(session: Session, url: string): Promise<boolean> {
+export async function mergedPublicationCoversCheckout(session: Session, url: string, exec = run): Promise<boolean> {
   const parsed = parsePrUrl(url);
   const pr = parsed ? getInspectorPr(parsed.key) : null;
   if (!session.cwd || !pr?.repoRoot || pr.observedState !== "MERGED" || !pr.observedHeadSha
     || !pr.headRefName || pr.headRefName !== session.gitBranch) return false;
-  const git = (root: string, args: string[]) => run("git", ["-C", root, ...args]);
+  const git = (root: string, args: string[]) => exec("git", ["-C", root, ...args]);
   const [localRepo, adoptedRepo, status, headTree, mergedTree, branch] = await Promise.all([
     git(session.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
     git(pr.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    git(session.cwd, ["status", "--porcelain"]),
+    git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]),
     git(session.cwd, ["rev-parse", "HEAD^{tree}"]),
     resolveCommitTree(session.cwd, pr.observedHeadSha),
     git(session.cwd, ["branch", "--show-current"]),
   ]);
-  return localRepo.code === 0 && adoptedRepo.code === 0
+  const matches = localRepo.code === 0 && adoptedRepo.code === 0
     && realpathSync(localRepo.stdout.trim()) === realpathSync(adoptedRepo.stdout.trim())
     && branch.code === 0 && branch.stdout.trim() === pr.headRefName
     && status.code === 0 && !status.stdout.trim()
     && headTree.code === 0 && headTree.stdout.trim() === mergedTree;
+  if (!matches) return false;
+  // Tree resolution may take time. Recheck after it, including files hidden by user config.
+  const freshStatus = await git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]);
+  return freshStatus.code === 0 && !freshStatus.stdout.trim();
 }
 
 /** See `TaskManager.useMergeQuestions`. */
@@ -1007,6 +1014,7 @@ export interface MergeQuestions {
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   mergedPublicationCoversCheckout?: typeof mergedPublicationCoversCheckout;
+  workflowDeliveredCurrentPrompt?: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
   kill: typeof kill;
 }
 
@@ -1148,6 +1156,7 @@ export class TaskManager {
   private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
   private readonly publicationSettlements = new Map<string, Promise<void>>();
+  private readonly publicationSettlementRechecks = new Set<string>();
 
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
@@ -1772,7 +1781,7 @@ export class TaskManager {
     const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
     if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
-    if (activeWorkflowOwnsSession(this.registry.workflowRunSummaries()
+    if (!blockedInCall && activeWorkflowOwnsSession(this.registry.workflowRunSummaries()
       .filter(run => run.sessionId === s.id))) return;
     // The one task this agent is executing, per the serial invariant - never "the task
     // this session ever ran", which is what the bindings are for.
@@ -1866,30 +1875,59 @@ export class TaskManager {
 
   /** Workflow delivery can roll the episode after merge; content proof closes that case. */
   private settlePublishedWorkAfterWorkflow(task: Task, session: Session): void {
-    if (this.stopping || this.publicationSettlements.has(task.id) || task.extraRepos.length > 0) return;
-    if (!this.registry.workflowRunSummaries().some(run => run.sessionId === session.id
-      && !activeWorkflowOwnsSession([run]))) return;
+    if (this.stopping || task.extraRepos.length > 0) return;
+    if (this.publicationSettlements.has(task.id)) {
+      this.publicationSettlementRechecks.add(task.id);
+      return;
+    }
+    const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+    const latestRun = this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0];
+    if (!episode || episode.promptedAt === null || !latestRun || activeWorkflowOwnsSession([latestRun])) return;
+    const promptRevision = this.registry.getGoal(session.id)?.promptRevision ?? null;
+    const ownsPrompt = this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt
+      ?? ((runId: string, sessionId: string, episodeId: string, promptedAt: number, revision: number | null) =>
+        new WorkflowStore().deliveredActionOwnsPrompt(runId, sessionId, episodeId, promptedAt, revision));
+    if (!ownsPrompt(latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
     const outcome = this.mergeOutcomeFor(task);
     if (!outcome) return;
-    const pending = (async () => {
+    const current = () => {
+      const fresh = this.registry.getSession(session.id);
+      const latestTask = this.registry.getTask(task.id);
+      const latestEpisode = this.registry.recordedWorkEpisodeForSession(session.id);
+      return !this.stopping && !!fresh && fresh.state === "idle" && fresh.lastActivity === session.lastActivity
+        && fresh.workCycle?.generation === session.workCycle?.generation && !fresh.queue?.openCount
+        && latestTask?.status === "running" && latestTask.sessionId === session.id
+        && latestTask.dispatchedAt === task.dispatchedAt && this.mergeOutcomeFor(latestTask)?.url === outcome.url
+        && latestEpisode?.episodeId === episode.episodeId && latestEpisode.promptedAt === episode.promptedAt
+        && (this.registry.getGoal(session.id)?.promptRevision ?? null) === promptRevision
+        && !activeWorkflowOwnsSession(this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id));
+    };
+    const verify = async () => {
       try {
-        if (!await (this.closeMergedSessionDeps.mergedPublicationCoversCheckout ?? mergedPublicationCoversCheckout)(session, outcome.url)) return;
+        return await (this.closeMergedSessionDeps.mergedPublicationCoversCheckout ?? mergedPublicationCoversCheckout)(session, outcome.url);
       } catch {
         // Unknown publication proof leaves the task running.
-        return;
+        return false;
       }
-      const fresh = this.registry.getSession(session.id);
-      const current = this.registry.getTask(task.id);
-      if (this.stopping || !fresh || fresh.state !== "idle" || fresh.lastActivity !== session.lastActivity
-        || fresh.workCycle?.generation !== session.workCycle?.generation || fresh.queue?.openCount
-        || current?.status !== "running" || current.sessionId !== session.id
-        || current.dispatchedAt !== task.dispatchedAt || this.mergeOutcomeFor(current)?.url !== outcome.url
-        || activeWorkflowOwnsSession(this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id))) return;
-      await this.complete(task.id, outcome.outcome, outcome.url, true);
+    };
+    const pending = (async () => {
+      if (!await verify() || !current()) return;
+      await this.runCompletion(task.id, {
+        outcome: outcome.outcome, outcomeUrl: outcome.url, satisfyDependents: false,
+        requireStopped: false, confirmIncompleteScout: false, inferredFrom: session.id,
+        finishGuard: { verify, current },
+      });
     })().catch((error: unknown) => {
       console.error("[merge] settling published task after workflow failed:", task.id, error);
     })
-      .finally(() => this.publicationSettlements.delete(task.id));
+      .finally(() => {
+        this.publicationSettlements.delete(task.id);
+        if (this.publicationSettlementRechecks.delete(task.id) && !this.stopping) {
+          const fresh = this.registry.getSession(session.id);
+          if (fresh) this.settleIfEpisodeFinished(fresh);
+        }
+      });
     this.publicationSettlements.set(task.id, pending);
   }
 
@@ -5862,6 +5900,8 @@ export class TaskManager {
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
+        if (input.finishGuard) return input.finishGuard.verify()
+          .then(verified => verified ? this.finishCompletion(id, input) : null);
         return Promise.resolve(this.finishCompletion(id, input));
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
@@ -5913,6 +5953,7 @@ export class TaskManager {
         throw new ScoutArchiveNotReadyError(ready.problems);
       }
       this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      if (input.finishGuard && !await input.finishGuard.verify()) return null;
       return this.finishCompletion(id, input);
     };
     return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
@@ -6016,6 +6057,7 @@ export class TaskManager {
 
   /** The synchronous status write. Unchanged from before completion became awaitable. */
   private finishCompletion(id: string, input: CompletionInput): Task | null {
+    if (input.finishGuard && !input.finishGuard.current()) return null;
     this.assertCompletable(id, input.requireStopped);
     const t = this.registry.getTask(id);
     if (!t) return null;

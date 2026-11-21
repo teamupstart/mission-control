@@ -194,6 +194,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const full = (sha: string): string =>
     ([...sha].map((char) => char.charCodeAt(0).toString(16)).join("") + "0".repeat(40)).slice(0, 40);
   const contentTree = { oid: full("reviewed-tree") };
+  const commitTrees = new Map<string, string>();
   const repository = { root: "/repo", branch: "feature" as string | null };
   /**
    * The commit evidence capture records, when it must differ from the one the PROOF read.
@@ -227,7 +228,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     adoptedPullRequests: options.realLedger ? undefined : () => adopted,
     readRepositoryId: async root => root,
     resolveCommit: async (_root, headSha) => full(headSha),
-    resolveCommitTree: async () => contentTree.oid,
+    resolveCommitTree: async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid,
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -511,6 +512,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     reportIdle();
   };
 
+  const reportPrompt = (prompt: string, ts?: number): void => {
+    const entered = Date.now();
+    while (Date.now() <= entered) { /* distinguish successive prompt receipts */ }
+    registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `agent-${sessionId}`,
+      cwd: "/repo", transcriptPath: null, env: { tmuxPane: `%${sessionId.length}` }, prompt, ...(ts === undefined ? {} : { ts }) });
+  };
+
   /** State that an open pull request for this branch now sits at the given captured head. */
   const adoptPr = (
     patch: Partial<SessionActionAdoptedPullRequest> & { atHead?: string } = {},
@@ -542,6 +550,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     head,
     captureHead,
     contentTree,
+    commitTrees,
     full,
     repository,
     adopted,
@@ -550,6 +559,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     versionId,
     reportIdle,
     reportWorking,
+    reportPrompt,
     runActionTurn,
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
@@ -2187,6 +2197,7 @@ for (const changed of [false, true]) {
       h.registry.upsertTask(mkTask({ id: `plan-${changed}`, kind: "plan", status: "running", sessionId: h.sessionId }));
       const head = h.full(h.head.sha);
       const key = `owner/repo#${changed ? 1571 : 1570}`;
+      h.commitTrees.set(head, h.contentTree.oid);
       const url = `https://github.com/owner/repo/pull/${changed ? 1571 : 1570}`;
       adoptInspectorPr({ key, url, owner: "owner", repo: "repo", number: changed ? 1571 : 1570,
         repoRoot: h.repository.root, cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "closed",
@@ -2200,7 +2211,7 @@ for (const changed of [false, true]) {
       const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
       assert.ok(h.injected.includes(delivery.payload), "the session received the action packet");
       if (changed) h.contentTree.oid = h.full("unpublished-plan");
-      h.reportWorking();
+      h.reportPrompt(delivery.payload);
       const report = `The plan is already published through merged pull request ${url}. Nothing remains to publish; no new pull request is needed.`;
       const transcriptPath = join(home, `${h.sessionId}-response.jsonl`);
       writeFileSync(transcriptPath, [
@@ -2218,9 +2229,9 @@ for (const changed of [false, true]) {
       assert.ok(response.ts > delivery.deliveredAt!, "the report follows action delivery");
       await h.manager.sweepSessionActions(SETTLED());
       if (changed) {
-        await waitFor(() => h.store.runSummary(runId)?.actionWait === "awaiting_pull_request",
-          "unpublished work should still require a PR");
-        assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+        await waitFor(() => h.store.getRun(runId)?.currentPhase === "session_action_blocked",
+          "unpublished continuation content must block historical publication");
+        assert.match(JSON.stringify(h.store.getAttempt(attemptId)), /published_content_changed/);
       } else {
         await waitFor(() => h.store.getRun(runId)?.status === "completed", "old merge stranded the run");
         const attempt = h.store.getAttempt(attemptId)!;
@@ -2237,5 +2248,74 @@ for (const changed of [false, true]) {
         "the continuation captures the session's post-delivery no-publication report");
       }
     } finally { await h.stop(); }
+  });
+}
+
+for (const repeatPacket of [false, true]) test(`workflow delivery owns only its consumed prompt, human repeats packet=${repeatPacket}`, async () => {
+  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+  const { forgetInjections } = await import("../src/server/injections.ts");
+  const h = await harness(`prompt-receipt-${repeatPacket}`, { pullRequest: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no delivered action");
+    const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+    h.reportPrompt(delivery.payload);
+    h.reportIdle();
+    const episode = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+    assert.ok(episode.promptedAt);
+    const restored = new WorkflowStore();
+    const revision = h.registry.getGoal(h.sessionId)?.promptRevision ?? null;
+    forgetInjections(h.sessionId);
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, h.sessionId, episode.episodeId, episode.promptedAt, revision), true,
+      "the exact receipt survives loss of in-memory authorship and a store restart");
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, "other-session", episode.episodeId, episode.promptedAt, revision), false);
+    h.reportPrompt(repeatPacket ? delivery.payload : "Now also handle X", episode.promptedAt);
+    h.reportIdle();
+    const followUp = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, h.sessionId, followUp.episodeId, followUp.promptedAt!,
+      h.registry.getGoal(h.sessionId)?.promptRevision ?? null), false,
+      "a later operator prompt cannot borrow the workflow's receipt");
+  } finally { await h.stop(); }
+});
+
+for (const restart of [false, true]) for (const humanFollowUp of [false, true]) {
+  test(`cancelled workflow settles only its own post-merge turn: restart=${restart}, human follow-up=${humanFollowUp}`, async () => {
+    const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+    const { mkTask } = await import("./helpers/session-fixture.ts");
+    const { setShippingConfig } = await import("../src/server/shipping/config.ts");
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const h = await harness(`settle-receipt-${restart}-${humanFollowUp}`, { pullRequest: true });
+    const deps = { resetWouldDestroyWork: async () => null, kill: async () => ({ ok: true as const }),
+      mergedPublicationCoversCheckout: async () => true };
+    let tasks = new TaskManager(h.registry, deps);
+    try {
+      const taskId = `task-${h.sessionId}`;
+      h.registry.upsertTask(mkTask({ id: taskId, kind: "plan", status: "running", sessionId: h.sessionId,
+        worktreePath: null }));
+      h.registry.bindTaskToWorkEpisode(taskId, h.sessionId);
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no delivered action");
+      const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+      const before = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+      h.registry.reconcilePrs(new Map([[h.sessionId, {
+        url: "https://github.com/owner/repo/pull/1570", number: 1570, state: "merged" as const,
+        checks: "passing" as const, branch: "feature", agentSessionId: `agent-${h.sessionId}`,
+        episodeId: before.episodeId, createdAt: before.startedAt, mergedAt: Date.now(),
+        headSha: h.full(h.head.sha), worktreeHeadSha: h.full(h.head.sha),
+      }]]), new Set());
+      h.reportPrompt(delivery.payload);
+      assert.notEqual(h.registry.recordedWorkEpisodeForSession(h.sessionId)?.episodeId, before.episodeId);
+      h.reportIdle();
+      if (humanFollowUp) { h.reportPrompt("Now also handle X"); h.reportIdle(); }
+      if (restart) await tasks.stop();
+      assert.equal(h.manager.cancel(runId, `cancel-${h.sessionId}`).ok, true);
+      if (restart) tasks = new TaskManager(h.registry, deps);
+      if (humanFollowUp) {
+        for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(h.registry.getTask(taskId)?.status, "running");
+      } else {
+        await waitFor(() => h.registry.getTask(taskId)?.status === "done", "workflow-owned merged task did not settle");
+      }
+    } finally { await tasks.stop(); await h.stop(); }
   });
 }

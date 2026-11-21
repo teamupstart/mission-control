@@ -6805,7 +6805,22 @@ export class WorkflowManager {
     // the write is still unresolved, and an echo that arrives with no authorship on file is
     // captured as the human's Goal - which for a repair packet means the next round reviews
     // the work against Mission Control's own previous complaint.
-    reserveInjection(session.id, sending.payload, "workflow");
+    reserveInjection(session.id, sending.payload, "workflow", () => {
+      // The Registry consumes this receipt after recording the prompt's work episode.
+      // A later human retype has no receipt, even when its text equals this packet.
+      if (sending.kind !== "session_action") return;
+      const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+      if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+      try {
+        this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+          deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+          promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+        });
+      } catch (error) {
+        workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+          error: error instanceof Error ? error.name : "unknown" });
+      }
+    });
     let result: InjectResult;
     try {
       result = await this.inject(

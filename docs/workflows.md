@@ -801,7 +801,8 @@ reported on the completed action. None sends a repair packet or spends a repair 
 
 A pull request the bound session adopted **before** the instruction was delivered also completes
 the action, so a session that finds its existing pull request and opens no duplicate is not left
-waiting. It must belong to the same session, still be open, resolve to this checkout's
+waiting. It must belong to the same session, still be open (or have been observed merging
+during the action wait), resolve to this checkout's
 repository, and have no observed branch or state that contradicts it. When the ledger recorded
 the checkout it was opened from, that must match this one too; when it recorded none, the looser
 rule applies and the completion warning says so. The branch and state are normally unobserved
@@ -817,8 +818,13 @@ changes discovered during continuation capture offer the existing resubmit recov
 
 A merged, idle task is reconsidered when its workflow finishes or is cancelled, and at startup.
 If a later prompt rolled its single-repository work into a new episode, settlement additionally
-requires a clean checkout matching the recorded merged PR. Busy sessions, queued work and active
-workflow runs retain ownership.
+requires a durable receipt tying that episode's latest prompt to an action delivered by the
+latest terminal workflow run, plus a clean checkout matching the recorded merged PR. An
+operator follow-up never borrows that receipt, even if it repeats the action's text. Publication
+and ownership are rechecked after any scout archive wait. Busy sessions, queued work and active
+workflow runs retain ownership, except that merging still releases a blocked `request_input`
+call through its atomic task-completion path. Assigned-agent completions remain reversible when
+work resumes, and dependency edges still require their own bound episode's merge.
 
 ### Command nodes
 

@@ -421,7 +421,8 @@ const pullRequest: SessionActionAdapter = {
     // An old merge is proof only when it covers the reviewed content. Do not let it
     // enter the ordinary adoption fallback, which intentionally treats freshness as advisory.
     const historicalMerges = context.adoptedPullRequests.filter(pr =>
-      pr.observedState === "MERGED" && pr.adoptedAt < context.deliveredAt);
+      pr.observedState === "MERGED" && pr.adoptedAt < context.deliveredAt
+      && (pr.observedAt === null || pr.observedAt < context.deliveredAt));
     const repository = context.repository;
     if (repository && context.acceptedContentTreeOid) {
       const published = historicalMerges.filter(pr =>

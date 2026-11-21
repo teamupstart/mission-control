@@ -613,6 +613,23 @@ const oldMerge = (patch: Partial<SessionActionAdoptedPullRequest> = {}) => pr({
   observedState: "MERGED", observedAt: 1, adoptedAt: 1, mergedContentTreeOid: TREE, ...patch,
 });
 
+for (const missing of ["review", "merged-tree"] as const) {
+  test(`a PR merged during the action wait preserves earlier adoption with missing ${missing} proof`, () => {
+    const decision = decide([oldMerge({ observedAt: 11,
+      ...(missing === "merged-tree" ? { mergedContentTreeOid: null } : {}),
+    })], missing === "review" ? { acceptedContentTreeOid: null } : {});
+    assert.equal(decision.kind, "complete");
+    if (decision.kind !== "complete") return;
+    assert.ok(decision.warnings?.length);
+    assert.equal("mergedContentTreeOid" in decision.continuationExpectation, false);
+  });
+}
+
+test("a merge during the wait still needs the earlier adoption's repository identity", () => {
+  assert.deepEqual(decide([oldMerge({ observedAt: 11, repositoryRoot: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
 test("an earlier merged publication covers the reviewed tree even with a packaging commit", () => {
   const decision = decide([oldMerge({ observedHeadOid: OTHER_HEAD })]);
   assert.equal(decision.kind, "complete");

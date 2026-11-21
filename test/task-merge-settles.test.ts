@@ -87,10 +87,11 @@ function fleet(
   id: string,
   busy = false,
   closeDeps?: ConstructorParameters<typeof TaskManager>[1],
+  archives?: ConstructorParameters<typeof TaskManager>[4],
 ) {
   const registry = new Registry();
   for (const stale of registry.listTasks()) registry.removeTask(stale.id);
-  const tasks = new TaskManager(registry, closeDeps);
+  const tasks = new TaskManager(registry, closeDeps, undefined, undefined, archives);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({
@@ -781,6 +782,7 @@ for (const status of ["completed", "cancelled"] as const) {
       resetWouldDestroyWork: async () => null,
       kill: async () => ({ ok: true }),
       mergedPublicationCoversCheckout: async () => { await proof.promise; return published; },
+      workflowDeliveredCurrentPrompt: () => true,
     });
     f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
     merge(f);
@@ -812,6 +814,7 @@ for (const failureStage of ["publication", "completion"] as const) {
         if (failing && failureStage === "publication") throw failure;
         return true;
       },
+      workflowDeliveredCurrentPrompt: () => true,
     });
     f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: "plan" });
     const run = { ...LADDER_SUMMARY, id: `failure-run-${failureStage}`, sessionId: f.id,
@@ -827,16 +830,20 @@ for (const failureStage of ["publication", "completion"] as const) {
 
     const errors: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
-    const completeTask = f.tasks.complete.bind(f.tasks);
-    const completion = t.mock.method(f.tasks, "complete", async (...args: Parameters<typeof completeTask>) => {
-      if (failing && failureStage === "completion") throw failure;
-      return completeTask(...args);
+    let completionCalls = 0;
+    const upsertTask = f.registry.upsertTask.bind(f.registry);
+    t.mock.method(f.registry, "upsertTask", (task: Parameters<typeof upsertTask>[0]) => {
+      if (task.id === f.taskId && task.status === "done") {
+        completionCalls++;
+        if (failing && failureStage === "completion") throw failure;
+      }
+      return upsertTask(task);
     });
     const terminal = { ...run, status: "completed" as const, phase: "done" };
     f.registry.upsertWorkflowRun(terminal);
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(f.registry.getTask(f.taskId)?.status, "running");
-    assert.equal(completion.mock.callCount(), failureStage === "completion" ? 1 : 0);
+    assert.equal(completionCalls, failureStage === "completion" ? 1 : 0);
     assert.deepEqual(errors, failureStage === "completion"
       ? [["[merge] settling published task after workflow failed:", f.taskId, failure]] : []);
 
@@ -870,6 +877,31 @@ test("rolled-over settlement verifies the actual clean checkout against the merg
     headRefName: "plan", title: "Plan", adoptedAt: 1, updatedAt: 1 });
   const session = { cwd: repo, gitBranch: "plan" } as Session;
   assert.equal(await mergedPublicationCoversCheckout(session, url), true);
+  await t.test("a tracked edit after the first status read prevents settlement", async () => {
+    const { run } = await import("../src/server/util/exec.ts");
+    let statusReads = 0;
+    try {
+      const exec: typeof run = async (...args) => {
+        const result = await run(...args);
+        if (args[1]?.includes("status") && ++statusReads === 1) {
+          writeFileSync(join(repo, "plan.md"), "Edited during publication proof");
+        }
+        return result;
+      };
+      assert.equal(await mergedPublicationCoversCheckout(session, url, exec), false);
+    } finally { git("restore", "plan.md"); }
+  });
+  await t.test("untracked files prevent settlement even when Git's user config hides them", async () => {
+    git("config", "status.showUntrackedFiles", "no");
+    writeFileSync(join(repo, "unpublished.md"), "More work");
+    try {
+      assert.equal(git("status", "--porcelain"), "");
+      assert.equal(await mergedPublicationCoversCheckout(session, url), false);
+    } finally {
+      rmSync(join(repo, "unpublished.md"));
+      git("config", "--unset", "status.showUntrackedFiles");
+    }
+  });
   await t.test("rejects another repository with the same merged commit and clean content tree", async () => {
     const otherRepo = mkdtempSync(join(home, "other-publication-"));
     git("clone", "--no-hardlinks", repo, otherRepo);
@@ -888,4 +920,126 @@ test("rolled-over settlement verifies the actual clean checkout against the merg
   git("add", "."); git("commit", "-m", "Unpublished");
   assert.equal(await mergedPublicationCoversCheckout(session, url), false);
   assert.equal(await mergedPublicationCoversCheckout({ ...session, gitBranch: "other" }, url), false);
+});
+
+async function rolledPublicationFixture(id: string, options: {
+  proof?: () => Promise<boolean>;
+  archives?: ConstructorParameters<typeof TaskManager>[4];
+  managed?: boolean;
+} = {}) {
+  const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+  setShippingConfig({ closeSessionAfterMerge: false });
+  let receipt: { episodeId: string; promptedAt: number | null } | null = null;
+  const f = fleet(id, true, {
+    resetWouldDestroyWork: async () => null,
+    kill: async () => ({ ok: true }),
+    mergedPublicationCoversCheckout: options.proof ?? (async () => true),
+    workflowDeliveredCurrentPrompt: (_runId, _sessionId, episodeId, promptedAt) =>
+      receipt?.episodeId === episodeId && receipt.promptedAt === promptedAt,
+  }, options.archives);
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, kind: options.archives ? "scout" : "plan",
+    ...(options.managed ? { worktreePath: `/repo/${id}` } : {}) });
+  const run = { ...LADDER_SUMMARY, id: `run-${id}`, sessionId: f.id,
+    status: "waiting_for_action" as const, phase: "session_action" };
+  f.registry.upsertWorkflowRun(run);
+  merge(f);
+  const merged = f.registry.recordedWorkEpisodeForSession(f.id)!;
+  let time = Math.max(Date.now(), merged.mergedAt!) + 5;
+  const hook = (event: "UserPromptSubmit" | "Stop", prompt?: string) => f.registry.applyHook({
+    agent: "claude", event, sessionId: `${f.id}-episode`, cwd: `/repo/${f.id}`,
+    transcriptPath: null, env: {}, ts: time++, ...(prompt ? { prompt } : {}),
+  });
+  hook("UserPromptSubmit", "Pull Request");
+  const current = f.registry.recordedWorkEpisodeForSession(f.id)!;
+  receipt = { episodeId: current.episodeId, promptedAt: current.promptedAt };
+  hook("Stop");
+  const finish = () => f.registry.upsertWorkflowRun({ ...run, status: "completed", phase: "done" });
+  return { ...f, hook, finish, merged, current };
+}
+
+async function settleTicks() {
+  for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve));
+}
+
+test("an operator follow-up cannot borrow a terminal workflow's publication proof", async () => {
+  let proofs = 0;
+  const f = await rolledPublicationFixture("operator-followup", { proof: async () => { proofs++; return true; } });
+  f.hook("UserPromptSubmit", "Now also handle X");
+  f.hook("Stop");
+  f.finish();
+  await settleTicks();
+  assert.equal(proofs, 0);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("an idle event during publication verification is replayed once after the stale proof", async () => {
+  const proof = deferred();
+  let calls = 0;
+  let active = 0;
+  let maximum = 0;
+  const f = await rolledPublicationFixture("proof-recheck", { proof: async () => {
+    calls++; maximum = Math.max(maximum, ++active);
+    if (calls === 1) await proof.promise;
+    active--; return true;
+  } });
+  f.finish();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  f.hook("Stop");
+  f.hook("Stop");
+  proof.resolve();
+  await settleTicks();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(calls, 3, "one stale proof, one coalesced retry, one final revalidation");
+  assert.equal(maximum, 1);
+});
+
+test("publication inferred for an assigned agent reopens when that agent resumes", async () => {
+  const f = await rolledPublicationFixture("assigned-reopens");
+  f.finish(); await settleTicks();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  f.hook("UserPromptSubmit", "Continue the task");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+for (const change of ["none", "working", "queue", "workflow", "checkout"] as const) {
+  test(`scout publication revalidates after archive verification: ${change}`, async () => {
+    const archive = deferred();
+    const entered = deferred();
+    let published = true;
+    const f = await rolledPublicationFixture(`scout-proof-${change}`, {
+      managed: true,
+      proof: async () => published,
+      archives: {
+        ensureReady: async () => { entered.resolve(); await archive.promise; return { ok: true }; },
+        settleBeforeCleanup: async () => ({ ok: true }),
+      },
+    });
+    f.finish(); await entered.promise;
+    if (change === "working") f.hook("UserPromptSubmit", "Continue this scout");
+    if (change === "queue") assert.ok(new QueueManager(f.registry).add(f.id, "More work"));
+    if (change === "workflow") {
+      const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+      f.registry.upsertWorkflowRun({ ...LADDER_SUMMARY, id: "new-active-run", sessionId: f.id, status: "waiting_for_action" });
+    }
+    if (change === "checkout") published = false;
+    archive.resolve(); await settleTicks();
+    assert.equal(f.registry.getTask(f.taskId)?.status, change === "none" ? "done" : "running");
+    const { getTaskSessionClosure } = await import("../src/server/db.ts");
+    assert.equal(getTaskSessionClosure(f.taskId) !== null, change === "none");
+  });
+}
+
+test("workflow settlement releases only dependency edges pinned to the merged episode", async () => {
+  const f = await rolledPublicationFixture("dependency-episodes");
+  const dep = (episodeId: string) => ({ type: "task" as const, taskId: f.taskId, title: "Plan",
+    sessionId: f.id, episodeId, agentSessionId: `${f.id}-episode`, branch: "feat/work",
+    prUrl: null, selectedAt: 1, satisfiedAt: null });
+  f.registry.upsertTask(baseTask({ id: "dependent-merged", sessionId: null, status: "backlog",
+    dependencies: [dep(f.merged.episodeId)] }));
+  f.registry.upsertTask(baseTask({ id: "dependent-unmerged", sessionId: null, status: "backlog",
+    dependencies: [dep(f.current.episodeId)] }));
+  f.finish(); await settleTicks();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.ok(f.registry.getTask("dependent-merged")?.dependencies[0]?.satisfiedAt);
+  assert.equal(f.registry.getTask("dependent-unmerged")?.dependencies[0]?.satisfiedAt, null);
 });

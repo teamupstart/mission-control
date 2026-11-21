@@ -870,6 +870,14 @@ A SessionAction is a durable side effect, not an evaluator:
   branch and reviewed publication tree. The continuation persists `mergedContentTreeOid` and
   rechecks that tree plus unpublished changes. Ordinary new-PR adoption keeps its advisory
   comparison policy; historical publication never borrows that looser fallback.
+  A PR observed merging during the action wait retains the ordinary earlier-adoption path;
+  adoption time alone does not establish that its merge predates delivery.
+- Rolled-over task settlement requires the latest terminal run's confirmed action delivery
+  to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
+  receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
+  the Registry records the episode. The receipt includes the human Goal revision so an
+  operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
+  fail closed; retained text labels alone never establish ownership after restart.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
   tick the adapter needed to see its final state, leaving a completed publication reported

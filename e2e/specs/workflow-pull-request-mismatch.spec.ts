@@ -184,9 +184,12 @@ for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "
     const head = execFileSync("git", ["-C", session.cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     // Seed the Inspector's historical provider observation in the disposable daemon only.
     // Everything from the later delivery through continuation and rendering is production code.
-    withDaemonDb(daemon, db => db.prepare(`UPDATE inspector_prs SET state = 'closed',
-      observed_state = 'MERGED', observed_head_sha = ?, head_ref_name = 'e2e/pr-mismatch',
-      observed_at = 1, merged_at = 1 WHERE url = ?`).run(head, "https://github.com/owner/repo/pull/77"));
+    withDaemonDb(daemon, db => {
+      const seeded = db.prepare(`UPDATE inspector_prs SET state = 'closed',
+        observed_state = 'MERGED', observed_head_sha = ?, head_ref_name = 'e2e/pr-mismatch',
+        observed_at = 1, merged_at = 1 WHERE url = ?`).run(head, "https://github.com/owner/repo/pull/77");
+      expect(Number(seeded.changes), "the hook must adopt PR #77 before seeding its merge").toBe(1);
+    });
   }
   const submitted = await api<{ run: { id: string } }>(
     daemon,

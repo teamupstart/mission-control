@@ -367,3 +367,19 @@ test("an agent blocked in a call whose task status write fails keeps its questio
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.match(reviewToolResult((await call)!).text, /pull request merged/);
 });
+
+test("a merge releases a blocked request_input call even with a non-terminal workflow", async () => {
+  const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-blocked-workflow");
+  f.hook("UserPromptSubmit");
+  f.registry.upsertWorkflowRun({ ...LADDER_SUMMARY, id: "blocked-call-workflow", sessionId: f.id,
+    status: "waiting_for_session", phase: "persona_review" });
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  const call = f.reviews.wait(asked.id, 60_000);
+  f.merge(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(asked.id)?.closedReason, "merged");
+  assert.ok(await call);
+});

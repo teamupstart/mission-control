@@ -3102,7 +3102,9 @@ of waiting inside the call:
   longer find (after a database restore, say) is still drawn as an entry, reading **This question
   is no longer available**, with the delivery time and **What the agent received**. While the
   conversation's history is still loading, or a read of it failed and is being retried (backing
-  off, for a few minutes at most), the same entry reads **Loading the question…** instead.
+  off, for a few minutes at most), the same entry reads **Loading the question…** instead. If
+  those retries run out without an answer, it reads **Couldn't load the question**: the question
+  may still exist, so **This question is no longer available** is kept for a history that was read.
 - While the agent works past its question, its session is not amber. Once it stops with the
   question still pending, it is amber and reads **waiting on your answer**, and it holds queue
   sends and backlog assignment like any session that needs you. A resident is the exception: it

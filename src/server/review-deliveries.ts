@@ -388,13 +388,15 @@ const STEER_ECHO_PENDING = Symbol("steer-echo-pending");
 const STEER_ECHO_UNREADABLE = Symbol("steer-echo-unreadable");
 
 /**
- * Every review id named by a delivery bound to a turn of this conversation. The conversation's
- * review history is capped to its newest rows, so an answer delivered long ago could otherwise be
- * missing from it and drawn as "no longer available" while its review still exists; the history
- * read adds these ids' reviews so every bound delivery's card can be drawn.
+ * Every review id named by a delivery recorded in this conversation, bound to its turn yet or not.
+ * The conversation's review history is capped to its newest rows, so an answer delivered long ago
+ * could otherwise be missing from it and drawn as "no longer available" while its review still
+ * exists; the history read adds these ids' reviews so every delivery's card can be drawn. Unbound
+ * rows count too: after a restart a delivery may not be bound until a transcript read reaches it,
+ * which can come after the history read, and the card must not depend on which ran first.
  */
-export function boundReviewIds(noteKey: string): string[] {
-  return [...new Set(ledger.rows(noteKey).filter((row) => row.messageId !== null).flatMap((row) => row.reviewIds))];
+export function deliveredReviewIds(noteKey: string): string[] {
+  return [...new Set(ledger.rows(noteKey).flatMap((row) => row.reviewIds))];
 }
 
 /**

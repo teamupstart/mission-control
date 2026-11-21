@@ -40,6 +40,9 @@ export function useTimelineReviews(
   // The session whose durable history has come back (or failed to). Until it is this one, a
   // delivered answer whose review is not in hand is still loading, not gone.
   const [settledFor, setSettledFor] = useState<string | null>(null);
+  // The session whose history settled only because its retries ran out, with a source still
+  // unread. A question missing from it may exist all the same, so the card says the read failed.
+  const [failedFor, setFailedFor] = useState<string | null>(null);
   const asyncInput = useFeatureFlag(ASYNC_INPUT_FLAG);
 
   useEffect(() => {
@@ -47,6 +50,7 @@ export function useTimelineReviews(
     setStored([]);
     setLineage([]);
     setSettledFor(null);
+    setFailedFor(null);
     if (!enabled) return;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
@@ -61,14 +65,19 @@ export function useTimelineReviews(
         if (!alive) return;
         history = next;
         // Whatever arrived is shown at once, so a failed lineage read never hides this session's
-        // own answers. Only a complete read settles the history, though: a transient failure is
-        // not evidence that a question is gone, so the cards stay loading and the read is retried,
-        // backing off, for a bounded number of attempts before the history is settled anyway.
+        // own answers. A transient failure is not evidence that a question is gone, so the cards
+        // stay loading and the read is retried, backing off, for a bounded number of attempts.
+        // Once they are spent the history settles as failed, never as complete: a card whose
+        // question is still missing then says it could not be loaded, not that it is gone.
         setStored(rows);
         setLineage(inherited);
         const wait = complete ? null : historyRetryDelay(attempt++);
-        if (wait === null) setSettledFor(sessionId);
-        else retry = setTimeout(load, wait);
+        if (wait !== null) {
+          retry = setTimeout(load, wait);
+          return;
+        }
+        if (!complete) setFailedFor(sessionId);
+        setSettledFor(sessionId);
       });
     };
     load();
@@ -87,6 +96,7 @@ export function useTimelineReviews(
     reviews: timelineReviewsFor(sessionId, stored, live, asyncInput),
     // A disabled hook reads nothing, so there is nothing to wait for: settled at once.
     loaded: !enabled || settledFor === sessionId,
+    failed: enabled && failedFor === sessionId,
     lineage,
   };
 }
@@ -149,12 +159,12 @@ export const NO_HISTORY: ReviewHistoryRead = { stored: [], lineage: [], ownAnswe
 /** The first retry's wait; each later one doubles, up to `HISTORY_RETRY_MAX_MS`. */
 export const HISTORY_RETRY_MS = 5_000;
 const HISTORY_RETRY_MAX_MS = 60_000;
-/** Retries before the history is settled with whatever it has. */
+/** Retries before the history is settled, as failed, with whatever it has. */
 const HISTORY_RETRY_LIMIT = 6;
 
 /**
  * How long to wait before retry `attempt` (0-based) of a review-history read that failed
- * transiently, or null once the attempts are spent and the history should settle as it is.
+ * transiently, or null once the attempts are spent and the history should settle as failed.
  * Bounded so a read that keeps failing neither polls the daemon for as long as the panel is
  * open nor leaves delivered answers on "Loading the question…" for good.
  */
@@ -172,6 +182,8 @@ export function historyRetryDelay(attempt: number): number | null {
 export interface TimelineReviews {
   reviews: ReviewItem[];
   loaded: boolean;
+  /** Settled only because its retries ran out with a source unread: a missing question may exist. */
+  failed: boolean;
   lineage: ReviewItem[];
 }
 

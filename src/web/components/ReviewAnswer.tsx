@@ -91,35 +91,42 @@ export function ReviewAnswerCard({
 
 /**
  * A delivered answer (or Remind me later instruction) whose question this conversation does not
- * have, drawn in the card's place: still loading while the review history is in flight, or no
- * longer available once it has come back without it. Either way it says what it is and when the
- * agent got it, and discloses exactly what the agent received, so it never reads as raw text.
+ * have, drawn in the card's place: still loading while the review history is in flight, unreadable
+ * once its retries ran out without an answer, or no longer available once it has come back without
+ * it. Each says what it is and when the agent got it, and discloses exactly what the agent
+ * received, so it never reads as raw text.
  */
 export function UnavailableReviewCard({
   envelope,
   delivery,
   loading = false,
+  unreadable = false,
 }: {
   envelope: "answer" | "remind-later";
   delivery: Extract<ReviewCardDelivery, { state: "delivered" }>;
   /** The review history has not come back yet, so the question may still be found. */
   loading?: boolean;
+  /** The review history could not be read, so the question may exist all the same. */
+  unreadable?: boolean;
 }): React.JSX.Element {
   const snoozed = envelope === "remind-later";
   const subject = snoozed ? "Snoozed question" : "Answer";
+  const [label, title] = loading
+    ? [`${subject} loading`, "Loading the question…"]
+    : unreadable
+      ? [snoozed ? "Snoozed question that could not be loaded" : "Answer whose question could not be loaded", "Couldn't load the question"]
+      : [snoozed ? "Snoozed question no longer available" : "Answer to a question no longer available", "This question is no longer available"];
   return (
     <div
       className={snoozed ? "review-snoozed" : "review-answer"}
       role="note"
-      aria-label={loading
-        ? `${subject} loading`
-        : snoozed ? "Snoozed question no longer available" : "Answer to a question no longer available"}
+      aria-label={label}
       aria-busy={loading || undefined}
       data-turn-id={delivery.turnId}
     >
       <div className="review-answer-head">
         <span className={`review-answer-who${snoozed ? " review-snoozed-who" : ""}`}>{snoozed ? "Snoozed" : "Answered"}</span>
-        <span className="review-answer-title">{loading ? "Loading the question…" : "This question is no longer available"}</span>
+        <span className="review-answer-title">{title}</span>
       </div>
       <ReviewDeliveryNote delivery={delivery} />
     </div>

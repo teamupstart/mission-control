@@ -54,7 +54,7 @@ test("?lineage=1 returns the answered questions of the sessions this conversatio
   assert.deepEqual(ownHistory.map((r) => r.id), [own], "the session's own history is unchanged");
 });
 
-test("the history always includes reviews this conversation's bound deliveries name, past the newest-500 cap", async () => {
+test("the history always includes reviews this conversation's deliveries name, bound yet or not, past the newest-500 cap", async () => {
   const { insertReviewDelivery } = await import("../src/server/db.ts");
   const registry = new Registry();
   registry.applyDiscovery([{
@@ -70,13 +70,23 @@ test("the history always includes reviews this conversation's bound deliveries n
   // The answer delivered long ago, then 501 newer answers that push it out of the capped history.
   const old = randomUUID();
   insert.run(old, session.id, 1, 2);
+  // Delivered too, but not yet bound to its turn: after a restart no transcript read has reached
+  // it, and the history read must not depend on whether one ran first.
+  const unbound = randomUUID();
+  insert.run(unbound, session.id, 1, 2);
   for (let i = 0; i < 501; i++) insert.run(randomUUID(), session.id, 10 + i, 10 + i);
   insertReviewDelivery({
     id: randomUUID(), noteKey: noteKeyFor(session), fingerprint: "f", envelope: "answer", reviewIds: [old],
     deliveredAt: 3, transcriptOffset: 0, contested: false, confirmedAt: 3, messageId: "delivered-turn", messageTs: 3,
     echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null,
   });
+  insertReviewDelivery({
+    id: randomUUID(), noteKey: noteKeyFor(session), fingerprint: "g", envelope: "answer", reviewIds: [unbound],
+    deliveredAt: 4, transcriptOffset: 0, contested: false, confirmedAt: 4, messageId: null, messageTs: null,
+    echoOwed: false, echoTurnGeneration: 1, echoEligibleAt: null, steerEcho: null,
+  });
   const history = await (await app.request(`/api/sessions/${encodeURIComponent(session.id)}/resolved-reviews`, { headers: HEADERS })).json() as ReviewItem[];
-  assert.equal(history.filter((r) => r.id !== old).length, 500, "the cap still applies to the rest");
+  assert.equal(history.filter((r) => r.id !== old && r.id !== unbound).length, 500, "the cap still applies to the rest");
   assert.ok(history.some((r) => r.id === old), "the delivered answer's review is always there for its card");
+  assert.ok(history.some((r) => r.id === unbound), "so is one whose delivery a transcript read has not bound yet");
 });

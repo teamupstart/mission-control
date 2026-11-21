@@ -60,6 +60,11 @@ export type ConversationRow =
       delivery: ReviewRowDelivery;
       /** The conversation's review history has not come back yet: the question may yet be found. */
       loading: boolean;
+      /**
+       * The history settled only because its reads kept failing: the question may still exist,
+       * so the card says it could not be loaded rather than that it is no longer available.
+       */
+      unreadable: boolean;
     };
 
 type ReviewEntry = Extract<ConversationRow, { kind: "review" | "asked" | "closed" }>;
@@ -135,7 +140,8 @@ function drawDeliveries(
       };
       const review = byId.get(id);
       if (!review) {
-        out.push({ kind: "delivered", ts: row.ts, reviewId: id, delivery, loading: history.loaded === false });
+        const loading = history.loaded === false;
+        out.push({ kind: "delivered", ts: row.ts, reviewId: id, delivery, loading, unreadable: !loading && history.failed === true });
         return;
       }
       delivered[presentation.envelope].add(review.id);
@@ -148,11 +154,14 @@ function drawDeliveries(
 /**
  * What is known of the conversation's review history beyond the entries themselves. `loaded`
  * false means the durable read is still in flight, so a delivered answer whose review is not in
- * hand is drawn as loading rather than as gone. `lineage` adds reviews a runtime-transfer
- * predecessor asked, for drawing a delivered answer only.
+ * hand is drawn as loading rather than as gone. `failed` means it settled only because its reads
+ * kept failing, so such an answer is drawn as unreadable: "no longer available" is reserved for
+ * a read that answered. `lineage` adds reviews a runtime-transfer predecessor asked, for drawing
+ * a delivered answer only.
  */
 export interface ReviewHistory {
   loaded?: boolean;
+  failed?: boolean;
   lineage?: readonly ReviewItem[];
 }
 

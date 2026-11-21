@@ -357,6 +357,58 @@ test("a failed review-history read keeps a delivered answer loading, never gone,
   await page.unroute("**/resolved-reviews*");
 });
 
+test("a review-history read that keeps failing ends in a read error, never \"no longer available\"", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  await enableAsyncInput(daemon);
+  const session = await dispatch(daemon, "Add a linter to CI", "add a linter to CI", "idle");
+  const filed = await ask(daemon, session.cwd!, LINTER);
+  await api(daemon, `/api/reviews/${filed.id}/resolve`, { action: "answer", response: "eslint", selections: [{ decisionId: "q", selected: ["o1"] }] });
+  const before = await openSession(page, session);
+  await expect(answerCard(before, LINTER)).toHaveCount(1, { timeout: 30_000 });
+
+  await page.goto("about:blank");
+  await daemon.shutdown();
+  await daemon.restart();
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.state,
+    { timeout: 60_000 }).toBe("idle");
+  // Every read of this session's own history fails transiently; its retries back off over minutes,
+  // so the page's clock is driven past each wait rather than waited out.
+  let ownReads = 0;
+  await page.route("**/resolved-reviews*", async (route) => {
+    if (route.request().url().includes("lineage")) return route.continue();
+    ownReads += 1;
+    await route.fulfill({ status: 500, body: "{}" });
+  });
+  await page.clock.install();
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const detail = await openSession(page, session);
+  await expect(replyTo(detail, filed.id).first()).toBeVisible({ timeout: 30_000 });
+  await expect(detail.getByRole("note", { name: "Answer loading" })).toBeVisible();
+  await expect.poll(() => ownReads, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  // The first read and six retries.
+  while (ownReads < 7) {
+    const reads = ownReads;
+    await page.clock.fastForward(60_000);
+    await expect.poll(() => ownReads, { timeout: 15_000 }).toBeGreaterThan(reads);
+  }
+
+  const card = detail.getByRole("note", { name: "Answer whose question could not be loaded" });
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  await expect(card).toContainText("Couldn't load the question");
+  await expect(card).toContainText("Delivered to the agent");
+  await expect(detail.getByText("This question is no longer available")).toHaveCount(0);
+  await expect(detail.getByRole("note", { name: "Answer loading" })).toHaveCount(0);
+  await expect(rawUserTurns(detail, RAW)).toHaveCount(0);
+  await card.getByText("What the agent received").click();
+  await expect(card.getByRole("group", { name: "What the agent received" })).toContainText(`[mission-control:answer review=${filed.id}]`);
+  await capture(card, "10-question-could-not-be-loaded", page);
+  // The retries are spent: no further reads.
+  await page.clock.fastForward(120_000);
+  await page.waitForTimeout(1_000);
+  expect(ownReads, "the read stops once its retries are spent").toBe(7);
+  await page.unroute("**/resolved-reviews*");
+});
+
 test("a review-history read the daemon refuses outright settles at once, and is not retried", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   await enableAsyncInput(daemon);

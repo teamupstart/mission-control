@@ -390,9 +390,9 @@ At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row throu
 that id prefix, so an operator message that starts with the marker is noted like any other send.
 `attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
 (`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
-`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available"),
-never as the raw turn. The resolved-reviews route adds every review a bound delivery of the
-conversation names (`boundReviewIds`) to its capped history, so an old delivered answer keeps its
+`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available",
+or "Couldn't load the question" once the history's retries ran out unread), never as the raw turn. The resolved-reviews route adds every review the
+conversation's deliveries name, bound yet or not (`deliveredReviewIds`), to its capped history, so an old delivered answer keeps its
 card however many newer reviews there are. A delivery's words on a turn no delivery claims drop the live label, as a
 delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
 (they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the

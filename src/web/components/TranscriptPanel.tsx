@@ -1391,6 +1391,7 @@ export function TranscriptPanel({
                   key={`rv-gone-${row.reviewId}-${row.delivery.turnId}`}
                   envelope={row.delivery.envelope}
                   loading={row.loading}
+                  unreadable={row.unreadable}
                   delivery={deliveredCard(row.delivery, hits, find?.query ?? "", currentKey)}
                 />
               ) : row.kind === "tools" ? (

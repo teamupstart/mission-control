@@ -317,7 +317,7 @@ import {
   type ProductIssueSubmitResult,
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
-import { boundReviewIds } from "./review-deliveries.ts";
+import { deliveredReviewIds } from "./review-deliveries.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
@@ -7237,7 +7237,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // card rather than "no longer available" while the review still exists.
     const present = new Set(history.map((review) => review.id));
     const owned = new Set(owners);
-    const delivered = loadReviewsByIds(boundReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
+    const delivered = loadReviewsByIds(deliveredReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
       .filter((review) => owned.has(review.sessionId));
     return c.json([...history, ...delivered]);
   });

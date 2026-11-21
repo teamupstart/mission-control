@@ -46,7 +46,7 @@ function rows(messages: TranscriptMessage[], reviews: ReviewItem[], pending: Pen
 const shape = (out: ConversationRow[]) => out.filter((row) => row.kind !== "asked").map((row) =>
   row.kind === "review"
     ? `review:${row.review.id.slice(0, 4)}${row.delivery ? `@${row.delivery.turnId}` : ""}${row.queued ? ":queued" : ""}`
-    : row.kind === "delivered" ? `delivered:${row.reviewId.slice(0, 4)}@${row.delivery.turnId}${row.loading ? ":loading" : ""}`
+    : row.kind === "delivered" ? `delivered:${row.reviewId.slice(0, 4)}@${row.delivery.turnId}${row.loading ? ":loading" : ""}${row.unreadable ? ":unreadable" : ""}`
       : row.kind === "turn" ? row.id : row.kind);
 
 test("a delivered answer is drawn once, at its turn, in place of the raw message, and the reply follows it", () => {
@@ -116,6 +116,30 @@ test("while the review history is still loading, a delivered answer reads as loa
   assert.match(html, /aria-label="Answer loading" aria-busy="true"/);
   assert.match(html, /Loading the question…/);
   assert.doesNotMatch(html, /no longer available/);
+});
+
+test("a review history that settled only because its reads kept failing draws a read error, never \"no longer available\"", () => {
+  // Retries spent with a source unread: the question may exist, so the card says it could not be loaded.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true, failed: true })), ["delivered:1b0c@d:unreadable"]);
+  // Still in flight is loading, whatever an earlier session's read did.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: false, failed: true })), ["delivered:1b0c@d:loading"]);
+  // A read that answered without the review is the only one that says gone.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true, failed: false })), ["delivered:1b0c@d"]);
+  // A review the failed history did return still draws its real card.
+  assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [review(A)], [], { loaded: true, failed: true })), ["review:1b0c@d"]);
+  for (const envelope of ["answer", "remind-later"] as const) {
+    const html = renderToStaticMarkup(createElement(UnavailableReviewCard, {
+      envelope, unreadable: true, delivery: { state: "delivered", turnId: "d", at: 3_000, received: { text: "Use eslint", open: false } },
+    }));
+    assert.match(html, /Couldn(&#x27;|')t load the question/);
+    assert.match(html, envelope === "answer"
+      ? /aria-label="Answer whose question could not be loaded"/
+      : /aria-label="Snoozed question that could not be loaded"/);
+    assert.doesNotMatch(html, /no longer available/);
+    assert.doesNotMatch(html, /aria-busy/);
+    assert.match(html, /Delivered to the agent/);
+    assert.match(html, /What the agent received/, "what the agent received stays one click away");
+  }
 });
 
 test("an answer delivered here to a question a runtime-transfer predecessor asked draws its real card", () => {

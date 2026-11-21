@@ -5377,6 +5377,14 @@ export class TaskManager {
         const changed = sessionChanged();
         if (changed) return { ok: false, error: changed, scope: "session" };
       }
+      if (shaped && live.cwd) {
+        // The context was chosen for this branch and commit; another terminal in the same checkout
+        // could have moved it while shapers ran, and then the guidance would describe the wrong code.
+        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
+        if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+      }
       if (shaped) {
         const stillReady = await paneReady(this.registry.getSession(s.id)!);
         if (!stillReady.ok) {

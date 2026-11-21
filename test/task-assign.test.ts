@@ -1956,3 +1956,27 @@ test("an unverified handover that carried no section keeps the shapers' own outc
     setShaping(false);
   }
 });
+
+test("a checkout that moved while the handover's shapers ran is not handed guidance chosen for the old one", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-moved-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // Another terminal in the same checkout switches branch while shapers answer.
+      gitIn(clone, "checkout", "-b", "someone-else");
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /checkout changed while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

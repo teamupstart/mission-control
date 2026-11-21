@@ -1533,3 +1533,40 @@ test("an import matching what is stored is not taken as saved when its answer is
   await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
 });
+
+test("a view without revisions, as a rolled-back daemon sends, turns revision-bound actions off and asks for a reload", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("older-notes", "Older notes") });
+  // Stands in for a daemon older than this dashboard: every shaping view arrives without revisions.
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    const strip = (data: string): string => {
+      try {
+        const msg = JSON.parse(data) as { type?: string; shaping?: { revisions?: unknown }; config?: { revisions?: unknown } };
+        if (msg.type === "snapshot" && msg.shaping) delete msg.shaping.revisions;
+        if (msg.type === "shaping_config" && msg.config) delete msg.config.revisions;
+        return JSON.stringify(msg);
+      } catch {
+        return data;
+      }
+    };
+    class OlderDaemonEvents extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = handler && ((event: MessageEvent) => handler(new MessageEvent("message", { data: strip(event.data as string) })));
+      }
+      get onmessage(): ((event: MessageEvent) => void) | null { return super.onmessage; }
+    }
+    window.EventSource = OlderDaemonEvents;
+  });
+  await page.reload();
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(row(page, "Older notes")).toBeVisible();
+  await expect(panel(page).getByRole("status").filter({ hasText: "did not say which definition" })).toHaveText(
+    "The daemon did not say which definition each shaper is, so switching, removing and dry runs are unavailable here. Reload the page to load the dashboard that matches it.",
+  );
+  await expect(pill(page, "Older notes")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Remove Older notes" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Dry-run Older notes" })).toBeDisabled();
+  // The rest of the panel still works.
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
+});

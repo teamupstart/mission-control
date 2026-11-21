@@ -34,7 +34,18 @@ export function daemonShapingView(config: ShapingConfig): ShapingConfigView {
  */
 export function sentByEarlierDashboard(config: ShapingConfig, id: string, expect: string): boolean {
   return shapingConfigView(config, shapingReviser).shapers
-    .some((entry) => entry.id === id && earlierDashboardRevision(entry) === expect);
+    .filter((entry) => entry.id === id)
+    .some((entry) => earlierProjections(entry).some((shown) => earlierDashboardRevision(shown) === expect));
+}
+
+/**
+ * Every shape an earlier dashboard may have hashed an entry in: as the view shows it now, and as
+ * it showed it before unsupported entries carried `replaceable`, which a tab loaded then kept.
+ */
+function earlierProjections(entry: object): object[] {
+  if (!("replaceable" in entry)) return [entry];
+  const { replaceable: _added, ...before } = entry as { replaceable?: unknown };
+  return [entry, before];
 }
 
 /** The revision an earlier dashboard computed for a view entry: FNV-1a 64 over its canonical JSON. */

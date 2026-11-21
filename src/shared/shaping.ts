@@ -1030,10 +1030,20 @@ export function shapingConfigView(
  * string-valued entry counts, so an id that names an inherited property, such as `constructor`,
  * never reads a function that JSON would drop from the intent that carries it.
  */
-export function shapingViewRevision(view: Pick<ShapingConfigView, "revisions">, id: string): string | null {
-  if (!Object.hasOwn(view.revisions, id)) return null;
+export function shapingViewRevision(view: { readonly revisions?: unknown }, id: string): string | null {
+  if (!shapingViewHasRevisions(view) || !Object.hasOwn(view.revisions, id)) return null;
   const revision: unknown = view.revisions[id];
   return typeof revision === "string" ? revision : null;
+}
+
+/**
+ * Whether a view carries the daemon's revision map. An open dashboard can meet one that does not:
+ * a daemon rolled back to a build older than the dashboard sends its view without one. Every
+ * reader asks this first, and an action bound to a revision is unavailable until one arrives.
+ */
+export function shapingViewHasRevisions(view: { readonly revisions?: unknown }): view is { revisions: Record<string, unknown> } {
+  const map = view.revisions;
+  return typeof map === "object" && map !== null && !Array.isArray(map);
 }
 
 /**

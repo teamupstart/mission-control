@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { SHAPING_LIMIT_RANGES, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import { SHAPING_LIMIT_RANGES, shapingViewHasRevisions, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import {
   moveIntent,
   shaperEnvironmentStatus,
@@ -120,6 +120,9 @@ export function TaskShapingView({
     const environment = shaper ? shaperEnvironmentStatus(shaper, references) : [];
     // An entry that cannot run may only be switched off, never on (`plan.md`).
     const canSwitch = entry.on || entry.problem === null;
+    // Without the daemon's revision nothing here can say which definition it acts on: a view from
+    // a daemon older than this dashboard carries none, and an import still being drawn has none yet.
+    const unbound = entry.revision === null;
     // A confirmation opened for an earlier definition of this id does not apply to its replacement.
     const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
     return (
@@ -188,23 +191,25 @@ export function TaskShapingView({
                 <button type="button" className="btn btn-ghost" onClick={() => setRemoving(null)}>Keep</button>
               </Tooltip>
               <Tooltip label="Delete this shaper's stored definition and its on or off choice">
-                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy}
+                <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy || unbound}
                   onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision ?? undefined }, key); }}>Remove</button>
               </Tooltip>
             </>
           ) : (
             <Tooltip label="Remove this shaper. Asks once more first.">
-              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy}
+              <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy || unbound}
                 onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
-          <Tooltip label={!canSwitch
+          <Tooltip label={unbound
+            ? "Unavailable until the daemon says which definition this is. Reload the page."
+            : !canSwitch
             ? "This build cannot run it, so it cannot be switched on."
             : entry.problem !== null
               ? "Stored on, but this build never runs it. Switch it off."
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
-              disabled={busy || !canSwitch} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
+              disabled={busy || !canSwitch || unbound} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
               onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
@@ -237,6 +242,14 @@ export function TaskShapingView({
         {/* The dialog is the only other place an import's outcome shows. A stream frame can free it
             before the answer lands, and the operator may close it then: a refusal that arrives
             afterwards is shown here, beside the button that opens the dialog again. */}
+        {config !== null && count > 0 && !shapingViewHasRevisions(config) && (
+          // A daemon older than this dashboard sends no revisions, so no row can say which
+          // definition an action would act on.
+          <p className="shaping-list-outcome shaping-revisions-missing" role="status">
+            The daemon did not say which definition each shaper is, so switching, removing and dry runs
+            are unavailable here. Reload the page to load the dashboard that matches it.
+          </p>
+        )}
         {/* A row's outcome is drawn inside the row. One for a shaper no longer listed, such as a
             removal refused because another window removed it first, would vanish with its row,
             so it is shown here instead. */}

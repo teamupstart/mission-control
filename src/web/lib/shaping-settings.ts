@@ -17,6 +17,7 @@ import {
   shaperIsLocal,
   shaperSwitchedOn,
   shapingReferences,
+  shapingViewHasRevisions,
   shapingViewRevision,
   TaskShapingSchema,
   type Shaper,
@@ -149,18 +150,16 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       else shapers[at] = parsed.data;
       overrides[parsed.data.id] = false;
       // The stored definition's revision is the daemon's to derive; it arrives with the frame.
-      const { [parsed.data.id]: _replaced, ...revisions } = view.revisions;
-      return { ...view, shapers, overrides, revisions };
+      return { ...view, shapers, overrides, ...withoutRevision(view, parsed.data.id) };
     }
     case "remove": {
       delete overrides[intent.id];
-      const { [intent.id]: _removed, ...revisions } = view.revisions;
       return {
         ...view,
+        ...withoutRevision(view, intent.id),
         shapers: view.shapers.filter((entry) => entry.id !== intent.id),
         overrides,
         order: view.order.filter((id) => id !== intent.id),
-        revisions,
       };
     }
     case "enable":
@@ -183,6 +182,13 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
         limits: { ...view.limits, ...intent.limits },
       };
   }
+}
+
+/** The view's revisions without `id`'s, or nothing at all for a view that carries none. */
+function withoutRevision(view: ShapingConfigView, id: string): Partial<Pick<ShapingConfigView, "revisions">> {
+  if (!shapingViewHasRevisions(view)) return {};
+  const { [id]: _dropped, ...revisions } = view.revisions;
+  return { revisions: revisions as Record<string, string> };
 }
 
 export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boolean {

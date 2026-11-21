@@ -548,3 +548,22 @@ test("an enable bound to a revision is reflected only by the definition it was s
   // Without a revision, the choice alone still decides.
   assert.equal(shapingIntentReflected(replaced, { kind: "enable", id: "a", enabled: true }), true);
 });
+
+test("a view from a daemon that sends no revisions draws its rows with every revision-bound action off", () => {
+  const { revisions: _none, ...older } = view({ shapers: [gatherer("a")], overrides: { a: true } });
+  const shown = older as unknown as ShapingConfigView;
+  assert.equal(shapingViewRevision(shown, "a"), null);
+  const rows = shapingList(shown).flatMap((group) => group.rows);
+  assert.deepEqual(rows.map((entry) => [entry.id, entry.revision]), [["a", null]]);
+  // Drawing a click on it never throws, and adds no revision map of its own.
+  const imported = previewShapingIntent(shown, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("b")) });
+  assert.equal("revisions" in imported, false);
+  assert.equal("revisions" in previewShapingIntent(shown, { kind: "remove", id: "a" }), false);
+  const html = render(shown);
+  assert.match(html, /The daemon did not say which definition each shaper is, so switching, removing and dry runs\s+are unavailable here\./);
+  for (const name of ["Gatherer a: on", "Remove Gatherer a", "Dry-run Gatherer a"]) {
+    assert.match(html, new RegExp(`<button[^>]*aria-label="${name}"[^>]*disabled=""|<button[^>]*disabled=""[^>]*aria-label="${name}"`), name);
+  }
+  // A view that carries them draws no such note.
+  assert.equal(/did not say which definition/.test(render(view({ shapers: [gatherer("a")] }))), false);
+});

@@ -948,3 +948,28 @@ test("a dashboard from before daemon-held revisions is told to reload, never to 
   const other = await put({ kind: "enable", id: "legacy", enabled: true, expect: "0123456789abcdef" });
   assert.equal(((await other.json()) as { error: string }).error, "shaper_changed");
 });
+
+test("an earlier dashboard's revision of a replaceable entry, hashed without the newer field, is told to reload", async () => {
+  // A literal credential the store empties, so the entry is unsupported and replaceable.
+  const leaked = { ...fixture("leaked", "gather", "ok"), transport: { type: "command", command: process.execPath, args: [FIXTURE, "ok", "ghp_" + "a".repeat(36)] } };
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [leaked] });
+  shaping.reloadShaping();
+  const { canonicalJson } = await import("../src/shared/shaping.ts");
+  const shown = ((await (await get()).json()) as { config: { shapers: Array<Record<string, unknown>> } }).config.shapers[0]!;
+  assert.equal(shown.replaceable, true, "the view now marks it");
+  // A tab loaded before that field existed hashed the entry without it.
+  const { replaceable: _later, ...before } = shown;
+  const fnv = (text: string) => {
+    let hash = 0xcbf29ce484222325n;
+    for (let at = 0; at < text.length; at++) {
+      hash ^= BigInt(text.charCodeAt(at));
+      hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+    }
+    return hash.toString(16).padStart(16, "0");
+  };
+  for (const expect of [fnv(canonicalJson(before)), fnv(canonicalJson(shown))]) {
+    const answer = await put({ kind: "remove", id: "leaked", expect });
+    assert.equal(answer.status, 409);
+    assert.equal(((await answer.json()) as { error: string }).error, "stale_dashboard");
+  }
+});

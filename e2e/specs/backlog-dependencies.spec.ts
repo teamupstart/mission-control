@@ -38,7 +38,9 @@ async function shoot(page: Page, name: string) {
   mkdirSync(dir, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 1200 });
   await page.mouse.move(0, 0);
-  const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change") : page.getByRole("dialog", { name: "Edit a backlog task" });
+  const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
+    : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
+    : page.getByRole("dialog", { name: "Edit a backlog task" });
   await target.screenshot({ path: `${dir}${name}.png` });
 }
 
@@ -349,10 +351,11 @@ for (const retained of [true, false]) test("change pinned revision previews and 
   await shoot(dashboard, "revision-change-saved-" + retained);
 });
 
-async function revisionEditor(page: Page, daemon: DaemonHandle, episode: "same" | "later" | "merged" = "same") {
+async function revisionEditor(page: Page, daemon: DaemonHandle, episode: "same" | "later" | "merged" = "same", prerequisites: Task[] = []) {
   const origin = await savedPlan(daemon);
   const task = await create(daemon, "Review staged revision", {
-    planInputs: [origin.input], dependencies: [{ type: "task", taskId: origin.source.id }],
+    planInputs: [origin.input], dependencies: [{ type: "task", taskId: origin.source.id },
+      ...prerequisites.map(prerequisite => ({ type: "task", taskId: prerequisite.id }))],
   });
   await post(daemon, "/mcp/plans/save", {
     env: {}, sessionId: origin.session.id, cwd: origin.session.cwd, repoSlot: "repo-01",
@@ -419,9 +422,17 @@ test("Revert discards a staged pin and its preview before a later Save", async (
   expect(await read()).toEqual(before);
 });
 
-test("Save waits for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {
-  const { dialog, read } = await revisionEditor(dashboard, daemon);
+test("Save and dependency edits wait for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {
+  const prerequisite = await create(daemon, "Retained prerequisite");
+  const candidate = await create(daemon, "Another prerequisite");
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "same", [prerequisite]);
   const before = await read();
+  const add = dialog.getByRole("combobox", { name: "Add dependency" });
+  const remove = dialog.getByRole("button", { name: /^Remove dependency: Retained prerequisite/ });
+  const mode = dialog.getByRole("group", { name: /^When to start after Retained prerequisite/ });
+  await expect(add).toBeEnabled();
+  await expect(remove).toBeEnabled();
+  await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeEnabled();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let started!: () => void;
@@ -436,16 +447,59 @@ test("Save waits for the pending revision preview, including keyboard submission
     await dialog.getByRole("button", { name: "Preview revision change" }).click();
     await requested;
     await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    await expect(add).toBeDisabled();
+    await expect(remove).toBeDisabled();
+    await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeDisabled();
+    await expect(mode.getByRole("button", { name: "After merge", exact: true })).toBeDisabled();
+    // A queued change event must also be refused by the handler, not just the DOM guard.
+    await add.evaluate((select: HTMLSelectElement, id) => {
+      select.value = `task:${id}`;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }, candidate.id);
+    await expect(dialog.getByRole("button", { name: /^Remove dependency: Another prerequisite/ })).toHaveCount(0);
     await dashboard.keyboard.press("ControlOrMeta+Enter");
     await expect(dialog).toBeVisible();
     expect(saves).toBe(0);
     expect(await read()).toEqual(before);
   } finally { release(); }
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(add).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  await expect(add).toBeEnabled();
+  await expect(remove).toBeEnabled();
+  await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(saves).toBe(1);
-  expect((await read()).planInputs![0]!.revision).toBe(2);
+  const saved = await read();
+  expect(saved.planInputs![0]!.revision).toBe(2);
+  expect(saved.dependencies).toEqual(before.dependencies);
+});
+
+test("revision preview keeps its returned snapshots when a retained prerequisite is satisfied live", async ({ dashboard, daemon }) => {
+  const prerequisite = await create(daemon, "Retained prerequisite");
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "same", [prerequisite]);
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  const preview = dialog.getByRole("region", { name: "Pinned revision preview" });
+  await expect(preview).toBeVisible();
+  const beforeText = await preview.innerText();
+  await expect(preview).toContainText("Retained prerequisite (waiting)");
+  // Exercise a real task_upsert while the preview stays open. The explicit fixture
+  // completion satisfies the edge through the same durable state used for a merge.
+  await post(daemon, `/api/tasks/${prerequisite.id}/complete`, { outcome: "Prerequisite landed", satisfyDependents: true });
+  await expect(dialog.locator(".dep-chips")).toContainText("Retained prerequisite (merged)");
+  expect((await read()).dependencies.find(edge => edge.type === "task" && edge.taskId === prerequisite.id)!.satisfiedAt).not.toBeNull();
+  expect(await preview.innerText()).toBe(beforeText);
+  await expect(preview.locator("p").filter({ hasText: /^Remove:/ })).toHaveText("Remove: None");
+  await expect(preview.locator("p").filter({ hasText: /^Add:/ })).toHaveText("Add: None");
+  await shoot(dashboard, "revision-change-live-snapshot");
+  // The unchanged preview is a snapshot, not permission to overwrite the live update.
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toContainText("Task changed; reopen the editor and preview again");
+  expect((await read()).planInputs![0]!.revision).toBe(1);
 });
 
 test("a staged pin survives a rejected save and is consumed before retrying a rejected dispatch", async ({ dashboard, daemon }) => {

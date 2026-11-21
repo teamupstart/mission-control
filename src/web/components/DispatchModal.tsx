@@ -1546,6 +1546,7 @@ function DispatchModal({
   const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
   const [editingPin, setEditingPin] = useState<number | null>(null);
   const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
+  const dependencyEditsBlocked = pinPreviewPending || pinChange !== null;
   const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
@@ -1563,6 +1564,7 @@ function DispatchModal({
     : null;
   const dependencyKey = dependencyInputKey;
   function removalReason(key: string): string | null {
+    if (pinPreviewPending) return "Wait for the revision preview before editing dependencies.";
     if (pinChange) return "Cancel the revision change before editing dependencies.";
     if (planRequirementsProblem) return planRequirementsProblem;
     const required = planRequirementsResult?.requirements.filter(requirement =>
@@ -1825,8 +1827,9 @@ function DispatchModal({
   }
 
   function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
+    if (dependencyEditsBlocked) return;
     stashedDependencies.current = NO_STASH;
-    if (!pinChange) update({ dependencies });
+    update({ dependencies });
   }
 
   /**
@@ -3677,7 +3680,7 @@ function DispatchModal({
                                       type="button"
                                       className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
                                       aria-pressed={shown === option}
-                                      disabled={Boolean(pinChange)}
+                                      disabled={dependencyEditsBlocked}
                                       onClick={() =>
                                         updateDependencies(draft.dependencies.map((candidate) =>
                                           dependencyKey(candidate) === key && candidate.type === "task"
@@ -3719,7 +3722,7 @@ function DispatchModal({
                         className="dep-add"
                         value=""
                         aria-label="Add dependency"
-                        disabled={Boolean(pinChange)}
+                        disabled={dependencyEditsBlocked}
                         onChange={(event) => {
                           const option = dependencyByKey.get(event.target.value);
                           if (option) {

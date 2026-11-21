@@ -2189,7 +2189,7 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  previewPlanChange: async (id: string, planInputChange: TaskPlanInputChange): Promise<{ ok: boolean; task?: Task; error?: string }> => {
+  previewPlanChange: async (id: string, planInputChange: TaskPlanInputChange): Promise<{ ok: boolean; task?: Task; before?: Task; error?: string }> => {
     const response = await fetch("/api/tasks/" + encodeURIComponent(id) + "/update", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planInputChange, previewOnly: true }) });
     return response.json();
   },

@@ -26,7 +26,7 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
   const [planId, setPlanId] = useState(input.planId);
   const [revision, setRevision] = useState("");
   const [files, setFiles] = useState(input.files.join(", "));
-  const [preview, setPreview] = useState<Task | null>(null);
+  const [preview, setPreview] = useState<{ before: Task; after: Task } | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const reset = () => { setPreview(null); setError(""); onChange(null); };
@@ -42,15 +42,15 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
     };
     try {
       const result = await api.previewPlanChange(task.id, change);
-      if (!result.ok || !result.task) setError(result.error ?? "Could not preview revision");
-      else { setPreview(result.task); onChange(change); }
+      if (!result.ok || !result.task || !result.before) setError(result.error ?? "Could not preview revision");
+      else { setPreview({ before: result.before, after: result.task }); onChange(change); }
     } catch { setError("Could not reach Mission Control"); }
     finally { setPending(false); onPending(false); }
   }
   if (!open) return <Tooltip label="Choose an exact replacement plan revision and preview its prerequisites"><button type="button" className="btn btn-ghost" disabled={disabled}
     onClick={() => { setOpen(true); onEditing(true); }}>Change pinned revision</button></Tooltip>;
-  const removed = task.dependencies.filter(edge => !preview?.dependencies.some(next => previewDependencyKey(next) === previewDependencyKey(edge)));
-  const added = preview?.dependencies.filter(edge => !task.dependencies.some(old => previewDependencyKey(old) === previewDependencyKey(edge))) ?? [];
+  const removed = preview?.before.dependencies.filter(edge => !preview.after.dependencies.some(next => previewDependencyKey(next) === previewDependencyKey(edge))) ?? [];
+  const added = preview?.after.dependencies.filter(edge => !preview.before.dependencies.some(old => previewDependencyKey(old) === previewDependencyKey(edge))) ?? [];
   return <fieldset className="pinned-plan-change" disabled={pending}>
     <legend>Change pinned revision</legend>
     <p className="field-hint">Select an exact revision. Newer revisions are never selected automatically. Preview first, then Save the task.</p>
@@ -65,7 +65,7 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
       <p><strong>New:</strong> <Tooltip label="Open the selected replacement revision in a new tab"><a href={managedPlanPreview(planId.trim(), Number(revision))} target="_blank" rel="noreferrer">{planId.trim()} revision {revision}</a></Tooltip> · {files}</p>
       <p><strong>Remove:</strong> {removed.map(changedDependencyLabel).join(", ") || "None"}</p>
       <p><strong>Add:</strong> {added.map(changedDependencyLabel).join(", ") || "None"}</p>
-      <p><strong>Retain:</strong> {preview.dependencies.filter(edge => !added.includes(edge)).map(edge => edge.title + (edge.satisfiedAt !== null ? " (merged/published)" : " (waiting)")).join(", ") || "None"}</p>
+      <p><strong>Retain:</strong> {preview.after.dependencies.filter(edge => !added.includes(edge)).map(edge => edge.title + (edge.satisfiedAt !== null ? " (merged/published)" : " (waiting)")).join(", ") || "None"}</p>
       <p className="field-hint">Ready to save the pin and prerequisites together. Other dependencies stay unchanged.</p>
     </section>}
   </fieldset>;

@@ -18,7 +18,9 @@ never stops the launch. With Phase 1 this completes the first slice (D3).
 - "Shaping context" in the pending tile, the chip, the viewer, the board and rail marker.
 - The `shaping` field in task reads, including the MCP tools.
 
-Not here: assignment into a live session and pipelines (non-goals), Settings (Phase 3).
+Also here: the second call site in `TaskManager.assign` (decision 21 in `phased-plan.md`).
+
+Not here: pipelines (a non-goal), Settings (Phase 3).
 
 ## Repository findings
 
@@ -109,6 +111,21 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   the same task is cleared when this launch reaches its worker (step 2).
 - Order with FR-05 repository task skills when both exist: kind contract, task context,
   repository task skill.
+- Schema step 41. 38 went to #1556, 39 to the asynchronous input inbox and 40 to the work unit
+  id, all of which merged first, so this phase renumbered as the later one. Whichever of this phase and FR-05 merges second
+  renumbers its step.
+
+## Rebase note: FR-05 repository task skills (#1565)
+
+This phase and FR-05 share the `composeTurnOne` closure in `Dispatcher.dispatch`. Whichever
+merges second resolves it the same way:
+
+1. Run `resolveRepoTaskSkills` first, before the shaping step.
+2. Measure turn one with `appendRepoTaskSkills` applied, so the budget sees the turn as sent,
+   and call `shapeTask` with the `maxSectionBytes` that leaves.
+3. Keep FR-05's block last: the shaping helper `withTaskContext` goes inside
+   `appendRepoTaskSkills`, so the order stays kind contract, task context, repository task
+   skill.
 
 ## Tests and verification
 

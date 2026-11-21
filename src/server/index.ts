@@ -5,6 +5,7 @@
 import "./migrate-state.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
+import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -228,6 +229,8 @@ const registry = new Registry();
 const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// The shapers folder is read at start, and again at every shaping run: never watched.
+if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
@@ -463,6 +466,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+tasks.registerWorkflowNames((workflowId) => workflows.workflowName(workflowId));
 // A task's dispatch Persona: creation, editing and launch all read the Library through this.
 tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through

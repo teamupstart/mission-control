@@ -21,3 +21,22 @@ boundaries are described in [Harnesses and terminal backends](harnesses-and-term
 
 For managed terminal preparation, launch ownership and recovery, see
 [Managed terminal resumes](harnesses-and-terminals.md#managed-terminal-resumes).
+
+## Turn one
+
+Every dispatched session's first prompt is composed once, before the runtime fork, in this
+order:
+
+1. The dependency-claim note, only when a claim failed in one of the task's worktrees.
+2. The repository manifest and, on a pair without an out-of-band channel, the standing
+   instructions.
+3. The operator's prompt, verbatim.
+4. The kind contract.
+5. The task context section, only when [task shaping](task-shaping.md) is on and a shaper
+   added something. It is appended by one helper, so the normal turn one and the
+   standing-instructions fallback carry identical text.
+
+Repository task skills, when they arrive, follow the task context section. Pi receives turn
+one as its launch argument, with the repository memory pointer in front of it; every other
+pair receives it through the embedded driver or a pane paste. How each path bounds the size of
+turn one is in [Where the section lands](task-shaping.md#where-the-section-lands).

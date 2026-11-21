@@ -42,6 +42,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ShapingTileFlag } from "../ShapingChip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -593,6 +594,7 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <ShapingTileFlag session={session} />
         {/* Stacked pull requests: why this child is held and what moves it - the same
             component, label and actions as its merge-queue row. */}
         {session.inspector?.stack?.label && (

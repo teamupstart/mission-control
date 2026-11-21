@@ -15,8 +15,9 @@ import type { TaskKind } from "./types.ts";
  * Local Plan Validation. `null` is None.
  *
  * The rule the dispatch form applied inline (`taskDefaultWorkflowId`) with its arguments
- * spelled out, so a surface that is not the form reaches it by this name. `test/` fails when
- * the form's answer and this one differ for any kind.
+ * spelled out, so a surface that is not the form reaches it by this name.
+ * `test/home-dispatch-options.test.ts` checks that the form imports this rule and no longer
+ * spells it, and pins this rule's answer for the kinds' defaults.
  */
 export function kindAfterWork(
   kind: TaskKind,

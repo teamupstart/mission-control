@@ -9,8 +9,8 @@ import { requireHomeSession } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 
 // Owner: P5. `POST /dispatch/dispatch-options` returns the dialog questions (spec 7.5). The
-// pages come from `buildDispatchQuestions` in `src/shared/dispatch-options.ts`, the same
-// module the mod imports, so the daemon only gathers what the pages depend on.
+// pages come from `buildDispatchQuestions` in `src/shared/dispatch-options.ts`, a browser-safe
+// module the mod can import later, so the daemon only gathers what the pages depend on.
 
 /** Every active published Workflow, as the dashboard's After work picker lists them. */
 export function publishedWorkflows(deps: HomeDispatchDeps): Array<{ id: string; name: string }> {

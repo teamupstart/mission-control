@@ -284,10 +284,16 @@ test("a launch with no fallback keeps its one-line agent command", () => {
   rmSync(dirname(argv[1]!), { recursive: true, force: true });
 });
 
-test("a launch read back through the wrapper is the primary launch, fallback or not", async () => {
+test("a launch read back through the wrapper is the primary launch, fallback or not, with multiline prompts", async () => {
   const { launchedArgv } = await import("./helpers/isolated-launch.ts");
-  const shaped = ["/agents/pi", "--session-id", "s1", "shaped turn one"];
-  const argv = isolatedAgentArgv(shaped, { fallbackArgv: ["/agents/pi", "--session-id", "s1", "original"] });
-  assert.deepEqual(launchedArgv(argv), shaped);
-  rmSync(dirname(argv[1]!), { recursive: true, force: true });
+  // Real turn ones span lines, and the shaped one carries a section whose lines a naive reader
+  // would take for statements, apostrophes included.
+  const shaped = ["/agents/pi", "--session-id", "s1",
+    "Fix the charge retry.\n\n## Task context\n\n### Acme guidance: Don't double-charge\nfi\nelse\nCharge each key once."];
+  const original = ["/agents/pi", "--session-id", "s1", "Fix the charge retry.\nIt's flaky."];
+  const withFallback = isolatedAgentArgv(shaped, { fallbackArgv: original });
+  assert.deepEqual(launchedArgv(withFallback), shaped);
+  const plain = isolatedAgentArgv(original);
+  assert.deepEqual(launchedArgv(plain), original);
+  for (const argv of [withFallback, plain]) rmSync(dirname(argv[1]!), { recursive: true, force: true });
 });

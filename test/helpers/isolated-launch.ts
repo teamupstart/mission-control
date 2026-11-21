@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
+import { shellCommand, shellWords, wrapperAgentCommand } from "../../src/server/terminal/shell.ts";
 
 /**
  * What a terminal backend was actually asked to run, read back through `isolatedAgentArgv`.
@@ -23,12 +23,8 @@ export function launchedCommand(argv: readonly string[]): string {
   if (script.includes("resume-guard.mjs")) {
     return shellCommand((JSON.parse(readFileSync(join(dirname(wrapper), "launch.json"), "utf8")) as { argv: string[] }).argv);
   }
-  // A launch with a fallback (a shaped Pi turn one) ends `if <probe>; then <launch> else ... fi`:
-  // the launch it means is the one under `then`. See `fittingLaunch` in agent-subprocess-env.ts.
-  const lines = script.trimEnd().split("\n");
-  const probe = lines.findIndex((line) => line.includes("mission-turn-one-probe"));
-  if (probe >= 0) return lines[probe + 1]?.trim() ?? "";
-  return lines.at(-1) ?? "";
+  // Read by statement, not by line: a launch prompt spans lines inside its quotes.
+  return wrapperAgentCommand(script);
 }
 
 /** The launch's own argv, unquoted - what `execFile` would have been given. */

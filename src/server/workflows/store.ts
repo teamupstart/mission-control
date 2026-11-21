@@ -127,6 +127,7 @@ import {
   WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -7152,6 +7153,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
+      const freshPublishedReview = workflowInspectorGateNeedsFreshReview(inspectorGateState(this.mustRun(input.runId)));
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -7167,6 +7169,7 @@ export class WorkflowStore {
         submissionId: input.id,
         triggerKey: input.triggerKey,
         round: input.round,
+        ...(freshPublishedReview ? { freshPublishedReview: true } : {}),
       }, input.now);
       return {
         run: this.mustRun(input.runId),
@@ -7311,11 +7314,10 @@ export class WorkflowStore {
         const latest = this.latestSubmission(run.id);
         if (latest && latest.round <= run.maxRepairRounds) {
           previousFingerprint = latest.evidenceFingerprint;
-          this.insertSubmissionInTransaction({
+          const repair = this.createRepairSubmission({
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
-            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -7323,15 +7325,8 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
-          assertRunLifecycle(run.id, "capturing", "capturing", null);
-          this.db.prepare(
-            `UPDATE workflow_runs
-                SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
-              WHERE id = ?`,
-          ).run(input.now, run.id);
-          run = this.mustRun(run.id);
-          submission = this.mustSubmission(input.submissionId);
+          run = repair.run;
+          submission = repair.submission;
           state = "resubmitted";
           created = true;
         } else {
@@ -8733,13 +8728,29 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
-  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  /** Capture retries read the boundary frozen when the root left the reviewed-tree hold. */
+  submissionRequiresFreshPublishedReview(submissionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events
+      WHERE run_id = (SELECT run_id FROM workflow_submissions WHERE id = ?)
+        AND event_kind = 'submission_created'
+        AND json_extract(payload_json, '$.submissionId') = ?
+        AND json_extract(payload_json, '$.freshPublishedReview') = 1 LIMIT 1`)
+      .get(submissionId, submissionId);
+  }
+
+  /** The newest executed verdict must pass, and pre-publication-review passes cannot cross
+   * the durable fresh-review boundary recorded atomically with its root submission. */
   priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
     const row = this.db.prepare(
       `SELECT * FROM (
          SELECT a.* FROM workflow_node_attempts a
            JOIN workflow_submissions s ON s.id = a.submission_id
           WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND s.round >= COALESCE((
+              SELECT MAX(json_extract(payload_json, '$.round')) FROM workflow_events
+              WHERE run_id = s.run_id AND event_kind = 'submission_created'
+                AND json_extract(payload_json, '$.freshPublishedReview') = 1
+            ), 0)
             AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
             AND a.runner_id IS NOT NULL
           ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1

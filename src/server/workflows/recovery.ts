@@ -72,6 +72,7 @@ export const WORKFLOW_PHASE_RECOVERY = {
   inspector_round_limit: "dismiss",
   inspector_unadopted_pr: "resume",
   inspector_working_tree_not_pushed: "resume",
+  inspector_reviewed_tree_changed: "resume",
   evidence_reconciliation_error: "resume",
 } satisfies Record<WorkflowRunPhase, PhaseRecovery>;
 

@@ -5335,16 +5335,21 @@ export class TaskManager {
     // The session was checked before the reset, and shapers can take seconds: an operator who
     // started a turn in the meantime, or a review that arrived, makes it no longer a session to
     // type into. Asked again only when shaping ran, so a handover with the flag off is unchanged.
-    if (shapingOn) {
+    // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
+    // probe below is itself an await a turn could start during.
+    const sessionChanged = (): string | null => {
+      if (!shapingOn) return null;
       const receiving = this.registry.getSession(s.id);
       const changed = !receiving ? "went away"
         : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
         : receiving.pendingReviews > 0 ? "got a review waiting on you"
         : null;
-      if (changed) {
-        return { ok: false, error: `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`, scope: "session" };
-      }
-      const stillReady = await paneReady(receiving!);
+      return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
+    };
+    if (shapingOn) {
+      const changed = sessionChanged();
+      if (changed) return { ok: false, error: changed, scope: "session" };
+      const stillReady = await paneReady(this.registry.getSession(s.id)!);
       if (!stillReady.ok) {
         return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
       }
@@ -5361,7 +5366,7 @@ export class TaskManager {
         this.registry.getSession(s.id) ?? s,
         withTaskContext(unshapedTurn, shaping.section),
         undefined,
-        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
+        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id) ?? sessionChanged(),
       );
     } catch (err) {
       discardScoutPromptBoundary(boundary);

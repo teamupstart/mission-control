@@ -1716,3 +1716,38 @@ test("a session that started a turn while its handover was being shaped is not t
     setShaping(false);
   }
 });
+
+test("a turn that starts during the handover's last pane probe is caught by the guard at delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, agentSessionId, clone } = setupInRepo("mission-assign-shaping-probe-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // The second probe is the one after shaping; the operator starts a turn while it runs.
+      paneReady: async () => {
+        if (++probes === 2) {
+          r.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: agentSessionId, cwd: clone, transcriptPath: null, env: {}, prompt: "something else" });
+        }
+        return { ok: true };
+      },
+      // As `injectPrompt` does: the guard runs immediately before anything is written.
+      inject: async (_session, _text, _deps, beforeWrite) => {
+        const refused = beforeWrite?.() ?? null;
+        if (refused) return { ok: false, pasted: false, submitVerified: false, error: refused };
+        typed = true;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(probes, 2, "the pane was probed before the reset and again after shaping");
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /became working while the task's context was being shaped/);
+    assert.equal(typed, false, "nothing was typed into the now-active conversation");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

@@ -86,14 +86,16 @@ export function openQuestionsLabel(count: number): string {
  * when it has nothing and the badge is the plain state.
  *
  * - A review its agent waits on inside a call: today's button, in today's tone and words.
- * - Pending message-mode questions on a stopped agent: the same amber button, labelled with the
- *   amber reason `stateDisplay` already gives it ("waiting on your answer").
- * - Pending message-mode questions on an agent still working, or on a resident between
- *   iterations: "N questions open" in the tone the session already wears, never amber. It is still
- *   a button that opens the questions.
+ * - Pending message-mode questions: a button that opens them. Whether its words say the agent
+ *   keeps working or has stopped comes from `questionAgentStatus`, the same reading the card, the
+ *   Asked entry and every action use, so the badge can never contradict the card beside it.
+ *   `display` decides the colour only, together with the label when it is amber: `stateDisplay`'s
+ *   amber reason ("waiting on your answer", "needs an answer") says more than a count. Any other
+ *   tone - working, idle, or a transient reading such as an interrupt in flight - shows the count,
+ *   "N questions open", in that tone, never amber.
  */
 export function questionBadge(
-  session: Pick<Session, "pendingReviews" | "openQuestions">,
+  session: Pick<Session, "pendingReviews" | "openQuestions" | "state" | "stateConfirmed" | "task">,
   display: StateDisplay,
 ): { label: string; tone: StateDisplay["tone"]; tooltip: string } | null {
   if (session.pendingReviews > 0) {
@@ -102,13 +104,14 @@ export function questionBadge(
   }
   const open = openQuestionCount(session);
   if (open === 0) return null;
-  if (display.tone === "attention") {
-    return { label: display.label, tone: display.tone, tooltip: `${open} question${open === 1 ? "" : "s"} waiting on your answer - open ${open === 1 ? "it" : "them"}` };
-  }
+  const them = open === 1 ? "it" : "them";
+  const tooltip = questionAgentStatus(session) === "working"
+    ? `The agent keeps working while ${open === 1 ? "this question is" : "these questions are"} open - open ${them} to answer`
+    : `The agent has stopped on ${open === 1 ? "this question" : "these questions"}, waiting on your answer - open ${them}`;
   return {
-    label: openQuestionsLabel(open),
+    label: display.tone === "attention" ? display.label : openQuestionsLabel(open),
     tone: display.tone,
-    tooltip: `The agent keeps working while ${open === 1 ? "this question is" : "these questions are"} open - open ${open === 1 ? "it" : "them"} to answer`,
+    tooltip,
   };
 }
 

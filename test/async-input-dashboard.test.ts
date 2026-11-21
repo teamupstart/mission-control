@@ -190,6 +190,27 @@ test("a resident with questions open keeps its own tone, never amber", () => {
   assert.deepEqual({ label: badge?.label, tone: badge?.tone }, { label: "1 question open", tone: "idle" });
 });
 
+test("the badge's words follow questionAgentStatus, never the display tone, so it cannot contradict the card", () => {
+  // A stopped agent whose badge is not amber, as an interrupt in flight or another runtime override
+  // draws it: the count stays, and the words say stopped, as the card beside it does.
+  const notAmber = { label: "interrupting", tone: "working" as const };
+  const stoppedBadge = questionBadge(stopped(), notAmber);
+  assert.equal(stoppedBadge?.label, "1 question open");
+  assert.equal(stoppedBadge?.tone, "working", "the colour is still the display's");
+  assert.match(stoppedBadge?.tooltip ?? "", /has stopped on this question/);
+  assert.doesNotMatch(stoppedBadge?.tooltip ?? "", /keeps working/);
+  assert.equal(questionStatusLine(question(), stopped(), NOW)?.label, "Stopped, waiting on this answer");
+  // A working agent whose display is amber for another reason keeps that reason as its label,
+  // and its words still say it keeps working.
+  const workingAmber = questionBadge(working(), { label: "needs an answer", tone: "attention" });
+  assert.equal(workingAmber?.label, "needs an answer");
+  assert.match(workingAmber?.tooltip ?? "", /keeps working/);
+  // The ordinary readings, through the real display.
+  assert.match(questionBadge(stopped(), stateDisplay(stopped()))?.tooltip ?? "", /has stopped/);
+  assert.match(questionBadge(working(), stateDisplay(working()))?.tooltip ?? "", /keeps working/);
+  assert.match(questionBadge(resident(), stateDisplay(resident()))?.tooltip ?? "", /keeps working/);
+});
+
 test("a call-mode review keeps today's badge, and nothing to answer is no button", () => {
   const session = mkSession({ state: "awaiting_input", stateConfirmed: true, pendingReviews: 1 });
   const badge = questionBadge(session, stateDisplay(session));

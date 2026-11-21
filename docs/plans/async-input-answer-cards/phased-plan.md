@@ -29,8 +29,12 @@ at answer time until then; the work is one phase after async-input Phases 2 and 
   (`reserveDelegatedTurn`), so a turn that lands before the send returns is still after the
   offset. It also contests a delivery while another send of the same words is in its race window
   (`noteOtherSend`, `session_other_sends`), because a fingerprint cannot tell two identical turns
-  apart. Review-message recognition uses the same mechanism through a shared binding helper, so
-  there is one binding rule rather than two.
+  apart. A delegated row binds only within `DELIVERY_LAG_MS` of its delivery. Delegated rows of a
+  conversation that is no longer live are pruned by age (`pruneDelegatedTurns`), after which
+  their turns lose their label. Answer cards cannot accept that: an old conversation must still
+  show its cards, so bound review-message rows are exempt from age pruning and only expired
+  unbound rows are pruned. Review-message recognition uses the same mechanism through a shared
+  binding helper, so there is one binding rule rather than two.
 - `attributeTranscript` (`src/server/transcript-attribution.ts:26`) is the single server-side
   pass over transcript turns. Its callers are the transcript route, the transcript stream,
   retro worthiness and workflow context. Attaching the presentation there reaches every reader
@@ -110,6 +114,12 @@ arrives before the delivery's echo cannot leave the delivery's echo to be captur
 Revision 6 settles two details from the same review: the marker is valid only as the literal
 first line, and a bound delivery keeps its `harness` origin even after the reviews it carried are
 deleted, so the raw fallback stays bylined Mission Control.
+
+Revision 7 settles retention and expiry. Bound rows are never pruned by age, so reopening an old
+conversation still shows its cards. An unbound row binds only inside the delivery window,
+expires after it and is pruned, and any later Mission Control send of the same words contests
+it, so a delivery whose turn was altered or dropped cannot claim an operator's later copy. No
+reviews are deleted by any retention today; the wording that assumed one was corrected.
 
 ## Final verification
 

@@ -1,7 +1,7 @@
 # Asynchronous input: answers render as answer cards
 
 Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
-phased in `phased-plan.md`. Revisions 3 to 6 bind recognition to a recorded daemon delivery after
+phased in `phased-plan.md`. Revisions 3 to 7 bind recognition to a recorded daemon delivery after
 the plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
@@ -86,15 +86,19 @@ marker is only a cheap filter and a label for the agent.
   means a turn that reaches the transcript before delivery is confirmed is still after the
   offset. This is the order `reserveDelegatedTurn` already uses for delegated turns.
 - **Binding.** A row binds to the first user turn written after its transcript offset whose text
-  has the same fingerprint, and the binding (the native message id) is never re-pointed. The
-  binding logic in `src/server/delegated-turns.ts` is extracted into a shared helper that both
-  tables use, not copied.
+  has the same fingerprint, and the binding (the native message id) is never re-pointed. A row
+  may bind only within the delivery window that delegated turns already use (`DELIVERY_LAG_MS`
+  in `src/server/delegated-turns.ts`). An unbound row past that window has expired: it binds
+  nothing, and is pruned. The binding logic is extracted into a shared helper that both tables
+  use, not copied.
 - **Racing sends are contested, not guessed.** A fingerprint cannot tell two identical turns
   apart, so the rule delegated turns use applies: while another send of the same words is inside
   the delivery's race window, the delivery is contested and binds nothing. Other sends are those
   the operator's composer, a queued turn or another sender makes, recorded through
   `noteOtherSend` and the durable `session_other_sends` table. Both turns then render as plain
-  text, as they do today, rather than one being guessed.
+  text, as they do today, rather than one being guessed. A later send of the same words through
+  Mission Control also contests a delivery that is still unbound, whenever it is sent, so a
+  delivery whose turn a harness altered or dropped can never claim the operator's later copy.
 - **Only a bound turn changes.** `src/server/transcript-attribution.ts`, which already attaches a
   `presentation` to launch prompts and resident wakes, changes a turn only when a delivery row is
   bound to it. The review ids come from the row, not from the text. A turn carrying a marker with
@@ -104,15 +108,17 @@ marker is only a cheap filter and a label for the agent.
 
 - `origin: "harness"`, so its byline, find scope and the rail's Yours tab treat it as Mission
   Control's, including after a restart, when the in-memory record is gone. The origin comes from
-  the bound delivery alone, so it holds even after the reviews it carried are deleted.
+  the bound delivery alone, so it holds even when the reviews it carried no longer resolve.
 - a new presentation kind, `{ kind: "review-message", envelope: "answer" | "remind-later",
   reviewIds: string[] }`, set only while every review it names still resolves. It is added to the `TranscriptPresentation` union in
   `src/shared/types.ts` beside `launch` and `resident`, not by repurposing either.
 
 Recognition reads only the delivery table, the reviews table and the transcript, all durable, so
-it survives restarts and works on history back to the table's retention window. A delivery that
-cannot bind (no readable transcript size at send time) leaves its turn as raw text rather than
-guessing.
+it survives restarts and works on all history. A bound row is never pruned by age: it is one
+small row per delivered answer, holding ids and a fingerprint but no message text, and it is kept
+for as long as Mission Control keeps the conversation's reviews, which today is indefinitely.
+Only expired unbound rows are pruned. A delivery that cannot bind (no readable transcript size at
+send time) leaves its turn as raw text rather than guessing.
 
 The Goal reader uses the same record, and accounts for echoes by count rather than by pairing.
 A prompt-hook echo carries no sign of who sent it, so an identical operator copy and the daemon's
@@ -146,10 +152,9 @@ native message kept as the panel's state.
 - **Nothing is hidden for good.** Each card has a "What the agent received" disclosure that
   shows the raw delivered text. Find in conversation searches the card's visible text and the
   raw text inside the disclosure.
-- **A turn whose ids are not all resolved or known** (an old row, or a review deleted by
-  retention) falls back to the raw text, still bylined Mission Control because the bound delivery
-  keeps its `harness` origin. Only once the delivery row itself is pruned does the turn read as
-  it did before this plan.
+- **A turn whose ids do not all resolve** (for example after a database restore that predates
+  the review) falls back to the raw text, still bylined Mission Control because the bound
+  delivery keeps its `harness` origin.
 
 ### 4. One card per answer, placed where the agent received it
 
@@ -238,13 +243,18 @@ two renderings.
 | An operator types or pastes the marker, or the whole text of a delivered answer. | Only a turn bound to a recorded daemon delivery is drawn as a card, and each delivery binds to exactly one turn. A copy sent through Mission Control while the delivery is unbound contests it, so neither turn becomes a card; a copy sent after the delivery has bound stays an operator turn. Either way the copy keeps its operator authorship, stays visible as typed, and remains eligible for Goal capture. |
 | A byte-identical copy of the whole delivered text, review id included, typed straight into a terminal pane outside Mission Control, inside the few seconds before the agent's turn lands. | Mission Control cannot see that send, so the first matching turn binds. This is the one case the guarantee does not cover, and it is the residual delegated turns already accept. |
 | A delivery cannot bind (transcript size unreadable before sending, or contested). | Its turn renders as raw text, as today, never as a card on a guess. |
+| A harness alters or drops a delivered turn, so the row stays unbound. | The row can bind only inside the delivery window and expires after it. Within the window, any later Mission Control send of the same words contests it. An operator's later copy stays an operator turn either way. |
+| An old conversation is reopened long after its answers were delivered. | Bound rows are never pruned by age, so its cards still render. |
 | The card moves from `resolvedAt` to the delivery turn when the answer is delivered. | Accepted for a single card per answer; the "On its way" line explains the interim state. |
 
 ## Verification
 
 - Unit (`test/`): envelope write and parse round trip, coalesced ids, malformed and partial
   lines, a marker after a leading blank line rejected, non-ASCII rejection; a bound turn whose
-  reviews were deleted keeps the Mission Control byline after a restart; a card is drawn only for a turn bound to a recorded delivery; a
+  reviews no longer resolve keeps the Mission Control byline after a restart; a bound row survives
+  the prune tick and an old conversation reopened after the prune age still shows its cards; an
+  unbound row past the delivery window binds nothing and is pruned; after a dropped delivery, an
+  operator's later Mission Control copy stays an operator turn; a card is drawn only for a turn bound to a recorded delivery; a
   pasted copy of a delivered message, a marker with a different body, and a marker with valid ids
   but no delivery all render as plain operator text; a turn that lands before delivery is
   confirmed still binds; a composer send of the same words inside the race window contests the

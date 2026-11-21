@@ -64,23 +64,27 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
    snooze instructions only while `featureEnabled("async-input")`. The row id, authorship and
    escalation do not change.
 3. **Delivery record and binding.** Add a table beside `session_delegated_turns` in
-   `src/server/db.ts` (created idempotently in the migration path, with an age index and the same
-   retention). When the outbox claims a marked row, and before the text is handed to the agent,
+   `src/server/db.ts`, created idempotently in the migration path with an age index. Bound rows
+   are never pruned by age. Unbound rows expire once `DELIVERY_LAG_MS` has passed since delivery:
+   from then on they bind nothing, and the existing prune tick deletes them. When the outbox claims a marked row, and before the text is handed to the agent,
    reserve one row: conversation key, `injectionFingerprint` of the exact text, the review ids,
    the time, the transcript size read at that moment, an unbound message id, and an unclaimed
    echo flag. Confirm it when delivery succeeds; release it when delivery is refused, as
    `releaseDelegatedTurn` does. Extract the binding rule from `delegatedTurnSources` into a
-   shared helper (first matching turn after the offset, bound once, never re-pointed, contested
-   and unknown-offset rows bind nothing) and use it for both tables. A reservation is contested
+   shared helper (first matching turn after the offset and inside the delivery window, bound once,
+   never re-pointed, contested, expired and unknown-offset rows bind nothing) and use it for both
+   tables. Keep `pruneDelegatedTurns` as it is for delegated rows. A reservation is contested
    while another send of the same words is in its race window, using the existing
-   `noteOtherSend` and `session_other_sends` record, and contests nothing it does not race.
+   `noteOtherSend` and `session_other_sends` record, and contests nothing it does not race. A
+   later Mission Control send of the same words contests any still-unbound row of those words,
+   as `noteOtherSend` already does for delegated rows.
    Do not fork the rule.
 4. **Recognition.** In `attributeTranscript`, change a user turn only when a delivery row is bound
    to it. A bound turn always gets `origin: "harness"`, from the delivery row alone. Add
    `presentation: { kind: "review-message", envelope, reviewIds }`, with the ids from the row,
    only when every id still exists for this session or its runtime-transfer lineage. Otherwise
-   leave the raw text with the `harness` origin, so a review deleted by retention still reads as
-   Mission Control's. A turn with a marker but no bound row is left exactly as it would be today.
+   leave the raw text with the `harness` origin, so a review that no longer resolves still reads
+   as Mission Control's. A turn with a marker but no bound row is left exactly as it would be today.
    Do not consult the flag.
 5. **Goal reader.** In `Registry.captureHookGoalPrompt`, account for delivery echoes by count, in
    the existing order: owed daemon echoes are checked before an operator follow-up's echo ticket
@@ -116,16 +120,20 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
 - With the flag off, no marker is written for call-mode late answers or snooze instructions.
   Marked turns already in a conversation still render as cards.
 - An old MCP child is unaffected; the daemon writes the marker.
-- A review deleted by retention makes its turn fall back to raw text, still bylined Mission
-  Control through the bound delivery. Once the delivery row itself is pruned by retention, the
-  turn reads as it did before this phase.
+- No retention deletes reviews today. A review that no longer resolves (for example after a
+  database restore) makes its turn fall back to raw text, still bylined Mission Control through
+  the bound delivery. Bound delivery rows are never pruned by age, so an old conversation keeps
+  its cards; only expired unbound rows are pruned.
 - The new table is additive and created idempotently; an older database gains it on open.
 
 ## 7. Tests and verification
 
 - Unit: format and parse round trip; coalesced ids; malformed, partial, non-ASCII and
   non-first-line markers rejected, including a marker after a leading blank line; a bound turn
-  whose reviews were deleted keeps `origin: harness` and no presentation, after a restart too; writer output for message-mode, call-mode-with-flag,
+  whose reviews no longer resolve keeps `origin: harness` and no presentation, after a restart
+  too; a bound row survives the prune tick, and an old conversation reopened after the prune age
+  still shows its cards; an unbound row past `DELIVERY_LAG_MS` binds nothing and is pruned; after
+  a dropped or altered delivery, an operator's later Mission Control copy stays an operator turn; writer output for message-mode, call-mode-with-flag,
   call-mode-without-flag and snooze rows; a fold rewrites the line with every id; a delivery
   reserves exactly one row before the send, with the offset read before the send, and it binds to
   exactly one turn, including a turn that lands before delivery is confirmed; a refused delivery
@@ -182,5 +190,9 @@ about a review. Retiring the flag makes the writer unconditional; it must not ch
 - Plan pull request review (#1612, revision 6): the marker is valid only as the literal first
   line, in both the grammar and the tests, and a bound delivery keeps its `harness` origin when
   its reviews are deleted.
+- Plan pull request review (#1612, revision 7): bound rows are exempt from age pruning so old
+  conversations keep their cards; unbound rows bind only inside the delivery window, then expire
+  and are pruned; a later Mission Control send contests an unbound row. The assumption that
+  reviews are deleted by retention was removed.
 - Final audit: owns every requirement of the source plan, sections 1 to 5, and all three adopted
   decisions.

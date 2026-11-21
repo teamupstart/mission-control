@@ -723,6 +723,10 @@ export const DetachReviewWaitSchema = z.object({
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
 });
+export const ListOpenQuestionsSchema = DetachReviewWaitSchema;
+export const WithdrawQuestionSchema = DetachReviewWaitSchema.extend({
+  reason: z.string().trim().min(1).max(2000),
+});
 export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
 
 // ---- public product issue reporting --------------------------------------------------
@@ -6305,6 +6309,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     branch: z.string().min(1).max(400).nullable(),
     expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    mergedContentTreeOid: CommitOidSchema.nullable().optional(),
     observedAt: z.number().int(),
   }),
 ]);
@@ -7531,6 +7536,13 @@ export const WorkflowInspectorGateStateSchema = z.object({
   findingFingerprints: z
     .array(z.string().min(1).max(200))
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
+  // Gate CAS compares serialized state; append new optional fields in writer order.
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
 });
 
 /**

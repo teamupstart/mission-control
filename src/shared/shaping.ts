@@ -970,10 +970,39 @@ export interface UnsupportedShaperView {
   label: string;
   /** Why, naming the failing field and never a stored value. */
   unsupported: string;
+  /**
+   * Present, and true, only when an import under this id replaces the entry: the daemon's own
+   * upsert rule, which accepts a replacement for an entry it emptied a literal credential in and
+   * refuses one for any other entry this build cannot run.
+   */
+  replaceable?: true;
 }
 
 /** The config as it leaves the daemon: the HTTP reply, and Phase 3's snapshot field and event. */
-export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Array<Shaper | UnsupportedShaperView> };
+export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
+  shapers: Array<Shaper | UnsupportedShaperView>;
+  /**
+   * Each registered id's revision, derived by the daemon's keyed `ShapingReviser` from every definition stored
+   * under it. A window sends it back as `expect` with an intent that acts on a shaper it showed.
+   * Opaque to the browser: two stored definitions that look the same in the view - an unsupported
+   * entry's id, label and reason, say - still have different revisions.
+   */
+  revisions: Record<string, string>;
+  /**
+   * The daemon process that published this view, random per process. A window sends it back with
+   * each write (`SHAPING_WRITE_ORDER_HEADER`), so a write made against a daemon that has since
+   * restarted, whose ordering it no longer holds, is refused rather than applied out of order.
+   * Absent from a view a daemon older than it sends.
+   */
+  instance?: string;
+  /**
+   * The commit of the daemon process `instance` names that this view shows: it grows with every
+   * commit that changes the view, by any writer. A write's answer carries the commit it made, so
+   * a window can tell when the event stream has reached it, or gone past it. Absent from a view a
+   * daemon older than it sends.
+   */
+  commit?: number;
+};
 
 /**
  * The config view: known shapers in full, and each unsupported entry reduced to its id, label
@@ -983,43 +1012,71 @@ export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Arra
  */
 export function shapingConfigView(
   config: ShapingConfig,
+  revise: ShapingReviser,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
+  const classified = classifyShapers(config, definitions);
+  // One revision per id, over every entry stored under it: the first owns the id and a repeat has
+  // no row of its own to act on, but removing the owner removes the repeats too. Grouped in a
+  // Map, never by probing a plain object: an id such as `constructor` would find the object's
+  // inherited property.
+  const groups = new Map<string, StoredShaper[]>();
+  for (const entry of classified) {
+    const group = groups.get(entry.stored.id);
+    if (group) group.push(entry.stored);
+    else groups.set(entry.stored.id, [entry.stored]);
+  }
+  const owned = new Map([...groups].map(([id, entries]) => [id, revise(entries)] as const));
   return {
     ...config,
-    shapers: classifyShapers(config, definitions).map((entry) => entry.kind === "known"
+    shapers: classified.map((entry) => entry.kind === "known"
       ? entry.shaper
-      : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
+      : {
+        id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason,
+        // The upsert rule is the owning entry's: an import under an id replaces the first stored
+        // entry with it, so only that one may say it is replaceable, never a repeat behind it.
+        ...(groups.get(entry.stored.id)![0] === entry.stored && credentialsWereRemoved(entry.stored)
+          ? { replaceable: true as const } : {}),
+      }),
+    revisions: Object.fromEntries(owned),
   };
 }
 
 /**
- * A short, stable revision of one entry exactly as the config view shows it: FNV-1a (64-bit)
- * over its canonical JSON. A window sends it with an intent that acts on a shaper it showed, and
- * the daemon refuses the intent when the stored entry no longer has that revision, so a click
- * can never act on a replacement another window wrote in the meantime. Browser-safe and
- * synchronous; it identifies a definition, it does not protect one, so it is not a security hash.
+ * The revision a config view reports for `id`, or null when it reports none. Only an own,
+ * string-valued entry counts, so an id that names an inherited property, such as `constructor`,
+ * never reads a function that JSON would drop from the intent that carries it.
  */
-export function shapingEntryRevision(entry: Shaper | UnsupportedShaperView): string {
-  const text = canonicalJson(entry);
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
-  for (let at = 0; at < text.length; at++) {
-    hash ^= BigInt(text.charCodeAt(at));
-    hash = (hash * prime) & mask;
-  }
-  return hash.toString(16).padStart(16, "0");
+export function shapingViewRevision(view: { readonly revisions?: unknown }, id: string): string | null {
+  if (!shapingViewHasRevisions(view) || !Object.hasOwn(view.revisions, id)) return null;
+  const revision: unknown = view.revisions[id];
+  return typeof revision === "string" ? revision : null;
 }
 
-/** The revision of the registered entry with this id, as the view shows it, or null when none is stored. */
-export function registeredShaperRevision(
-  config: ShapingConfig,
-  id: string,
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
-): string | null {
-  const entry = shapingConfigView(config, definitions).shapers.find((candidate) => candidate.id === id);
-  return entry ? shapingEntryRevision(entry) : null;
+/**
+ * Whether a view carries the daemon's revision map. An open dashboard can meet one that does not:
+ * a daemon rolled back to a build older than the dashboard sends its view without one. Every
+ * reader asks this first, and an action bound to a revision is unavailable until one arrives.
+ */
+export function shapingViewHasRevisions(view: { readonly revisions?: unknown }): view is { revisions: Record<string, unknown> } {
+  const map = view.revisions;
+  return typeof map === "object" && map !== null && !Array.isArray(map);
+}
+
+/**
+ * Derives the revision of everything stored under one id, given those entries in stored order.
+ * Only the daemon holds one (`src/server/shaping/revisions.ts`): it is keyed with a secret of the
+ * daemon's, so a revision published in the view can be compared but never recomputed, and so
+ * cannot confirm a guess at a field the view hides. Any change to what is stored under the id -
+ * a field the view never shows, or a repeat - changes it. The daemon refuses an intent whose
+ * `expect` no longer matches, so a click never acts on a replacement written meanwhile.
+ */
+export type ShapingReviser = (entries: readonly StoredShaper[]) => string;
+
+/** The revision of every stored entry with this id, or null when none is stored. */
+export function registeredShaperRevision(config: ShapingConfig, id: string, revise: ShapingReviser): string | null {
+  const entries = config.shapers.filter((stored) => stored.id === id);
+  return entries.length > 0 ? revise(entries) : null;
 }
 
 /** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
@@ -1144,14 +1201,14 @@ export interface ShapingReply {
 // ---------------------------------------------------------------------------------------------
 // Intents
 
-/** A `shapingEntryRevision`: 16 lowercase hex digits. */
+/** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
   /**
-   * `expect`, when sent, is the `shapingEntryRevision` of the registered entry the sender showed.
+   * `expect`, when sent, is the revision the config view reported for the registered entry the sender showed.
    * The intent is refused if the stored entry has changed since, so it never removes or switches
    * a replacement written meanwhile.
    */
@@ -1161,8 +1218,21 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
    * the order as it is stored when the intent arrives, so moves from two windows compose.
+   * Unbound: kept for a client that sends no revision.
    */
   z.object({ kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable() }),
+  /**
+   * A move bound to the definition the sender showed, which the dashboard sends: once that is
+   * replaced, even into another stage, it is refused rather than placing the replacement. A kind
+   * of its own, never an `expect` added to `move`: a daemon older than this kind strips a field
+   * it does not know and would apply the move by id alone, but refuses a kind it does not know,
+   * so a placement in flight across a rollback is refused there instead of reordering a
+   * replacement the operator never saw.
+   */
+  z.object({
+    kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
+    expect: ShapingRevisionSchema,
+  }),
   z.object({
     kind: z.literal("settings"),
     caller: partialPatch(ShapingCallerObjectSchema).optional(),
@@ -1194,16 +1264,25 @@ export function applyShapingIntent(
   config: ShapingConfig,
   intent: ShapingIntent,
   discovered: readonly DiscoveredShaper[] = [],
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
+  options: {
+    /** The daemon's reviser. Required for an intent that carries `expect`. */
+    revise?: ShapingReviser;
+    definitions?: ShapingDefinitions;
+  } = {},
 ): ShapingIntentResult {
+  const { revise, definitions = SHAPING_DEFINITIONS } = options;
   const refuse = (error: ShapingIntentError, reason: string): ShapingIntentResult => ({ ok: false, error, reason });
   const shapers = [...config.shapers];
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
   /** Whether the registered entry differs from the revision the sender showed. */
-  const stale = (id: string, expect: string | undefined): boolean =>
-    expect !== undefined && registeredShaperRevision(config, id, definitions) !== expect;
+  const stale = (id: string, expect: string | undefined): boolean => {
+    if (expect === undefined) return false;
+    // A programming error, never an operator's: a revision is only ever checked by the daemon.
+    if (!revise) throw new Error("A revision-bound shaping intent needs the daemon's reviser.");
+    return registeredShaperRevision(config, id, revise) !== expect;
+  };
   const changed = (id: string): ShapingIntentResult => refuse("shaper_changed",
     `"${id}" changed in another window since it was shown here, so nothing was done. Review it again first.`);
   /** Choices for ids that no longer exist make room before a live one is stored. */
@@ -1255,7 +1334,11 @@ export function applyShapingIntent(
       }
       break;
     }
-    case "move": {
+    case "move":
+    case "place": {
+      // A placement checks the definition it was sent for first: one replaced since, even by an
+      // entry this build cannot run, is "changed", which tells the sender to review it.
+      if (intent.kind === "place" && index(intent.id) !== -1 && stale(intent.id, intent.expect)) return changed(intent.id);
       const known = classifyShapers(config, definitions).flatMap((entry, position) => entry.kind === "known"
         ? [{ id: entry.shaper.id, stage: entry.shaper.stage, position }] : []);
       const moved = known.find((entry) => entry.id === intent.id);
@@ -1946,7 +2029,7 @@ export function composeShapingSection(
 /** `POST /api/shaping/test`: run one shaper against a repository, as dispatch would. */
 export const ShapingTestRequestSchema = z.object({
   id: z.string().min(1).max(64),
-  /** The `shapingEntryRevision` the sender showed; the dry run is refused if the entry has changed. */
+  /** The revision the config view reported to the sender; the dry run is refused if the entry has changed. */
   expect: ShapingRevisionSchema.optional(),
   /** An absolute path to a local repository checkout. */
   repository: z.string().min(1).max(4096).refine((value) => value.startsWith("/"), { message: "The repository is an absolute path." }),
@@ -1954,3 +2037,22 @@ export const ShapingTestRequestSchema = z.object({
   kind: z.string().min(1).max(64).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
+
+/**
+ * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.
+ * The tab's id, kept across its reloads and copied by its duplicates, the write's number, the
+ * comma-separated controls it affects, and the daemon instance whose view the tab last read. The
+ * sequence is the time the write was sent, in microseconds since the epoch, raised past the last
+ * one the tab sent. The daemon refuses a write, as it is about to apply, once a later write from the
+ * same tab was applied to one of those controls, or once a record it dropped held a later sequence
+ * (`src/server/shaping/write-order.ts`).
+ */
+export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
+
+/** How long the daemon keeps its record of each applied shaping write, after it last applied. */
+export const SHAPING_WRITE_WINDOW_MS = 10 * 60_000;
+
+/** The value of `SHAPING_WRITE_ORDER_HEADER` for one write. */
+export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[], instance?: string): string {
+  return `${window} ${sequence} ${controls.join(",")}${instance ? ` ${instance}` : ""}`;
+}

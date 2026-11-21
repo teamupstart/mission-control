@@ -3075,6 +3075,27 @@ of waiting inside the call:
 - Every new question alerts. The title says whether the agent **has a question, still working**
   or **needs your answer**.
 
+Each answer restates the full question and context, the agent's `meanwhile` plan, and the elapsed
+time since the ask. It tells the agent to reconcile its work and resume anything interrupted;
+a dismissal tells it to keep its provisional choice. Message-mode answers for the same
+conversation coalesce into one message only at the unclaimed answer tail of the queue, without
+passing an intervening message. Claimed deliveries keep their original text, and call-mode
+answers keep their existing delivery behavior.
+
+With the flag on, a session may have at most ten open `request_input` questions in either wait
+mode, including snoozed ones. Existing questions above the limit are retained, but new asks
+cannot grow the set. With the flag off, call-mode asks keep their previous behavior. An exact
+duplicate reattaches to the existing question even at the limit: message mode returns its
+receipt, while call mode waits on that question through the existing call path. A new ask beyond
+the limit returns an error with the open titles and tells the agent to work on what it can or
+end its turn.
+With the flag on, `list_open_questions` lists the caller's pending and snoozed `request_input`
+questions in either wait mode, including id, title, asked time and `meanwhile`.
+`withdraw_question(id, reason)` settles the caller's own open message-mode question as
+`withdrawn`, records the reason, and sends no answer. It releases that question's completion
+hold. Questions belonging to other sessions and call-mode questions cannot be withdrawn.
+The receipt names the question id and both tools; listing is for housekeeping, not polling.
+
 The daemon decides how each ask waits and says so in its response. A question is filed this way
 only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
 a receipt, and the session can receive a message. Everything else waits inside the call as

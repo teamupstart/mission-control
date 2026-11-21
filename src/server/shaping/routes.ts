@@ -1,19 +1,36 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
-import type { Hono } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
+import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
 import { currentShaping, registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
 import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
+import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
 import { taskShapingForReads } from "./reads.ts";
+import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
+import {
+  dropShapingWriteRecords,
+  EARLIER_INSTANCE_REFUSAL,
+  expiredWriteRefusal,
+  noteShapingWriteApplied,
+  readShapingWriteOrder,
+  SEQUENCE_TOO_FAR_AHEAD_REFUSAL,
+  SHAPING_WRITE_ORDER_HEADER,
+  shapingWriteExpired,
+  shapingWriteFromEarlierInstance,
+  shapingWriteSuperseded,
+  shapingWriteTooFarAhead,
+  SUPERSEDED_WRITE_REFUSAL,
+  UNREADABLE_ORDER_REFUSAL,
+} from "./write-order.ts";
 import { referenceStatus } from "./references.ts";
 
 /**
@@ -84,6 +101,12 @@ export function registerShapingRoutes(
   options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined } = {},
 ): void {
   const gate = requireFeature("task-shaping");
+  // Both writes are refused unless they come from the dashboard, as a dry run executes a shaper.
+  // Before the body limit, so a forged request is refused as forbidden whatever its size.
+  const loopbackWrite: MiddlewareHandler = async (c, next) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    await next();
+  };
 
   app.get("/api/tasks/:id/shaping", gate, (c) => {
     const task = options.taskById?.(c.req.param("id"));
@@ -99,26 +122,46 @@ export function registerShapingRoutes(
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
-    return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
+    return c.json({ config: daemonShapingView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
-  app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
+  app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingIntentSchema);
     if (!parsed.ok) return parsed.res;
+    const intent = parsed.data;
+    if ("expect" in intent && intent.expect !== undefined) {
+      const config = getShapingConfig();
+      if (registeredShaperRevision(config, intent.id, shapingReviser) !== intent.expect
+        && !issuedByThisDaemon(intent.expect)) return c.json(UNISSUED_REVISION_REFUSAL, 409);
+    }
+    const header = c.req.header(SHAPING_WRITE_ORDER_HEADER);
+    const order = readShapingWriteOrder(header);
+    // Sent but unreadable is refused, never taken for a write with no order: that one would skip
+    // every ordering check, and could overwrite a newer edit if it arrives late.
+    if (header !== undefined && order === null) return c.json(UNREADABLE_ORDER_REFUSAL, 400);
+    if (order && shapingWriteTooFarAhead(order)) return c.json(SEQUENCE_TOO_FAR_AHEAD_REFUSAL, 400);
     try {
-      const result = applyShapingIntent(parsed.data, await discoverShapers());
+      const discovered = await discoverShapers();
+      // Checked here, as the write is about to apply and after every wait: a write that waited for
+      // discovery while its window gave up on it and sent a newer one never overwrites that one.
+      if (order) dropShapingWriteRecords();
+      if (order && shapingWriteFromEarlierInstance(order)) return c.json(EARLIER_INSTANCE_REFUSAL, 409);
+      if (order && shapingWriteExpired(order)) return c.json(expiredWriteRefusal(), 409);
+      if (order && shapingWriteSuperseded(order)) return c.json(SUPERSEDED_WRITE_REFUSAL, 409);
+      const result = applyShapingIntent(parsed.data, discovered);
+      if (result.ok && order) noteShapingWriteApplied(order);
       if (!result.ok) {
         // 409 when the request is sound but the stored config has moved on under it.
         const conflict = result.error === "unreadable_config" || result.error === "shaper_changed";
         return c.json({ error: result.error, reason: result.reason }, conflict ? 409 : 400);
       }
-      return c.json({ config: shapingConfigView(result.config) });
+      return c.json({ config: daemonShapingView(result.config) });
     } catch (error) {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
     }
   });
 
-  app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
+  app.post("/api/shaping/test", gate, loopbackWrite, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind, expect } = parsed.data;
@@ -128,7 +171,8 @@ export function registerShapingRoutes(
     const config = getShapingConfig();
     // Bound to the definition the sender showed: a replacement written meanwhile is never run
     // under the name of the shaper the operator chose.
-    if (expect !== undefined && registeredShaperRevision(config, id) !== expect) {
+    if (expect !== undefined && registeredShaperRevision(config, id, shapingReviser) !== expect) {
+      if (!issuedByThisDaemon(expect)) return c.json(UNISSUED_REVISION_REFUSAL, 409);
       return c.json({
         error: "shaper_changed",
         reason: `"${id}" changed in another window since it was shown here, so it was not run. Review it again first.`,

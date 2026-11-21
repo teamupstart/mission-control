@@ -1068,6 +1068,40 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "list_open_questions",
+  {
+    title: "List your open questions",
+    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "withdraw_question",
+  {
+    title: "Withdraw your question",
+    description: "Withdraw one of your own open message-mode questions that you no longer need, with a reason. Requires async-input. Cannot withdraw another session's question or a question whose tool call waits for an answer. No answer message is sent.",
+    inputSchema: { id: z.string().min(1), reason: z.string().trim().min(1).max(2000) },
+  },
+  async ({ id, reason }) => {
+    try {
+      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // The MCP entry point uses the dashboard's report contract and daemon service.
 const productIssueTransport = {
   requestId: randomUUID,

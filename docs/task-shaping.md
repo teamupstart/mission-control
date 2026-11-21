@@ -347,7 +347,7 @@ arrives after it is still shown. When a newer write went out before that refusal
 refusal names the earlier action, so it never reads as the outcome of the change just made. A
 later write that succeeds under the same control clears an earlier write's refusal there. When
 both are refused, the newer write's reason stays the control's refusal and a late one is listed
-apart from it, under **Earlier refusals**. A refusal belongs to its control: a write under another
+apart from it, under **Earlier outcomes**. A refusal belongs to its control: a write under another
 control leaves it in place, and acting on the same control again dismisses it. A write whose
 answer never arrives, because it timed out or the connection failed, is reported as unconfirmed,
 never as refused, and never as saved: only the daemon's answer ties an outcome to a request,

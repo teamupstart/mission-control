@@ -745,7 +745,8 @@ test("a repeated id is listed without controls, and an id like constructor still
   await page.getByRole("button", { name: "Confirm removing Twin notes" }).click();
   await expect(owner).toHaveCount(0);
   await expect(copy).toHaveCount(0);
-  expect((await shapingConfig(daemon)).shapers).toEqual([]);
+  // The rows go with the drawn removal, before the daemon stores it: read storage until it has.
+  await expect.poll(async () => (await shapingConfig(daemon)).shapers).toEqual([]);
 });
 
 // A save sends only what this window typed. With an unsaved identity edit open here, the peer
@@ -1096,7 +1097,7 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
 
   const changed = "\"both-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.";
   const alert = row(page, "Both notes").getByRole("alert");
-  const earlier = row(page, "Both notes").getByRole("list", { name: "Earlier refusals" });
+  const earlier = row(page, "Both notes").getByRole("list", { name: "Earlier outcomes" });
   // A polite live region is already there, empty, before any late refusal arrives in it.
   const live = row(page, "Both notes").locator("[aria-live=polite]");
   await expect(live).toHaveCount(1);
@@ -1108,7 +1109,7 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
   expect((await (await first).response())?.status()).toBe(409);
   // The latest action's reason stays the row's refusal; the late one is listed apart from it.
   await expect(earlier).toHaveText(`An earlier change, switching both-notes on, was refused: ${changed}`);
-  await expect(live.getByRole("list", { name: "Earlier refusals" })).toHaveCount(1);
+  await expect(live.getByRole("list", { name: "Earlier outcomes" })).toHaveCount(1);
   await expect(alert).toHaveText(changed);
   await page.unroute("**/api/shaping");
 });
@@ -1473,7 +1474,7 @@ test("a reopened import dialog shows an earlier save's refusal that arrives afte
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   answers[0]!.open();
-  await expect(dialog.getByRole("list", { name: "Earlier refusals" }))
+  await expect(dialog.getByRole("list", { name: "Earlier outcomes" }))
     .toHaveText("An earlier change, importing twin-saves, was refused: Save 1 was refused.");
   await expect(dialog.getByRole("alert")).toHaveText("Save 2 was refused.");
   await page.unroute("**/api/shaping");

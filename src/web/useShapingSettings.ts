@@ -158,7 +158,7 @@ export function useShapingSettings(
     pendingKey: pending?.key ?? null,
     /** Each control's newest refusal: the reason its latest refused action failed. */
     errors: Object.fromEntries(Object.entries(refusals).map(([key, list]) => [key, list[0]!.message])),
-    /** Older refusals under each control, newest first, that arrived after a newer write went out. */
+    /** Older outcomes under each control, newest first: refusals, and writes whose answer was lost. */
     earlier: Object.fromEntries(Object.entries(refusals).filter(([, list]) => list.length > 1)
       .map(([key, list]) => [key, list.slice(1).map((refusal) => refusal.message)])),
     /**

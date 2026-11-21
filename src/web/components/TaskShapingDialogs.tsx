@@ -59,16 +59,18 @@ export function ShaperReview({ shaper }: { shaper: Shaper }): React.JSX.Element 
 }
 
 /**
- * Refusals of earlier writes under one control that arrived after a newer write went out. They
- * are listed apart from the control's current refusal, which stays the reason its latest action
- * failed. The polite live region is always present, so a refusal that arrives while the current
- * one is unchanged is still announced: a region inserted together with its content often is not.
+ * Outcomes of earlier writes under one control that arrived after a newer write went out: a
+ * refusal, or a write whose answer was lost and which the daemon may have stored, so the list is
+ * named for outcomes, not refusals. They are listed apart from the control's current outcome,
+ * which stays the result of its latest action. The polite live region is always present, so one
+ * that arrives while the current one is unchanged is still announced: a region inserted together
+ * with its content often is not.
  */
-export function EarlierRefusals({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element {
+export function EarlierOutcomes({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element {
   return (
     <div className="shaping-earlier-live" aria-live="polite">
       {messages && messages.length > 0 && (
-        <ul className="shaping-earlier-refusals" aria-label="Earlier refusals">
+        <ul className="shaping-earlier-outcomes" aria-label="Earlier outcomes">
           {messages.map((message, at) => <li key={at}>{message}</li>)}
         </ul>
       )}
@@ -193,7 +195,7 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, fres
           </>
         )}
         {(saved || fresh) && error && <p role="alert" className="shaping-refusal">{error}</p>}
-        <EarlierRefusals messages={saved || fresh ? earlier : undefined} />
+        <EarlierOutcomes messages={saved || fresh ? earlier : undefined} />
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without saving anything">

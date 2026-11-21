@@ -8,7 +8,7 @@ import {
   type ShapingListGroup,
   type ShapingListRow,
 } from "../lib/shaping-settings.ts";
-import { EarlierRefusals, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
+import { EarlierOutcomes, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported", { title: string; hint: string }> = {
@@ -45,7 +45,7 @@ export function TaskShapingView({
   references?: ShapingReferenceStatus;
   pending?: ShapingIntent | null;
   errors?: Record<string, string>;
-  /** Older refusals under each control, newest first, kept apart from its current one. */
+  /** Older outcomes under each control, newest first, kept apart from its current one. */
   earlier?: Record<string, string[]>;
   /** When each control's latest outcome arrived, in arrival order. */
   outcomeArrivals?: Record<string, number>;
@@ -149,7 +149,7 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
-          <EarlierRefusals messages={earlier[key]} />
+          <EarlierOutcomes messages={earlier[key]} />
           {entry.repeats > 0 && (
             <p className="shaping-row-note">
               {entry.repeats === 1
@@ -259,7 +259,7 @@ export function TaskShapingView({
               <div key={key} className="shaping-orphan-outcome">
                 <div className="shaping-orphan-copy">
                   {errors[key] && <p role="alert">{errors[key]}</p>}
-                  <EarlierRefusals messages={earlier[key]} />
+                  <EarlierOutcomes messages={earlier[key]} />
                 </div>
                 {onDismiss && <DismissOutcome label={key.slice("row:".length)} onDismiss={() => onDismiss(key)} />}
               </div>
@@ -271,7 +271,7 @@ export function TaskShapingView({
             <div className="shaping-orphan-outcome">
               <div className="shaping-orphan-copy">
                 {errors.import && <p role="alert">{errors.import}</p>}
-                <EarlierRefusals messages={earlier.import} />
+                <EarlierOutcomes messages={earlier.import} />
               </div>
               {onDismiss && <DismissOutcome label="the last import" onDismiss={() => onDismiss("import")} />}
             </div>
@@ -459,7 +459,7 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
         </div>
       </div>
       {error && <p role="alert">{error}</p>}
-      <EarlierRefusals messages={earlier} />
+      <EarlierOutcomes messages={earlier} />
       <div className="shaping-settings-actions">
         <Tooltip label="Put back the saved values">
           <button type="button" className="btn btn-ghost" disabled={!edited || busy} onClick={() => setDraft({})}>Reset</button>

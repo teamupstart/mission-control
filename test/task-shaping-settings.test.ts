@@ -529,10 +529,10 @@ test("a row and the settings form show their current refusal, with older ones li
     onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
     repositories: async () => [],
   }));
-  assert.match(html, /<p role="alert">The latest reason\.<\/p><div class="shaping-earlier-live" aria-live="polite"><ul class="shaping-earlier-refusals" aria-label="Earlier refusals"><li>An earlier change, switching a on, was refused: The older reason\.<\/li><\/ul>/);
-  assert.match(html, /<p role="alert">The settings reason\.<\/p><div class="shaping-earlier-live" aria-live="polite"><ul class="shaping-earlier-refusals" aria-label="Earlier refusals"><li>An earlier change, saving the caller identity and budgets, was refused: Older\.<\/li><\/ul>/);
+  assert.match(html, /<p role="alert">The latest reason\.<\/p><div class="shaping-earlier-live" aria-live="polite"><ul class="shaping-earlier-outcomes" aria-label="Earlier outcomes"><li>An earlier change, switching a on, was refused: The older reason\.<\/li><\/ul>/);
+  assert.match(html, /<p role="alert">The settings reason\.<\/p><div class="shaping-earlier-live" aria-live="polite"><ul class="shaping-earlier-outcomes" aria-label="Earlier outcomes"><li>An earlier change, saving the caller identity and budgets, was refused: Older\.<\/li><\/ul>/);
   // Nothing is drawn where there is no older refusal.
-  assert.equal(/Earlier refusals/.test(render(view({ shapers: [gatherer("a")] }))), false);
+  assert.equal(/Earlier outcomes/.test(render(view({ shapers: [gatherer("a")] }))), false);
 });
 
 test("an enable bound to a revision is reflected only by the definition it was sent for", () => {

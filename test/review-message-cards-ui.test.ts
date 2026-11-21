@@ -180,18 +180,35 @@ test("the review history read always resolves, keeps what arrived, and is comple
   const { loadReviewHistory } = await import("../src/web/lib/timelineReviews.ts");
   const own = [review(A)];
   const inherited = [review(B, { sessionId: "predecessor" })];
+  const ok = (value: ReviewItem[]) => async () => ({ ok: true as const, value });
+  const transient = async () => ({ ok: false as const, definite: false });
+  const definite = async () => ({ ok: false as const, definite: true });
   const reject = () => Promise.reject(new Error("network down"));
   // A failed lineage read cannot hide the session's own answers, but it does not settle either.
-  assert.deepEqual(await loadReviewHistory("s", { own: async () => own, lineage: reject }), { stored: own, lineage: [], complete: false });
+  assert.deepEqual(await loadReviewHistory("s", { own: ok(own), lineage: reject }), { stored: own, lineage: [], complete: false });
   // Nor the other way round.
-  assert.deepEqual(await loadReviewHistory("s", { own: reject, lineage: async () => inherited }), { stored: [], lineage: inherited, complete: false });
-  // A non-OK response (null) is a failure too, never an empty history.
-  assert.deepEqual(await loadReviewHistory("s", { own: async () => null, lineage: async () => [] }), { stored: [], lineage: [], complete: false });
+  assert.deepEqual(await loadReviewHistory("s", { own: reject, lineage: ok(inherited) }), { stored: [], lineage: inherited, complete: false });
+  // A 5xx or network failure is transient: never an empty history.
+  assert.deepEqual(await loadReviewHistory("s", { own: transient, lineage: ok([]) }), { stored: [], lineage: [], complete: false });
+  // A 4xx is a definite answer (a session the daemon no longer holds): complete, with nothing in it.
+  assert.deepEqual(await loadReviewHistory("s", { own: definite, lineage: definite }), { stored: [], lineage: [], complete: true });
   // Both answered, even with nothing in them: complete, so a missing review really is gone.
-  assert.deepEqual(await loadReviewHistory("s", { own: async () => [], lineage: async () => [] }), { stored: [], lineage: [], complete: true });
+  assert.deepEqual(await loadReviewHistory("s", { own: ok([]), lineage: ok([]) }), { stored: [], lineage: [], complete: true });
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: true })), ["delivered:1b0c@d"]);
   // Not complete, the history stays unloaded and the card stays loading.
   assert.deepEqual(shape(rows([delivered("d", 3_000, [A])], [], [], { loaded: false })), ["delivered:1b0c@d:loading"]);
+});
+
+test("a review-history read that keeps failing backs off and stops, so it neither polls for good nor loads for good", async () => {
+  const { historyRetryDelay } = await import("../src/web/lib/timelineReviews.ts");
+  const waits: number[] = [];
+  for (let attempt = 0; ; attempt++) {
+    const wait = historyRetryDelay(attempt);
+    if (wait === null) break;
+    waits.push(wait);
+    assert.ok(attempt < 50, "the schedule ends");
+  }
+  assert.deepEqual(waits, [5_000, 10_000, 20_000, 40_000, 60_000, 60_000], "doubling from 5 s, capped at 60 s, six retries");
 });
 
 test("a disabled review-history hook counts as settled, so a delivered card never stays on loading", async () => {

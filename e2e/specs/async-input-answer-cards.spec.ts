@@ -357,6 +357,38 @@ test("a failed review-history read keeps a delivered answer loading, never gone,
   await page.unroute("**/resolved-reviews*");
 });
 
+test("a review-history read the daemon refuses outright settles at once, and is not retried", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  await enableAsyncInput(daemon);
+  const session = await dispatch(daemon, "Add a linter to CI", "add a linter to CI", "idle");
+  const filed = await ask(daemon, session.cwd!, LINTER);
+  await api(daemon, `/api/reviews/${filed.id}/resolve`, { action: "answer", response: "eslint", selections: [{ decisionId: "q", selected: ["o1"] }] });
+  const before = await openSession(page, session);
+  await expect(answerCard(before, LINTER)).toHaveCount(1, { timeout: 30_000 });
+
+  await page.goto("about:blank");
+  await daemon.shutdown();
+  await daemon.restart();
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.state,
+    { timeout: 60_000 }).toBe("idle");
+  // A 4xx is the daemon's definite answer: asking again would not change it.
+  let ownReads = 0;
+  await page.route("**/resolved-reviews*", async (route) => {
+    if (route.request().url().includes("lineage")) return route.continue();
+    ownReads += 1;
+    await route.fulfill({ status: 404, body: '{"error":"no such session"}' });
+  });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const detail = await openSession(page, session);
+  await expect(replyTo(detail, filed.id).first()).toBeVisible({ timeout: 30_000 });
+  await expect(detail.getByRole("note", { name: "Answer to a question no longer available" })).toBeVisible({ timeout: 15_000 });
+  await expect(detail.getByRole("note", { name: "Answer loading" })).toHaveCount(0);
+  const reads = ownReads;
+  await page.waitForTimeout(6_000); // past the first retry delay
+  expect(ownReads, "a refused read is not retried").toBe(reads);
+  await page.unroute("**/resolved-reviews*");
+});
+
 test("Remind me later with a provisional option draws the snoozed line, not raw instructions", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);
   await enableAsyncInput(daemon);

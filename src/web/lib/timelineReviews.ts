@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReviewItem } from "@shared/types.ts";
 import { isConversationQuestionRecord, isConversationResolvedReview } from "@shared/review-item.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
-import { api } from "./api.ts";
+import { api, type JsonRead } from "./api.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 
 /**
@@ -49,6 +49,7 @@ export function useTimelineReviews(
     setSettledFor(null);
     if (!enabled) return;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
     const load = (): void => {
       void loadReviewHistory(sessionId).then(({ stored: rows, lineage: inherited, complete }) => {
         // Guarded against the session switching mid-flight: without this, a slow response for
@@ -56,12 +57,14 @@ export function useTimelineReviews(
         // its answers would read as this session's.
         if (!alive) return;
         // Whatever arrived is shown at once, so a failed lineage read never hides this session's
-        // own answers. Only a complete read settles the history, though: a failed one is not
-        // evidence that a question is gone, so the cards stay loading and the read is retried.
+        // own answers. Only a complete read settles the history, though: a transient failure is
+        // not evidence that a question is gone, so the cards stay loading and the read is retried,
+        // backing off, for a bounded number of attempts before the history is settled anyway.
         setStored(rows);
         setLineage(inherited);
-        if (complete) setSettledFor(sessionId);
-        else retry = setTimeout(load, HISTORY_RETRY_MS);
+        const wait = complete ? null : historyRetryDelay(attempt++);
+        if (wait === null) setSettledFor(sessionId);
+        else retry = setTimeout(load, wait);
       });
     };
     load();
@@ -94,23 +97,41 @@ export function useTimelineReviews(
 export async function loadReviewHistory(
   sessionId: string,
   read: {
-    own: (id: string) => Promise<ReviewItem[] | null>;
-    lineage: (id: string) => Promise<ReviewItem[] | null>;
+    own: (id: string) => Promise<JsonRead<ReviewItem[]>>;
+    lineage: (id: string) => Promise<JsonRead<ReviewItem[]>>;
   } = { own: api.resolvedReviews, lineage: api.lineageReviews },
 ): Promise<{ stored: ReviewItem[]; lineage: ReviewItem[]; complete: boolean }> {
   const [own, inherited] = await Promise.allSettled([read.own(sessionId), read.lineage(sessionId)]);
-  const ownRows = own.status === "fulfilled" ? own.value : null;
-  const inheritedRows = inherited.status === "fulfilled" ? inherited.value : null;
+  const outcome = (r: PromiseSettledResult<JsonRead<ReviewItem[]>>): JsonRead<ReviewItem[]> =>
+    r.status === "fulfilled" ? r.value : { ok: false, definite: false };
+  const mine = outcome(own);
+  const theirs = outcome(inherited);
+  // A definite answer (a 4xx, such as a session the daemon no longer holds) is final: asking
+  // again will not change it, so it completes the read with nothing in it.
+  const answered = (r: JsonRead<ReviewItem[]>) => r.ok || r.definite;
   return {
-    stored: ownRows ?? [],
-    lineage: inheritedRows ?? [],
-    // Both reads answered: only then may a missing review be called gone.
-    complete: ownRows !== null && inheritedRows !== null,
+    stored: mine.ok ? mine.value : [],
+    lineage: theirs.ok ? theirs.value : [],
+    complete: answered(mine) && answered(theirs),
   };
 }
 
-/** How long a review-history read that failed waits before it is tried again. */
+/** The first retry's wait; each later one doubles, up to `HISTORY_RETRY_MAX_MS`. */
 export const HISTORY_RETRY_MS = 5_000;
+const HISTORY_RETRY_MAX_MS = 60_000;
+/** Retries before the history is settled with whatever it has. */
+const HISTORY_RETRY_LIMIT = 6;
+
+/**
+ * How long to wait before retry `attempt` (0-based) of a review-history read that failed
+ * transiently, or null once the attempts are spent and the history should settle as it is.
+ * Bounded so a read that keeps failing neither polls the daemon for as long as the panel is
+ * open nor leaves delivered answers on "Loading the question…" for good.
+ */
+export function historyRetryDelay(attempt: number): number | null {
+  if (attempt >= HISTORY_RETRY_LIMIT) return null;
+  return Math.min(HISTORY_RETRY_MS * 2 ** attempt, HISTORY_RETRY_MAX_MS);
+}
 
 /**
  * What `useTimelineReviews` hands the conversation. `reviews` are this session's entries.

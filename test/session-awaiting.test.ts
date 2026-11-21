@@ -592,6 +592,84 @@ test("a turn whose prompt arrives after it started is decided by that prompt, an
   assert.equal(clearedEvents(silent.syntheticId).at(-1)?.actor, "wake");
 });
 
+test("a re-declaration inside an undecided nudge turn still uses up that nudge, so the next real wake ends the wait", (t) => {
+  // A harness without prompt hooks: an automated nudge starts a turn nobody can attribute until
+  // it ends. The agent finds its background work still running and declares again in that turn.
+  // The turn must still use up the nudge that started it, or the session's next real wake is
+  // taken for that nudge and the wait stands until its deadline.
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const d = mkDiscovered({ agent: "codex" });
+  registry.applyDiscovery([d]);
+  let at = Date.now() - 60_000;
+  const read = (state: "idle" | "working") => {
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity: at += 1_000 });
+    registry.applyDiscovery([d]);
+  };
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!;
+  read("working");
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  read("idle");
+  reserveInjection(d.syntheticId, "Please wrap up and open the pull request.", "foreman");
+  read("working");
+  assert.equal(stored().undecidedTurn, true);
+
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(Date.now(), 30)).ok, true);
+  assert.equal(stored().undecidedTurn, true, "the re-declaration dropped the turn in flight");
+  assert.equal(stored().redeclaredInTurn, true);
+  read("idle");
+  assert.ok(registry.getAwaiting(d.syntheticId), "the re-declared wait ended at the nudge turn's end");
+  assert.deepEqual(stored().pendingNudges, [], "the nudge turn's end did not use up its nudge");
+  assert.equal(stored().redeclaredInTurn, false);
+
+  read("working");
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the next real wake was taken for the nudge");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("on a hook-instrumented session a re-declaration inside an undecided turn lets the turn be decided but never woken", (t) => {
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const stored = (d: DiscoveredSession) =>
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!;
+
+  // The late prompt is the delivery's: it is used up, as it would be without the re-declaration.
+  const late = working(registry);
+  assert.equal(registry.reportAwaiting(late.syntheticId, body()).ok, true);
+  hook(registry, late, "Stop");
+  reserveInjection(late.syntheticId, "Please wrap up and open the pull request.", "foreman");
+  hook(registry, late, "PreToolUse");
+  assert.equal(registry.reportAwaiting(late.syntheticId, body(Date.now(), 30)).ok, true);
+  hook(registry, late, "UserPromptSubmit", "Please wrap up and open the pull request.");
+  assert.deepEqual(stored(late).pendingNudges, [], "the late prompt did not use up its delivery after the re-declaration");
+  hook(registry, late, "Stop");
+  assert.ok(registry.getAwaiting(late.syntheticId));
+
+  // The late prompt is someone else's: the wake came and went inside the turn that re-declared,
+  // so the wait stands, and the delivery stays pending for its own turn.
+  const other = working(registry);
+  assert.equal(registry.reportAwaiting(other.syntheticId, body()).ok, true);
+  hook(registry, other, "Stop");
+  reserveInjection(other.syntheticId, "Round 2 repair packet", "workflow");
+  hook(registry, other, "PreToolUse");
+  assert.equal(registry.reportAwaiting(other.syntheticId, body(Date.now(), 30)).ok, true);
+  hook(registry, other, "UserPromptSubmit", "Check the build log for me.");
+  assert.ok(registry.getAwaiting(other.syntheticId), "a turn that re-declared the wait ended it on its late prompt");
+  assert.equal(stored(other).pendingNudges.length, 1);
+
+  // No prompt ever reported: on a hook-instrumented session that is the session's own turn, and
+  // having re-declared in it, the wait stands.
+  const silent = working(registry);
+  assert.equal(registry.reportAwaiting(silent.syntheticId, body()).ok, true);
+  hook(registry, silent, "Stop");
+  reserveInjection(silent.syntheticId, "Round 3 repair packet", "workflow");
+  hook(registry, silent, "PreToolUse");
+  assert.equal(registry.reportAwaiting(silent.syntheticId, body(Date.now(), 30)).ok, true);
+  hook(registry, silent, "Stop");
+  assert.ok(registry.getAwaiting(silent.syntheticId), "a turn that re-declared the wait ended it at its end");
+  assert.equal(stored(silent).pendingNudges.length, 1);
+});
+
 test("a turn left undecided at a restart is still decided by its prompt after it", () => {
   const WRAP = "Please wrap up and open the pull request.";
   // Two sessions, each with Foreman's delivery pending and a turn under way whose prompt has

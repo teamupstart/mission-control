@@ -53,6 +53,8 @@ wake. A message that provably never landed removes only its own id, so a duplica
 even after a daemon restart, leaves an earlier message's claim in place. `undecided_turn`
 marks a turn that started while a delivery was pending and whose prompt has not been reported
 yet, so a restart before that prompt arrives can still decide whose turn it was.
+`redeclared_in_turn` marks that the session declared its wait again during that turn: the turn
+is still decided, so a delivery that started it is used up, but it no longer ends the wait.
 
 ## Full-database recovery points
 

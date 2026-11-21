@@ -2647,7 +2647,9 @@ arrives after it starts is decided when it arrives, even across a restart; a tur
 reports one is the session's own wake on a hook-instrumented session, and uses up the oldest
 delivery on a harness without hooks. Only confirmed readings of the session's state count:
 rediscovering a session after a restart is never itself read as a wake, and a turn already
-under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. It also ends on `clear_awaiting`, when you or a
+under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made
+during a turn that Mission Control could not yet attribute still lets that turn use up the
+delivery that started it, so the agent's next real wake is not mistaken for it. It also ends on `clear_awaiting`, when you or a
 controlling session clear it, when the task it was declared for reaches a terminal status, and
 when the agent process exits or has not been seen live for three minutes, because the wake
 source it declared was its own and is presumed gone with it. Switching the preview off ends

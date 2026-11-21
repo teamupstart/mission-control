@@ -4545,6 +4545,10 @@ function migrate(d: DatabaseSync): void {
   // `undecided_turn`: a turn started while a delivery was pending and its prompt has not been
   // reported yet. Stored so a restart before the prompt arrives can still decide that turn.
   addColumn(d, "session_awaitings", "undecided_turn", "INTEGER");
+  // `redeclared_in_turn`: the session declared its wait again during that undecided turn. The
+  // turn may still use up the delivery that started it, but it can no longer be the wake, since
+  // the agent has just said it is still waiting. Stored for the same restart.
+  addColumn(d, "session_awaitings", "redeclared_in_turn", "INTEGER");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -12697,6 +12701,12 @@ export interface SessionAwaitingRecord {
    * prompt decides whose turn it was, or, if none comes, the turn's end does.
    */
   undecidedTurn: boolean;
+  /**
+   * The session declared its wait again during that undecided turn. The turn is still decided,
+   * so a delivery that started it is used up, but it no longer ends the wait: the agent has
+   * just said it is still waiting. False whenever `undecidedTurn` is.
+   */
+  redeclaredInTurn: boolean;
 }
 
 interface SessionAwaitingRow {
@@ -12713,10 +12723,11 @@ interface SessionAwaitingRow {
   settled_at: number | null;
   pending_nudges: string | null;
   undecided_turn: number | null;
+  redeclared_in_turn: number | null;
 }
 
 const SESSION_AWAITING_COLUMNS = `note_key, task_id, awaiting_id, what, wake_source, expected_by,
-  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn`;
+  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn`;
 
 /** One automated delivery a waiting session has not yet started a turn for. */
 export interface PendingNudge {
@@ -12778,6 +12789,7 @@ function rowToSessionAwaiting(r: SessionAwaitingRow): SessionAwaitingRecord {
     settledAt: r.settled_at,
     pendingNudges: parsePendingNudges(r.pending_nudges),
     undecidedTurn: r.undecided_turn === 1,
+    redeclaredInTurn: r.undecided_turn === 1 && r.redeclared_in_turn === 1,
   };
 }
 
@@ -12795,19 +12807,21 @@ export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
   openDb()
     .prepare(
       `INSERT INTO session_awaitings (${SESSION_AWAITING_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          task_id=excluded.task_id, awaiting_id=excluded.awaiting_id, what=excluded.what,
          wake_source=excluded.wake_source, expected_by=excluded.expected_by,
          reference_url=excluded.reference_url, details=excluded.details,
          started_at=excluded.started_at, updated_at=excluded.updated_at, settled_at=excluded.settled_at,
-         pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn`,
+         pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn,
+         redeclared_in_turn=excluded.redeclared_in_turn`,
     )
     .run(
       record.noteKey, record.taskId, a.id, a.what, a.wakeSource, a.expectedBy, a.referenceUrl,
       a.details, a.startedAt, a.updatedAt, record.settledAt,
       record.pendingNudges.length ? JSON.stringify(record.pendingNudges) : null,
       record.undecidedTurn ? 1 : 0,
+      record.undecidedTurn && record.redeclaredInTurn ? 1 : 0,
     );
 }
 

@@ -9356,7 +9356,12 @@ export class Registry extends EventEmitter {
       // landing after it, their turns are still Mission Control's.
       pendingNudges: this.awaitings.get(key)?.pendingNudges
         ?? outstandingAutomatedClaims(s.id, now - AWAITING_SEED_WINDOW_MS),
-      undecidedTurn: false,
+      // A re-declaration inside a turn still undecided (one that started while a delivery was
+      // pending, its prompt not yet reported) keeps that turn undecided, so its prompt or its end
+      // still decides it and a delivery that started it is still used up. Marked, because the
+      // agent has just said it is still waiting: that turn can no longer be the wake.
+      undecidedTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
+      redeclaredInTurn: this.awaitings.get(key)?.undecidedTurn ?? false,
     };
     upsertSessionAwaiting(record);
     this.awaitings.set(key, record);
@@ -9500,13 +9505,13 @@ export class Registry extends EventEmitter {
         return;
       }
       if (prompt) {
-        if (!this.useUpAwaitingNudge(key, record, prompt, { settledAt: null, undecidedTurn: false })) {
+        if (!this.useUpAwaitingNudge(key, record, prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false })) {
           this.endAwaitingFromTurn(s, key, "wake", now);
         }
         return;
       }
       // Stored, so a restart before the prompt arrives can still decide this turn.
-      const undecided = { ...record, settledAt: null, undecidedTurn: true };
+      const undecided = { ...record, settledAt: null, undecidedTurn: true, redeclaredInTurn: false };
       upsertSessionAwaiting(undecided);
       this.awaitings.set(key, undecided);
       return;
@@ -9519,11 +9524,17 @@ export class Registry extends EventEmitter {
         // still outstanding is the best reading of whose turn it was.
         // A contested oldest delivery is not a nudge either (see `useUpAwaitingNudge`).
         const oldest = record.pendingNudges[0];
-        if (s.hooksSeen || (oldest && nudgeContested(oldest))) {
+        const ownTurn = s.hooksSeen || (oldest !== undefined && nudgeContested(oldest));
+        // Unless the session declared its wait again during this very turn: then the wake, if
+        // this turn was one, came and went inside it, and the wait it declared stands.
+        if (ownTurn && !record.redeclaredInTurn) {
           this.endAwaitingFromTurn(s, key, "wake", now);
           return;
         }
-        const next = { ...record, settledAt: now, undecidedTurn: false, pendingNudges: record.pendingNudges.slice(1) };
+        const next = {
+          ...record, settledAt: now, undecidedTurn: false, redeclaredInTurn: false,
+          pendingNudges: ownTurn ? record.pendingNudges : record.pendingNudges.slice(1),
+        };
         upsertSessionAwaiting(next);
         this.awaitings.set(key, next);
         return;
@@ -9594,7 +9605,7 @@ export class Registry extends EventEmitter {
     key: string,
     record: SessionAwaitingRecord,
     prompt: readonly string[],
-    patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn">>,
+    patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn" | "redeclaredInTurn">>,
   ): boolean {
     const i = record.pendingNudges.findIndex((nudge) => prompt.includes(nudge.key));
     if (i < 0 || nudgeContested(record.pendingNudges[i]!)) return false;
@@ -9612,13 +9623,21 @@ export class Registry extends EventEmitter {
    * A prompt reported for a waiting session whose turn started before its prompt was known
    * (an SDK driver's state can arrive before the prompt hook). The prompt decides the turn: one
    * of Mission Control's pending deliveries is that nudge; anything else is the wake, which ends
-   * the wait now.
+   * the wait now, unless the session already declared its wait again during this turn.
    */
   private observeAwaitingPrompt(s: Session, prompt: readonly string[]): void {
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record?.undecidedTurn) return;
-    if (this.useUpAwaitingNudge(key, record, prompt, { undecidedTurn: false })) return;
+    if (this.useUpAwaitingNudge(key, record, prompt, { undecidedTurn: false, redeclaredInTurn: false })) return;
+    if (record.redeclaredInTurn) {
+      // The wake came and went inside this turn, and the agent has already said it is still
+      // waiting: the turn is decided, and the wait it re-declared settles at the turn's end.
+      const next = { ...record, undecidedTurn: false, redeclaredInTurn: false };
+      upsertSessionAwaiting(next);
+      this.awaitings.set(key, next);
+      return;
+    }
     this.clearAwaiting(s.id, "wake");
   }
 

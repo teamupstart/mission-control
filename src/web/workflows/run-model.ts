@@ -32,6 +32,7 @@ import type {
   WorkflowRunStatus,
   WorkflowRunSummary,
   WorkflowSubmission,
+  WorkflowWaitActivity,
 } from "@shared/workflow.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
 import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
@@ -1283,6 +1284,27 @@ const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   findings: "GitHub Inspector left findings that have to be resolved.",
   pr_closed: "The adopted pull request was closed or switched.",
 };
+
+const GATE_WAIT_ACTIVITY: Record<WorkflowGateWaitReason, WorkflowWaitActivity> = {
+  missing_pr: { actor: "Operator", inProgress: false },
+  unadopted_pr: { actor: "Operator", inProgress: false },
+  inspector_disabled: { actor: "Operator", inProgress: false },
+  awaiting_fresh_observation: { actor: "GitHub Inspector", inProgress: true },
+  working_tree_not_pushed: { actor: "Session", inProgress: true },
+  head_mismatch: { actor: "Session", inProgress: true },
+  review_pending: { actor: "GitHub Inspector", inProgress: true },
+  review_backoff: { actor: "GitHub Inspector", inProgress: true },
+  review_error: { actor: "GitHub Inspector", inProgress: true },
+  findings: { actor: "Session", inProgress: true },
+  pr_closed: { actor: "Operator", inProgress: false },
+  clean_review_pending: { actor: "GitHub Inspector", inProgress: true },
+  reviewed_tree_changed: { actor: "Operator", inProgress: false },
+};
+
+/** Exhaustive for known reasons, conservative for a newer server's reason codes. */
+export function gateWaitActivity(reason: WorkflowGateWaitReason): WorkflowWaitActivity | null {
+  return Object.hasOwn(GATE_WAIT_ACTIVITY, reason) ? GATE_WAIT_ACTIVITY[reason] : null;
+}
 
 /** What the Inspector gate is waiting on, as a sentence. `null` means it is satisfied. */
 export function gateWaitSentence(reason: WorkflowGateWaitReason | null): string {

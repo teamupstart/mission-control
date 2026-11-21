@@ -2710,11 +2710,34 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
 export type WorkflowResumptionWithheldReason =
   (typeof WORKFLOW_RESUMPTION_WITHHELD_REASONS)[number];
 
+/** Presentation of who can advance a known wait and whether work is still progressing. */
+export interface WorkflowWaitActivity {
+  actor: "Operator" | "Session" | "Workflow" | "GitHub Inspector" | "Blocker owner";
+  inProgress: boolean;
+}
+
+const RESUMPTION_WITHHELD_ACTIVITY: Record<WorkflowResumptionWithheldReason, WorkflowWaitActivity> = {
+  policy_manual: { actor: "Operator", inProgress: false },
+  binding_inactive: { actor: "Operator", inProgress: false },
+  session_unavailable: { actor: "Operator", inProgress: false },
+  session_busy: { actor: "Session", inProgress: true },
+  session_needs_you: { actor: "Operator", inProgress: false },
+  packet_undelivered: { actor: "Workflow", inProgress: true },
+  repository_unchanged: { actor: "Session", inProgress: false },
+  session_blocked: { actor: "Blocker owner", inProgress: false },
+};
+
+/** Stored reason codes can come from a newer version; unknown waits must not imply progress. */
+export function workflowResumptionWithheldActivity(reason: string): WorkflowWaitActivity | null {
+  return Object.hasOwn(RESUMPTION_WITHHELD_ACTIVITY, reason)
+    ? RESUMPTION_WITHHELD_ACTIVITY[reason as WorkflowResumptionWithheldReason] : null;
+}
+
 /**
  * What the run page says about a withheld resumption, in the operator's language.
  *
- * One sentence each, and each one names what would change it. These are read by run detail
- * and by nothing else; the daemon stores the reason code, never the prose, so re-wording
+ * One sentence each, and each one names what would change it. Run detail and Fleet share
+ * these sentences; the daemon stores the reason code, never the prose, so re-wording
  * this never invalidates a ledger entry.
  */
 export function workflowResumptionWithheldSentence(
@@ -5048,6 +5071,10 @@ export interface WorkflowRunSummary {
   phase: string;
   /** Computed alongside every summary, including pages and SSE updates. Never persisted. */
   recovery?: WorkflowRunRecovery;
+  /** Live queue owner and Inspector reason, shared with run detail. Display only, never a session blocker. */
+  deliveryHold?: WorkflowRunDetail["deliveryHold"];
+  gateWaitReason?: WorkflowGateWaitReason | null;
+  resumption?: WorkflowRunDetail["resumption"];
   round: number;
   /**
    * The latest evidence segment inside `round`. Optional so a summary written by an older

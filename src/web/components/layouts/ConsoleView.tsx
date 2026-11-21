@@ -146,6 +146,7 @@ export function ConsoleView(props: SessionViewProps & {
       onSelect={() => props.onSelect(s.id)}
       registerEl={props.registerEl}
       workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowHoldRuns={props.workflowHoldRunsBySession?.get(s.id) ?? null}
       workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}

@@ -23,8 +23,9 @@ import type { TranscriptMessage } from "@shared/types.ts";
  *   request has nothing honest to draw - showing the platform contract is the bug this
  *   exists to fix, and inventing prose would put words in the operator's mouth.
  * - a `review-message` turn: returned unchanged. Its cards are drawn by `mergeConversation`,
- *   which knows the reviews; a review it cannot find gets a "no longer available" card, and
- *   this native text is only ever shown inside a card's "What the agent received".
+ *   which knows the reviews; a review it cannot find gets a loading, unreadable or "no longer
+ *   available" card by the state of the review history (`UnavailableReviewCard`), and this
+ *   native text is only ever shown inside a card's "What the agent received".
  * - no marker: returned unchanged, by reference. Every historical transcript, every manually
  *   discovered session, and every conversation a `/clear` replaced takes this path, which is
  *   why an installation with an empty marker table renders exactly as it did before.

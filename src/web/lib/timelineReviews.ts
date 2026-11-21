@@ -176,8 +176,11 @@ export function historyRetryDelay(attempt: number): number | null {
 /**
  * What `useTimelineReviews` hands the conversation. `reviews` are this session's entries.
  * `loaded` says its durable history has settled, so a delivered answer naming a review that is
- * still missing really is gone rather than still loading. `lineage` is the same history for the
- * sessions this conversation was transferred from, used only to draw a delivered answer.
+ * still missing is no longer loading. Read it with `failed`: settled with `failed` false, the
+ * history was read and the question really is gone; settled with `failed` true, the retries ran
+ * out with a source unread, so the question may still exist and the card says it could not be
+ * loaded. `lineage` is the same history for the sessions this conversation was transferred from,
+ * used only to draw a delivered answer.
  */
 export interface TimelineReviews {
   reviews: ReviewItem[];

@@ -149,7 +149,8 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await expect(inbox).toBeHidden();
 
   // The answer reaches the agent as a message, which starts its next turn.
-  await expect(detail.getByText(`Mock reply to: Mission Control answer to question ${filed.id}`, { exact: false }).first())
+  // The message opens with the review marker line, then exactly the answer text.
+  await expect(detail.getByText(`Mock reply to: [mission-control:answer review=${filed.id}]`, { exact: false }).first())
     .toBeVisible({ timeout: 30_000 });
   await expect(badge).not.toHaveClass(/badge-attention/);
   // The conversation shows the operator's answer once, as the gold answer entry. The message

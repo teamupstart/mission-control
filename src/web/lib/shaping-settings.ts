@@ -29,6 +29,14 @@ import {
   type UnsupportedShaperView,
 } from "@shared/shaping.ts";
 
+/**
+ * What became of one write: the daemon stored it, refused it (or the panel refused to send it),
+ * its answer never arrived so the daemon may or may not have stored it, or it was not sent because
+ * another write was in flight or the panel had no connection. A control keeps what the operator
+ * entered unless the write was saved or refused, so an unconfirmed one can be compared and retried.
+ */
+export type ShapingWriteOutcome = "saved" | "refused" | "unconfirmed" | "not_sent";
+
 /** An entry this build cannot run, as the view carries it: id, label and reason only. */
 export function isUnsupportedShaper(entry: Shaper | UnsupportedShaperView): entry is UnsupportedShaperView {
   return "unsupported" in entry;

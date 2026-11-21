@@ -1607,3 +1607,29 @@ test("a frame from an unrelated write never stands in for a lost import answer",
   await expect(dialog).toBeVisible();
   await page.unroute("**/api/shaping");
 });
+
+test("a settings save whose answer is lost keeps what the operator entered, to retry", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const budget = form.getByRole("spinbutton", { name: "Context budget (KiB)" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The connection drops before the daemon stores anything.
+  await page.route("**/api/shaping", (route) => route.request().method() !== "PUT" ? route.fallback() : route.abort("connectionreset"));
+  await identity.fill("kept-identity");
+  await budget.fill("40");
+  await save.click();
+  await expect(form.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
+  );
+  // What was entered is still there, against what is stored, and can be sent again as it is.
+  await expect(identity).toHaveValue("kept-identity");
+  await expect(budget).toHaveValue("40");
+  expect((await shapingConfig(daemon)).caller.user).toBe("");
+  await page.unroute("**/api/shaping");
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("kept-identity");
+  await expect.poll(async () => (await shapingConfig(daemon)).limits.totalBytes).toBe(40 * 1024);
+  await expect(save).toBeDisabled();
+});

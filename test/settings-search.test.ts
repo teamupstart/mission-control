@@ -44,7 +44,7 @@ const SHAPING: ShapingSettings = {
   pendingKey: null,
   errors: {}, earlier: {}, outcomeArrivals: {},
   ready: true,
-  set: async () => true,
+  set: async () => "saved" as const,
   dismiss: () => {},
 };
 import { ACTIONS } from "../src/web/lib/keybindings.ts";

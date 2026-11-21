@@ -248,7 +248,8 @@ before the body limit, so such a request is refused as forbidden whatever its si
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
-  it, which the daemon allows only for an entry it emptied a literal credential in. Its raw definition stays in the daemon's storage and settings
+  it, which the daemon allows only for the entry that owns the id, and only when it emptied a
+  literal credential in it; a repeat behind the owner never carries it. Its raw definition stays in the daemon's storage and settings
   backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
   revision per stored shaper id, which the daemon derives from the stored entry itself, so two
   unsupported entries that show the same id, label and reason still have different revisions.
@@ -364,7 +365,8 @@ the switch was sent for, so a peer replacing the shaper and switching the replac
 is never taken for it. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
-edits it sent: a draft it left out, or one typed after it, stays.
+edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears
+nothing: what was entered stays, to compare with the stored settings and send again.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery

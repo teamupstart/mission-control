@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { previewShapingIntent, shapingIntentReflected, shapingRefusalText, shapingUnconfirmedText } from "./lib/shaping-settings.ts";
+import {
+  previewShapingIntent,
+  shapingIntentReflected,
+  shapingRefusalText,
+  shapingUnconfirmedText,
+  type ShapingWriteOutcome,
+} from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
 
 /** How long one write may wait for the daemon's answer before the panel stops waiting. */
@@ -70,19 +76,19 @@ export function useShapingSettings(
   }, [pending, reflected, live]);
 
   /**
-   * Send one intent. Resolves true only when the daemon's answer accepted it. A stream frame that
+   * Send one intent. Resolves "saved" only when the daemon's answer accepted it. A stream frame that
    * shows the change frees the controls early, but it is no acknowledgment of this request: the
    * same state can come from another write, or have been stored before this one went out.
    */
-  const set = async (intent: ShapingIntent, key: string): Promise<boolean> => {
-    if (!live || writing.current) return false;
+  const set = async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
+    if (!live || writing.current) return "not_sent";
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
       const message = parsed.error.issues[0]?.message ?? "This change is not valid.";
       setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, arrived: ++arrivals.current, message }]));
-      return false;
+      return "refused";
     }
     const request = parsed.data;
     const number = ++sent.current;
@@ -112,7 +118,7 @@ export function useShapingSettings(
           writing.current = null;
           setPending(null);
         }
-        return false;
+        return "unconfirmed";
       }
       if (!result.ok) {
         throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");
@@ -130,7 +136,7 @@ export function useShapingSettings(
       // A later write on this control succeeded, so an earlier one's refusal no longer describes
       // it. A refusal of a request sent after this one is still news and stays.
       setRefusals((current) => withRefusals(current, key, (current[key] ?? []).filter((refusal) => refusal.number > number)));
-      return true;
+      return "saved";
     } catch (error) {
       // The HTTP result decides whether this write succeeded. A frame can free the controls
       // early, but it only shows a config that looks like the outcome: a peer may have written it,
@@ -146,7 +152,7 @@ export function useShapingSettings(
         writing.current = null;
         setPending(null);
       }
-      return false;
+      return "refused";
     }
   };
 

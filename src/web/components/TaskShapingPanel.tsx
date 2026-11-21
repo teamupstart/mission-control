@@ -46,7 +46,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       outcomeArrivals={state?.outcomeArrivals ?? {}}
       onDismiss={state?.dismiss}
       ready={ready}
-      onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve(false)}
+      onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve("not_sent" as const)}
       onTest={onTest}
       repositories={repositories}
       readFolderIds={readFolderIds}

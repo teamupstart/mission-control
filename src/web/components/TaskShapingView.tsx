@@ -7,6 +7,7 @@ import {
   shapingList,
   type ShapingListGroup,
   type ShapingListRow,
+  type ShapingWriteOutcome,
 } from "../lib/shaping-settings.ts";
 import { EarlierOutcomes, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -52,7 +53,7 @@ export function TaskShapingView({
   /** Clears the outcomes shown under one control, for those drawn above the list. */
   onDismiss?: (key: string) => void;
   ready?: boolean;
-  onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
+  onSet: (intent: ShapingIntent, key: string) => Promise<ShapingWriteOutcome>;
   onTest: ShapingTestRunner;
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
@@ -302,9 +303,9 @@ export function TaskShapingView({
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
             const session = importSession.current;
-            const saved = await onSet({ kind: "upsert", shaper }, "import");
+            const outcome = await onSet({ kind: "upsert", shaper }, "import");
             // Closing is the dialog's to do, and only for the dialog that sent this save.
-            return saved && importSession.current === session;
+            return outcome === "saved" && importSession.current === session;
           }} />
       )}
       {testing && (
@@ -356,7 +357,7 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
   busy: boolean;
   error: string | null;
   earlier?: readonly string[];
-  onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
+  onSet: (intent: ShapingIntent, key: string) => Promise<ShapingWriteOutcome>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<Partial<SettingsFields>>({});
   const confirmed: SettingsFields = { user: config.caller.user, deadlineMs: String(config.limits.deadlineMs), totalKiB: kib(config.limits.totalBytes) };
@@ -415,7 +416,10 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
     if (intent.limits?.totalBytes !== undefined) sentFields.push("totalKiB");
     const submitted = Object.fromEntries(sentFields.map((field) => [field, generations.current[field]])) as
       Partial<Record<keyof SettingsFields, number>>;
-    await onSet(intent, "settings");
+    const outcome = await onSet(intent, "settings");
+    // An unconfirmed save may not have been stored, and one never sent certainly was not: the
+    // fields keep what the operator entered, to compare with what the list shows and send again.
+    if (outcome === "unconfirmed" || outcome === "not_sent") return;
     setDraft((current) => {
       const next = { ...current };
       for (const field of Object.keys(submitted) as Array<keyof SettingsFields>) {

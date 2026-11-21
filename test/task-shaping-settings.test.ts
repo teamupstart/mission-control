@@ -50,7 +50,7 @@ function view(input: Record<string, unknown>): ShapingConfigView {
 
 function render(config: ShapingConfigView | null, references: Record<string, "set" | "unset"> = {}): string {
   return renderToStaticMarkup(createElement(TaskShapingView, {
-    config, references, onSet: async () => true,
+    config, references, onSet: async () => "saved" as const,
     onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
     repositories: async () => [],
   }));
@@ -231,7 +231,7 @@ test("an intent bound to a revision is refused once another window replaces the 
 test("an untouched budget keeps its exact stored bytes when another setting is saved", () => {
   const precise = view({ limits: { totalBytes: 1025 } });
   const html = renderToStaticMarkup(createElement(TaskShapingView, {
-    config: precise, onSet: async () => true,
+    config: precise, onSet: async () => "saved" as const,
     onTest: async () => ({ ok: false as const, aborted: false, reason: "" }), repositories: async () => [],
   }));
   // Shown to three decimals, never as a rounded whole that a save would read back as 1,024 bytes.
@@ -525,7 +525,7 @@ test("a row and the settings form show their current refusal, with older ones li
     config: view({ shapers: [gatherer("a")] }),
     errors: { "row:a": "The latest reason.", settings: "The settings reason." },
     earlier: { "row:a": ["An earlier change, switching a on, was refused: The older reason."], settings: ["An earlier change, saving the caller identity and budgets, was refused: Older."] },
-    onSet: async () => true,
+    onSet: async () => "saved" as const,
     onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
     repositories: async () => [],
   }));
@@ -566,4 +566,20 @@ test("a view from a daemon that sends no revisions draws its rows with every rev
   }
   // A view that carries them draws no such note.
   assert.equal(/did not say which definition/.test(render(view({ shapers: [gatherer("a")] }))), false);
+});
+
+test("only the owning entry may say an import replaces it, never a repeat behind it", () => {
+  // An unsupported owner, then a repeat under its id whose literal credential the store emptied.
+  const owner = { id: "twin", label: "Owner", stage: "route", transport: { type: "grpc" } };
+  const repeat = gatherer("twin", { label: "Repeat", transport: { type: "command", command: "/usr/local/bin/notes", args: ["ghp_" + "a".repeat(36)] } });
+  const stored = ShapingConfigSchema.parse({ shapers: [owner, repeat] });
+  const shown = daemonShapingView(stored).shapers as Array<{ label: string; replaceable?: true }>;
+  assert.deepEqual(shown.map((entry) => [entry.label, "replaceable" in entry]), [["Owner", false], ["Repeat", false]]);
+  // The daemon checks an import against the owner, and refuses it.
+  const refused = applyShapingIntent(stored, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("twin")) });
+  assert.equal(refused.ok ? "" : refused.error, "unsupported_shaper");
+  // The same entry as owner is replaceable, and the daemon agrees.
+  const alone = ShapingConfigSchema.parse({ shapers: [repeat] });
+  assert.equal((daemonShapingView(alone).shapers[0] as { replaceable?: true }).replaceable, true);
+  assert.equal(applyShapingIntent(alone, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("twin")) }).ok, true);
 });

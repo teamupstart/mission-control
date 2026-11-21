@@ -1019,7 +1019,10 @@ export function shapingConfigView(
       ? entry.shaper
       : {
         id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason,
-        ...(credentialsWereRemoved(entry.stored) ? { replaceable: true as const } : {}),
+        // The upsert rule is the owning entry's: an import under an id replaces the first stored
+        // entry with it, so only that one may say it is replaceable, never a repeat behind it.
+        ...(groups.get(entry.stored.id)![0] === entry.stored && credentialsWereRemoved(entry.stored)
+          ? { replaceable: true as const } : {}),
       }),
     revisions: Object.fromEntries(owned),
   };

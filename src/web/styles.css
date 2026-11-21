@@ -14032,6 +14032,34 @@ select:not([multiple]) option:focus-visible {
   text-transform: uppercase;
   color: var(--muted);
 }
+.residents-drawer-sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.residents-drawer-sec-toggle .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-sec-toggle:hover,
+.residents-drawer-sec-toggle:hover .brh-chevron {
+  color: var(--fg);
+}
+.residents-drawer-sec-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.residents-drawer-foot.is-collapsed {
+  padding-block: 8px;
+}
 /* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
    the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
 .residents-edge-tab {

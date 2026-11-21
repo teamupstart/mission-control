@@ -47,6 +47,13 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },
+  {
+    id: "resident-profiles-fold",
+    label: "Fold the drawer's Profiles",
+    description: "Adds a chevron to the Residents drawer's Profiles heading that folds the launch list away, so the live residents above get the room.",
+    stage: "preview",
+    keywords: ["residents", "drawer", "profiles", "launch", "collapse"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */

@@ -405,7 +405,9 @@ persisted on the row (`steer_echo`), and any other send of the same words - an o
 Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
 `DeliveryLedger.reserve` - settles it from what the file already holds before that send is
 written (`onSend`), so an identical copy that lands right after a steered delivery is never
-taken for its echo. Only a read that reaches the end of the file settles "no echo"; a failed read
+taken for its echo. That listener (`review-steer-echo.ts`) is installed in `delivery-ledgers.ts`
+with the review ledger itself, so it runs before every send into the claim space even in a
+process that never imported `review-deliveries.ts`. Only a read that reaches the end of the file settles "no echo"; a failed read
 or a missing transcript decides nothing. Each row also persists the one prompt-hook echo it owes:
 `captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
 delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's

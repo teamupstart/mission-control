@@ -12,7 +12,8 @@ import {
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
 } from "./db.ts";
-import { DeliveryLedger, registerDeliveryLedgers } from "./delivery-binding.ts";
+import { DeliveryLedger, onSend, registerDeliveryLedgers } from "./delivery-binding.ts";
+import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
   noteOtherSend,
@@ -29,7 +30,10 @@ export {
  * if every ledger is registered before any binding, reservation or other send runs. Constructing
  * them here, in one module that both `delegated-turns.ts` and `review-deliveries.ts` import, means
  * whichever is loaded first brings the other's rows into the claim space with it, rather than the
- * claim space depending on which delivery module some caller happened to import.
+ * claim space depending on which delivery module some caller happened to import. The same holds for
+ * what a ledger must do before any send into that space: the review ledger's steered-echo listener
+ * is installed here, with the ledger, so a delegated send settles a review delivery's echo even in
+ * a process that never imported `review-deliveries.ts`.
  */
 
 /** A controlling session's delegated messages (`delegated-turns.ts`). */
@@ -64,5 +68,9 @@ export const reviewLedger = new DeliveryLedger<ReviewDeliveryRow>({
 export function onReviewLedgerForget(hook: () => void): void {
   reviewForgetHooks.push(hook);
 }
+
+// Before any send into the claim space, a bound review delivery's steered echo is settled from
+// what the file already holds (`review-steer-echo.ts`), so the new send's turn can never take it.
+onSend(settleSteerEchoesBeforeSend(reviewLedger));
 
 registerDeliveryLedgers([delegatedLedger, reviewLedger]);

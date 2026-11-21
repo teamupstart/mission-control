@@ -988,6 +988,13 @@ export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
    * entry's id, label and reason, say - still have different revisions.
    */
   revisions: Record<string, string>;
+  /**
+   * The daemon process that published this view, random per process. A window sends it back with
+   * each write (`SHAPING_WRITE_ORDER_HEADER`), so a write made against a daemon that has since
+   * restarted, whose ordering it no longer holds, is refused rather than applied out of order.
+   * Absent from a view a daemon older than it sends.
+   */
+  instance?: string;
 };
 
 /**
@@ -1963,7 +1970,10 @@ export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
  */
 export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
 
-/** The value of `SHAPING_WRITE_ORDER_HEADER` for one write. */
-export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[]): string {
-  return `${window} ${sequence} ${controls.join(",")}`;
+/**
+ * The value of `SHAPING_WRITE_ORDER_HEADER` for one write: `<window> <sequence> <controls>`, then
+ * the daemon instance whose view the window last read, when it knows one.
+ */
+export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[], instance?: string): string {
+  return `${window} ${sequence} ${controls.join(",")}${instance ? ` ${instance}` : ""}`;
 }

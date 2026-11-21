@@ -127,7 +127,7 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, number, keys) });
+      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, number, keys, viewInstance(confirmed)) });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
@@ -212,6 +212,12 @@ export function useShapingSettings(
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;
+
+/** The daemon instance a view names, when it names a readable one: older daemons send none. */
+function viewInstance(view: ShapingConfigView | null): string | undefined {
+  const instance: unknown = view?.instance;
+  return typeof instance === "string" && /^[A-Za-z0-9-]{1,64}$/.test(instance) ? instance : undefined;
+}
 
 /** A random id for one window's hook, as the write-order header accepts it. */
 function newWindowId(): string {

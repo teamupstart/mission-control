@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { canonicalJson, shapingConfigView, type ShapingConfig, type ShapingConfigView, type ShapingReviser } from "@shared/shaping.ts";
+import { DAEMON_SHAPING_INSTANCE } from "./write-order.ts";
 
 /**
  * The key revisions are derived with. Random per daemon process and never written anywhere, so
@@ -88,7 +89,12 @@ const committedViews = new WeakMap<ShapingConfig, ShapingConfigView>();
 
 /** Take `config`'s view now, as it is committed, for every reader of that config to see. */
 export function captureShapingView(config: ShapingConfig): void {
-  committedViews.set(config, shapingConfigView(config, shapingReviser));
+  committedViews.set(config, withInstance(shapingConfigView(config, shapingReviser)));
+}
+
+/** A view as this daemon process publishes it: naming the process, for write ordering. */
+function withInstance(view: ShapingConfigView): ShapingConfigView {
+  return { ...view, instance: DAEMON_SHAPING_INSTANCE };
 }
 
 /**
@@ -96,7 +102,7 @@ export function captureShapingView(config: ShapingConfig): void {
  * were when `config` was committed when it was, otherwise as they are now.
  */
 export function daemonShapingView(config: ShapingConfig): ShapingConfigView {
-  return committedViews.get(config) ?? shapingConfigView(config, shapingReviser);
+  return committedViews.get(config) ?? withInstance(shapingConfigView(config, shapingReviser));
 }
 
 /**

@@ -1906,3 +1906,39 @@ test("a save that timed out never overwrites a newer save made after it in the s
   expect((await shapingConfig(daemon)).caller.user).toBe("second-save");
   await page.unroute("**/api/shaping");
 });
+
+test("a save delayed across a daemon restart never overwrites a newer save made before it", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The first save is held on its way to the daemon until after the restart.
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  let late: number | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    await goes.opened;
+    const response = await route.fetch();
+    late = response.status();
+    await route.abort("connectionreset").catch(() => {});
+  });
+  await identity.fill("before-restart-first");
+  await save.click();
+  await expect(form.getByRole("alert")).toContainText("did not answer within 15 seconds", { timeout: 25_000 });
+  // The newer save lands with the daemon that is running now.
+  await identity.fill("before-restart-second");
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("before-restart-second");
+  // The daemon restarts, forgetting the order it had seen, and the first save then arrives.
+  await daemon.crash();
+  await daemon.restart();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("before-restart-second");
+  goes.open();
+  await expect.poll(() => late, { timeout: 15_000 }).toBe(409);
+  expect((await shapingConfig(daemon)).caller.user).toBe("before-restart-second");
+  await page.unroute("**/api/shaping");
+});

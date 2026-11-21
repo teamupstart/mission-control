@@ -311,7 +311,11 @@ before the body limit, so such a request is refused as forbidden whatever its si
   any wait such as shaper discovery, it answers 409 `superseded` and changes nothing once a later
   write from the same window has been applied to one of those controls. So a write whose answer
   the panel stopped waiting for, which it may then send again, never overwrites the newer edit.
-  A write without the header, from any other client, is not ordered.
+  That ordering lives in the daemon's memory, so the header also names the daemon process whose
+  view the window last read (the view's `instance`, random per process): a write made against a
+  process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
+  the restarted daemon no longer knows what came after it. A write without the header, from any
+  other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping

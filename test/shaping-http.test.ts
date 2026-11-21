@@ -1157,3 +1157,21 @@ test("a write from a window is refused once a later one of its on the same contr
   assert.equal(((await staleImport.json()) as { error: string }).error, "superseded");
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["ordered-row"], true, "the switch stands");
 });
+
+test("a write made against an earlier daemon process is refused, so a restart cannot reorder writes", async () => {
+  const { SHAPING_WRITE_ORDER_HEADER, shapingWriteOrder } = await import("../src/shared/shaping.ts");
+  const view = ((await (await get()).json()) as { config: { instance?: string } }).config;
+  assert.match(view.instance ?? "", /^[0-9a-f-]{36}$/, "the view names this daemon process");
+  const write = (instance: string, user: string) => app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, [SHAPING_WRITE_ORDER_HEADER]: shapingWriteOrder("restart-window", 1, ["settings"], instance) },
+    body: JSON.stringify({ kind: "settings", caller: { user } }),
+  });
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const earlier = await write("an-earlier-daemon-process", "from-before-the-restart");
+  assert.equal(earlier.status, 409);
+  const body = (await earlier.json()) as { error: string; reason: string };
+  assert.equal(body.error, "daemon_restarted");
+  assert.match(body.reason, /before the daemon restarted/);
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  assert.equal((await write(view.instance!, "against-this-process")).status, 200);
+});

@@ -99,3 +99,20 @@ test("with the flag off, task reads and MCP reads hide a saved record without de
   const back = (await tasksRead()).find((task) => task.id === "flag-off");
   assert.equal(back?.shaping?.sessionId, "s1", "turning the flag back on shows it again");
 });
+
+test("the shaping route serves no superseded record from a durable row while its clean-up is pending", async () => {
+  const db = await import("../src/server/db.ts");
+  const reads = await import("../src/server/shaping/reads.ts");
+  // A task no longer in the live registry, whose row still holds an earlier delivery's record.
+  db.upsertTask(mkTask({ id: "durable-only", status: "done", sessionId: "s1" }));
+  assert.equal(db.commitTaskShaping("durable-only", record("s1"), "## Task context\n\nearlier delivery", 1), true);
+  assert.equal((await app.request("/api/tasks/durable-only/shaping", { headers })).status, 200, "served while nothing is pending");
+  // A failed commit to the same session whose clean-up has not succeeded yet.
+  reads.noteSupersededShaping("durable-only", "s1");
+  try {
+    const route = await app.request("/api/tasks/durable-only/shaping", { headers });
+    assert.equal(route.status, 404, "the earlier delivery's text is not served as this session's");
+  } finally {
+    reads.forgetSupersededShaping("durable-only");
+  }
+});

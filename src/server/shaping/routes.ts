@@ -13,6 +13,7 @@ import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
+import { taskShapingForReads } from "./reads.ts";
 import { referenceStatus } from "./references.ts";
 
 /**
@@ -87,7 +88,10 @@ export function registerShapingRoutes(
   app.get("/api/tasks/:id/shaping", gate, (c) => {
     const task = options.taskById?.(c.req.param("id"));
     if (!task) return c.json({ error: "no such task" }, 404);
-    const summary = currentShaping(task);
+    // Through the same projection as every other task read, so a record a failed commit superseded
+    // (its clean-up still pending) is not served as this session's, whether the task came from memory
+    // or from its durable row.
+    const summary = currentShaping(taskShapingForReads(task));
     if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
     return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null });
   });

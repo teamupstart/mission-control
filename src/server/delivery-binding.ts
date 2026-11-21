@@ -303,7 +303,11 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    */
   private readonly twins = new Map<string, { from: number; count: number; final: boolean }>();
 
-  constructor(private readonly store: DeliveryStore<Row>) {
+  constructor(
+    private readonly store: DeliveryStore<Row>,
+    /** Drop whatever the owner derived from these rows, whenever the row caches are dropped. */
+    private readonly onForget: () => void = () => {},
+  ) {
     ledgers.push(this as unknown as DeliveryLedger<BindableDelivery>);
   }
 
@@ -318,6 +322,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   /** Drop every cache, so the next read comes from the table. */
   forgetCaches(): void {
+    this.onForget();
     this.cache.clear();
     this.scanned.clear();
     this.expired.clear();

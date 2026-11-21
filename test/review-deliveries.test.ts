@@ -644,6 +644,30 @@ test("bookkeeping for a delivery that ends uncertain - never confirmed, never re
   assert.deepEqual(reviewDeliveryBookkeeping(), { reservations: 1, unacceptedClaims: 0 });
 });
 
+test("the Goal reader's owed-echo list stays exact as a long history settles, grows, releases and restarts", () => {
+  const k = conversationKey(); const now = Date.now();
+  // A long history of delivered answers whose echoes have all been accounted for.
+  for (let i = 0; i < 40; i++) {
+    const old = answerText([randomUUID()]);
+    reserveReviewDelivery({ key: k, transcript: null }, old, undefined, now);
+    assert.equal(claimReviewDeliveryEcho(k, [old], now + 1), true);
+  }
+  const text = answerText([randomUUID()]);
+  // Built (and empty) before the next delivery: the new one must still be found.
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + 2), false);
+  reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now + 3);
+  const refused = reserveReviewDelivery({ key: k, transcript: null }, text, undefined, now + 4)!;
+  releaseReviewDelivery(k, refused); // the second send was refused: it owes nothing
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + 5), true, "the delivery that went out owes one echo");
+  assert.equal(claimReviewDeliveryEcho(k, [text], now + 6), false, "and only one: the refused one owes none");
+  // After a restart the list is rebuilt from the table alone.
+  const again = answerText([randomUUID()]);
+  reserveReviewDelivery({ key: k, transcript: null }, again, undefined, now + 7);
+  restart();
+  assert.equal(claimReviewDeliveryEcho(k, [again], now + 8), true);
+  assert.equal(claimReviewDeliveryEcho(k, [again], now + 9), false);
+});
+
 test("the count survives a restart between a delivery and its echo", () => {
   const { submit, deliver, revisions } = hookSession();
   const text = answerText([randomUUID()]);

@@ -50,7 +50,31 @@ const ledger = new DeliveryLedger<ReviewDeliveryRow>({
   contest: contestReviewDelivery,
   bind: bindReviewDelivery,
   sender: () => MISSION_CONTROL,
-});
+}, () => owing.clear());
+
+/**
+ * Per conversation, only the deliveries that still owe their prompt-hook echo, in reservation
+ * order. Bound rows are kept for good (an old conversation, resumed under its note key, still
+ * draws its cards), so a conversation's rows grow with its history; the Goal reader runs on every
+ * prompt and each turn completion runs the expiry, and both scan this list instead - a handful at
+ * most - rather than every delivery the conversation ever had. Rebuilt from the rows whenever the
+ * ledger's caches are dropped.
+ */
+const owing = new Map<string, ReviewDeliveryRow[]>();
+
+function owingRows(noteKey: string): ReviewDeliveryRow[] {
+  let rows = owing.get(noteKey);
+  if (!rows) {
+    rows = ledger.rows(noteKey).filter((row) => row.echoOwed);
+    owing.set(noteKey, rows);
+  }
+  return rows;
+}
+
+function dropOwing(noteKey: string, id: string): void {
+  const rows = owing.get(noteKey);
+  if (rows) owing.set(noteKey, rows.filter((row) => row.id !== id));
+}
 
 // Another send of a delivery's words - the operator's, Foreman's, a controller's delegated
 // delivery, or a second delivery of Mission Control's own - about to be written: from here a
@@ -134,6 +158,8 @@ export function reserveReviewDelivery(
     steerEcho: null,
   }), now);
   reservedAt.set(row.id, { base, handed: false, at: now });
+  // A list already built gains the new row; one not built yet will read it from the ledger.
+  owing.get(row.noteKey)?.push(row);
   return row.id;
 }
 
@@ -195,6 +221,7 @@ export function confirmReviewDelivery(
 export function releaseReviewDelivery(noteKey: string, id: string): void {
   reservedAt.delete(id);
   ledger.release(noteKey, id);
+  dropOwing(noteKey, id);
   const restore = unacceptedClaims.get(id)?.restore;
   unacceptedClaims.delete(id);
   try {
@@ -206,6 +233,7 @@ export function releaseReviewDelivery(noteKey: string, id: string): void {
 
 function persistEcho(row: ReviewDeliveryRow): void {
   updateReviewDeliveryEcho(row.id, { owed: row.echoOwed, turnGeneration: row.echoTurnGeneration, eligibleAt: row.echoEligibleAt });
+  if (!row.echoOwed) dropOwing(row.noteKey, row.id);
 }
 
 /** Whether this delivery's owed echo has aged past its wait. */
@@ -230,7 +258,7 @@ export function claimReviewDeliveryEcho(
 ): boolean {
   sweep(now);
   const fingerprints = new Set(texts.map(injectionFingerprint));
-  for (const row of ledger.rows(noteKey)) {
+  for (const row of owingRows(noteKey)) {
     if (!row.echoOwed || !fingerprints.has(row.fingerprint)) continue;
     row.echoOwed = false;
     persistEcho(row);
@@ -250,7 +278,7 @@ export function claimReviewDeliveryEcho(
  * deliveries aging. Idempotent.
  */
 export function expireReviewDeliveryEchoes(noteKey: string, completedGeneration: number, now = Date.now()): void {
-  for (const row of ledger.rows(noteKey)) {
+  for (const row of owingRows(noteKey)) {
     // A delivery still waiting for its handoff belongs to no turn yet (`stampReviewDeliveryHandoff`).
     if (!row.echoOwed || awaitingHandoff(row.id)) continue;
     if (row.echoTurnGeneration <= completedGeneration || echoLapsed(row, now)) {

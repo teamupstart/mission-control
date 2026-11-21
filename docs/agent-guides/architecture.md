@@ -410,7 +410,9 @@ work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N de
 operator sends of the same words always yield M Goal revisions. The debt's turn is stamped when
 the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
 terminal write boundary), not at reservation, and no completion or TTL clears it before then;
-the TTL itself restarts at the handoff. An arrival that spent the
+the TTL itself restarts at the handoff. Bound rows are kept for good, so a conversation's rows
+grow with its history; the Goal reader and the expiry scan only a per-conversation list of the
+deliveries that still owe an echo, rebuilt from the rows whenever the ledger's caches drop. An arrival that spent the
 echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
 
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through

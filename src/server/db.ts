@@ -5600,17 +5600,20 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
 
 /**
  * A call has started waiting on a message-mode question: an MCP child from an older build
- * re-attached to it (`ReviewManager.wait`). Clears the detach it was born with, so its answer is
- * that call's result and reaches the outbox only if the call later detaches, exactly as a
- * call-mode question's does. Only while still pending and not yet handed to the outbox.
+ * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
+ * wait mode is cleared and so is the detach it was born with, so it counts as a pending review,
+ * its answer is that call's result, and it reaches the outbox only if the call later detaches,
+ * exactly as any call-mode question's does. Only while still pending and not yet handed to the
+ * outbox. Returns whether the row changed.
  */
-export function markReviewWaitAttached(id: string): void {
-  openDb()
+export function markReviewWaitAttached(id: string): boolean {
+  const result = openDb()
     .prepare(
-      `UPDATE reviews SET mcp_wait_detached_at = NULL
+      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL
         WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
     )
     .run(id);
+  return Number(result.changes) > 0;
 }
 
 /**
@@ -9308,10 +9311,13 @@ export function openTaskSessionClosure(
 export function completeTaskWithSessionClosure(
   task: Task,
   closure: { sessionId: string; requestedAt: number; deadlineAt: number } | null,
+  /** Other durable state that must commit with this completion or not at all. */
+  alsoPersist?: () => void,
 ): readonly string[] {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
+    alsoPersist?.();
     const displaced = upsertTask(task);
     if (taskHasWorktrees(task)) {
       d.prepare(`INSERT OR REPLACE INTO task_worktree_returns (task_id, completed_at, dispatched_at)

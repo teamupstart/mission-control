@@ -320,8 +320,7 @@ export class ReviewManager {
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
       // poll arrives is that poll's result and is never also queued as a message.
-      if (existing.waitMode === "message" && options.callerPolls === true) markReviewWaitAttached(existing.id);
-      return existing;
+      return existing.waitMode === "message" && options.callerPolls === true ? this.attachCall(existing) : existing;
     }
 
     const review: ReviewItem = {
@@ -358,6 +357,19 @@ export class ReviewManager {
   }
 
   /**
+   * An older MCP child is waiting in a call on a question filed without one: turn it into the
+   * call-mode question it now is (`markReviewWaitAttached`), and republish it so the session
+   * counts it as a pending review rather than an open question until it settles. Without this
+   * a session blocked in that call would read as still working past its question.
+   */
+  private attachCall(review: ReviewItem): ReviewItem {
+    if (!markReviewWaitAttached(review.id)) return review;
+    const { waitMode: _filed, ...call } = review;
+    this.registry.upsertReview(call);
+    return call;
+  }
+
+  /**
    * The questions a new `request_input` ask replaces, which `create` withdraws with it.
    *
    * The exact-match re-attach in `create` covers a retry sent byte for byte. Agents rarely
@@ -382,13 +394,15 @@ export class ReviewManager {
    * because they chose to park it and its agent was told to carry on, so a later, different
    * question from that agent is expected rather than a retry.
    *
-   * Message-mode questions (`async-input`) are excluded on either side. The withdrawal rests on
-   * the call being blocking: only a timed-out retry can arrive long after an open question. A
-   * message-mode ask never times out, so a later, similar question is a new question, and a
-   * call-mode retry is no evidence that a question filed to be answered later is spent.
+   * An older message-mode question (`async-input`) is never withdrawn. The withdrawal rests on
+   * the older call being blocking: only a timed-out call leaves a question its agent re-asks. A
+   * message-mode ask never times out, so a later, similar question is a new question. A newer
+   * message-mode ask CAN withdraw an older call-mode one: a call that timed out before the flag
+   * was turned on, re-asked in new words, is the same retry, and leaving both would let the
+   * operator answer a stale copy after the agent already heard the other.
    */
   private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
-    if (newer.snoozable !== true || newer.waitMode === "message") return [];
+    if (newer.snoozable !== true) return [];
     const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
     return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
       older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
@@ -641,13 +655,6 @@ export class ReviewManager {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    // A call is waiting on a question filed without one (`async-input`): an MCP child from an
-    // older build re-asked it word for word, was handed the open row, and long-polls it because
-    // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
-    // its answer is this call's result, and only a later detach (a cancelled or restarted call)
-    // hands it to the outbox. Without this the agent would hear the answer twice.
-    if (current.waitMode === "message") markReviewWaitAttached(id);
-
     return new Promise<ReviewItem | null>((resolve) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
@@ -665,6 +672,14 @@ export class ReviewManager {
       set.add(waiter);
       if (signal?.aborted) early();
       else signal?.addEventListener("abort", early, { once: true });
+      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+      // older build re-asked it word for word, was handed the open row, and long-polls it because
+      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+      // closure that event triggers must be able to release this very call.
+      if (current.waitMode === "message") this.attachCall(current);
     });
   }
 
@@ -735,21 +750,40 @@ export class ReviewManager {
    * completion; it only makes sure no question outlives it unexplained.
    */
   closeQuestionsForMerge(sessionId: string, flagOn: boolean): ReviewItem[] {
-    const closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
-    if (closing.length === 0) return [];
-    // Mid runtime transfer the questions are moving to the successor session, so they cannot be
-    // closed here. A skipped close is not a success: throw, and the merge settle keeps the task
-    // running until the transfer resolves and the next observation can close them with `merged`.
-    if (transferForSource(sessionId)) throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
-    // All or none: the caller completes the task only once every question is durably closed,
-    // so a failed write must not leave some closed and some open. Published only after commit.
-    const resolvedAt = Date.now();
-    inTransaction(() => {
-      for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
-    });
-    return closing.map((review) => this.publishSettled({
-      ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
-    }));
+    const closure = this.mergeClosure(sessionId, flagOn);
+    inTransaction(closure.persist);
+    return closure.publish();
+  }
+
+  /**
+   * The merge closure in two halves, so a caller can commit it inside its own transaction.
+   * `persist` writes every outstanding question's `orphaned`/`merged` settle and nothing else;
+   * it must run inside a transaction, and throws `MergeClosureDeferred` mid runtime transfer.
+   * `publish` broadcasts what `persist` wrote and releases waiting calls; run it only after
+   * the commit. Merge-driven completion persists this with the task's own status write
+   * (`TaskManager` `joinCompletion`), so the two land together or not at all.
+   */
+  mergeClosure(sessionId: string, flagOn: boolean): { persist: () => void; publish: () => ReviewItem[] } {
+    let closing: ReviewItem[] = [];
+    let resolvedAt = 0;
+    return {
+      persist: () => {
+        closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
+        if (closing.length === 0) return;
+        // Mid runtime transfer the questions are moving to the successor session, so they cannot
+        // be closed here. A skipped close is not a success: throw, and the merge settle keeps the
+        // task running until the transfer resolves and the next observation can close them.
+        if (transferForSource(sessionId)) {
+          closing = [];
+          throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
+        }
+        resolvedAt = Date.now();
+        for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+      },
+      publish: () => closing.map((review) => this.publishSettled({
+        ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
+      })),
+    };
   }
 
   /**

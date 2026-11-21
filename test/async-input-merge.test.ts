@@ -31,16 +31,31 @@ const decisions = (question: string): PlanDecision[] => [
   { id: "q", question, options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
 ];
 
-function fleet(id: string, closeFails = { times: 0 }) {
+function fleet(id: string, closeFails = { times: 0 }, scout?: { ready: boolean }) {
   const registry = new Registry();
   for (const stale of registry.listTasks()) registry.removeTask(stale.id);
-  const tasks = new TaskManager(registry);
+  // A scout completes only once its archive gate says its report is durable.
+  const archives = scout && {
+    ensureReady: async () => (scout.ready ? { ok: true as const } : { ok: false as const, problems: ["no report submitted yet"] }),
+    settleBeforeCleanup: async () => ({ ok: true as const }),
+  };
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
   const reviews = new ReviewManager(registry);
   // The daemon's wiring (`src/server/index.ts`), with the flag read per merge.
   tasks.useMergeQuestions({
     close: (sessionId) => {
       if (closeFails.times > 0) { closeFails.times--; throw new Error("the review store refused the write"); }
       reviews.closeQuestionsForMerge(sessionId, featureEnabled("async-input"));
+    },
+    closure: (sessionId) => {
+      const closure = reviews.mergeClosure(sessionId, featureEnabled("async-input"));
+      return {
+        persist: () => {
+          if (closeFails.times > 0) { closeFails.times--; throw new Error("the review store refused the write"); }
+          closure.persist();
+        },
+        publish: () => { closure.publish(); },
+      };
     },
     blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled("async-input")),
   });
@@ -51,7 +66,10 @@ function fleet(id: string, closeFails = { times: 0 }) {
   };
   registry.applyDiscovery([d]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${id}-episode`, cwd, transcriptPath: null, env: {} });
-  registry.upsertTask(baseTask({ id: `task-${id}`, title: "Ship the thing", status: "running", sessionId: id, worktreePath: null }));
+  registry.upsertTask(baseTask({
+    id: `task-${id}`, title: "Ship the thing", status: "running", sessionId: id, worktreePath: null,
+    ...(scout ? { kind: "scout" as const } : {}),
+  }));
   registry.bindTaskToWorkEpisode(`task-${id}`, id);
   const merge = () => {
     const episode = registry.workEpisodeForSession(id)!;
@@ -232,4 +250,90 @@ test("a merge seen between a call-mode ask and its first poll closes the questio
   f.hook("Stop");
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+});
+
+test("a merged scout whose report is not ready keeps its questions open, and closes them when it completes", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const scout = { ready: false };
+  const f = fleet("s-merge-scout", { times: 0 }, scout);
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+
+  f.merge();
+  await tick(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "the archive check refused the completion");
+  assert.equal(f.registry.getReview(filed.id)?.status, "pending", "so the question is still the operator's to answer");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, undefined);
+
+  // The report lands; the next observation completes the scout and closes the question with it.
+  scout.ready = true;
+  f.hook("Stop");
+  await tick(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(filed.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("a task status write that fails rolls the question closure back with it", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-write-fails");
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  const db = openDb();
+  // The task's own completion write is refused after the question settles were written.
+  for (const event of ["INSERT", "UPDATE"]) {
+    db.exec(`CREATE TRIGGER refuse_done_${event.toLowerCase()} BEFORE ${event} ON tasks
+      WHEN NEW.id = '${f.taskId}' AND NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'refused'); END`);
+  }
+  try {
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(f.registry.getReview(filed.id)?.status, "pending", "nothing was published");
+    const row = db.prepare("SELECT status, closed_reason FROM reviews WHERE id = ?").get(filed.id) as { status: string; closed_reason: string | null };
+    assert.deepEqual({ ...row }, { status: "pending", closed_reason: null }, "the settle rolled back with the failed write");
+  } finally {
+    db.exec("DROP TRIGGER refuse_done_insert; DROP TRIGGER refuse_done_update;");
+  }
+
+  // Once the write is accepted, the next observation completes the task and closes the question together.
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("an older child polling a filed question after the merge is released at once by the closure its attach triggers", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-late-poll");
+  f.hook("UserPromptSubmit");
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getReview(filed.id)?.status, "pending", "working past a filed question: nothing to close yet");
+
+  // The older child's poll attaches the call, which makes the session blocked and triggers the
+  // merge closure from inside the attach. The poll must hear it now, not at its timeout.
+  const polled = await Promise.race([
+    f.reviews.wait(filed.id, 60_000),
+    new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 2_000)),
+  ]);
+  assert.notEqual(polled, "timed out", "the waiter was registered before the closure released it");
+  assert.equal((polled as { status: string }).status, "orphaned");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("a scout blocked in a call keeps its question open on merge, since its archive may still refuse", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-blocked-scout", { times: 0 }, { ready: false });
+  f.hook("UserPromptSubmit");
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  void f.reviews.wait(asked.id, 60_000);
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getReview(asked.id)?.status, "pending", "still the operator's to answer");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  f.reviews.resolve(asked.id, "dismiss", null, "human");
 });

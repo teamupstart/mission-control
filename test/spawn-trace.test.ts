@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -111,6 +111,30 @@ test("the report labels a shell git started by its git command, never by the chi
     assert.deepEqual(report.shellsStartedByGitFor, [["sh -c from git fetch", 1]]);
   } finally {
     rmSync(trace, { recursive: true, force: true });
+  }
+});
+
+test("a relative trace directory reaches a descendant started in another directory", () => {
+  // The worker resolves it once; a node child running elsewhere still writes beside the worker.
+  const dir = mkdtempSync(join(tmpdir(), "mission-spawn-trace-relative-"));
+  try {
+    const elsewhere = join(dir, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "child.mjs"), `import cp from "node:child_process"; cp.spawnSync("true");\n`);
+    writeFileSync(join(dir, "probe.mjs"), `
+      import cp from "node:child_process";
+      cp.spawnSync(process.execPath, ["child.mjs"], { cwd: ${JSON.stringify(elsewhere)}, stdio: "inherit" });
+    `);
+    const env: NodeJS.ProcessEnv = { ...process.env, MISSION_TEST_SPAWN_TRACE: "trace" };
+    delete env.MISSION_TEST_SPAWN_TRACE_FILE;
+    execFileSync(process.execPath, ["--import", join(root, "test/spawn-trace.mjs"), "probe.mjs"], { cwd: dir, env, stdio: "pipe" });
+    const records = readdirSync(join(dir, "trace")).flatMap((name) =>
+      readFileSync(join(dir, "trace", name), "utf8").trim().split("\n").map((line) => JSON.parse(line)));
+    assert.deepEqual(records.filter((record) => record.event === "start").map((start) => start.role).sort(), ["descendant", "worker"]);
+    assert.ok(records.some((record) => record.event === "spawn" && record.cmd === "true"), "the descendant's spawn is in the same trace");
+    assert.equal(existsSync(join(elsewhere, "trace")), false, "nothing was written relative to the descendant's directory");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

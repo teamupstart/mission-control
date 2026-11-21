@@ -5386,7 +5386,14 @@ export class TaskManager {
         }
       }
       if (shaped) {
-        const stillReady = await paneReady(this.registry.getSession(s.id)!);
+        // The checkout read above is an await too: ask about the session again before probing it.
+        const changedSince = sessionChanged();
+        if (changedSince) return { ok: false, error: changedSince, scope: "session" };
+        const receiving = this.registry.getSession(s.id);
+        if (!receiving) {
+          return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+        const stillReady = await paneReady(receiving);
         if (!stillReady.ok) {
           return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
         }

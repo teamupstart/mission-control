@@ -39,7 +39,7 @@ Create your own custom persona's and apply them to Residents. Keep your Resident
 ## How a resident keeps working
 <!-- stage: loop -->
 
-After every turn the daemon waits the profile's cadence, then wakes the resident with its loop prompt: check what changed, act, and report one line of status. The resident may ask to wake sooner or later within the bounds set here, and the rolling caps pause it before it spends more than you allowed. A message from you always goes first, and while it waits on your answer it holds its wakes. Pause, Resume and Run now are on every surface that shows a running resident.
+After every turn the daemon waits the profile's cadence, then wakes the resident with its loop prompt: check what changed, act, and report one line of status. The resident may ask to wake sooner or later within the bounds set here, and the rolling caps pause it before it spends more than you allowed. A message from you always goes first. A question it waits on inside the call holds its wakes; with Ask without stopping on, its questions wait in your inbox while it keeps its cadence. Pause, Resume and Run now are on every surface that shows a running resident.
 
 ## Launch it
 <!-- stage: launch -->

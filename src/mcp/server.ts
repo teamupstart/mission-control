@@ -1,5 +1,6 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
+import { MEANWHILE_MAX_CHARS } from "@shared/async-input.ts";
 import {
   ProposeResidentInstructionChangesSchema,
   residentInstructionOutcomeText,
@@ -116,19 +117,45 @@ async function createReview(
   /** Offer "Remind me later": only `request_input`'s own asks, whose agent knows how to carry on. */
   snoozable?: boolean,
 ): Promise<string> {
-  const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
+  return (await postReview({ kind, title, body, decisions, managedPlan, snoozable })).id;
+}
+
+/**
+ * How the daemon said a review waits (`async-input`): `call` means long-poll it as always;
+ * `message` means the agent hears the answer later as a message, and `receipt` is the tool result.
+ * A daemon from an older build says nothing, which is `call`.
+ */
+type CreatedReview = { id: string; wait: "call" } | { id: string; wait: "message"; receipt: string };
+
+async function postReview(input: {
+  kind: string;
+  title: string;
+  body: string;
+  decisions?: unknown;
+  managedPlan?: unknown;
+  snoozable?: boolean;
+  /** This child can hand back a receipt instead of long-polling. Only `request_input` says so. */
+  asyncCapable?: boolean;
+  meanwhile?: string;
+}): Promise<CreatedReview> {
+  const res = await http(input.managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
     cwd: process.cwd(),
-    kind,
-    title,
-    body,
-    decisions,
-    managedPlan,
-    ...(snoozable ? { snoozable: true } : {}),
+    kind: input.kind,
+    title: input.title,
+    body: input.body,
+    decisions: input.decisions,
+    managedPlan: input.managedPlan,
+    ...(input.snoozable ? { snoozable: true } : {}),
+    ...(input.asyncCapable ? { asyncCapable: true } : {}),
+    ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { id: string }).id;
+  const created = (await res.json()) as { id: string; wait?: string; receipt?: unknown };
+  return created.wait === "message" && typeof created.receipt === "string"
+    ? { id: created.id, wait: "message", receipt: created.receipt }
+    : { id: created.id, wait: "call" };
 }
 
 /**
@@ -935,10 +962,16 @@ server.registerTool(
   {
     title: "Ask the human a question",
     description:
-      "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. The operator can always type an answer. With `options`, they can also " +
-      "pick choices and add typed context. The tool returns their answer, selections, or an " +
-      "explicit dismissal. They may choose to chat about it, in which case the result tells you " +
+      "File a question for your human operator in the Mission Control dashboard. The result " +
+      "says which of two things happened. Either it carries their answer, selections, or an " +
+      "explicit dismissal, because this call waited for them; or it is a receipt saying the " +
+      "question is filed and NOT answered, in which case keep working on everything that does " +
+      "not depend on it, do not ask it again or poll, and expect the answer later as a message " +
+      "in this conversation. If you then run out of work, say what is waiting on the answer and " +
+      "end your turn; Mission Control wakes you with it. Pass `meanwhile` to tell the operator " +
+      "what you will do while the question is open. " +
+      "The operator can always type an answer. With `options`, they can also " +
+      "pick choices and add typed context. They may choose to chat about it, in which case the result tells you " +
       "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
       "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
       "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
@@ -984,9 +1017,17 @@ server.registerTool(
         .boolean()
         .optional()
         .describe("Deprecated compatibility field. The text box is always available."),
+      meanwhile: z
+        .string()
+        .max(MEANWHILE_MAX_CHARS)
+        .optional()
+        .describe(
+          "One line, shown on the operator's card: what you will do while the question is open - " +
+            "the assumption you proceed on, or the work you hold back until the answer arrives.",
+        ),
     },
   },
-  async ({ question, context, options, multiSelect }, extra) => {
+  async ({ question, context, options, multiSelect, meanwhile }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -1005,8 +1046,14 @@ server.registerTool(
       // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
       // through the same builder.
       const ask = requestInputReview({ question, context, options, multiSelect });
-      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions, undefined, true);
-      const review = await waitForResolution(id, extra);
+      // `asyncCapable`: the daemon decides how this ask waits. Told `message`, the question is
+      // filed and the receipt is the whole result - nothing long-polls, so nothing can time out.
+      const created = await postReview({
+        kind: ask.kind, title: ask.title, body: ask.body, decisions: ask.decisions,
+        snoozable: true, asyncCapable: true, ...(meanwhile?.trim() ? { meanwhile } : {}),
+      });
+      if (created.wait === "message") return textResult(created.receipt);
+      const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {

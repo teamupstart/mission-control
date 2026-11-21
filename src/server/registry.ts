@@ -1,5 +1,6 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, shapingConfigView, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
@@ -2962,6 +2963,7 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       workCycle: undefined,
       pendingReviews: this.countPending(d.syntheticId),
+      openQuestions: this.countOpenQuestions(d.syntheticId),
       // Resolved below after `pipeline` is known. A first-seen provider worker is not in
       // `this.sessions` yet, so resolving here cannot follow its commission-to-task join.
       task: null,
@@ -3185,6 +3187,7 @@ export class Registry extends EventEmitter {
       lastActivity: null,
       workCycle: undefined,
       pendingReviews: this.countPending(input.id),
+      openQuestions: this.countOpenQuestions(input.id),
       task: null,
       prUrl: null,
       prNumber: null,
@@ -7356,11 +7359,41 @@ export class Registry extends EventEmitter {
 
   // ---- reviews (used by phase 3) ----
 
+  /**
+   * Pending reviews this session's agent waits on inside a tool call. A message-mode question
+   * (`async-input`) is counted by `countOpenQuestions` instead, so every reader of
+   * `pendingReviews` keeps the meaning it has always had: an agent stopped inside a call.
+   */
   private countPending(sessionId: string): number {
     let n = 0;
     for (const r of this.reviews.values())
-      if (r.sessionId === sessionId && r.status === "pending") n++;
+      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode !== "message") n++;
     return n;
+  }
+
+  /** Pending message-mode questions: filed by an agent that kept working. Snoozed ones excluded. */
+  private countOpenQuestions(sessionId: string): number {
+    let n = 0;
+    for (const r of this.reviews.values())
+      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode === "message") n++;
+    return n;
+  }
+
+  /**
+   * Whether an outstanding `request_input` question holds this session's completion: prompted
+   * completion, workflow resumption and automatic evidence preparation refuse while it does.
+   *
+   * Read from the reviews themselves, not from the bucket, because a snoozed question turns
+   * nothing amber and must hold completion all the same. Not conditional on session state: the
+   * gates already refuse a working session, so in practice this decides the outcome once the
+   * session has stopped. A resident has no completion to hold. The flag is read per check, so
+   * turning it off returns call-mode questions to today's behavior while message-mode questions
+   * keep the hold until they settle (`questionHoldsCompletion`).
+   */
+  completionHeldByQuestion(session: Pick<Session, "id" | "task">): boolean {
+    if (session.task?.kind === "resident") return false;
+    const flagOn = featureEnabled(ASYNC_INPUT_FLAG);
+    return this.outstandingReviews(session.id).some((review) => questionHoldsCompletion(review, flagOn));
   }
 
   upsertReview(review: ReviewItem): void {
@@ -7431,8 +7464,10 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return;
     const n = this.countPending(sessionId);
-    if (s.pendingReviews !== n) {
-      const next = { ...s, pendingReviews: n };
+    const open = this.countOpenQuestions(sessionId);
+    // Both counts in one `session_upsert`, so no frame shows a question counted twice or not at all.
+    if (s.pendingReviews !== n || s.openQuestions !== open) {
+      const next = { ...s, pendingReviews: n, openQuestions: open };
       this.sessions.set(sessionId, next);
       this.emitSession(next);
     }
@@ -9007,7 +9042,9 @@ export class Registry extends EventEmitter {
         error: `This session's task is already ${task.status}, so there is nothing for it to wait on.`,
       };
     }
-    const asking = this.pendingReviews(s.id).some((r) => r.kind === "input");
+    // A message-mode question (`async-input`) does not refuse: its agent kept working past it,
+    // so a blocker on someone else is a separate wait the operator should still see.
+    const asking = this.pendingReviews(s.id).some((r) => r.kind === "input" && r.waitMode !== "message");
     if (asking) {
       return {
         ok: false,
@@ -10477,6 +10514,9 @@ export class Registry extends EventEmitter {
     if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
       return false;
     }
+    // Refused, not consumed: an outstanding request_input question, snoozed or not, keeps the
+    // generation for after it is answered (`async-input`'s completion hold).
+    if (this.completionHeldByQuestion(session)) return false;
     if (listQueueItems(input.logicalKey).length > 0) return false;
     if (!sessionIntentMatches(this.getGoal(id), input.expectedIntent)) return false;
     const cycle = session.workCycle;
@@ -11156,6 +11196,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // SDK session whose next accepted turn suppresses the transient idle state.
   workCycle: byJson,
   pendingReviews: byValue,
+  openQuestions: byValue,
   task: byJson,
   prUrl: byValue,
   prNumber: byValue,

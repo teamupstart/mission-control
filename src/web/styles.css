@@ -12740,6 +12740,9 @@ button.dispatch-guided-rung .dispatch-guided-num {
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
 }
+.dispatch-more-body[hidden] {
+  display: none;
+}
 
 /* The task-level scheduling choice belongs with the backlog metadata, but it is not another
    text field. A bounded row gives the copy and the same switch used on stored backlog cards
@@ -42153,3 +42156,17 @@ body.foreman-sidecar-open .modal-backdrop {
 .pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
 .pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
 .pr-check-results li { margin-block: 8px; }
+
+/* Exact pin changes sit inside the backlog field, using the editor's existing controls. */
+.pinned-plan-change {
+  min-inline-size: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pinned-plan-change legend { padding: 0 6px; font-weight: 600; color: var(--muted); }
+.pinned-plan-change .field { margin: 10px 0; }
+.pinned-plan-change section { margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.pinned-plan-change p { margin: 10px 0; }

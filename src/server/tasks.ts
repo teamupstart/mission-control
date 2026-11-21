@@ -1,3 +1,6 @@
+import { featureEnabled } from "./feature-flags/index.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { selectPinChangeDependencies } from "./plans/pin-change.ts";
 import { run } from "./util/exec.ts";
 import { getInspectorPr } from "./db.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -4351,7 +4354,7 @@ export class TaskManager {
     id: string,
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
-  ): Promise<Ok & { task?: Task }> {
+  ): Promise<Ok & { task?: Task; before?: Task }> {
     // Preparation can await tool availability or the plan-storage lock after reading its base
     // row, and writing the prepared row would undo anything written meanwhile, a dispatch
     // included. A dashboard edit prepares once more from the newer row, which re-runs every
@@ -4365,8 +4368,8 @@ export class TaskManager {
         return { ok: false, error: `task is ${current.status}, not in the backlog` };
       }
       if (current === prepared.base) {
-        this.registry.upsertTask(prepared.task);
-        return { ok: true, task: prepared.task };
+        if (!patch.previewOnly) this.registry.upsertTask(prepared.task);
+        return { ok: true, task: prepared.task, ...(patch.previewOnly ? { before: prepared.base } : {}) };
       }
       if (options.backlogOnly || attempt > 0) {
         return { ok: false, error: "task changed while preparing the update; retry" };
@@ -4389,6 +4392,56 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    let planChangeDependencies: TaskDependency[] | undefined;
+    if (patch.planInputChange || patch.previewOnly) {
+      if (!featureEnabled(PINNED_PLAN_CHANGE_FLAG_ID)) return { ok: false, error: "Change pinned plan revision preview is disabled" };
+      if (t.status !== "backlog") return { ok: false, error: "task is not in the backlog" };
+    }
+    if (patch.planInputChange) {
+      if (patch.planInputs !== undefined || patch.dependencies !== undefined) return { ok: false, error: "Use planInputChange separately from planInputs and dependencies" };
+      try {
+        const { from, to, expectedUpdatedAt } = patch.planInputChange;
+        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== t.updatedAt) throw new PlanStoreError("Task changed; reopen the editor and preview again");
+        const index = (t.planInputs ?? []).findIndex(input => input.repoKey === from.repoKey && input.planId === from.planId && input.revision === from.revision && JSON.stringify(input.files) === JSON.stringify(from.files));
+        if (index < 0) throw new PlanStoreError("Pinned input changed; reopen the editor and preview again");
+        validatePlanInputs([to], [t.repoRoot, ...t.extraRepos.map(r => r.repoRoot)]);
+        const planInputs = [...t.planInputs!];
+        planInputs[index] = to;
+        const saved = planRevisionRecord(to.planId, to.revision);
+        const source = saved.task_id ? this.getDurable(saved.task_id) ?? null : null;
+        const selection = selectPinChangeDependencies({
+          current: t.dependencies,
+          from: { input: from, origin: planRevisionRecord(from.planId, from.revision) },
+          to: { input: to, origin: saved },
+          remainingPins: planInputs.map(input => ({ input, origin: planRevisionRecord(input.planId, input.revision) })),
+          storage: readPlanRevision(to.planId, to.revision).manifest.policy.storage,
+          published: Boolean(publicationReceipt(to)),
+          source,
+          bindings: saved.task_id
+            ? [taskWorkEpisodeForTask(saved.task_id), ...historicalTaskWorkEpisodeBindingsForTask(saved.task_id)]
+              .filter((binding): binding is TaskWorkEpisodeBinding => binding !== null)
+            : [],
+          now: Date.now(),
+        });
+        const { dependencies, addition, mergeCandidate } = selection;
+        if (addition) {
+          const candidates = [...dependencies];
+          if (mergeCandidate) {
+            const mergedUrl = this.mergeUrlForDependency(mergeCandidate.edge, "");
+            if (mergedUrl) candidates.push({ ...mergeCandidate.edge, prUrl: mergedUrl,
+              satisfiedAt: mergeCandidate.mergedAt ?? Date.now() });
+          }
+          if (addition.type === "task" && source?.status === "done"
+            && !candidates.some(edge => dependencyKey(edge) === dependencyKey(addition))) {
+            throw new PlanStoreError(`Completed replacement origin ${JSON.stringify(source.title)} has no merge proof for work episode ${saved.episode_id ?? "unknown"}. Select a revision with verified merge proof.`);
+          }
+          dependencies.push(...this.resolveDependencies([addition], t.id, candidates));
+        }
+        if (dependencies.length > MAX_TASK_DEPENDENCIES) throw new TaskDependencyError("Too many task dependencies");
+        planChangeDependencies = dependencies;
+        patch = { ...patch, planInputs, dependencies: dependencies.map(dependencyInputOf) };
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
     if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: "task is being assigned" };
     }
@@ -4554,7 +4607,7 @@ export class TaskManager {
     }
     try {
       if (patch.dependencies !== undefined) {
-        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, planChangeDependencies ?? t.dependencies);
         validatePlanInputDependencies({ planInputs: patch.planInputs ?? t.planInputs, dependencies });
       }
     } catch (error) {

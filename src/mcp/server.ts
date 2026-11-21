@@ -820,7 +820,12 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, planInputs, " +
+      "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
+      "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +
+      "superseded originating prerequisites, preserving unrelated dependencies. Do not combine it with " +
+      "planInputs or dependencies. previewOnly validates without saving; inspect before and after, then " +
+      "repeat with previewOnly false to save. Never choose a newer revision automatically. Supports " +
       "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
       "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
       "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
@@ -840,8 +845,8 @@ server.registerTool(
       if (!res.ok) {
         return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
       }
-      const result = (await res.json()) as { task: Task };
-      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+      const result = (await res.json()) as { task: Task; before?: Task };
+      return textResult(JSON.stringify(result.before ? { before: taskConfiguration(result.before), after: taskConfiguration(result.task) } : taskConfiguration(result.task), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

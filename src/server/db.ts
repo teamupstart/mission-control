@@ -4538,7 +4538,7 @@ function migrate(d: DatabaseSync): void {
   // Each blocker's identity, kept across re-reports. A row written before it existed reads
   // back with an id derived from its key and start (see `rowToSessionBlocker`).
   addColumn(d, "session_blockers", "blocker_id", "TEXT");
-  // Schema 40: a session idle on purpose while a background process finishes. Keyed like
+  // Schema 41: a session idle on purpose while a background process finishes. Keyed like
   // session_blockers, so a daemon restart reloads it; `task_id` is recorded for the
   // terminal-task clear. `settled_at` is when the declaring turn was seen to end, which is what
   // tells the session's NEXT turn (the wake) from the rest of the turn that declared it.

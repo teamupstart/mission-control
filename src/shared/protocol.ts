@@ -9437,7 +9437,32 @@ export const StoredPauseStateSchema = z.object({
 export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({
+  enabled: z.boolean(),
+  requestId: z.string().guid().optional(),
+  /**
+   * The session's own pending ask this click accepts, when the click came from its card. Bound
+   * only to which request is still on screen: the grant still needs the private click above,
+   * and a request the session no longer holds refuses the grant rather than applying it to a
+   * conversation that never asked.
+   */
+  controlRequestId: z.string().guid().optional(),
+}).strict();
+/** Longest reason a session may give for wanting Control other sessions. */
+export const SESSION_CONTROL_REQUEST_REASON_MAX = 2_000;
+/** `request_session_control`: the caller is the signed session credential, never a body id. */
+export const RequestSessionControlSchema = z.object({
+  reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX),
+}).strict();
+/** Where one ask stands. Only `granted` means the session holds the grant. */
+export const SESSION_CONTROL_REQUEST_STATUSES = ["pending", "granted", "declined", "expired"] as const;
+export type SessionControlRequestStatus = (typeof SESSION_CONTROL_REQUEST_STATUSES)[number];
+export interface SessionControlRequestResult {
+  id: string;
+  status: SessionControlRequestStatus;
+  /** Why an ask ended without a decision; set only on `expired`. */
+  detail?: string;
+}
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),

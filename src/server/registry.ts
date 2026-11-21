@@ -42,6 +42,7 @@ import type {
   RestoringSession,
   ServerEvent,
   Session,
+  SessionControlRequestView,
   SessionCost,
   SessionMeta,
   SessionGoal,
@@ -1007,6 +1008,12 @@ export class Registry extends EventEmitter {
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** Explicit grants, bounded by live sessions and never persisted. */
   private sessionControlGrants = new Map<string, string>();
+  /**
+   * Each session's pending ask for a grant, keyed by session id. `SessionControlRequests` is
+   * the only writer; the registry only decorates it onto every session it emits, as it does
+   * the grant. Bounded by live sessions, and never persisted: a restart forgets the ask.
+   */
+  private sessionControlRequests = new Map<string, SessionControlRequestView>();
   /** A terminal side effect must not cross the asynchronous reset boundary. */
   private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
@@ -1599,6 +1606,26 @@ export class Registry extends EventEmitter {
     return JSON.stringify([session.pid, session.agentSessionId, session.cwd, episode.episodeId, this.taskForSession(id, session.cwd)?.id ?? null]);
   }
 
+  /** The ask `SessionControlRequests` is drawing for one session, or null. */
+  sessionControlRequest(id: string): SessionControlRequestView | null {
+    return this.sessionControlRequests.get(id) ?? null;
+  }
+
+  /**
+   * Adopt `SessionControlRequests`' answer for one session and re-emit it. Returns false for a
+   * session the registry does not hold, so the manager can drop an ask that outlived it.
+   */
+  setSessionControlRequest(id: string, request: SessionControlRequestView | null): boolean {
+    const session = this.sessions.get(id);
+    if (request && session) this.sessionControlRequests.set(id, request);
+    else this.sessionControlRequests.delete(id);
+    if (!session) return false;
+    const next: Session = { ...session, sessionControlRequest: request };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+    return true;
+  }
+
   /** Grants never survive a daemon restart, reset, or replacement work episode. */
   sessionControlEnabled(id: string): boolean {
     const grant = this.sessionControlGrants.get(id);
@@ -2142,6 +2169,7 @@ export class Registry extends EventEmitter {
   }
   private emitSession(s: Session): void {
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
+    s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
     s.resumedAt = this.sessionResumes.get(s.id) ?? null;
     this.emitEvent({ type: "session_upsert", session: s });
@@ -2871,6 +2899,7 @@ export class Registry extends EventEmitter {
       // that decides the key.
       foremanInvite: null,
       sessionControlEnabled: prev?.sessionControlEnabled ?? false,
+      sessionControlRequest: this.sessionControlRequests.get(d.syntheticId) ?? null,
       // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
       // explicit null keeps `byJson` from reading absent-vs-null as a change every tick.
       pause: this.sessionPauses.get(d.syntheticId) ?? null,
@@ -3119,6 +3148,7 @@ export class Registry extends EventEmitter {
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
       // the operator kicked Foreman out.
       foremanInvite: null,
+      sessionControlRequest: this.sessionControlRequests.get(input.id) ?? null,
       // A restored SDK session that was paused before the restart is still paused.
       pause: this.sessionPauses.get(input.id) ?? null,
       resumedAt: this.sessionResumes.get(input.id) ?? null,
@@ -7161,6 +7191,7 @@ export class Registry extends EventEmitter {
     this.sdkLaunchTasks.delete(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
+    this.sessionControlRequests.delete(id);
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -11088,6 +11119,8 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
   sessionControlEnabled: byValue,
+  // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
+  sessionControlRequest: byJson,
   // Nested and moves on its own: a pause, its after-turn freeze and its lift change nothing
   // else on the session, so leaving it out would let a card keep saying "paused" after resume.
   pause: byJson,

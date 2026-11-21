@@ -5601,7 +5601,8 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
 /**
  * A call has started waiting on a message-mode question: an MCP child from an older build
  * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
- * wait mode is cleared and so is the detach it was born with, so it counts as a pending review,
+ * wait mode is cleared, with the `meanwhile` line that no longer describes a blocked agent, and
+ * so is the detach it was born with, so it counts as a pending review,
  * its answer is that call's result, and it reaches the outbox only if the call later detaches,
  * exactly as any call-mode question's does. Only while still pending and not yet handed to the
  * outbox. Returns whether the row changed.
@@ -5609,7 +5610,7 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
 export function markReviewWaitAttached(id: string): boolean {
   const result = openDb()
     .prepare(
-      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL
+      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
         WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
     )
     .run(id);

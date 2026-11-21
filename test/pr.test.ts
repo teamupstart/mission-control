@@ -266,3 +266,18 @@ test("reconcilePrs retains closed PRs and follows reopening", () => {
     assert.equal(reg.getSession("feat")!.prState, state);
   }
 });
+
+test("check detail changes publish independently of rollup and survive discovery, then clear with the PR", () => {
+  const reg = new Registry();
+  const discovered = disco({ syntheticId: "ci-details" });
+  reg.applyDiscovery([discovered]);
+  const first = { complete: true, results: [{ name: "build", conclusion: "CANCELLED", url: null }] };
+  reg.reconcilePrs(new Map([[discovered.syntheticId, match({ checks: "failing", checkDetails: first })]]), new Set());
+  reg.applyDiscovery([discovered]);
+  assert.deepEqual(reg.getSession(discovered.syntheticId)?.prCheckDetails, first);
+  const second = { complete: true, results: [{ name: "build", conclusion: "FAILURE", url: "https://ci.example/job" }] };
+  reg.reconcilePrs(new Map([[discovered.syntheticId, match({ checks: "failing", checkDetails: second })]]), new Set());
+  assert.deepEqual(reg.getSession(discovered.syntheticId)?.prCheckDetails, second);
+  reg.reconcilePrs(new Map(), new Set());
+  assert.equal(reg.getSession(discovered.syntheticId)?.prCheckDetails, null);
+});

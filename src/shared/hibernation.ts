@@ -17,6 +17,7 @@ import { z } from "zod";
 import { AGENT_IDENTITY } from "./agent.ts";
 import type { FeatureFlagId } from "./feature-flags.ts";
 import { capabilitiesFor } from "./harness-capabilities.ts";
+import { questionsAwaitingOperator } from "./async-input.ts";
 import { taskKindLaunchesHarness } from "./task.ts";
 import {
   PERMISSION_MODES,
@@ -121,7 +122,7 @@ export function parseTaskHibernation(raw: string | null | undefined): TaskHibern
 /** The session fields `hibernateRefusal` reads. */
 export type HibernationCandidate = Pick<
   Session,
-  "agent" | "runtime" | "state" | "agentSessionId" | "pendingReviews" | "pendingTurns" | "task"
+  "agent" | "runtime" | "state" | "agentSessionId" | "pendingReviews" | "openQuestions" | "pendingTurns" | "task"
 >;
 
 /** A persisted permission mode read back, or null when this build does not know it. */
@@ -179,7 +180,9 @@ export function hibernateRefusal(session: HibernationCandidate): string | null {
   if (!session.agentSessionId) {
     return "Mission Control has not seen this conversation's id yet, so it could not reopen it.";
   }
-  if (session.pendingReviews > 0) return "It has a question waiting for you. Answer it first.";
+  // A question filed without stopping (`async-input`) counts too: hibernating would evict the
+  // session and orphan it, so its answer would never reach the resumed conversation.
+  if (questionsAwaitingOperator(session) > 0) return "It has a question waiting for you. Answer it first.";
   if (session.pendingTurns.length > 0) return "Messages are still waiting to be delivered to it.";
   return null;
 }

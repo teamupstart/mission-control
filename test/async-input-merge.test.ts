@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
-import type { ReviewItem } from "../src/shared/types.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision } from "../src/shared/types.ts";
@@ -21,6 +20,7 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { applyFeatureFlagIntent, featureEnabled } = await import("../src/server/feature-flags/index.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { reserveSessionTransfer, updateSessionTransfer } = await import("../src/server/session-transfers/store.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -156,8 +156,7 @@ test("with the flag on, a merge reaches an agent blocked inside a request_input 
   assert.equal(f.registry.getSession(f.id)?.state, "working");
   // An older MCP child, or a session no message can reach: the agent waits inside the call.
   const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
-  let returned: ReviewItem | null = null;
-  void f.reviews.wait(asked.id, 60_000).then((r) => { returned = r; });
+  const call = f.reviews.wait(asked.id, 60_000);
   assert.equal(f.reviews.blockedInRequestInputCall(f.id, true), true);
 
   f.merge();
@@ -166,8 +165,9 @@ test("with the flag on, a merge reaches an agent blocked inside a request_input 
   assert.equal(f.registry.getReview(asked.id)?.closedReason, "merged");
   const row = openDb().prepare("SELECT closed_reason FROM reviews WHERE id = ?").get(asked.id) as { closed_reason: string };
   assert.equal(row.closed_reason, "merged", "the reason is durable");
+  const returned = await call;
   assert.ok(returned, "the agent's call returned");
-  assert.match(reviewToolResult(returned!).text, /pull request merged/);
+  assert.match(reviewToolResult(returned).text, /pull request merged/);
   assert.equal(f.registry.getTask(f.taskId)?.status, "running", "still mid-turn: not concluded until the agent stops");
 
   // The call returned and the agent ends its turn: the ordinary idle settle completes the task.
@@ -188,4 +188,48 @@ test("with the flag off, an agent blocked inside a request_input call keeps toda
   assert.equal(f.registry.getReview(asked.id)?.status, "pending");
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
   f.reviews.resolve(asked.id, "dismiss", null, "human");
+});
+
+test("a merge during a runtime transfer holds completion until the questions can be closed with the reason merged", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-transfer");
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  const transfer = reserveSessionTransfer({ sourceSessionId: f.id, noteKey: f.id, taskId: null,
+    facts: { agent: "claude", nativeId: f.id, sourceName: "Transfer", sourceRuntime: "sdk", sourceEpisodeId: null,
+      cwd: `/repo/${f.id}`, repoRoot: null, taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: "/unused",
+      leaseId: "unused", backend: null, home: null, sourceStopped: true, stopStarted: true, sourceProcess: null,
+      launchAt: null, launchOutcome: "refused", canEnd: false } });
+
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "a skipped close is not a completed merge");
+  assert.equal(f.registry.getReview(filed.id)?.status, "pending");
+
+  // The transfer resolves without moving the question; the next observation closes and completes.
+  updateSessionTransfer(transfer, { state: "aborted" });
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("a merge seen between a call-mode ask and its first poll closes the question, and the first poll collects that", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-before-poll");
+  f.hook("UserPromptSubmit");
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  assert.equal(f.reviews.blockedInRequestInputCall(f.id, true), true, "the call owns the question before any poll attaches");
+
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getReview(asked.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(asked.id)?.closedReason, "merged");
+  const first = await f.reviews.wait(asked.id, 60_000);
+  assert.match(reviewToolResult(first!).text, /pull request merged/, "the first poll returns at once with why");
+
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
 });

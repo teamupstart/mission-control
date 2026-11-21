@@ -315,7 +315,7 @@ test("a resident is never held by its open questions, and the snoozed-question e
   assert.equal(registry.completionHeldByQuestion(parkedSession), true);
 });
 
-test("a merge closes every outstanding request_input question with the reason merged, and leaves gates alone", () => {
+test("a merge closes every outstanding request_input question with the reason merged, and leaves gates alone", async () => {
   setFlag(true);
   const { registry, reviews } = fleet();
   const d = mkDiscovered();
@@ -326,8 +326,7 @@ test("a merge closes every outstanding request_input question with the reason me
   const parked = reviews.create(id, "input", "Parked?", "Parked?", decisions("Parked?"), { snoozable: true, waitMode: "message" });
   reviews.snooze(parked.id, 60 * 60_000);
   const gate = reviews.create(id, "plan-decisions", "Plan", "Plan", decisions("Plan?"));
-  let waited: ReviewItem | null = null;
-  void reviews.wait(blocking.id, 60_000).then((r) => { waited = r; });
+  const waiting = reviews.wait(blocking.id, 60_000);
 
   const closed = reviews.closeQuestionsForMerge(id, true);
   assert.deepEqual(closed.map((r) => r.id).sort(), [filed.id, blocking.id, parked.id].sort());
@@ -340,7 +339,10 @@ test("a merge closes every outstanding request_input question with the reason me
   assert.deepEqual(registry.outstandingReviews(id).map((r) => r.id), [gate.id]);
   assert.equal(registry.completionHeldByQuestion(registry.getSession(id)!), false);
   // A call still listening hears why, rather than a generic channel loss.
-  assert.match(reviewToolResult(waited ?? registry.getReview(blocking.id)!).text, /pull request merged/);
+  // The waiter itself is released with the closure, not just the registry row.
+  const waited = await waiting;
+  assert.ok(waited);
+  assert.match(reviewToolResult(waited).text, /pull request merged/);
 });
 
 test("with the flag off a merge closes only message-mode questions and records no reason on call-mode ones", () => {

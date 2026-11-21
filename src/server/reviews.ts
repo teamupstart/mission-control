@@ -25,6 +25,7 @@ import {
   loadReviewContinuationCandidates,
   loadSnoozeInstructionCandidates,
   markReviewWaitAttached,
+  reviewWaitAttached,
   markReviewWaitDetached,
   snoozeReviewRow,
   updateReviewStatus,
@@ -64,6 +65,9 @@ export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
+
+/** A merge could not close a session's questions yet (a runtime transfer is moving them). */
+export class MergeClosureDeferred extends Error {}
 
 /**
  * "Remind me later" asked for by anyone but the operator. Parking a question tells its agent to
@@ -731,9 +735,12 @@ export class ReviewManager {
    * completion; it only makes sure no question outlives it unexplained.
    */
   closeQuestionsForMerge(sessionId: string, flagOn: boolean): ReviewItem[] {
-    if (transferForSource(sessionId)) return [];
     const closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
     if (closing.length === 0) return [];
+    // Mid runtime transfer the questions are moving to the successor session, so they cannot be
+    // closed here. A skipped close is not a success: throw, and the merge settle keeps the task
+    // running until the transfer resolves and the next observation can close them with `merged`.
+    if (transferForSource(sessionId)) throw new MergeClosureDeferred(`session ${sessionId} is mid runtime transfer`);
     // All or none: the caller completes the task only once every question is durably closed,
     // so a failed write must not leave some closed and some open. Published only after commit.
     const resolvedAt = Date.now();
@@ -746,14 +753,18 @@ export class ReviewManager {
   }
 
   /**
-   * The agent is waiting inside a call-mode `request_input` call right now: a pending question
-   * of its own with a live long-poll attached. Such an agent cannot go idle until the question
+   * The agent is waiting inside a `request_input` call right now: a pending question of its own
+   * with a live long-poll attached, or whose call has not yet detached. Such an agent cannot go idle until the question
    * settles, which is why a merge has to close it rather than wait for idleness.
    */
   blockedInRequestInputCall(sessionId: string, flagOn: boolean): boolean {
     // Pending in either count: a filed question an older child re-asked is waited on in a call too.
+    // A live long-poll proves the call; so does a row whose call has not detached, which covers the
+    // moment between the ask and its first `/wait`, when no poll is attached yet. The in-memory
+    // filter runs first, so the row is read only for a question that could hold the merge.
     return this.registry.outstandingReviews(sessionId).some((review) =>
-      review.status === "pending" && questionHoldsCompletion(review, flagOn) && (this.waiters.get(review.id)?.size ?? 0) > 0);
+      review.status === "pending" && questionHoldsCompletion(review, flagOn)
+      && ((this.waiters.get(review.id)?.size ?? 0) > 0 || reviewWaitAttached(review.id)));
   }
 
   persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {

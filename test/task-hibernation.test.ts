@@ -238,6 +238,8 @@ test("only an idle session of a running task, with a known conversation, can be 
   assert.match(hibernateRefusal({ ...base, state: "exited" }) ?? "", /already ending/);
   assert.match(hibernateRefusal({ ...base, agentSessionId: null }) ?? "", /could not reopen/);
   assert.match(hibernateRefusal({ ...base, pendingReviews: 1 }) ?? "", /question waiting/);
+  // A question filed without stopping (async-input) is in `openQuestions`, not `pendingReviews`.
+  assert.match(hibernateRefusal({ ...base, openQuestions: 1 }) ?? "", /question waiting/);
   assert.match(hibernateRefusal({ ...base, pendingTurns: [{} as never] }) ?? "", /Messages/);
   void task;
 });

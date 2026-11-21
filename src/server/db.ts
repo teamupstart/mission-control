@@ -5603,6 +5603,17 @@ export function markReviewWaitAttached(id: string): void {
     .run(id);
 }
 
+/**
+ * A call still owns this review's answer: its wait was never recorded as detached. True from the
+ * ask until a cancellation, a restart or a snooze detaches it, including before the first poll.
+ */
+export function reviewWaitAttached(id: string): boolean {
+  const row = openDb().prepare("SELECT mcp_wait_detached_at FROM reviews WHERE id = ?").get(id) as
+    | { mcp_wait_detached_at: number | null }
+    | undefined;
+  return row !== undefined && row.mcp_wait_detached_at === null;
+}
+
 /** Quote fixed identifiers from a shared policy as SQL string literals. Never pass input here. */
 function sqlLiterals(values: Iterable<string>): string {
   return [...values].map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");

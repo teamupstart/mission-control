@@ -295,6 +295,12 @@ and count.
 - **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
   same launch behavior the dock has (see below). The dock and the drawer share one launch
   state, so closing either while a launch is starting never starts a second resident.
+  With the **Fold the drawer's Profiles** preview on (`resident-profiles-fold`, in
+  **Settings > Feature flags**), a chevron beside the **Profiles** heading folds the list to its
+  heading, so the live residents above get the room, and opens it again. It works from the
+  keyboard with <kbd>Enter</kbd> or <kbd>Space</kbd>. The fold lasts while the drawer closes and
+  reopens, and a page reload opens the list again. With the preview off the heading has no
+  chevron and the list always shows, even if it was folded when the preview was switched off.
 - **Pin.** Open, the drawer lasts until it is closed or the page reloads: a refresh or a
   restart closes it. **Pin** keeps it open through those too, and changes nothing on screen.
   The pin is stored per machine. **Unpin** leaves the drawer open until the next reload, and
@@ -470,6 +476,14 @@ pending pacing too. Only an operator Pause or a guardrail requires Resume; neith
 answering a review. Legacy automatic `needs-you` pauses recover on observation using the default
 cadence because their old pacing intent was already discarded. Pausing does not interrupt an
 already running turn.
+
+With the `async-input` preview flag on ([Ask without stopping](sessions.md#asking-without-stopping)),
+a resident's `request_input` questions are filed and do not hold its wakes: it keeps iterating on
+its cadence while they wait in the attention inbox, and Resume is not refused for them. A question
+still waiting inside a call, a plan or diff review, and a permission dialog hold wakes exactly as
+above. An answer arrives as a message, which counts as human input and preserves pending pacing.
+The loop prompt asks the resident to check whether its earlier questions were answered before it
+asks again, and never to repeat a question that is still open.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
@@ -743,7 +757,12 @@ profile, marked *loads natively*, and comes back into the set if you switch to *
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
 Control leaves it to the native client. A custom server that shares a name with a global server
 is refused. Codex also checks for collisions in active workspace and managed configuration before
-starting the thread. To use **Pinned at launch** while a Codex OAuth server is configured globally,
+starting the thread. Codex's user `[mcp_servers.mission-control]` table may keep what Mission
+Control's own setup writes there: the `command`, `args` and `env.ELECTRON_RUN_AS_NODE = "1"` from
+installing the integration, and `default_tools_approval_mode = "approve"` from the Setup trust
+action. An `env` key the launch flags also set, such as `MISSION_PORT`, is accepted because the
+launch replaces its value. Any other field or `env` key in that table, or the server defined in
+another layer, refuses the start and names the key to remove. To use **Pinned at launch** while a Codex OAuth server is configured globally,
 turn off **Inherit harness defaults** and select the servers the resident needs.
 
 If plugin MCP tools disappear when the account has a claude.ai connector for the same server,

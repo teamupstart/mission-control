@@ -183,6 +183,15 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
+  transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
+  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
+  recorded with launches. A stored shaper whose stage or transport this build does not know is
+  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
+  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -835,11 +844,11 @@ A SessionAction is a durable side effect, not an evaluator:
 
 ### The `pull_request` adapter
 
-- Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
-  repository root and branch as the bound checkout, whose last observed remote head is the
-  exact commit the continuation captured. That commit's resolved Git tree must also equal the
-  `contentTreeOid` captured on the parent judged submission. `Session.prUrl` is a lookup hint and satisfies
-  nothing; neither does a branch name, nor a pull request merely existing.
+- New publication requires a durable adoption in Mission Control's ledger. Repository,
+  branch, head and content comparisons are advisory for a newly opened PR; differences are
+  recorded as warnings. Earlier open adoptions use the existing session/checkout checks.
+  `Session.prUrl` alone proves nothing. Earlier merged publication follows the stricter
+  content proof below.
 - It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
@@ -854,19 +863,41 @@ A SessionAction is a durable side effect, not an evaluator:
   expectation the immutable child can never satisfy, and the action waits forever while the
   head keeps moving.
 - Commit identity is not content identity. A packaging commit may differ from the reviewed
-  commit while preserving the accepted tree. A different published tree blocks with the
-  append-only `published_content_changed` code and must not reach End on the prior verdict.
-  Missing historical tree proof blocks as `capture_failed`; absence is never treated as
-  equivalence.
-- Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
-  including a provider that could not be reached: waiting is recoverable and a block is not.
+  commit while preserving the accepted publication tree. Historical merge satisfaction uses
+  that tree and refuses missing proof. If continuation capture discovers unpublished changes
+  or a different tree, `published_content_changed` exposes the existing resubmit recovery.
+- A historical merge can satisfy a later action only with a known matching repository,
+  branch and reviewed publication tree. The continuation persists `mergedContentTreeOid` and
+  rechecks that tree plus unpublished changes. Ordinary new-PR adoption keeps its advisory
+  comparison policy; historical publication never borrows that looser fallback.
+  A PR observed merging during the action wait retains the ordinary earlier-adoption path;
+  adoption time alone does not establish that its merge predates delivery.
+  Ledger reads require an explicit adoption-time/key cursor and use bounded pages. Git lookups run
+  sequentially per action so branch history cannot create an unbounded subprocess burst.
+  Every page remains eligible; a matching historical publication is never truncated away.
+  Successful immutable tree resolutions are cached by repository identity and commit in a
+  bounded manager cache. Unknown objects retry after a one-minute cooldown, held separately
+  until expiry so cache eviction cannot trigger immediate retries. Missing accepted trees
+  skip these lookups.
+  Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
+- Rolled-over task settlement requires the latest terminal run's confirmed action delivery
+  to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
+  receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
+  the Registry records the episode. The receipt includes the human Goal revision so an
+  operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
+  fail closed; retained text labels alone never establish ownership after restart.
+  Driver state events without a prompt hook do not roll an episode; an unchanged merged
+  episode retains the ordinary settlement path. Blocked runs still own recovery and keep
+  the task running until the run completes, fails, or is cancelled.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
-  tick the adapter needed to see it closed - and the one state that blocks becomes unreachable,
-  leaving a durable contradiction reported as an ordinary missing-PR wait for ever. Read through
-  `loadAdoptedInspectorPrsSince(deliveredAt)`, which keeps retired rows visible for exactly the
-  window this action has been waiting. Widening that bound is not free: the caller resolves a
-  repository identity per distinct root, and each one is a git subprocess.
+  tick the adapter needed to see its final state, leaving a completed publication reported
+  as an ordinary missing-PR wait. Read through
+  `loadAdoptedInspectorPrsSince(deliveredAt, branch, null)` for the first page, then pass the
+  preceding page's last row as the cursor. This keeps retired rows visible for exactly the
+  window this action has been waiting, plus older merged observations on its branch. The
+  caller resolves repository identity per distinct root and resolves merged content only
+  inside the matching repository and branch. Closed-unmerged history stays outside the window.
 - A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
   and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
   produced one somewhere else", which look identical from the ledger and are opposite problems.
@@ -1215,6 +1246,8 @@ Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overla
 
 A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
 
+Backdrop clicks stop at the overlay, including when it is nested in a clickable tile. Modal overlays (`ariaModal`) move focus inside, contain Tab and Shift+Tab while topmost, and restore their connected opener on dismissal. Existing autofocus inside the panel is preserved. Use the shared behavior instead of adding a separate focus trap to a dialog.
+
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
 A fourth layout also requires render selection, expansion state, Escape handling, expand shortcuts, command bar behavior, `layoutNav.ts`, and `LayoutPanel`.
@@ -1246,11 +1279,15 @@ Extend existing registries instead of adding parallel lists:
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
   falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
   runtime probe for installed software. A feature flag must feed one shared availability gate
-  for all readers, updated live rather than frozen at module load. The existing build-time gate is:
-  `settingsCategoryAvailable` in `src/web/lib/settings-registry.ts` withholds Conductor while
-  `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off, and every
-  reader (rail, walk, router, palette, settings search, `SettingsPage`) goes through it or
-  `VISIBLE_SETTINGS_CATEGORIES`, so none of them can disagree. Setup applies the same switch to
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
   its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
   stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new

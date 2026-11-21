@@ -35,9 +35,11 @@ test("headless mode: its Settings row toggles a second window and gates the daem
   await expect(row(page)).toHaveAttribute("aria-pressed", "true");
   await expect(row(peer)).toHaveAttribute("aria-pressed", "true");
   await expect.poll(capabilities).toContain("home-dispatch-v1");
+  // Open means the route answers for itself (a stub's 501, or a real route's own status), never the
+  // flag-off 404, so this keeps holding as each phase fills its route.
   const on = await inbox();
-  expect(on.status).toBe(501);
-  expect(await on.json()).toEqual({ error: "not implemented", feature: "headless-mode" });
+  expect(on.status).not.toBe(404);
+  expect(await on.json()).not.toEqual({ error: "This feature is disabled.", feature: "headless-mode" });
   expect((await fetch(`${daemon.baseURL}/dispatch/inbox`)).status).toBe(401);
   if (process.env.MC_E2E_EVIDENCE) {
     // The enabled row, in the window that clicked and in the one that followed without a reload.

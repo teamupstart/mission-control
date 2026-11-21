@@ -126,6 +126,20 @@ export function credentialShapedName(name: string): boolean {
  */
 export const MAKE_RECURSION_ENV_NAMES = ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"] as const;
 
+/**
+ * Git's config-from-environment family: `GIT_CONFIG_COUNT=N` plus `GIT_CONFIG_KEY_<i>` and
+ * `GIT_CONFIG_VALUE_<i>` for every `i` below N. Never passed to a Command, as a whole.
+ *
+ * Whole, because git refuses to start at all under a partial family ("missing config key
+ * GIT_CONFIG_KEY_0"): the name rule alone used to take `KEY_<i>` (its `KEY` segment) and leave
+ * COUNT, so an operator who exported one ordinary setting this way had every git in every
+ * Command fail. Never, because the family is not safe to forward: a config key can carry a
+ * secret in its URL subsection (`url.https://user:token@host/.insteadOf`), a value can carry
+ * one too (`http.extraHeader`), and neither is name-shaped. A Command loses settings that were
+ * never reaching it intact anyway; it keeps a git that starts.
+ */
+const GIT_CONFIG_FAMILY = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+
 export function scrubCheckEnv(
   env: NodeJS.ProcessEnv,
   daemonToken: string,
@@ -149,6 +163,7 @@ export function scrubCheckEnv(
     if (value === undefined) continue;
     if ((STATE_HOME_ENV_NAMES as readonly string[]).includes(name)) continue;
     if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
+    if (GIT_CONFIG_FAMILY.test(name)) continue;
     if (credentialShapedName(name)) continue;
     // The VALUE rule, which is the only one that removes the daemon's own token by identity
     // rather than by hoping whoever exported it chose a credential-shaped name. `includes`

@@ -1,10 +1,10 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 // The advisor a dispatched Claude session launches with: Inherit (null), Opus, Sonnet or Off,
@@ -283,13 +283,7 @@ test("a database from before the pin opens, gains both columns, and reads every 
 
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   return repo;
 }
 

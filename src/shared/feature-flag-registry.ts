@@ -32,6 +32,46 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   },
+  {
+    id: "task-hibernation",
+    label: "Hibernate tasks",
+    description:
+      "Adds Hibernate to a task session's pause menu: the agent stops and frees its memory, and the task waits in the Backlog until you resume its conversation.",
+    stage: "preview",
+    keywords: ["hibernate", "resume", "memory", "pause", "sleep", "backlog"],
+  },
+  {
+    id: "task-shaping",
+    label: "Task shaping",
+    description: "Register shapers in Settings > Task shaping and dry-run them to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",
+    stage: "preview",
+    keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
+  },
+  {
+    id: "resident-profiles-fold",
+    label: "Fold the drawer's Profiles",
+    description: "Adds a chevron to the Residents drawer's Profiles heading that folds the launch list away, so the live residents above get the room.",
+    stage: "preview",
+    keywords: ["residents", "drawer", "profiles", "launch", "collapse"],
+  },
+  {
+    id: "session-control-requests",
+    label: "Session control requests",
+    description: "Let a session ask, through Mission Control's MCP tools, for permission to control other sessions. "
+      + "The request appears as a card on that session, and only your own click on Accept in the desktop app grants it.",
+    stage: "preview",
+    keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
+  },
+  {
+    id: "async-input",
+    label: "Ask without stopping",
+    description:
+      "request_input files the question in the attention inbox and returns at once, so the agent keeps " +
+      "working; your answer reaches it later as a message. A session that stops with a question open shows " +
+      "as waiting on your answer.",
+    stage: "preview",
+    keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */

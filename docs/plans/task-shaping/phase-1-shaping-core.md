@@ -76,11 +76,15 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    total it may fill as an argument and reads no config, so a later step outside shaping can
    call it with what the shaping stages left (decision 12 in `phased-plan.md`).
    `resolveShapers` returns known shapers
-   only, and implements the whole enablement and ordering rule now, including for a
+   only, and implements the whole enablement and ordering rule now. An empty `kinds` means
+   every kind whose `TASK_KIND_BEHAVIOR.launch` is `harness` (`shapedByDefault`), so a resident
+   launch is shaped only when a shaper lists the resident kind, and a resolve input with
+   `turn: "iteration"`, a resident's wake turn, resolves to nothing (Jordan, 2026-11-20). The rule also covers a
    discovered list that stays empty until Phase 4. A stored choice in `overrides`, on or off,
    always wins. With no stored choice, a registered shaper is off, and a discovered one runs
    unless its manifest says `"enabled": false`. `shaperIsLocal(shaper)` says whether a shaper
-   may be sent local paths.
+   may be sent local paths. In the request's `context`, each `repositories` entry carries a
+   `slot` and `target` is the slot of the repository the call is about (D17).
 4. **Config entry and domain.** `shaping` in `APP_CONFIG_ENTRIES`, and a `shaping` backup
    domain.
 5. **`src/server/shaping/index.ts`.** `getShapingConfig`, `applyShapingIntent`,
@@ -94,7 +98,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    removed a credential value from the data or from a failure reason, and the summary records
    it for that shaper.
    Each call's timeout is the smaller of the shaper's and the time left in the step. Paths are
-   put in a request only when `shaperIsLocal`. The summary records each shaper's origin and
+   put in a request only when `shaperIsLocal`. Slots are `repo-01` for the primary and then
+   `repo-02` onward in attachment order. The summary records each shaper's origin and
    the SHA-256 of its definition, taken over canonical JSON for a registered shaper. The
    `TaskShaping` type also declares an optional `sessionId`, which the engine leaves unset
    and Phase 2 sets when it commits the record. An optional `input.maxSectionBytes` lowers
@@ -138,7 +143,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 ## Tests and verification
 
 - `test/shaping.test.ts`: every pure function and every intent; the enablement table in
-  `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
+  `plan.md`, row for row; a shaper with no `kinds` serving every harness-launched kind but not a
+  resident launch, one listing the resident kind serving it, and a wake turn resolving nothing; an entry with an unknown stage or transport id that survives a
   parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
   written by `upsert`; an `upsert` over an id whose stored choice is on, left there by a
   discovered shaper, which leaves it off; a literal credential in a credential-looking
@@ -151,7 +157,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome, two repositories whose entries
-  share an id but differ, which both reach the section, and a `redacted` mark carried
+  share an id but differ, which both reach the section, two attached worktrees of one
+  repository, whose requests differ only in `context.target`, and a `redacted` mark carried
   into the summary from a data reply and from a failed one, and a `maxSectionBytes` below
   `limits.totalBytes` that cuts the section and records it as truncated, and `input.trace`
   reaching every call of a run as `ctx.trace` unchanged while appearing in no summary or
@@ -191,6 +198,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
   reference that fails closed, `ctx` gained the per-run scope for one MCP connection per run,
   and `shaperIsLocal` keeps local paths out of remote requests.
 - For Phase 6: the built-in id and its options are declared here.
+- For Phase 7: the stage tuple and the engine loop take `route` as an append, and
+  `allocateBudget` already takes its total as an argument. D17's two fields are declared here.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.
 - Review history: plan validation and the review of pull request #1546 changed this phase

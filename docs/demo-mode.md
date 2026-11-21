@@ -87,7 +87,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   Answer the question and the three drain in order, which is the whole point of the affordance.
 - **Ten tasks across every state a board really shows**: `done`, four `running`, `cancelled`,
   and four in `backlog` - one of them blocked on another, one parked (`enabled: false`). Note
-  that "blocked" and "parked" are not statuses; there are only six of those, and neither is
+  that "blocked" and "parked" are not statuses; there are only seven of those, and neither is
   among them.
 - **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
   plan and an answered question in a session's resolved history.

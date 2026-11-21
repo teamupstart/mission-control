@@ -1,5 +1,7 @@
 # Phase 10: mctl client and read commands (WP6a)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: The mod is the display; mctl reads are a second surface. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.13.
 
 **1. Outcome.** `mctl` can read the daemon: `get`, `describe`, `logs` (including `-f`), `status` and `config`, with the same token and rules as the mod, and it never answers, approves, cancels or sends.

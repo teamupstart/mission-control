@@ -78,14 +78,18 @@ report, so the count and the lists cannot disagree.
 
 The [shared task-status policy](../src/shared/task-status.ts) defines whether each
 `TaskStatus` is active. Provisioning (`dispatching`) and execution (`running`) are active;
-`backlog` and terminal statuses are not. Lifecycle guards use `isActiveTask`, and SQL
+`backlog`, `hibernated` and terminal statuses are not. `hibernated` is not terminal either: the
+operator stopped the agent and will resume its conversation (see
+[Hibernate a task](sessions.md#hibernate-a-task-and-resume-it-later)). Lifecycle guards use `isActiveTask`, and SQL
 readers use its derived `ACTIVE_TASK_STATUSES` list. Adding a status to `TASK_STATUSES`
 requires an explicit activity decision and an entry in the
 [lifecycle contract matrix](../test/task-status-contract.test.ts).
 
 Some consumers deliberately ask a broader question. Schedule overlap, startup loading,
-and ensemble submission eligibility include backlog work as well as active tasks. Merge
-reconciliation also considers failed and cancelled tasks that may have shipped. These
+and ensemble submission eligibility include backlog work as well as active tasks; schedule
+overlap and startup loading include hibernated tasks too. Merge reconciliation also
+considers failed and cancelled tasks that may have shipped; it never touches a hibernated
+task, which only the operator's Resume moves on. These
 consumers compose the active policy with their own cases; they do not redefine it.
 
 ## Task-source content refresh

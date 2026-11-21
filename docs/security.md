@@ -153,12 +153,13 @@ as task creation, dispatch and deletion, without a **Control other sessions** gr
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the
 current daemon run. Its identity includes the process, native conversation id, working
-directory, work episode and task. Exactly two things create a grant, and both are a trusted
-click in the desktop dashboard: the session's own control menu, and the **Launch** click for a
-resident profile whose pinned revision turns **Control other sessions** on (see
+directory, work episode and task. Exactly three things create a grant, and each is a trusted
+click in the desktop dashboard: the session's own control menu, **Accept** on the session's own
+ask for control (see [Session control requests](#session-control-requests)), and the **Launch**
+click for a resident profile whose pinned revision turns **Control other sessions** on (see
 [Resident launch grants](#resident-launch-grants)). Dispatch defaults, a launch from any other
-surface and session-control tools cannot create one. Resetting or replacing that identity
-revokes it.
+surface and session-control tools cannot create one; a tool can only ask. Resetting or
+replacing that identity revokes it.
 
 The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
@@ -182,6 +183,33 @@ the shared machine token and signed agent credentials cannot create a grant.
 The standalone browser dashboard cannot change this setting. A desktop app that adopted
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
+
+### Session control requests
+
+Behind the `session-control-requests` preview flag, `request_session_control` lets a session ask
+for its own grant. Asking and accepting are separate authorities:
+
+- **The ask.** `POST /mcp/session-control/requests` requires the machine token and the signed
+  Registry session credential, so the asker is always the verified caller and never a body id.
+  It records one pending ask per session, bound to the same identity the grant binds, and draws
+  it on that session. It grants nothing, and a long-poll route answers only the session that
+  asked.
+- **Why it is not a review.** A review settles through `POST /api/reviews/:id/resolve`, which any
+  loopback caller can reach with a body-asserted `by: "human"`, and which Foreman and a session
+  holding the grant (`control_session` `resolve_review`) also use. An ask settled there would let
+  one agent grant itself or another agent authority, so an ask has no review, no review id and
+  no action in `control_session`.
+- **The accept.** The card's **Accept** arms the private trusted click exactly as the menu does,
+  for that session and `enabled: true`, and sends the existing grant with the ask's id as
+  `controlRequestId`. The grant route refuses an ask the session no longer holds before it
+  consumes the click, and checks it again after, so a stale card cannot grant a conversation
+  that never asked. Every refusal above applies unchanged. The ask settles `granted` only by
+  observing the grant, whichever surface applied it.
+- **The decline.** Declining only removes an ask, so like a revoke it needs no click, but it
+  still refuses tool, agent-credential and agent-actor callers.
+
+An ask expires when its conversation changes, its session ends, the daemon restarts or the
+flag turns off. The limit stated below applies to it unchanged.
 
 ### Resident launch grants
 
@@ -371,3 +399,174 @@ what that measurement does not cover, are in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
 Control does not claim an operating-system sandbox against a process running as the same user as
 the daemon, which could read an owner-only file before the launcher does.
+
+## Task shaping
+
+[Task shaping](task-shaping.md) is a preview behind the `task-shaping` flag, and with it off
+nothing below runs. Only the operator adds a shaper, through the loopback API, and a registered
+shaper is stored switched off.
+
+**A `command` shaper runs as you.** It is the same trust as an operator-authored Workflow
+command, and Mission Control adds no operating-system sandbox. What it does control: argv is
+spawned without a shell, a gatherer runs in the repository's checkout and a selector in an empty
+directory of its own, stdout is capped at 256 KiB, and the timeout kills the whole process
+group.
+
+The child's environment is built in two steps (`shaperCommandEnv`):
+
+1. **The inherited environment.** It starts from the daemon's own environment, with the
+   daemon's executable search path as `PATH`. Removed from it are:
+   - Mission Control's API token and token-file variables, its scout credential and session
+     locator variables, and its state directory under all three names (`MISSION_HOME`,
+     `FLEET_HOME`, `HARNESS_HOME`);
+   - terminal pane identities, and `make`'s recursion variables;
+   - every variable whose name looks like a credential, meaning a name segment such as
+     `token`, `secret`, `password`, `credential` or `key`;
+   - any variable whose value carries the daemon's token.
+
+   Every other variable is passed through unchanged, such as `HOME`, `LANG`, `TMPDIR` and proxy
+   settings.
+2. **The named variables.** Each variable the shaper names in `env` is then added from the
+   daemon's environment, credential-shaped or not, which is how a shaper receives an API token.
+   Three kinds are never added, even by name: Mission Control's own token, credential and
+   state-directory variables, an empty value, and a value that carries the daemon's token.
+
+Before any reason is recorded from what the shaper wrote, every value in the environment the
+child was spawned with, inherited or named, is replaced with `[redacted]`. That covers a
+failure's stderr and the reasons drawn from a reply on stdout: an `error` it states, its
+degraded `notes`, and a validation failure, whose path can hold a key the shaper chose. A reported `version` is redacted too, as an identifier: a named value or a long one goes,
+while a short inherited value such as `0` stays, so `v1.4.0` survives. Each
+is redacted whole and only then cut to its recorded length, so a cut cannot split a value
+into a fragment the redactor no longer recognises. A value is replaced anywhere it appears when it is
+four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
+every "C" in the message. A value of a variable the operator named in `env` is a credential it
+chose to pass, so it is replaced anywhere whatever its length, inside a word included. Overlapping or adjacent matches, including two values that overlap,
+are replaced as one span, so no part of either survives. Each value is found with a
+Knuth-Morris-Pratt scan and its matches are marked in a difference array, so the work is linear
+in the text and the value however many copies overlap, and a reply at the 256 KiB cap cannot
+stall the daemon.
+
+A value the operator named in `env` is also removed from the reply's own content before the
+engine reads it: every occurrence in an entry's path, title or body, the summary, a fact's value,
+the notes, the version and an error becomes `[NAME redacted]`. Keys the result schema defines are
+never changed. An entry whose id, or a fact whose name, contains the value is dropped with a
+note rather than renamed, so redaction never merges two of them. Every value is found on the
+original text before anything is replaced, so two named values that overlap are removed over
+their combined span and no fragment of either survives. A field the result schema bounds, such
+as an entry's title or the version, is cut back to its bound when the marker makes it longer, so
+a reply that was valid stays valid. The shaper's record is marked
+`redacted`, its reason names what was dropped, and its outcome does not change. An inherited
+value that carries a credential although nobody named it, a URL with userinfo such as an
+authenticated `HTTPS_PROXY`, is treated as named: the whole URL, its `user:password` part and the
+password are removed from diagnostics and content alike, under the variable's name. Inherited values are not rewritten in content, which
+legitimately holds paths and ordinary words.
+
+stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
+whole and a non-ASCII value still matches exactly when it is redacted.
+
+When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
+started outside its process group cannot keep them open after the group is killed. It also
+kills what is left of the shaper's own process group, even after a successful reply, so a
+helper the shaper started in its group cannot outlive the call. That happens as soon as the
+shaper exits, so a helper holding its pipes cannot turn a complete reply into a timeout; a
+bounded drain then answers with what was read. The drain ends before the call's own deadline,
+so a reply that arrived on time is returned on time. A
+selector's scratch directory is removed in the background after the call has answered, never
+before it. A large tree left behind costs disk work, not the dry run's latency or the event
+loop's. A removal that fails is logged through the call's redactor, because a path in the tree
+is named by the shaper. Removal never changes a permission and never follows a symlink. A directory the
+shaper locked is left behind and logged, because a path in the tree could be swapped for a
+link between a read and a `chmod`. A cleanup a transport registers after its call was
+abandoned runs as soon as it is registered, so a late resource is still released.
+
+**Pass command credentials through `env`.** Credential detection in a shaper definition is
+best-effort. It recognises the forms below and refuses them, but a literal secret in a form it
+cannot recognise, such as a bare positional argument with no known token shape, is stored as
+written and copied into settings snapshots. A command's credential belongs in a variable named
+in `env`, which is passed from the daemon's environment and never stored.
+
+A header that looks like it carries a credential must hold its secret
+as a reference. That is `authorization`, `proxy-authorization` or `cookie`, or any name that
+contains `token`, `secret`, `key`, `password`, `auth` or `credential`, compared without case,
+such as `x-api-key` or `X-Monkey`, as well as a name with a segment such as `session`. The rule
+goes by name, so a credential under an innocent-looking name is not caught. When the value is
+not empty it is `{env:NAME}` references only, so a caller reference beside one is refused too. Only `Authorization` and `Proxy-Authorization` may put a scheme
+before them, and only `Bearer`, `Basic`, `Token` or `Digest`, as in `Bearer {env:ACME_TOKEN}`.
+An API-key header such as `x-api-key` takes references alone. Any other leading word, a lone
+word with or without whitespace after it, or a key prefix such as `sk-live {env:X}`, is
+literal secret text and is refused. So is a value that names only a caller reference. A transport
+URL, an `http` shaper's or an `mcp` server's, may not carry a user name, a password or any query
+string. An argument may not hand over a credential
+as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
+credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
+`--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
+field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
+any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), judged over every
+occurrence of a repeated key rather than only the last one `JSON.parse` keeps, a cookie (`-b`, `--cookie`), any of
+these as a curl short option grouped after switches, read the way curl reads it (`-sH "Authorization: …"`,
+`-svuname:pass`, `-bname=value`), a curl long option's next argument even when it starts with a
+dash (`--user -name:pass`), curl's key passphrase (`--pass`, `--proxy-pass`) and certificate
+password (`--cert file:password`, `-E file:password`), or
+a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
+query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
+`env` instead.
+Any argument, a positional one included, that holds a well-known credential's shape is refused as
+well: a GitHub, AWS, Slack, Google, GitLab, npm, Anthropic or OpenAI token, a JWT, or a private
+key header. The shapes live in `src/shared/secret-shapes.ts`, which the Inspector's outbound
+scrubber reads too. A bare value that matches no known shape cannot be told apart from
+configuration, such as a repository name, so it stays the operator's to name in `env`.
+Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
+definition that breaks these rules is
+refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
+settings snapshot, hold the reference and never the value. The stored config's own schema
+also empties any literal credential it finds in an entry, including one this build cannot
+run: a header value, a transport URL's userinfo and query string, or a credential argument. Every read, settings restore and backup capture goes through that schema, so an
+entry handed over another way, such as a foreign snapshot, still cannot carry a literal
+credential in those fields into the daemon or into a snapshot. That guarantee covers those
+fields only: an unsupported entry keeps every other field exactly as written, unread, so a
+foreign snapshot can still carry secret text in a field this build does not know, and it is
+kept in the stored config and in later snapshots. Like the shape check above, this is best
+effort, not a scan of everything an entry holds. A stored entry may nest at most 32 levels deep, checked
+without recursion before anything recursive reads it, so a crafted entry is a validation
+error that takes the unreadable-config path rather than a stack overflow. An entry it emptied anything in is marked
+`credentialsRemoved` and is unsupported. When that mark would take an entry past the 16 KiB
+entry limit, only its id, label, stage and transport type are kept, so the config still parses
+and saves. It never runs, dry-runs or switches on with its
+changed arguments or headers, until the operator registers a valid replacement for its id,
+which is stored off. An argument is judged by its name, split at the first `=`, so a value
+with line breaks in it is recognised as well.
+
+**What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
+harness, runtime and after-work workflow, the attached repositories' names, roles, branches and
+base commits, the declared caller identity, and the facts and summary a gatherer produced. Local
+worktree paths go only to local shapers (`command`, `builtin`, and an `mcp` server started as a
+local process). A remote shaper never receives a local path.
+
+**What comes back is untrusted.** A shaper's text is validated against one result shape, capped
+per entry, per shaper and in total, and placed in its own labelled section, which states that it
+cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
+or returns something else is recorded as an outcome, never an error reply.
+
+This build only dry-runs shapers through the API: no worker receives their text yet. Calling
+them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
+later phase. The `mcp` and `http` transports and the shapers folder are declared but not yet
+reachable: each answers `unavailable` until its phase lands, and its egress and folder
+ownership rules are documented with it.
+
+**The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
+in the daemon and reads the paths its options list, nothing else. Containment and size are
+checked on the file it opened, not on a path looked up beforehand: the open does not follow a
+final link, and it is non-blocking, so it does not wait for a writer on a named pipe, or on a
+device whose driver honours non-blocking opens. The opened file must be a regular file of at
+most 4 MiB with the same device and inode as the link-free real path inside the worktree, and
+the read stops at its cap. These checks run once the open has returned, so they do not bound
+how long an open on a hung network filesystem takes.
+This proves no file outside the worktree is read while the worktree's directories are not being
+rearranged during the read. A process running as the operator that swaps a directory on the
+path in a tight race can still get an outside file read, and that process could read the file
+itself. Every `repository-files` filesystem call in the daemon goes through one of two gates,
+one call at a time each, one for lookups and reads and one for closes, so a hung network mount
+can hold at most two of Node's shared file-I/O threads and never keeps another run's file open.
+The gatherer also holds at most one open file at a time, daemon-wide, released only once its
+close finishes, so a stalled close cannot make descriptors pile up.
+[The guide](task-shaping.md#the-built-in-gatherer) states every rule.

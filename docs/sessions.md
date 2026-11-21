@@ -884,6 +884,127 @@ narrowest title bar it gives way with the fleet pulse's words, and comes back as
 widens; while Pause all or priority is on, the banner under the title bar keeps **Resume all
 now** and **End priority** at every width.
 
+### Hibernate a task and resume it later
+
+Pause keeps the agent's process in memory. **Hibernate** ends it, so a low-priority task you
+want to leave blocked for days stops using memory. The task, its conversation, its worktree and
+local changes, and its recorded blocker are all kept. **Resume** starts a new agent process that
+reopens the same conversation in the same worktree, under the same task.
+
+It is a preview: switch on **Hibernate tasks** in Settings → Feature flags. It then appears as
+the last row of the pause menu (the run chip, the card's ⋯ menu and the console's toolbar button
+all open that menu).
+
+**What can be hibernated.** An idle session of a running task, in a terminal or on the Agent
+SDK, with Claude Code or Codex. A terminal Pi session can be hibernated too. The row is offered but
+disabled, with the reason on it, when:
+
+- the agent is Pi on the Agent SDK, whose driver runs inside Mission Control, so there is no
+  memory to free;
+- it is mid-turn, starting, or waiting on your answer (finish the turn or answer the question
+  first);
+- it has messages still waiting to be delivered, or a question waiting for you;
+- Mission Control has not yet seen the conversation's id, so it could not reopen it, or cannot
+  read the checkout the session is running in;
+- the task is a Pipeline, resident or ensemble-member task, which keeps its own lifecycle.
+
+The priority session is not offered Hibernate at all, and the route refuses it: end priority
+first. A session whose workflow run is still in progress is refused too, and the menu says so
+before you click. An armed workflow
+that has not started a run is kept: it is still attached when the task resumes.
+
+**What Hibernate does.** The task is recorded as hibernated and unbound from its session first.
+Then the agent is stopped, after lifting its pause if it had one. An Agent SDK session is stopped
+and Mission Control waits until it has finished writing its conversation. A terminal agent is
+stopped the way Kill stops it: it is sent `SIGTERM`, and its terminal session is closed if the
+agent was the only thing in it. Hibernate then waits up to 10 seconds for the agent's process to
+be gone. If it is still running, Hibernate says the stop is incomplete instead of reporting
+success, and the task stays hibernated with that reason. Stop that session, or wait for it to
+exit, then Resume. Because nothing is bound to the session when it leaves, nothing
+settles the task as failed, clears its blocker or detaches its workflow. An Agent SDK session's
+record is kept with the status `hibernated`, which no restart picks back up. If the agent will not
+stop, the task goes back to running on its session and the menu says why.
+
+**Where a hibernated task is.** It leaves the board. It waits at the top of the Backlog column,
+in a **Hibernated** section, with its title, the blocker it was waiting on, how long it has been
+hibernated, and **Resume**. In the Console layout, the Line's Backlog drawer shows the same
+section, and its Backlog stage reads `1 hibernated` when nothing else is queued. A hibernated
+task stays hibernated across a Mission Control restart until you resume it. Foreman's backlog
+autopilot never starts it, a recurring mission treats it as still in flight, and a blocker
+it carries is never pruned for age. Nothing but your Resume changes its status: even a pull
+request that merges while it is hibernated leaves it hibernated, and it is settled by that
+merge only once it is running again.
+
+**What Resume does.** No prompt is sent either way: the agent comes back idle where it left off,
+still blocked if it was blocked, and the task is bound back to it and returns to the board.
+
+- An **Agent SDK** session is relaunched under the same id, with its conversation, model, effort
+  and permission mode, exactly as a daemon restart restores a session. The task is bound to it
+  only once the driver itself reports that it reopened the saved conversation. A driver that
+  reports a different conversation, or none within 30 seconds, is hibernated again, and the
+  task stays hibernated with the reason. A freshly hibernated card
+  lingers for a few seconds before it leaves, so a Resume pressed during that time is refused and
+  can be retried a moment later.
+- A **terminal** session is reopened with the managed terminal resume (the same one the
+  conversation pane's agent launcher uses): the agent's own resume command for that conversation,
+  in the task's worktree, with the permission mode it last ran in and Mission Control's tools, in
+  a new terminal session. It opens in the backend the task last used, or the one Settings →
+  Harnesses chooses for that agent. The agent is a new process with a new session id, so Resume
+  waits up to a minute for it to report the hibernated conversation's own id, then moves the
+  task, its work history and any armed workflow onto it. Only the process this Resume launched
+  qualifies: the one in the terminal tab it opened, or descended from the launch that claimed its
+  managed resume. If the agent it launched reports any other conversation, that launch is undone
+  like any failed one. An agent in the same worktree that Resume did not launch is left alone,
+  whatever conversation it reports. If something else opens the same conversation meanwhile, the
+  task is given to neither and the launch is undone, so two processes never write one
+  conversation.
+
+Hibernate records the checkout the conversation ran in, as the filesystem identifies that
+directory. Before Resume starts anything, it checks that the directory at that path is still
+the same one. A worktree moved away and back passes. If the worktree was removed and another
+directory now stands at its path, Resume refuses and says so, so the conversation is not
+reopened in a different checkout. That rests on the filesystem's directory ids: APFS, on the
+macOS Mission Control supports, does not hand a removed directory's id to a new one, but a
+filesystem that does (such as Linux's ext4) can make a directory removed and recreated at once
+look like the same checkout. The check is repeated just before a terminal agent is launched,
+and once more immediately before the task is bound, so a checkout replaced during the launch is
+caught too: the launch is undone, or an Agent SDK session is put back to sleep.
+
+Resume refuses a conversation that is already open in another session, so two processes never
+write one conversation at once. That includes the hibernated session's own agent: if it is still
+running, because it has not exited yet or because Mission Control stopped while hibernating a
+terminal session and the agent outlived it, Resume says so and launches nothing. Stop that
+session, or wait for it to exit, then Retry. Ownership is checked again across every live
+session immediately before the task is bound. If another session took the conversation while
+the agent was starting, a terminal launch is undone and an Agent SDK session is hibernated
+again, and the task stays hibernated with the reason. A launched terminal agent is bound only
+if it is still live, in the saved checkout and on the saved conversation at that moment, and an
+Agent SDK session only if its driver is still running and still on the saved conversation. A woken Agent SDK session whose driver
+ends before the task is bound, for any reason, keeps the status `hibernated`, so Retry can still
+reopen it. If the task itself was deleted, cancelled or completed while the agent was starting,
+nothing is bound: an Agent SDK driver is stopped, and a terminal launch is undone the same way as
+a failed one. Since there is no hibernated task left to record it on, an agent that could not be
+stopped is named in the reply instead. If an
+Agent SDK driver cannot be stopped again, the row says so, and the next Resume stops that driver
+before it launches anything.
+
+**When Resume fails.** If the worktree is gone, the agent cannot reopen its conversation, or a
+resumed terminal agent does not report that conversation within a minute (its new terminal
+session is closed again), the task stays hibernated. Its Backlog row turns red and says why, and **Retry** tries
+again. Nothing about the worktree, its changes or the conversation is touched by a failed attempt. A failed terminal Resume undoes its launch: it cancels a launch that has not
+started the agent yet, or closes the new terminal session and waits up to ten seconds for the
+agent it started to exit. If that terminal cannot be closed, or its agent is still running after
+it closed, the row says so and records it. So does a launch that failed to open its terminal
+after its agent may already have started: with no terminal to close, Retry refuses until that
+agent has ended. Retry first closes it (or finds it gone) and refuses to
+launch another agent while it may still be running, and the record is kept through any other
+failure in between. A launch that never started its agent but whose terminal would not close is
+recorded too: Retry closes that terminal again, and since no agent is in it, reopens the
+conversation either way.
+
+Turning the preview off hides Hibernate. Tasks already hibernated stay in the Backlog and can
+still be resumed, so switching the preview off never strands a conversation.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach
@@ -2355,6 +2476,30 @@ The desktop app must own its daemon: if it reused a standalone daemon, stop that
 reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
 forged browser headers.
 
+#### When a session asks for control
+
+With the **Session control requests** preview on (Settings > Feature flags, off by default), a
+session that needs this grant can ask for it with the `request_session_control` tool, giving a
+reason. The ask appears as a **Permission** card at the top of that session's Conversation tab,
+showing the session's name and its reason verbatim, with **Decline** and **Accept**.
+
+- **Accept** gives the session exactly the grant the menu above gives, through the same real
+  desktop click. A scripted click, a browser dashboard, an agent, Foreman or another session
+  cannot accept it, and the browser shows Accept disabled. The ask is not a review, so it never
+  appears among the session's reviews and no review answer can approve it.
+- **Decline** works anywhere and grants nothing. The agent is told not to ask again unless you
+  tell it to.
+- Turning control on from the menu also answers a pending ask.
+
+The tool blocks until you decide and then returns `granted`, `declined`, or why the ask ended
+without a decision. `granted` records your decision when you made it, not current authority:
+turning control off later, or a reset, ends the grant without changing that answer, and the
+session's `read_sessions` and `control_session` calls then refuse. An ask lasts as long as the conversation that raised it: a reset,
+replacement conversation, different task, the session ending or a daemon restart withdraws the
+card, and so does turning the preview off. A session that already holds the grant is answered
+at once, and a repeated call rejoins its one pending ask without changing the reason you are
+reading.
+
 The session uses two Mission Control tools:
 
 - `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`
@@ -2410,8 +2555,9 @@ records a **blocker** with `report_blocker`: what it is waiting for (`reason`), 
 answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
 `dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
 lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
-through `request_input`, and `report_blocker` is refused while the session has a
-`request_input` of its own pending. It is also refused once the session's task has finished,
+through `request_input`, and `report_blocker` is refused while the session is waiting inside a
+`request_input` call of its own. A question filed with
+[Ask without stopping](#asking-without-stopping) does not refuse it, because its agent kept working. It is also refused once the session's task has finished,
 since nothing would clear a blocker stored against a done, failed or cancelled task.
 
 The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
@@ -2566,7 +2712,8 @@ The MCP tools are:
   daemon-token authority as task creation without a Control other sessions grant. Chat launches
   pre-approve task creation and dispatch so a conversation can delegate separate work.
 - `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
-  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`,
+  `hibernated`),
   `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
   `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
   Repository selectors accept an absolute checkout path or unique directory name; worktrees
@@ -2599,8 +2746,9 @@ The MCP tools are:
   rules. Running and dispatching tasks must be cancelled with `cancel_task` first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, context?, options?)` - ask a question and **block** for an answer or
-  dismissal. The human can always type an answer. With `options` the card also shows radios
+- `request_input(question, context?, options?, meanwhile?)` - ask a question. By default the call
+  **blocks** for an answer or dismissal; with the `async-input` preview flag on, it files the
+  question and returns at once (see [Asking without stopping](#asking-without-stopping)). The human can always type an answer. With `options` the card also shows radios
   (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
   Use `question` for the decision itself, which becomes the card's heading. The card prints
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
@@ -2895,6 +3043,81 @@ snooze or bring a question back early. Session control has no snooze command. Th
 both from any other actor, such as a controlling session or Foreman, and from any request that
 carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
 operation or a page from another origin. The question stays open.
+
+#### Asking without stopping
+
+**Ask without stopping** is a preview feature behind the `async-input` flag (Settings > Feature
+flags). With it on, `request_input` files the question and returns at once with a receipt instead
+of waiting inside the call:
+
+- The receipt says the question is filed and not answered. The agent keeps doing every part of
+  its task that does not depend on the answer, proceeds only on choices that are easy to reverse
+  where the work does depend on it, holds anything irreversible or outward-facing, and does not
+  ask again or poll. An agent with nothing else to do says what is waiting on the question and
+  ends its turn.
+- The question appears in the attention inbox and the review modal exactly as before, with
+  Answer, Dismiss, Chat about it and Remind me later. The agent may pass `meanwhile`, one line of
+  at most 300 characters saying what it does while the question is open.
+- Your answer reaches the agent as a message in its conversation through the same outbox as a
+  message you type: an idle session gets a new turn, and a busy one is steered after 60 seconds
+  where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
+  standing approval, is delivered the same way.
+- That message is Mission Control's, not yours, whoever answered. It is never captured as a new
+  Goal prompt for the session and is not drawn as a turn you typed; your answer already appears
+  in the conversation as the gold answer entry. An answer to a question that waited inside the
+  call and lost it keeps today's behavior.
+- While the agent works past its question, its session is not amber. Once it stops with the
+  question still pending, it is amber and reads **waiting on your answer**, and it holds queue
+  sends and backlog assignment like any session that needs you. A resident is the exception: it
+  keeps iterating on its cadence while its questions wait in the inbox.
+- Every new question alerts. The title says whether the agent **has a question, still working**
+  or **needs your answer**.
+
+Each answer restates the full question and context, the agent's `meanwhile` plan, and the elapsed
+time since the ask. It tells the agent to reconcile its work and resume anything interrupted;
+a dismissal tells it to keep its provisional choice. Message-mode answers for the same
+conversation coalesce into one message only at the unclaimed answer tail of the queue, without
+passing an intervening message. Claimed deliveries keep their original text, and call-mode
+answers keep their existing delivery behavior.
+
+With the flag on, a session may have at most ten open `request_input` questions in either wait
+mode, including snoozed ones. Existing questions above the limit are retained, but new asks
+cannot grow the set. With the flag off, call-mode asks keep their previous behavior. An exact
+duplicate reattaches to the existing question even at the limit: message mode returns its
+receipt, while call mode waits on that question through the existing call path. A new ask beyond
+the limit returns an error with the open titles and tells the agent to work on what it can or
+end its turn.
+With the flag on, `list_open_questions` lists the caller's pending and snoozed `request_input`
+questions in either wait mode, including id, title, asked time and `meanwhile`.
+`withdraw_question(id, reason)` settles the caller's own open message-mode question as
+`withdrawn`, records the reason, and sends no answer. It releases that question's completion
+hold. Questions belonging to other sessions and call-mode questions cannot be withdrawn.
+The receipt names the question id and both tools; listing is for housekeeping, not polling.
+
+The daemon decides how each ask waits and says so in its response. A question is filed this way
+only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
+a receipt, and the session can receive a message. Everything else waits inside the call as
+before: the other review tools (plan decisions, diff review, the confirmations other tools raise),
+an MCP child from an older build, and a session no message can reach, such as a Pipeline engine
+session or a terminal session with no writable pane. The flag is read for every ask, so it takes
+effect without a restart.
+
+Two completion rules apply to **every outstanding `request_input` question** of a session, meaning
+one that is pending or snoozed, whether it waits in a call or was filed. They always apply to a
+filed question, and to a question waiting in a call while the flag is on:
+
+- **It holds completion.** Foreman's prompted completion, workflow resumption and automatic
+  evidence preparation refuse while the session has one, whatever the session is doing. This
+  includes a snoozed question, which turns nothing amber. A resident is not held.
+- **A merge still completes the task.** A merged pull request is your own conclusion, so
+  merge-driven completion is not held. Every outstanding question is closed at that moment, with
+  the status `orphaned` and the recorded reason `merged`, and leaves the inbox. The agent, if it
+  is still waiting inside a call, is told the pull request merged before anyone answered.
+
+Operator messages, workflow repair rounds and `report_blocker` are not held by a filed question.
+Turning the flag off sends new asks back to waiting inside the call. Questions already filed stay
+answerable, their answers are still delivered, and both completion rules keep applying to them
+until they are settled; questions waiting in a call return to today's completion behavior.
 
 ### The ask channel
 

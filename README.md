@@ -64,6 +64,10 @@ drives the work, Mission Control watches that too.
 Codex SDK sessions show background child agents from their native thread-tree frames, including
 children still running after the parent finishes. See [harness behavior](docs/harnesses-and-terminals.md#codex-sdk-background-sub-agents).
 
+The [asynchronous input preview](docs/sessions.md#asking-without-stopping) lets agents keep
+working while questions wait in your inbox. Answers carry their original context, and consecutive
+queued answers can arrive together. Agents can list and withdraw questions within a ten-question limit.
+
 Prefer one page? The
 [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
 is this same tour as a single self-contained document, with 25 screenshots from a running
@@ -312,6 +316,10 @@ Read more in [Foreman](docs/foreman.md).
 
 ## Workflows and Personas
 
+Reused workflow check slots with ignored Go source are quarantined before checks run, preserving
+the files and reporting pool contamination as infrastructure trouble. See
+[check isolation](docs/worktrees-and-checks.md#running-a-check-command).
+
 Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
@@ -349,7 +357,8 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 Local CodeRabbit reviews are available as a reusable Library Command and in the optional
 No-Mistakes review stage. Root YAML enables review without a Library override; the default
-allowance is ten executions, with warning skips on exhaustion. See
+allowance is ten executions. Recoverable connection failures retry automatically within that
+allowance; an incomplete review stays blocked when retries or allowance run out. See
 [CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
 
 Read more in [Workflows and Personas](docs/workflows.md) and
@@ -363,7 +372,7 @@ Trust. It comments inline, answers replies in its own threads, re-reviews every 
 resolves findings when the code fixes them. Dry run records what it would say without publishing
 anything.
 
-Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, on by default (an upgrade turns it on once; a later opt-out is kept). It prompts
 eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
 attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
 invitation and repository trust, and waits while a workflow owns the session.

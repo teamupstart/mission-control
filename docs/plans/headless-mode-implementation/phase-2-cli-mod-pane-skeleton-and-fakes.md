@@ -1,5 +1,7 @@
 # Phase 2: CLI, mod and pane skeleton, and fakes (WP1b)
 
+> **Status: merged on main.** Built; no work remains in this phase. See `phased-plan.md` section 1.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
 **1. Outcome.** The `mctl` command registry, the mod and pane skeleton with its build, and the shared fakes exist, so every later phase can build and test in parallel against stubs.

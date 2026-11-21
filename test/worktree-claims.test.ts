@@ -630,17 +630,38 @@ test("a timeout kills the step's whole process group and counts as a failed clai
       `const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});` +
       `fs.writeFileSync("deps/grandchild.pid",String(c.pid));setInterval(()=>{},1000);`,
   );
+  // The schema's smallest limit is a minute; the runner's own timer is what is under test, so it
+  // is shortened here. Under full-suite load a short limit can expire before a cold `node` has
+  // even spawned its grandchild, and a group with no grandchild in it proves nothing about
+  // killing one. `runClaimStep` arms that timer itself once the step is spawned, so the test
+  // cannot wait for readiness first; a run that never wrote the pid file is instead repeated
+  // with a longer limit rather than read.
+  let limitMs = 750;
   const m = manager(claimOf({ steps: [{ argv: grandchild }, { argv: recordStep("after") }] }), {
-    // The schema's smallest limit is a minute; the runner's own timer is what is under test.
-    runClaimStep: (request) => runClaimStep({ ...request, timeoutMs: Math.min(request.timeoutMs, 750) }),
+    runClaimStep: (request) => runClaimStep({ ...request, timeoutMs: Math.min(request.timeoutMs, limitMs) }),
   });
-  const result = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-timeout"));
-  assert.equal(result.claimWarning?.reason, "timed out at the claim's 10-minute limit");
-  assert.equal(runs(result.lease.path, "after").length, 0);
-  const pid = Number(readFileSync(join(result.lease.path, "deps", "grandchild.pid"), "utf8"));
-  await waitFor(() => !alive(pid), "the grandchild to die with its group");
-  assert.equal(onlySlot(m).depsState, "failed");
-  await m.release(result.lease);
+  for (const limit of [750, 3_000, 12_000]) {
+    limitMs = limit;
+    const result = leased(await taskAcquire(m, fixture.clone, fixture.sha, "task-timeout-" + String(limit)));
+    assert.equal(result.claimWarning?.reason, "timed out at the claim's 10-minute limit");
+    assert.equal(runs(result.lease.path, "after").length, 0);
+    assert.equal(onlySlot(m).depsState, "failed");
+    const pidFile = join(result.lease.path, "deps", "grandchild.pid");
+    // The kill can also land between the file's creation and its write, leaving it empty. That
+    // reads as PID 0, which `process.kill(0, 0)` answers for this test's own process group, so
+    // only a complete positive PID counts as ready. An incomplete marker is removed so the next
+    // attempt cannot read it.
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : NaN;
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      rmSync(pidFile, { force: true });
+      await m.release(result.lease);
+      continue;
+    }
+    await waitFor(() => !alive(pid), "the grandchild to die with its group");
+    await m.release(result.lease);
+    return;
+  }
+  assert.fail("the step never spawned its grandchild before any limit expired");
 });
 
 test("the claim's deadline covers every step together", async () => {

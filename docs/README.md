@@ -11,6 +11,7 @@ Mission Control's product reference is organized by feature below.
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
+- [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
 - [Residents](residents.md): long-running agents launched from resident profiles.
@@ -59,6 +60,7 @@ Mission Control's product reference is organized by feature below.
 - [Setup guide](setup-guide.html): install Mission Control, set this machine up from **Settings → Setup**, and keep the app current. Illustrated, for someone installing it for the first time.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
+- [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
 
 ## Support
 

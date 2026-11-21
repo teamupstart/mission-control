@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, builtinWorkflowVersionId } from "../src/shared/builtin-workflow.ts";
 import type { PlanIdentity } from "../src/shared/managed-plans.ts";
+import type { ReviewActor } from "../src/shared/types.ts";
 import { declaredBlockers } from "../src/shared/backlog.ts";
 import { localSourceContent } from "../src/shared/task-source-sync.ts";
 
@@ -25,6 +27,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { openDb, closeDb, loadActiveTasks } = await import("../src/server/db.ts");
 const { savePlan, planContext, readPlanFile, reserveTaskPlans } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
+const { buildInbox } = await import("../src/server/home-dispatch/inbox.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
@@ -35,13 +38,12 @@ after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
   const id = randomUUID(), repo = join(home, id);
-  mkdirSync(repo); git(repo, "init", "-q", "-b", "main");
-  git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial");
+  const baseSha = seedGitRepo(repo, { branch: "main", files: {}, message: "initial", name: "Test", email: "test@example.com", storeIdentity: false });
   const registry = new Registry();
   registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null, terminals: [], startedAt: 1 }]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: id, cwd: repo, transcriptPath: null, env: {} });
   const session = registry.getSession(id)!;
-  const task = mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha: git(repo, "rev-parse", "HEAD"), workflowId: workflow ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : null,
+  const task = mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha, workflowId: workflow ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : null,
     planPolicy: { version: 2, storage: "local", commitPlanHtml: true }, planInputs: [] });
   registry.upsertTask(task);
   const personas = new PersonaManager(registry), workflows = new WorkflowManager(registry, personas.store);
@@ -59,11 +61,11 @@ async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
   const input: PlanIdentity = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: 1 };
   const service = workflows.localPlanPublication(tasks);
   const post = (path: string, body: object) => app.request(path, { method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify({ env: {}, sessionId: id, cwd: repo, ...body }) });
-  const review = async (action: "answer" | "dismiss" | "revise" = "answer", revision = 1) => {
+  const review = async (action: "answer" | "dismiss" | "revise" = "answer", revision = 1, by: ReviewActor = "human") => {
     const res = await post("/mcp/v2/reviews", { kind: "plan-decisions", title: "Approve bundle", body: "Inspect complete Markdown and HTML", managedPlan: { repoSlot: "repo-01", planId: input.planId, revision } });
     assert.equal(res.status, 200, await res.clone().text());
     const { id: reviewId } = await res.json() as { id: string };
-    reviews.resolve(reviewId, action === "revise" ? "answer" : action, null, "human", action !== "dismiss" ? [{ decisionId: "approve-final-bundle", selected: [action === "revise" ? "revise" : "approve"], other: null }] : null);
+    reviews.resolve(reviewId, action === "revise" ? "answer" : action, null, by, action !== "dismiss" ? [{ decisionId: "approve-final-bundle", selected: [action === "revise" ? "revise" : "approve"], other: null }] : null);
     return reviewId;
   };
   return { id, repo, registry, workflows, tasks, task, session, authority, saved, input, service, post, review, reviews, binding, files, rebindApp };
@@ -227,6 +229,63 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] }), /originating.*episode/);
+});
+
+test("a run summary carries when its run started, for headless mode's inbox to tell a task's own run from an earlier one", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const summary = f.workflows.store.runSummary(runId)!;
+  assert.equal(typeof summary.startedAt, "number");
+  assert.equal(summary.startedAt, f.workflows.store.getRun(runId)!.startedAt, "the same value the run row holds");
+  // Every way the daemon lists runs shares one builder, including the list the inbox reads.
+  const started = f.workflows.store.getRun(runId)!.startedAt;
+  assert.equal(f.workflows.runs().find((r) => r.id === runId)?.startedAt, started, "manager.runs(), the list the inbox reads");
+  assert.equal(f.workflows.store.listRunSummaryPage({ limit: 50, cursor: null }).items.find((r) => r.id === runId)?.startedAt, started, "the paged list");
+});
+
+test("the inbox attaches a real run to a task only when it started after the task did", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const runStart = f.workflows.store.getRun(runId)!.startedAt;
+  openDb().prepare(`UPDATE tasks SET origin_surface = 'mctl', origin_repo = ? WHERE id = ?`).run(f.repo, f.task.id);
+  const cli = { caller: { surface: "cli" as const, repoRoot: null }, sessionId: null, allRepos: true };
+  const runOf = () => buildInbox({ registry: f.registry, workflows: f.workflows }, cli).items.find((i) => i.taskId === f.task.id)?.run;
+
+  // The task was dispatched before the run began: the run is its own, read from the real store.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart - 1_000 });
+  assert.equal(runOf()?.workflowId !== undefined, true, "a run that started after the task did is attached");
+  // The task was dispatched after the run began: the run belongs to whichever task held the session before.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart + 1_000 });
+  assert.equal(runOf(), undefined, "a run that started before the task did is not");
+});
+
+// Headless mode (7.9): only `home-approval:` approves from a home session; a later plain `home:` or
+// `mctl` request for changes beats it, and a plain `home:` or `mctl` approval is never an approval.
+test("a home-approval approves publication, and a later home or mctl refusal revokes it", async () => {
+  const f = await fixture(false);
+  const first = await f.review("answer", 1, "home-approval:home-1");
+  assert.equal(f.service.readiness(f.input).state, "approved", "an accepted home approval counts as human approval");
+  const refused = await f.review("revise", 1, "home:home-1");
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(1, first);
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(2, refused);
+  assert.equal(f.service.readiness(f.input).state, "blocked", "the later request for changes beats the earlier approval");
+  await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+  assert.equal(publicationReceipt(f.input), null);
+
+  const byCli = await f.review("revise", 1, "mctl");
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(3, byCli);
+  assert.equal(f.service.readiness(f.input).state, "blocked");
+
+  const plainApproval = await f.review("answer", 1, "home:home-1");
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(4, plainApproval);
+  assert.equal(f.service.readiness(f.input).state, "blocked", "a plain home answer never approves");
+  await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+
+  const again = await f.review("answer", 1, "home-approval:home-1");
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(5, again);
+  assert.equal(f.service.readiness(f.input).state, "approved", "a fresh accepted approval after the refusals counts");
+  assert.ok(await f.service.publish(f.authority, f.input), "and publishes");
+  assert.ok(publicationReceipt(f.input));
 });
 
 for (const workflow of [false, true]) for (const action of ["revise", "dismiss"] as const) {

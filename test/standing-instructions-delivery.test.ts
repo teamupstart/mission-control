@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
-import { mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 
 // Repository standing instructions reaching a real launch, on every one of the five shipped
 // harness · runtime pairs.
@@ -89,13 +89,7 @@ beforeEach(() => {
 /** A repo a worktree can actually be cut from, named by its CANONICAL path. */
 function seedRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "base"]);
+  seedGitRepo(repo, { branch: "main", files: { "file.txt": "base\n" } });
   // Realpath, because `resolveRepoPath` canonicalizes and the macOS temp dir is a symlink -
   // a key stored under the uncanonical spelling would match nothing, which is exactly the
   // silent "nothing applies" this feature has to avoid.

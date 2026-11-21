@@ -1,12 +1,16 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
+import { MEANWHILE_MAX_CHARS } from "@shared/async-input.ts";
 import {
   ProposeResidentInstructionChangesSchema,
   residentInstructionOutcomeText,
   type ResidentInstructionOutcome,
 } from "@shared/resident-instructions.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import {
+  DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SESSION_CONTROL_REQUEST_REASON_MAX, SessionControlReadSchema,
+  SessionControlRequestSchema, type SessionControlRequestResult,
+} from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -113,19 +117,45 @@ async function createReview(
   /** Offer "Remind me later": only `request_input`'s own asks, whose agent knows how to carry on. */
   snoozable?: boolean,
 ): Promise<string> {
-  const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
+  return (await postReview({ kind, title, body, decisions, managedPlan, snoozable })).id;
+}
+
+/**
+ * How the daemon said a review waits (`async-input`): `call` means long-poll it as always;
+ * `message` means the agent hears the answer later as a message, and `receipt` is the tool result.
+ * A daemon from an older build says nothing, which is `call`.
+ */
+type CreatedReview = { id: string; wait: "call" } | { id: string; wait: "message"; receipt: string };
+
+async function postReview(input: {
+  kind: string;
+  title: string;
+  body: string;
+  decisions?: unknown;
+  managedPlan?: unknown;
+  snoozable?: boolean;
+  /** This child can hand back a receipt instead of long-polling. Only `request_input` says so. */
+  asyncCapable?: boolean;
+  meanwhile?: string;
+}): Promise<CreatedReview> {
+  const res = await http(input.managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
     cwd: process.cwd(),
-    kind,
-    title,
-    body,
-    decisions,
-    managedPlan,
-    ...(snoozable ? { snoozable: true } : {}),
+    kind: input.kind,
+    title: input.title,
+    body: input.body,
+    decisions: input.decisions,
+    managedPlan: input.managedPlan,
+    ...(input.snoozable ? { snoozable: true } : {}),
+    ...(input.asyncCapable ? { asyncCapable: true } : {}),
+    ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { id: string }).id;
+  const created = (await res.json()) as { id: string; wait?: string; receipt?: unknown };
+  return created.wait === "message" && typeof created.receipt === "string"
+    ? { id: created.id, wait: "message", receipt: created.receipt }
+    : { id: created.id, wait: "call" };
 }
 
 /**
@@ -359,6 +389,102 @@ server.registerTool(
   async (args) => {
     const res = await http("/mcp/session-control/act", "POST", args, true);
     return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
+
+/**
+ * The caller's cancellation bounded by a deadline: aborts on whichever comes first. Hand-rolled
+ * rather than `AbortSignal.any`, which Node 18 before 18.17 lacks, and this server has run there.
+ */
+function untilCancelledOr(signal: AbortSignal, ms: number): AbortSignal {
+  const bounded = new AbortController();
+  const cancel = (): void => bounded.abort(signal.reason);
+  const timer = setTimeout(() => bounded.abort(new Error(`Mission Control did not answer within ${ms} ms`)), ms);
+  timer.unref?.();
+  bounded.signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }, { once: true });
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  return bounded.signal;
+}
+
+/**
+ * What the agent reads once its ask settles. `granted` records the operator's decision when it
+ * was made, not current authority: a later revoke or reset ends the grant without changing it.
+ */
+function sessionControlRequestText(result: SessionControlRequestResult): { text: string; isError: boolean } {
+  switch (result.status) {
+    case "granted":
+      return { isError: false, text: "Granted: the operator allowed this session to control other sessions. Use read_sessions " +
+        "to inspect other live sessions and control_session to act on them. This records the operator's decision, not " +
+        "current authority: the grant ends when the operator revokes it, when this conversation is reset or replaced, or " +
+        "when Mission Control restarts, and read_sessions and control_session then refuse." };
+    case "declined":
+      return { isError: false, text: "Declined: the operator chose not to let this session control other sessions. Do not " +
+        "ask again unless the operator tells you to. Carry on without it, and say what you could not do." };
+    case "expired":
+      return { isError: true, text: `Not granted: the request ended without a decision because ${result.detail ?? "it expired"}. ` +
+        "Nothing was granted." };
+    case "pending":
+      return { isError: true, text: "The request is still waiting on the operator." };
+  }
+}
+
+server.registerTool(
+  "request_session_control",
+  {
+    title: "Ask the operator to let this session control other sessions",
+    description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
+      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
+      "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
+      "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +
+      "already holds the grant, it returns at once. If declined, do not ask again unless the operator tells you to.",
+    inputSchema: {
+      reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX)
+        .describe("Why this session needs to control other sessions: which sessions, and what you will do. Shown to the operator verbatim."),
+    },
+  },
+  async ({ reason }, extra) => {
+    const beat = heartbeat(extra);
+    try {
+      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true, untilCancelledOr(extra.signal, 15_000));
+      if (raised.status === 404) {
+        return textResult("Not asked: session control requests are turned off in Mission Control (Settings > Feature " +
+          "flags). Nothing was shown to the operator. If you need this, ask them with request_input to turn on " +
+          "Control other sessions from this session's toolbar.", true);
+      }
+      if (!raised.ok) return textResult(`Not asked: ${await raised.text()}`, true);
+      let result = (await raised.json()) as SessionControlRequestResult;
+      // Best-effort: the session's status line says what it is waiting on.
+      if (result.status === "pending") {
+        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" },
+          false, untilCancelledOr(extra.signal, 5_000)).catch(() => {});
+      }
+      while (result.status === "pending") {
+        if (extra.signal.aborted) throw new Error("the client cancelled this request");
+        const res = await http(`/mcp/session-control/requests/${encodeURIComponent(result.id)}/wait`, "GET", undefined, true, extra.signal);
+        // The daemon no longer recognises this conversation as the one that asked.
+        if (res.status === 403) {
+          result = { id: result.id, status: "expired", detail: "this conversation changed before the operator answered" };
+          break;
+        }
+        // The preview was switched off between rounds; that withdrew the card as well.
+        if (res.status === 404 && ((await res.clone().json().catch(() => null)) as { feature?: string } | null)?.feature) {
+          result = { id: result.id, status: "expired", detail: "session control requests were turned off in Settings > Feature flags" };
+          break;
+        }
+        if (!res.ok) return textResult(`Could not wait on the request: ${await res.text()}`, true);
+        result = (await res.json()) as SessionControlRequestResult;
+        beat();
+      }
+      const answer = sessionControlRequestText(result);
+      return textResult(answer.text, answer.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
   },
 );
 
@@ -831,10 +957,16 @@ server.registerTool(
   {
     title: "Ask the human a question",
     description:
-      "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. The operator can always type an answer. With `options`, they can also " +
-      "pick choices and add typed context. The tool returns their answer, selections, or an " +
-      "explicit dismissal. They may choose to chat about it, in which case the result tells you " +
+      "File a question for your human operator in the Mission Control dashboard. The result " +
+      "says which of two things happened. Either it carries their answer, selections, or an " +
+      "explicit dismissal, because this call waited for them; or it is a receipt saying the " +
+      "question is filed and NOT answered, in which case keep working on everything that does " +
+      "not depend on it, do not ask it again or poll, and expect the answer later as a message " +
+      "in this conversation. If you then run out of work, say what is waiting on the answer and " +
+      "end your turn; Mission Control wakes you with it. Pass `meanwhile` to tell the operator " +
+      "what you will do while the question is open. " +
+      "The operator can always type an answer. With `options`, they can also " +
+      "pick choices and add typed context. They may choose to chat about it, in which case the result tells you " +
       "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
       "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
       "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
@@ -880,9 +1012,17 @@ server.registerTool(
         .boolean()
         .optional()
         .describe("Deprecated compatibility field. The text box is always available."),
+      meanwhile: z
+        .string()
+        .max(MEANWHILE_MAX_CHARS)
+        .optional()
+        .describe(
+          "One line, shown on the operator's card: what you will do while the question is open - " +
+            "the assumption you proceed on, or the work you hold back until the answer arrives.",
+        ),
     },
   },
-  async ({ question, context, options, multiSelect }, extra) => {
+  async ({ question, context, options, multiSelect, meanwhile }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -901,10 +1041,50 @@ server.registerTool(
       // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
       // through the same builder.
       const ask = requestInputReview({ question, context, options, multiSelect });
-      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions, undefined, true);
-      const review = await waitForResolution(id, extra);
+      // `asyncCapable`: the daemon decides how this ask waits. Told `message`, the question is
+      // filed and the receipt is the whole result - nothing long-polls, so nothing can time out.
+      const created = await postReview({
+        kind: ask.kind, title: ask.title, body: ask.body, decisions: ask.decisions,
+        snoozable: true, asyncCapable: true, ...(meanwhile?.trim() ? { meanwhile } : {}),
+      });
+      if (created.wait === "message") return textResult(created.receipt);
+      const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "list_open_questions",
+  {
+    title: "List your open questions",
+    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/questions/list", "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "withdraw_question",
+  {
+    title: "Withdraw your question",
+    description: "Withdraw one of your own open message-mode questions that you no longer need, with a reason. Requires async-input. Cannot withdraw another session's question or a question whose tool call waits for an answer. No answer message is sent.",
+    inputSchema: { id: z.string().min(1), reason: z.string().trim().min(1).max(2000) },
+  },
+  async ({ id, reason }) => {
+    try {
+      const res = await http(`/mcp/questions/${encodeURIComponent(id)}/withdraw`, "POST", { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), reason }, false, AbortSignal.timeout(30_000));
+      return textResult(await res.text(), !res.ok);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

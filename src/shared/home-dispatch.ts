@@ -68,6 +68,33 @@ export const HomeSessionRegistrationAnswerSchema = z.object({
 });
 export type HomeSessionRegistrationAnswer = z.infer<typeof HomeSessionRegistrationAnswerSchema>;
 
+/** The oldest mod API this daemon serves; the registration answer's `minModApi` (7.2). */
+export const HOME_DISPATCH_MIN_MOD_API = 1;
+
+/* ------------------------------------------------- dispatch intent detector (7.20) */
+
+export type DispatchIntent = "now" | "backlog";
+
+const NAMES_MISSION_CONTROL = /\bmission[ -]control\b|\bmc\b/i;
+const SCHEDULE_WORD = /\b(?:schedule|backlog|later|queue|park)\b/i;
+const RUN_VERB = /\b(?:run|start|kick\s+off|send|dispatch|hand|delegate)\b/i;
+
+/**
+ * Whether a prompt asks to run a task in Mission Control now or to save it for later (7.20).
+ *
+ * Pure and case-insensitive: it names Mission Control (`mission control`, `mission-control`,
+ * or `MC` as a whole word), and then a schedule word gives `backlog`, else a run verb gives
+ * `now`, else null. It lives here, in browser-safe shared code, because the mod runs it on the
+ * prompt as typed and sends nothing to the daemon. P3 owns it; the home-session rules in
+ * `src/server/home-dispatch/sessions.ts` re-export it.
+ */
+export function dispatchIntentFor(prompt: string): DispatchIntent | null {
+  if (!NAMES_MISSION_CONTROL.test(prompt)) return null;
+  if (SCHEDULE_WORD.test(prompt)) return "backlog";
+  if (RUN_VERB.test(prompt)) return "now";
+  return null;
+}
+
 /* -------------------------------------------------------------------- inbox (7.7) */
 
 export const INBOX_STATES = ["waiting", "blocked", "ready", "running", "queued", "shelved", "failed"] as const;
@@ -147,6 +174,12 @@ export const HomeDispatchInboxItemSchema = z.object({
     decisions: Count.optional(),
   }).optional(),
   resident: z.object({ runId: Text, name: z.string() }).optional(),
+  /**
+   * Task shaping's state for the task (spec v20, D60): the "Shaping context" wait and the "Context
+   * degraded" marker the dashboard shows. Optional and additive, so an item with nothing to say
+   * carries no field. Built from `currentShaping(task)` in `src/shared/shaping.ts`.
+   */
+  shaping: z.object({ state: z.string(), summary: z.string() }).optional(),
 });
 export type HomeDispatchInboxItem = z.infer<typeof HomeDispatchInboxItemSchema>;
 

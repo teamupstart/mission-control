@@ -801,12 +801,30 @@ reported on the completed action. None sends a repair packet or spends a repair 
 
 A pull request the bound session adopted **before** the instruction was delivered also completes
 the action, so a session that finds its existing pull request and opens no duplicate is not left
-waiting. It must belong to the same session, still be open, resolve to this checkout's
+waiting. It must belong to the same session, still be open (or have been observed merging
+during the action wait), resolve to this checkout's
 repository, and have no observed branch or state that contradicts it. When the ledger recorded
 the checkout it was opened from, that must match this one too; when it recorded none, the looser
 rule applies and the completion warning says so. The branch and state are normally unobserved
 here, because only the GitHub Inspector's poller records them and it does not run while the
 Inspector is disabled.
+
+A pull request that **merged before** the action was delivered can also satisfy it. Mission
+Control reads the retained Inspector observation for the same repository and branch and resolves
+its published Git tree. That tree must equal the reviewed publication tree. The continuation
+must still have that content and no unpublished changes. Runs records the merged PR URL and
+explains that no new PR is needed. Unknown or different publication proof still requires a PR;
+changes discovered during continuation capture offer the existing resubmit recovery.
+
+A merged, idle task is reconsidered when its workflow finishes or is cancelled, and at startup.
+If a later prompt rolled its single-repository work into a new episode, settlement additionally
+requires a durable receipt tying that episode's latest prompt to an action delivered by the
+latest terminal workflow run, plus a clean checkout matching the recorded merged PR. An
+operator follow-up never borrows that receipt, even if it repeats the action's text. Publication
+and ownership are rechecked after any scout archive wait. Busy sessions, queued work and active
+workflow runs retain ownership, except that merging still releases a blocked `request_input`
+call through its atomic task-completion path. Assigned-agent completions remain reversible when
+work resumes, and dependency edges still require their own bound episode's merge.
 
 ### Command nodes
 
@@ -1221,6 +1239,18 @@ mapping output leaves stable extraction intact and fails closed to deterministic
 attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
 fallback.
 
+Preflight checks locally inspectable work, including requested draft PR title and body content
+and deviation notes. Criterion extraction preserves publication-only outcomes as explicitly
+classified criteria and records publication details in constraints. The daemon defers their proof
+only while the pinned graph still has a pending Pull Request action.
+Personas apply the same boundary on initial and repair rounds, while continuing to check draft
+content, implementation, tests and other deliverables. The Pull Request action reads back the
+created or updated PR from GitHub, verifies its title and required notes, and returns the verified
+URL. This publication instruction also accompanies existing frozen action prompts. It does not
+change the action's durable adoption check, Inspector checks, CI policy, or other evidence gates.
+Already-frozen criterion identities and wording remain immutable; existing runs can classify
+missing publication timing without rewriting the rubric or historical submissions.
+
 A workflow-bound task whose published graph contains a Persona receives an evidence-readiness
 contract before completion, whatever its kind - a scout dispatched with such a workflow receives
 it alongside its report contract. Through `submit_workflow_evidence`, the agent can register three
@@ -1517,6 +1547,32 @@ Links resolve only against evidence frozen for that submission. Historical snaps
 matches normalize into the separate mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
+
+Publication-only criteria, such as "Pull request opened documenting the implementation,
+verification, and deviations", can be classified as fulfilled by the Pull Request action during
+intent compaction. The criterion stays material and visible. Readiness defers its proof only
+when the pinned graph has a reachable action with the `pull_request` completion contract ahead
+of the current submission. The Evidence pane labels it **deferred to Pull Request**, and Personas
+receive the same deferral. This is a scheduling distinction, not proof of completion or an override.
+
+Implementation, tests, and verification still need pre-review evidence. Mixed requirements must
+be split during compaction; an explicit requirement to open the PR before review is not deferred.
+A workflow without that action, or a review after it, still requires publication proof. The
+classification is frozen with the run's criteria and reused across repair rounds.
+
+Existing runs whose criteria predate the classification receive a bounded timing-only
+classification on their next capture when their pinned graph still has a pending Pull Request
+action. This preserves criterion IDs, text, ordering, materiality, and proof-class suggestions.
+The daemon saves the first successful classification, including explicit negative results, for
+reuse in later rounds and after restart. It records a `criterion_fulfillment` model call and a
+`criterion_fulfillment_classified` event. Invalid, incomplete, or failed classification leaves
+the evidence gate unchanged and can be retried; it never grants an override.
+
+For an existing run already paused at readiness, the Evidence pane offers **Classify publication
+criteria**. This creates a same-round recovery segment using the frozen evidence. Historical
+submissions, verdicts, and override records remain unchanged, and no broad override is carried
+forward. New captures distinguish an unclassified legacy criterion (absent timing field) from
+an explicitly non-publication criterion (`fulfilledByAction: null`).
 
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
 result before the engine creates any Persona or Check attempt, until the round exhausts its
@@ -1930,6 +1986,12 @@ When that action's only reachable downstream node is End, the child segment is l
 **verified shipping** rather than another evidence number. Its notice states that the pull
 request is open at the captured commit, published content matches the prior accepted review, and
 no new evidence review was started.
+
+Every session-action wait names its next actor in the same explanation on Runs and on Fleet's
+Board cards and Console rail. Awaiting PR names the session that must open or identify the PR;
+Needs you names the operator who must answer; capture and queued delivery name Mission Control.
+The explanation stays visible even when workflow details are collapsed and disappears when the
+run finishes. The held-session section does not promise automatic progress for an operator wait.
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from the **Review worklist**, which is about what the run
@@ -2991,8 +3053,12 @@ these defaults. The command previews its owned argv, never an editable shell rec
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
-Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
-mean a clean review. YAML-enabled reviews with
+Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
+unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
+exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
+A later complete review clears that condition. To recover from an exhausted incomplete review,
+explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
+Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
 and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
 or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
@@ -3000,6 +3066,16 @@ returned a result Mission Control cannot accept blocks with an error that points
 retained output instead, since Setup would show a healthy CLI. Neither spends a repair round or
 sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
 update, remote-ref fetch or paid-credit continuation happens automatically.
+
+When the provider explicitly marks an error as `errorType: connection` and `recoverable: true`,
+Mission Control automatically retries the same step and captured comparison, up to three total
+attempts. The delays are 30 and 60 seconds plus up to 50% jitter; a longer vendor wait takes
+precedence, including a deadline extended by another node after the retry was scheduled.
+Pending retries survive daemon restart. Every launched attempt spends the existing
+shared review allowance, and retries never authorize extra credits. Missing completion,
+authentication, usage and credit errors do not qualify. Exhaustion retains the connection cause
+and asks the operator to inspect output and retry after connectivity recovers. A heartbeat or
+partial review never satisfies the gate.
 
 CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
 through its review snapshot, a commit of exactly the captured publication content parented on HEAD, so a ship

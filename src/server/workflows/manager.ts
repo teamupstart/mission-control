@@ -1,3 +1,4 @@
+import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -100,6 +101,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  workflowHasPendingPullRequestAction,
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
@@ -112,6 +114,7 @@ import {
   workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -154,6 +157,7 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
@@ -181,6 +185,7 @@ import {
   completionWatchesPullRequests,
   sessionActionAdapter,
   type SessionActionAdoptedPullRequest,
+  type SessionActionRepositoryFacts,
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
@@ -386,6 +391,7 @@ export interface WorkflowManagerOptions {
   ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
+  classifyCriterionFulfillment?: NonNullable<Parameters<typeof classifyWorkflowCriterionFulfillment>[1]>["execute"];
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   /** The authorship sink's older name, still honoured. See `confirmInjection`. */
@@ -652,6 +658,10 @@ export class WorkflowManager {
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
+  /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
+  private readonly publicationTrees = new Map<string, string>();
+  private readonly publicationTreeRetryAt = new Map<string, number>();
+  private readonly pendingPublicationTrees = new Map<string, Promise<string | null>>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
    *
@@ -777,7 +787,8 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+              || this.hibernationHoldsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
@@ -805,6 +816,10 @@ export class WorkflowManager {
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;
+          // A hibernated task's binding waits for its own conversation: a woken driver that
+          // reported another one is refused and put back to sleep (`HibernationManager`), and
+          // delivery refuses a mismatched conversation anyway, so it is not paused for that.
+          if (this.hibernationHoldsBinding(binding)) continue;
           for (const delivery of this.store.markSendingUncertainForSession(
             event.session.id,
             "conversation_changed",
@@ -1629,7 +1644,7 @@ export class WorkflowManager {
   }
 
   /** Resume obligations include secondary repository bindings and exited projections. */
-  resumeNeedsEvidence(session: Session): boolean {
+  resumeNeedsEvidence(session: Pick<Session, "id" | "agentSessionId">): boolean {
     const noteKey = noteKeyFor(session);
     return this.store.listBindings().some((binding) => {
       if (binding.noteKey !== noteKey || binding.state !== "active") return false;
@@ -1765,13 +1780,17 @@ export class WorkflowManager {
    * The initial dashboard composer must inspect the same packet `createBinding` will attach
    * to this conversation. Resolving the note key from the live session here keeps that
    * ownership decision in the daemon and avoids making the browser invent a provisional
-   * binding solely to list or remove evidence.
+   * binding solely to list or remove evidence. Foreman's registered view also includes
+   * this conversation's reserved items without returning them to the editable tray.
    */
-  stagedEvidenceForSession(sessionId: string): WorkflowSessionEvidenceList | null {
+  stagedEvidenceForSession(
+    sessionId: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowSessionEvidenceList | null {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
       ? {
-        ...this.store.listWorkflowEvidence(noteKeyFor(session)),
+        ...this.store.listWorkflowEvidence(noteKeyFor(session), view),
         registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
       }
       : null;
@@ -2339,7 +2358,10 @@ export class WorkflowManager {
      * one click away. `resubmitUnchanged` is that click, which is why it skips this
      * entirely rather than getting a flag of its own to keep in step.
      */
-    if (!input.resubmitUnchanged) {
+    // The latest snapshot is packaging evidence, not a semantic review of this tree.
+    // An explicit fresh-review request must not demand another code change first.
+    const needsFreshReview = workflowInspectorGateNeedsFreshReview(activeGate);
+    if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
@@ -2389,7 +2411,7 @@ export class WorkflowManager {
       created.run,
       created.submission,
       latest.evidenceFingerprint,
-      input.resubmitUnchanged,
+      input.resubmitUnchanged || needsFreshReview,
     );
   }
 
@@ -2403,6 +2425,11 @@ export class WorkflowManager {
     if (!["evidence_reconciliation_error", "evidence_readiness", "preflight_refinement_exhausted", "persona_feedback", "round_limit", "infrastructure_error"].includes(run.currentPhase)) return null;
     const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!parsed.success) return null;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (run.criteria?.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)
+        && version && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+      return { submissionId: submission.id, kind: "publication", label: "Classify publication criteria" };
+    }
     if (run.currentPhase === "evidence_reconciliation_error" || submission.readiness?.gapCodes.includes("missing_coverage")) {
       let cursor: WorkflowSubmission | null = submission;
       for (let depth = 0; cursor && depth < 128; depth++) {
@@ -4608,7 +4635,8 @@ export class WorkflowManager {
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
-      && run.currentPhase === "inspector_head_mismatch";
+      && ["inspector_head_mismatch", "inspector_working_tree_not_pushed",
+        "inspector_reviewed_tree_changed"].includes(run.currentPhase);
     if (
       !run
       || !state
@@ -4971,6 +4999,21 @@ export class WorkflowManager {
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
       const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
+        && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
+        && publishedTree !== acceptedTree) {
+        this.transitionInspectorGate(run, state, {
+          ...state,
+          waitReason: "reviewed_tree_changed",
+          reviewedContent: {
+            submissionId: parent.id,
+            headSha: accepted.data.evidence.headSha,
+            treeOid: acceptedTree,
+            publishedTreeOid: publishedTree,
+          },
+        }, "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        return;
+      }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
         || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
@@ -5423,6 +5466,8 @@ export class WorkflowManager {
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      // An outstanding request_input question, snoozed or not, holds evidence preparation too.
+      && !this.registry.completionHeldByQuestion(session)
       && !hasBlocker(session);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
@@ -6165,6 +6210,9 @@ export class WorkflowManager {
       ? await this.capturedContinuationHead(capturedChild, repository?.root ?? null)
       : null;
     const parentContext = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const acceptedContentTreeOid = parentContext.success
+      ? workflowPublicationTree(parentContext.data.evidence)
+      : null;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -6174,11 +6222,9 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
       capturedHeadOid,
-      acceptedContentTreeOid: parentContext.success
-        ? workflowPublicationTree(parentContext.data.evidence)
-        : null,
+      acceptedContentTreeOid,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
@@ -6231,18 +6277,22 @@ export class WorkflowManager {
    * timer, and a cached copy is exactly how an action would keep waiting for a head that had
    * already arrived.
    *
-   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
-   * request reachable at all. The poller retires a closed row in the statement after the one
-   * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * preserve the PR as a completed action with a warning. Anything retired before this action
-   * was even delivered
-   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
-   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
+   * Recent retirements preserve closures observed during this action. Earlier merges on the
+   * checkout's branch remain candidates too: publication may predate a later completion turn.
+   * Resolve identity once per root and merged trees only for this repository and branch.
    */
   private async adoptedPullRequestsForAction(
     observedSince: number,
+    repository: SessionActionRepositoryFacts | null,
+    resolvePublishedTrees: boolean,
+    now: number,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
+    // Missing-object cooldowns expire independently of the bounded successful-tree cache.
+    // Otherwise a history larger than that cache retries every missing object on every scan.
+    for (const [key, retryAt] of this.publicationTreeRetryAt) {
+      if (retryAt <= now) this.publicationTreeRetryAt.delete(key);
+    }
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
     // repository are the ordinary case, and this runs on the settle path of every waiting
     // action.
@@ -6254,24 +6304,63 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
-    // retires a closed pull request on the same tick it first observes the closure, so without
-    // the second half the adapter could never reach the one state it is meant to block on.
-    const rows = loadAdoptedInspectorPrsSince(observedSince);
-    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
-    return rows.map((pr, index) => ({
-      key: pr.key,
-      url: pr.url,
-      number: pr.number,
-      repositoryRoot: resolved[index] ?? null,
-      branch: pr.headRefName,
-      observedHeadOid: pr.observedHeadSha,
-      observedState: pr.observedState,
-      observedAt: pr.observedAt,
-      sessionId: pr.sessionId,
-      adoptedAt: pr.adoptedAt,
-      checkout: pr.cwd,
-    }));
+    // Page retained merges without discarding older proof. Resolve sequentially so a reused
+    // branch cannot launch one Git process per historical PR in a single settle check.
+    const adopted: SessionActionAdoptedPullRequest[] = [];
+    let after: { adoptedAt: number; key: string } | null = null;
+    for (;;) {
+      const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null, after);
+      if (!rows.length) return adopted;
+      for (const pr of rows) {
+        const repositoryRoot = await identify(pr.repoRoot);
+        let mergedContentTreeOid: string | null = null;
+        if (resolvePublishedTrees && pr.observedState === "MERGED" && pr.observedHeadSha && repository
+          && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch) {
+          const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
+          let treeOid = this.publicationTrees.get(key) ?? null;
+          if (!treeOid && !this.publicationTreeRetryAt.has(key)) {
+            let pending = this.pendingPublicationTrees.get(key);
+            if (!pending) {
+              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(error => {
+                workflowLog("warn", { event: "session_action_publication_tree_unavailable", call: pr.key,
+                  state: pr.observedHeadSha,
+                  error: error instanceof Error ? ("code" in error && typeof error.code === "string" ? error.code : error.name) : "unknown" });
+                return null;
+              });
+              this.pendingPublicationTrees.set(key, pending);
+            }
+            try {
+              treeOid = await pending;
+              if (!treeOid) this.publicationTreeRetryAt.set(key, now + 60_000);
+            } finally {
+              if (this.pendingPublicationTrees.get(key) === pending) this.pendingPublicationTrees.delete(key);
+            }
+          }
+          mergedContentTreeOid = treeOid;
+          if (treeOid) {
+            this.publicationTreeRetryAt.delete(key);
+            this.publicationTrees.delete(key);
+            this.publicationTrees.set(key, treeOid);
+            if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          }
+        }
+        adopted.push({
+          mergedContentTreeOid,
+          key: pr.key,
+          url: pr.url,
+          number: pr.number,
+          repositoryRoot,
+          branch: pr.headRefName,
+          observedHeadOid: pr.observedHeadSha,
+          observedState: pr.observedState,
+          observedAt: pr.observedAt,
+          sessionId: pr.sessionId,
+          adoptedAt: pr.adoptedAt,
+          checkout: pr.cwd,
+        });
+      }
+      after = rows[rows.length - 1]!;
+    }
   }
 
   /**
@@ -6763,7 +6852,22 @@ export class WorkflowManager {
     // the write is still unresolved, and an echo that arrives with no authorship on file is
     // captured as the human's Goal - which for a repair packet means the next round reviews
     // the work against Mission Control's own previous complaint.
-    reserveInjection(session.id, sending.payload, "workflow");
+    reserveInjection(session.id, sending.payload, "workflow", () => {
+      // The Registry consumes this receipt after recording the prompt's work episode.
+      // A later human retype has no receipt, even when its text equals this packet.
+      if (sending.kind !== "session_action") return;
+      const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+      if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+      try {
+        this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+          deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+          promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+        });
+      } catch (error) {
+        workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+          error: error instanceof Error ? error.name : "unknown" });
+      }
+    });
     let result: InjectResult;
     try {
       result = await this.inject(
@@ -6977,6 +7081,8 @@ export class WorkflowManager {
     // actually holds before it can say whether the capture is the one the adapter proved.
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    // The root's durable boundary also covers Foreman capture and interrupted retries.
+    allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling
@@ -7406,6 +7512,32 @@ export class WorkflowManager {
           }
         }
       }
+      // Old runs already have their criterion identities. Classify only missing timing metadata,
+      // against that frozen intent, rather than recompacting or reusing a broad override.
+      const fulfillmentSource = this.store.getRun(run.id)?.criteria;
+      if (context.compaction.status === "model" && fulfillmentSource && version
+          && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+        let classified = fulfillmentSource;
+        if (fulfillmentSource.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)) {
+          const classificationContext = { ...context, canonicalCriteria: fulfillmentSource.canonicalCriteria };
+          const classifications = await this.schedule(() => classifyWorkflowCriterionFulfillment(classificationContext, {
+            execute: this.options.classifyCriterionFulfillment
+              ?? (this.options.compactContext ? async () => ({ kind: "failed" as const,
+                cause: "transport" as const, reason: "No injected criterion fulfillment classifier" }) : undefined),
+            observer: observerFor("criterion_fulfillment"),
+            onExecution: (execution) => contextExecutions.set("criterion_fulfillment", execution),
+          }), "capture");
+          if (classifications && this.captureIsActive(run.id, submission.id)) {
+            classified = this.store.freezeRunCriterionFulfillment({ runId: run.id, source: fulfillmentSource,
+              classifications, submissionId: submission.id, now: Date.now() }) ?? fulfillmentSource;
+          }
+        }
+        // A recovery child's context may predate the successful classification. Copy only
+        // timing from the durable result; every other field and all historical contexts stay put.
+        const timing = new Map(classified.canonicalCriteria.map((criterion) => [criterion.id, criterion.fulfilledByAction]));
+        context = { ...context, canonicalCriteria: context.canonicalCriteria?.map((criterion) =>
+          timing.get(criterion.id) === undefined ? criterion : { ...criterion, fulfilledByAction: timing.get(criterion.id) }) };
+      }
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
@@ -7490,6 +7622,8 @@ export class WorkflowManager {
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
             enforceCoverage: enforcingReadiness,
+            pendingPullRequestAction: version != null
+              && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
@@ -7739,7 +7873,8 @@ export class WorkflowManager {
 
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+        || this.hibernationHoldsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7751,6 +7886,76 @@ export class WorkflowManager {
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
+  }
+
+  /**
+   * A hibernated terminal task resumed as a new process on its conversation: the bindings armed
+   * on the stopped session for THAT conversation (`noteKey`, the hibernation's) follow the new
+   * one. A binding the stopped session held for any other conversation stays where it is: it
+   * belongs to a conversation this Resume did not reopen. Only an armed binding moves -
+   * hibernation is refused while a run is open, so none has a delivery in flight - and only to
+   * the same agent.
+   *
+   * The conversation's own binding (no `repoRoot`) moves only into the same checkout, the
+   * compatibility `reattach` asks for. Each secondary repository's binding (`ensureRepoBinding`)
+   * reviews its own worktree rather than the session's, so it moves with the session and keeps
+   * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
+   * it on the stopped session where no review could find a live one.
+   *
+   * A conversation armed in another checkout than the one it reopened in (the session changed
+   * directory after its workflow was armed) carries none of them into a checkout they were not
+   * armed for. Nor are they left active on the stopped session: they are orphaned, as any
+   * binding whose session leaves is, so the workflow reads as detached and the operator can
+   * reattach it.
+   *
+   * Writes only, and answers the bindings it moved or orphaned: Resume makes these moves in the same
+   * transaction as the task's own row, and publishes them with `announceBindings` once it has
+   * committed.
+   */
+  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): string[] {
+    const held = this.store.listBindings().filter((binding) =>
+      binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
+      && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
+    const own = held.filter((binding) => !binding.repoRoot);
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) {
+      return held.flatMap((binding) => {
+        const orphaned = this.store.orphanBinding(binding.id, "session_disappeared", now);
+        return orphaned ? [orphaned.id] : [];
+      });
+    }
+    const moved: string[] = [];
+    for (const binding of held) {
+      const secondary = Boolean(binding.repoRoot);
+      const updated = this.store.reattachBinding(binding.id, {
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: secondary ? binding.sessionCwd : session.cwd,
+        sessionRepoRoot: secondary ? binding.sessionRepoRoot : session.repoRoot,
+      }, now);
+      if (updated) moved.push(updated.id);
+    }
+    return moved;
+  }
+
+  /**
+   * Publish bindings a caller moved inside its own transaction (`followResumedConversation`),
+   * once that has committed, so no dashboard is shown a move that was then rolled back.
+   */
+  announceBindings(ids: readonly string[]): void {
+    for (const id of ids) this.publishBinding(id);
+  }
+
+  /**
+   * A hibernated task's binding is not orphaned by its session leaving: Resume reopens the same
+   * conversation (`@shared/hibernation.ts`) - under the same session id for an Agent SDK session,
+   * and through `followResumedConversation` for a terminal one - so the armed workflow is still
+   * the one that will judge its work. Only the binding for THAT conversation is held: one the
+   * session held for another conversation is orphaned as usual, since no Resume carries it.
+   */
+  private hibernationHoldsBinding(binding: WorkflowBinding): boolean {
+    return hibernationHoldsConversation(this.registry.listTasks(), binding.sessionId, binding.noteKey);
   }
 
   private localPlanOwnsBinding(binding: WorkflowBinding): boolean {
@@ -8193,6 +8398,10 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    // `async-input`'s completion hold: an outstanding request_input question, snoozed or not,
+    // is still the operator's to answer, so the run does not resume around it. Reported as the
+    // same reason, because to the operator it is the same fact: the session is waiting on them.
+    if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.

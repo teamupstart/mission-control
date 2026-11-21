@@ -74,6 +74,13 @@
      only cue - every paused surface also prints the two-bar glyph and the word. */
   --paused: #9aaecb;
 
+  /* A hibernated task (`Task.hibernation`): its agent stopped on purpose, its conversation kept.
+     Periwinkle, a step bluer than `--paused` slate - the two are the same family of "the
+     operator stopped this", and distinguishable because only this one has no process at all.
+     Kept off `--working` blue and `--held` purple for `--paused`'s reasons. Never the only cue:
+     every hibernated surface prints the moon and the word. */
+  --hibernated: #8f9be0;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -11688,8 +11695,7 @@ span.task-outcome:hover {
   border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
-/* "A CI check failed" alert - sits right after the PR chip and links to the same
-   PR. Same pill recipe as the chip, in the danger tone so it reads as an alarm. */
+/* CI warning opens individual conclusions and job links. */
 .pr-checks-alert {
   flex: none;
   display: inline-flex;
@@ -13651,6 +13657,38 @@ select:not([multiple]) option:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* Beside the drawer, a Board whose columns do not fit scrolls sideways - but a scroller clips at
+   its padding edge, so the overview's 20px right padding scrolled away and a cut-off column ran
+   flush into the drawer's border. With macOS's overlay scrollbar hidden at rest, that read as
+   the drawer laid over the Board (#1579). The gutter moves outside the scrollport, as a margin,
+   so a column is cut a gutter short of the drawer, the way the window's left edge already
+   holds one. A Board that fits is laid out exactly as before: 20px either way. Overview only:
+   the drill-in runs edge to edge, up to the drawer. */
+.residents-pinned-row > .board[data-focus="none"] {
+  padding-right: 0;
+  margin-right: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .residents-pinned-row > .board[data-focus="none"] {
+    transition: padding 0.34s ease, margin 0.34s ease;
+  }
+}
+/* And a visible track: declaring `::-webkit-scrollbar` opts out of the overlay scrollbar, so an
+   overflowing Board says it scrolls (as `.wf-pipeline-strip` does). Chromium reserves the track
+   only while the columns overflow, so a Board that fits is untouched. */
+.residents-pinned-row > .board::-webkit-scrollbar {
+  height: 10px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+.residents-pinned-row > .board::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
 .residents-drawer-head {
   flex: none;
   display: flex;
@@ -14024,6 +14062,34 @@ select:not([multiple]) option:focus-visible {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+.residents-drawer-sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.residents-drawer-sec-toggle .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-sec-toggle:hover,
+.residents-drawer-sec-toggle:hover .brh-chevron {
+  color: var(--fg);
+}
+.residents-drawer-sec-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.residents-drawer-foot.is-collapsed {
+  padding-block: 8px;
 }
 /* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
    the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
@@ -28266,6 +28332,12 @@ button.sc-row:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* The Backlog drawer's Hibernated section, inset to the drawer's own 14px gutter. */
+.line-drawer-body > .bl-hib {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
 /* A failed remedy, said between the header and the rows rather than inside them. Outside the
    capped body because the body scrolls: an alert in there is scrolled away by the same list
    the action was taken from. */
@@ -31566,6 +31638,19 @@ span.line-run-prov {
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
+.workflow-action-wait {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+.workflow-action-wait strong { color: var(--fg); }
+.rail-row > .workflow-action-wait { grid-column: 1 / -1; }
+
 .fleet-section-why {
   font-size: 10px;
   line-height: 1.45;
@@ -32859,6 +32944,165 @@ span.line-run-prov {
   line-height: 1.5;
   color: var(--dim);
   font-style: italic;
+}
+
+/* The Backlog's Hibernated section (issue #1547): tasks whose agent the operator stopped to
+   free its memory. Above the queued cards, compact, dashed - "no process" - and in the
+   hibernated tone, with Resume on every row. Not a `.bl-card`: it is neither dragged, selected
+   nor reordered, and nothing that orders the backlog may see it. */
+.bl-hib {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+.bl-hib-head,
+.bl-queued-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 2px 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bl-hib-head {
+  color: var(--hibernated);
+}
+.bl-hib-n {
+  color: var(--dim);
+  font-weight: 600;
+}
+.bl-queued-head {
+  margin-top: 6px;
+}
+.bl-hib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bl-hib-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 7px 12px;
+  background: color-mix(in oklab, var(--hibernated) 6%, var(--panel));
+  border: 1px dashed color-mix(in oklab, var(--hibernated) 36%, var(--border));
+  border-radius: 9px;
+}
+.bl-hib-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 9px 0 0 9px;
+  background: repeating-linear-gradient(180deg, var(--hibernated) 0 4px, transparent 4px 7px);
+}
+.bl-hib-card.is-failed {
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.bl-hib-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+.bl-hib-row > .agent-dot {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 5px;
+}
+/* Wraps, up to two lines: a narrow Backlog column must still say which task this is. */
+.bl-hib-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.bl-hib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.bl-hib-resume {
+  flex: none;
+  padding: 1px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--fg);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--hibernated) 24%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--hibernated) 58%, var(--border));
+  border-radius: 999px;
+}
+.bl-hib-resume:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--hibernated) 34%, var(--panel));
+}
+.bl-hib-resume:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.bl-hib-blocker {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.bl-hib-blocker-kind {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.bl-hib-blocker-reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.bl-hib-meta > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta > .moon-glyph {
+  flex: none;
+  color: var(--hibernated);
+}
+.bl-hib-failure {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 /* The way OUT of a dead prerequisite - a dependency that was cancelled or failed and
@@ -40959,6 +41203,29 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
 
+/* A session's own ask for Control other sessions (SessionControlRequestCard.tsx). It borrows
+   the review card's head, body and action row so it reads like a `request_input` question,
+   inside its own attention-framed panel because it sits in the conversation, not a modal.
+   Like the blocker band it never shrinks under the transcript. Only the agent's reason
+   scrolls, inside its own capped box: capping the card instead scrolled Accept and Decline
+   out of view on a short window, and the decision is the one thing this card exists for. */
+.session-control-request {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.detail-conv > .session-control-request { flex: none; }
+.session-control-request .review-content {
+  margin-bottom: 10px;
+  max-height: min(9.5em, 16dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.session-control-request-note { margin: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.session-control-request .review-actions + .session-control-request-note { margin: 10px 0 0; }
+
 /* Resident skill sources share the profile editor's typography and spacing. */
 .resident-source-add, .resident-skill-filters { display: flex; gap: 12px; align-items: end; }
 .resident-source-add .field, .resident-skill-filters .field { flex: 1; min-width: 0; }
@@ -41704,3 +41971,88 @@ body.foreman-sidecar-open .modal-backdrop {
 .feature-flag-empty { padding: 12px; margin: 0; }
 .feature-flag-row .settings-grant { flex: none; }
 .feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
+
+/* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
+   add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
+.task-shaping { display: flex; flex-direction: column; gap: 16px; }
+.task-shaping > .settings-hint { margin: 0; }
+.shaping-settings { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--bg); }
+.shaping-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.shaping-field > label, .shaping-field > span { font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-field .settings-hint { margin: 0; }
+.shaping-field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 14px; }
+.shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
+.shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+/* Inset like the rows below it, so the text never meets the list border. */
+.shaping-list-outcome { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px 2px; overflow-wrap: anywhere; }
+.shaping-list-outcome [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Baseline: the Dismiss label lines up with the first line of the message beside it. */
+.shaping-orphan-outcome { display: flex; align-items: baseline; gap: 12px; }
+.shaping-revisions-missing { font-size: 12px; color: var(--attention); }
+.shaping-orphan-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* The shaper's id, as its row would show it, at its own width rather than the column's. */
+.shaping-orphan-copy > .shaping-row-id { align-self: flex-start; }
+.shaping-outcome-dismiss { flex: none; }
+.shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
+.shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
+.shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
+.shaping-stage-head p { margin: 0; font-size: 11.5px; color: var(--dim); }
+.shaping-stage .feature-flag-empty { padding: 4px 12px 12px; }
+.shaping-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px; border-top: 1px solid var(--border-soft); }
+.shaping-stage-head + .shaping-row { border-top: 0; }
+.shaping-row-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 4px; }
+.shaping-row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.shaping-row-title strong { font-size: 13px; font-weight: 600; }
+.shaping-row-id { font-size: 11.5px; color: var(--dim); }
+.shaping-chip { font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 999px; border: 1px solid var(--border-soft); color: var(--dim); background: var(--panel-2); }
+/* pre-wrap: an argument with two spaces must not look like one with one. */
+.shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
+   gap, yet stays in the accessibility tree, which display: none would not. */
+.shaping-earlier-live:empty { position: absolute; }
+/* Older outcomes, apart from the current one: the same warning colour, quieter, one per line. */
+.shaping-earlier-outcomes { margin: 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.shaping-earlier-outcomes li { font-size: 11.5px; color: var(--attention); opacity: 0.85; overflow-wrap: anywhere; }
+.shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+.shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
+.shaping-env li.is-set span { color: var(--idle); }
+.shaping-env li.is-unset span { color: var(--attention); }
+.shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
+.shaping-move { min-width: 30px; }
+.shaping-dialog { width: min(720px, 100%); }
+.shaping-dialog .modal-head h3 { margin: 0; font-size: 14px; }
+.shaping-dialog .modal-body { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+.shaping-dialog-lede { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--dim); }
+.shaping-manifest { font-family: var(--mono); font-size: 12px; }
+.shaping-file { align-self: flex-start; cursor: pointer; }
+.shaping-refusal { margin: 0; font-size: 12px; color: var(--attention); overflow-wrap: anywhere; }
+.shaping-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-review { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg); }
+.shaping-review dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.shaping-review-line { display: contents; }
+.shaping-review dt { font-size: 11.5px; color: var(--dim); }
+.shaping-review dd { margin: 0; font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-review dd code { white-space: pre-wrap; }
+.shaping-receives h4 { margin: 0 0 4px; font-size: 12px; font-weight: 640; }
+.shaping-receives ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.shaping-receives p { margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+.shaping-result { display: flex; flex-direction: column; gap: 8px; }
+.shaping-result h4 { margin: 4px 0 0; font-size: 12.5px; font-weight: 640; }
+.shaping-outcome { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-outcome strong { color: var(--fg); }
+.shaping-outcome.is-ok strong { color: var(--idle); }
+.shaping-outcome:not(.is-ok) strong { color: var(--attention); }
+.shaping-reason { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.shaping-entry { border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; }
+.shaping-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 10px; background: var(--panel-2); font-size: 12px; }
+.shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
+.shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
+.pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
+.pr-check-results li { margin-block: 8px; }

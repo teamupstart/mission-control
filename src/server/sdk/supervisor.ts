@@ -4,6 +4,7 @@ import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
@@ -60,6 +61,7 @@ import {
   getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
+  setSdkSessionConversation,
   recordSdkSessionProcess,
   sdkSessionIsLive,
   setSdkSessionEffort,
@@ -254,6 +256,27 @@ export class SdkSupervisor {
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
   /**
+   * Sessions whose task is being hibernated (`@shared/hibernation.ts`). Their driver's end is
+   * written `hibernated` rather than `exited`, which is the one thing that keeps the row
+   * resumable by `wake` and out of every automatic restore.
+   */
+  private hibernating = new Set<string>();
+  /** Hibernated sessions a `wake` is relaunching, so a second Resume cannot launch it twice. */
+  private waking = new Set<string>();
+  /**
+   * Woken drivers whose task has not been bound back to them yet. One that ends in that window,
+   * stopped by a Resume that refused it or exiting on its own, leaves its row `hibernated` as it
+   * was before the Resume, so the next Resume can still reopen the conversation. Cleared only by
+   * `wakeBound`, once the task is running on it.
+   */
+  private unboundWakes = new Set<string>();
+  /**
+   * The conversation each driver has itself reported binding since it was adopted - the
+   * driver's own word, never the id the adoption was handed - and who is waiting to hear it.
+   */
+  private reportedConversations = new Map<string, string>();
+  private conversationWaiters = new Map<string, Set<(conversation: string | null) => void>>();
+  /**
    * Set once the daemon is going down, and read by the event pump.
    *
    * It decides ONE thing, and that thing is the whole of resume-on-restart: whether a
@@ -307,6 +330,13 @@ export class SdkSupervisor {
       }
       if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
       const launchTask = row.taskId ? getDurableTask(row.taskId) : null;
+      if (launchTask?.status === "hibernated" && launchTask.hibernation?.sessionId === row.id) {
+        // The daemon stopped between recording a hibernation and its driver ending, or between
+        // a Resume relaunching it and the task taking it back. The operator's last word was
+        // hibernate, so the row says so and waits for their Resume rather than coming back.
+        setSdkSessionStatus(row.id, "hibernated");
+        continue;
+      }
       if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)
         && !this.registry.outcomePrecedesSessionWork(launchTask, row.id)) {
         // task_id is launch provenance, not current ownership. Reuse by another task
@@ -676,6 +706,8 @@ export class SdkSupervisor {
       void handle.stop().catch(() => {});
       throw new Error(refusal);
     }
+    // A new driver for this id has reported nothing yet, whatever an earlier one said.
+    this.reportedConversations.delete(registration.id);
     // BEFORE `registerSdkSession` and before the pump, and that ordering is the whole
     // reason this is here rather than at the dispatcher's call site. Registration is what
     // makes a session streamable, and the pump's first frames can carry turn one; a marker
@@ -784,6 +816,12 @@ export class SdkSupervisor {
     beforeSend?: () => string | null,
     acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
+    // A woken driver has not yet shown it reopened the task's conversation (`unboundWakes`), so a
+    // turn now could land in a conversation Resume is about to refuse. Refused before anything
+    // is recorded, and accepted again the moment the task is bound to it.
+    if (this.unboundWakes.has(id)) {
+      return Promise.reject(new Error("its conversation is still being reopened. Send again once it has resumed"));
+    }
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
@@ -853,6 +891,9 @@ export class SdkSupervisor {
     turn: SdkTurn,
     beforeSend?: () => string | null,
   ): Promise<"started" | null> {
+    // Not idle for this purpose until its task is bound (`holdsDelivery`): the caller keeps the
+    // row for the next idle transition, which the binding produces.
+    if (this.unboundWakes.has(id)) return Promise.resolve(null);
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
@@ -1139,6 +1180,151 @@ export class SdkSupervisor {
   }
 
   /**
+   * The conversation this session's driver has reported binding since it was adopted, waiting
+   * up to `timeoutMs` for the report, or null when none came (or the driver ended first).
+   *
+   * Resume asks this before it binds a task to a woken driver: the id the relaunch was handed is
+   * only what was ASKED for, and a driver that opened something else must not inherit the task.
+   */
+  reportedConversation(id: string, timeoutMs: number): Promise<string | null> {
+    const known = this.reportedConversations.get(id);
+    if (known) return Promise.resolve(known);
+    if (!this.handles.has(id)) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const waiters = this.conversationWaiters.get(id) ?? new Set();
+      this.conversationWaiters.set(id, waiters);
+      const done = (conversation: string | null): void => {
+        clearTimeout(timer);
+        waiters.delete(done);
+        resolve(conversation);
+      };
+      const timer = setTimeout(() => done(null), timeoutMs);
+      timer.unref?.();
+      waiters.add(done);
+    });
+  }
+
+  private noteReportedConversation(id: string, conversation: string | null): void {
+    if (conversation) this.reportedConversations.set(id, conversation);
+    else this.reportedConversations.delete(id);
+    const waiters = this.conversationWaiters.get(id);
+    if (!waiters) return;
+    this.conversationWaiters.delete(id);
+    for (const waiter of [...waiters]) waiter(conversation);
+  }
+
+  /**
+   * Stop a session's driver because its task is being hibernated.
+   *
+   * The ordinary `stop` - thaw first, then drain until the harness has finished writing the
+   * conversation file - except that the row it leaves says `hibernated`, so no restore picks it
+   * back up and `wake` can reopen it under the same id. The caller records the task's
+   * hibernation BEFORE calling this; a stop that rejects leaves the driver running and the
+   * caller puts the task back.
+   */
+  async hibernate(id: string): Promise<void> {
+    if (!this.handles.has(id)) throw new Error("its agent is not running here");
+    this.hibernating.add(id);
+    try {
+      await this.stop(id);
+    } finally {
+      // After the pump has written the row, or after a rejected stop left the driver live.
+      this.hibernating.delete(id);
+    }
+  }
+
+  /** A woken session's task is bound to it: from here on its end is an ordinary one. */
+  wakeBound(id: string): void {
+    this.unboundWakes.delete(id);
+  }
+
+  /**
+   * Whether queued turns must wait: a woken driver has not yet shown it reopened its task's
+   * conversation. `PendingTurnManager` holds rows on this rather than having a send refused, so
+   * nothing is retried in a loop; the binding's `session_upsert` releases them.
+   */
+  holdsDelivery(id: string): boolean {
+    return this.unboundWakes.has(id);
+  }
+
+  /**
+   * Point a hibernated row back at `conversation`, the task's saved one. A woken driver reports
+   * the conversation it opened (`bound`), and that report is written to the row whether or not
+   * Resume accepts it, so one Resume refuses must not leave the next one reopening it.
+   */
+  keepConversation(id: string, conversation: string): void {
+    const row = getSdkSession(id);
+    if (row && row.agentSessionId !== conversation) setSdkSessionConversation(id, conversation);
+  }
+
+  /**
+   * Reopen a hibernated session: relaunch its driver under the SAME id with its conversation,
+   * exactly as a daemon restart does (`resume`), on the operator's Resume.
+   *
+   * Throws with the reason when the conversation could not be reopened, leaving the row
+   * `hibernated` so the operator can retry. On success the session is registered idle and the
+   * row is live again; binding it back to its task is the caller's.
+   */
+  async wake(id: string, conversation: string): Promise<Session> {
+    if (this.shuttingDown) throw new Error("Mission Control is shutting down");
+    if (this.handles.has(id)) throw new Error("its agent is already running");
+    if (this.waking.has(id)) throw new Error("it is already resuming");
+    // The stopped card lingers for a few seconds before it leaves (`Registry.beginEviction`),
+    // and one id is one card: relaunching under it now would be refused only after the driver
+    // had already started.
+    if (this.registry.getSession(id)) throw new Error("it is still shutting down. Try again in a few seconds");
+    const row = getSdkSession(id);
+    if (!row) throw new Error("its embedded session record is gone");
+    if (row.status !== "hibernated") {
+      throw new Error(`its embedded session is ${row.status ?? row.statusRaw}, not hibernated`);
+    }
+    // Asked here rather than left to the harness, whose refusal would not name the checkout.
+    if (!existsSync(row.cwd)) throw new Error(`its checkout ${row.cwd} no longer exists`);
+    // The task's saved conversation, never whatever an earlier refused wake left on the row.
+    this.keepConversation(id, conversation);
+    this.waking.add(id);
+    // Before the driver starts, so not even an immediate exit can write its row `exited`.
+    this.unboundWakes.add(id);
+    try {
+      // No continuation turn is owed: only an idle session is hibernated.
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false });
+    } catch (error) {
+      // Adopted, then something after the adoption threw: the conversation IS open again and
+      // its pump owns it from here, so this is a resume, not a failure to report.
+      if (this.handles.has(id)) {
+        console.error(`[sdk] ${id} resumed, but a step after adoption failed:`, error);
+      } else {
+        // `adopt` may have written the row before refusing; nothing is running, so the
+        // conversation stays hibernated for the next attempt.
+        setSdkSessionStatus(id, "hibernated");
+        this.unboundWakes.delete(id);
+        throw error;
+      }
+    } finally {
+      this.waking.delete(id);
+    }
+    const session = this.registry.getSession(id);
+    if (!session) {
+      // Its driver may be running though no card holds it. It is stopped and drained before this
+      // fails, so no agent is left on the conversation with nothing to show or end it. Its end is
+      // written `hibernated` (`unboundWakes`), and so is the row here, whatever the stop did.
+      let stopFailure: string | null = null;
+      if (this.handles.has(id)) {
+        try {
+          await this.stop(id);
+        } catch (error) {
+          stopFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      setSdkSessionStatus(id, "hibernated");
+      throw new Error(stopFailure === null
+        ? "its agent started but did not register"
+        : `its agent started but did not register, and could not be stopped (${stopFailure}). It may still be running: Retry stops it first`);
+    }
+    return session;
+  }
+
+  /**
    * The stop itself, without lifting the session's pause. Shutdown's path (`stopAll`): the
    * daemon is going down, not the session, and `PauseManager.stop()` has already continued the
    * driver's processes so it can drain while keeping the pause record, which the next daemon
@@ -1215,7 +1401,7 @@ export class SdkSupervisor {
     for (const id of ids) {
       if (!this.handles.has(id)) continue;
       try {
-        setSdkSessionStatus(id, "suspended");
+        setSdkSessionStatus(id, this.endsHibernated(id) ? "hibernated" : "suspended");
       } catch (err) {
         console.error(`[sdk] could not mark ${id} suspended:`, err);
       }
@@ -1811,7 +1997,8 @@ export class SdkSupervisor {
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
-        if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
+        if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus(id));
+        if (evt.kind === "bound") this.noteReportedConversation(id, evt.agentSessionId);
         if (!this.shuttingDown && !heldIdle) {
           this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending, holdWorkCycle });
           if (evt.kind === "bound") {
@@ -1844,6 +2031,8 @@ export class SdkSupervisor {
     } finally {
       if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
       this.handles.delete(id);
+      // A driver that ended never reports, so nobody waits on it past this point.
+      this.noteReportedConversation(id, null);
       this.sends.delete(id);
       this.pumps.delete(id);
       this.cancelCapacityRetry(id);
@@ -1856,7 +2045,8 @@ export class SdkSupervisor {
       cleanupDisposableAgentStateHome(this.stateHomes.get(id));
       this.stateHomes.delete(id);
       try {
-        setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());
+        // A hibernating driver's conversation is on disk whatever its stream did on the way out.
+        setSdkSessionStatus(id, outcome === "failed" && !this.endsHibernated(id) ? "failed" : this.endStatus(id));
       } catch (err) {
         console.error(`[sdk] final status write for ${id} failed:`, err);
       }
@@ -2003,8 +2193,14 @@ export class SdkSupervisor {
     }
   }
 
+  /** Hibernating, or woken and not yet bound: either way its conversation waits for a Resume. */
+  private endsHibernated(id: string): boolean {
+    return this.hibernating.has(id) || this.unboundWakes.has(id);
+  }
+
   /** What a driver ending means, which depends entirely on who ended it. */
-  private endStatus(): SdkSessionStatus {
+  private endStatus(id: string): SdkSessionStatus {
+    if (this.endsHibernated(id)) return "hibernated";
     return this.shuttingDown ? "suspended" : "exited";
   }
 }

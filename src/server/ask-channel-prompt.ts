@@ -52,8 +52,10 @@ terminal. Nobody is reading your screen.
 
 The built-in \`${ASK_USER_QUESTION_TOOL}\` tool is unavailable in this session. When you need a
 decision, a clarification, or a choice from your human, call the MCP tool
-\`${ask}\`. It puts the question on their dashboard and BLOCKS until they answer, then
-returns their answer to you.
+\`${ask}\`. It puts the question on their dashboard. Its result either carries their
+answer, or says the question is filed and the answer will arrive later as a message in this
+conversation; then keep working on what does not depend on it, and if nothing else remains,
+say what is waiting on the answer and end your turn.
 
 Pass discrete choices as \`options\` so they arrive as real controls the human can click:
 

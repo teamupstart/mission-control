@@ -78,8 +78,9 @@ identity, stored secrets.
      `{ task, repo: { name, facts?, summary? }, version? }`, the FR-02 `get_guidance` input.
      `task` is the prompt followed by one fixed block that states every field of the
      request's `context` except local paths: the task id, title, kind, harness and runtime,
-     the after-work step with its workflow id, labels, priority, the caller, and each
-     attached repository with its role, branch and base commit.
+     the after-work step with its workflow id, labels, priority, the caller, the slot of
+     the repository the call is about, and each attached repository with its slot, role,
+     branch and base commit (D17).
    - `argument`: four arguments,
      `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
      alone, and `context` is the request's whole `context` object.
@@ -149,6 +150,7 @@ identity, stored secrets.
   runtime, the after-work step and its workflow id, labels, priority, the caller, and both
   repositories on the same branch name with different base commits, so a test can tell
   them apart) reaches the tool in each mode,
+  two attached worktrees of one repository, told apart in each mode by the target slot,
   structured and text replies, a tool error, a timeout, a reply over 256 KiB on each server
   type, which comes back `failed` at once without being parsed, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
@@ -197,6 +199,8 @@ free of shaping-specific assumptions where that is cheap.
 - Phase 3: renders `references` and lists environment names at import. This phase supplies
   the data only.
 - Phase 4: a discovered manifest with an `mcp` or `http` transport works with no change here.
+- Phase 7: adds one folded line, a route reply to `scrubResolved`, and one connection for a
+  selector and a router on the same server. D17's folded line is owned here.
 - Review history: plan validation and the review of pull request #1546 changed this phase
   in several rounds. The rules they produced are stated in the steps above and in
   `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each

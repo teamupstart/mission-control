@@ -48,6 +48,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/product-issues", "task.issue_submit", "tasks"],
   ["POST", "/mcp/reviews", "attention.request", "permissions"],
   ["POST", "/mcp/v2/reviews", "attention.request", "permissions"],
+  ["POST", "/mcp/questions/:id/withdraw", "attention.withdraw", "permissions"],
   ["POST", "/mcp/reviews/:id/detach", "attention.detach", "permissions"],
   ["POST", "/api/reviews/:id/resolve", "attention.resolve", "permissions"],
   ["POST", "/api/reviews/:id/snooze", "attention.snooze", "permissions"],
@@ -196,6 +197,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/session-transfers/:id/recheck", "session.transfer_recheck", "sessions"],
   ["POST", "/api/session-transfers/:id/resolve", "session.transfer_resolve", "sessions"],
   ["PUT", "/api/feature-flags", "settings.feature_flags", "settings"],
+  ["PUT", "/api/shaping", "settings.shaping", "settings"],
+  ["POST", "/api/shaping/test", "settings.shaping_test", "settings"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

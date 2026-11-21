@@ -8,6 +8,8 @@ const TASK_ACTIVITY = {
   done: false,
   cancelled: false,
   failed: false,
+  // The agent was stopped on purpose and nothing runs until the operator resumes it.
+  hibernated: false,
 } as const satisfies Record<TaskStatus, boolean>;
 
 /** An executing task, including provisioning. Backlog work is not active yet. */

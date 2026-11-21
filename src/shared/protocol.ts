@@ -1,4 +1,6 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
+export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
+export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -46,6 +48,7 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
+import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -674,10 +677,25 @@ export const CreateReviewSchema = z
      * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
      */
     snoozable: z.boolean().optional(),
+    /**
+     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
+     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
+     * older build never sends this and is always told `call`.
+     */
+    asyncCapable: z.boolean().optional(),
+    /** What the agent does while the question is open: one line, `input` only. */
+    meanwhile: z.string()
+      .transform((line) => oneLine(line))
+      .pipe(z.string().max(MEANWHILE_MAX_CHARS))
+      .optional(),
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",
     path: ["snoozable"],
+  })
+  .refine((r) => r.kind === "input" || r.meanwhile === undefined, {
+    message: "only kind 'input' can carry a meanwhile line",
+    path: ["meanwhile"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -704,6 +722,10 @@ export const DetachReviewWaitSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
+});
+export const ListOpenQuestionsSchema = DetachReviewWaitSchema;
+export const WithdrawQuestionSchema = DetachReviewWaitSchema.extend({
+  reason: z.string().trim().min(1).max(2000),
 });
 export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
 
@@ -2999,8 +3021,14 @@ void inspectorInspectionSchemaMatchesType;
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
-  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
-  codeRabbitAutoResolve: z.boolean().default(false),
+  /**
+   * Prompt the eligible owner about CodeRabbit threads, independently of merge consent.
+   *
+   * On by default. An install that stored the old default-off value is switched on exactly
+   * once by the schema 38 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
+   * opt-out is an ordinary stored `false` and is kept.
+   */
+  codeRabbitAutoResolve: z.boolean().default(true),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -6281,6 +6309,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     branch: z.string().min(1).max(400).nullable(),
     expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    mergedContentTreeOid: CommitOidSchema.nullable().optional(),
     observedAt: z.number().int(),
   }),
 ]);
@@ -6563,6 +6592,7 @@ export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCove
   );
 
 export const WorkflowCanonicalCriterionSchema = z.object({
+  fulfilledByAction: z.literal("pull_request").nullable().optional(),
   id: z.string().min(1).max(200),
   text: z.string().trim().min(1)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
@@ -6605,6 +6635,7 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    deferredToAction: z.literal("pull_request").optional(),
     // Absent on every readiness row written before the repair packet could name a contested
     // claim, so it defaults rather than failing those rows open.
     contestedClientCriterionIds: z.array(
@@ -6899,6 +6930,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
   criteria: z.array(z.object({
     criterionId: z.string().min(1).max(200),
     material: z.boolean(),
+    deferredToAction: z.literal("pull_request").optional(),
     claimId: z.string().min(1).max(200).nullable(),
     evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
     gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
@@ -7504,6 +7536,13 @@ export const WorkflowInspectorGateStateSchema = z.object({
   findingFingerprints: z
     .array(z.string().min(1).max(200))
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
+  // Gate CAS compares serialized state; append new optional fields in writer order.
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
 });
 
 /**
@@ -7750,7 +7789,7 @@ export const CodeRabbitComparisonSchema = z.object({
 export const CodeRabbitReviewSummarySchema = z.object({
   comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
   counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
-  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryableConnection: z.literal(true).optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
@@ -9429,7 +9468,32 @@ export const StoredPauseStateSchema = z.object({
 export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({
+  enabled: z.boolean(),
+  requestId: z.string().guid().optional(),
+  /**
+   * The session's own pending ask this click accepts, when the click came from its card. Bound
+   * only to which request is still on screen: the grant still needs the private click above,
+   * and a request the session no longer holds refuses the grant rather than applying it to a
+   * conversation that never asked.
+   */
+  controlRequestId: z.string().guid().optional(),
+}).strict();
+/** Longest reason a session may give for wanting Control other sessions. */
+export const SESSION_CONTROL_REQUEST_REASON_MAX = 2_000;
+/** `request_session_control`: the caller is the signed session credential, never a body id. */
+export const RequestSessionControlSchema = z.object({
+  reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX),
+}).strict();
+/** Where one ask stands. Only `granted` means the session holds the grant. */
+export const SESSION_CONTROL_REQUEST_STATUSES = ["pending", "granted", "declined", "expired"] as const;
+export type SessionControlRequestStatus = (typeof SESSION_CONTROL_REQUEST_STATUSES)[number];
+export interface SessionControlRequestResult {
+  id: string;
+  status: SessionControlRequestStatus;
+  /** Why an ask ended without a decision; set only on `expired`. */
+  detail?: string;
+}
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),

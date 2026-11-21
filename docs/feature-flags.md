@@ -3,7 +3,10 @@
 The flag core stores one set of operator choices for this machine. The registry includes
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
-and **Headless mode** (`headless-mode`) as previews.
+**Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
+[Session control requests](sessions.md#when-a-session-asks-for-control),
+[Fold the drawer's Profiles](residents.md#the-residents-drawer) and
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -24,6 +27,15 @@ a Claude Code terminal session. It ships off until chosen. With it on, every `/d
 answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
 route answers 404 and the `home-dispatch-v1` health capability is absent.
 
+**Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
+task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
+Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
+**Session control requests** (`session-control-requests`) lets a session ask for **Control other
+sessions** with `request_session_control`; only a desktop click on the card's Accept grants it.
+Turning it off refuses new asks and withdraws every pending card at once, telling each waiting
+agent its ask ended without a decision. A grant already given is unaffected.
+
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
 off**, **Turn them on too**, or **Cancel**. Cancel and Escape write nothing. Turning the master
@@ -31,8 +43,15 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Alpha builds do not enable preview features. Choose individual flags or Enable all on any
-update channel.
+Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Enable all, so an alpha operator gets every current and future preview feature by default. It is
+the same write as the master switch without "Turn them on too": flags you switched off stay off.
+Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
+on alpha. Alpha is saved first and stays on if that write fails, because the alpha
+switch must keep working while the daemon is down; the Application updates section then says
+Enable all could not be switched on and offers **Retry**. That failure survives moving between
+Settings categories, and a pending write never locks the alpha switch. A write that gets no
+answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.
 
 ## Definition and resolution
 
@@ -61,9 +80,10 @@ choice, even if it matches its default. On then off with the master off therefor
 explicit off, which a later master-on keeps. `explicitlyDisabledFeatureFlags` lists known
 flags with that stored false for the confirmation dialog.
 
-The update channel never changes a flag; on every channel a preview feature is on only because
-the operator switched that flag on or switched on Enable all; only Enable all makes new preview
-features come on by themselves.
+Resolution never reads the update channel. Opting in to alpha changes flags only through the
+dashboard, which follows a successful alpha opt-in with the `{ kind: "master", enabled: true }`
+intent below; the daemon still has no reader for the desktop's update preferences. Only Enable
+all makes new preview features come on by themselves.
 
 Unknown ids never enable a feature, but their stored choices survive writes, so downgrading
 and upgrading does not erase preferences. Retired ids are dropped on the next write and must
@@ -128,3 +148,26 @@ restoring one without it leaves current choices alone. Its surface is `settings`
 Do not skip the default-on release: it gives operators a way to disable a problem before the
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
+
+## Shipped flags
+
+| Id | Stage | Gates | Guide |
+| --- | --- | --- | --- |
+| `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
+| `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
+| `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
+| `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
+| `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+| `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
+| `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+
+`test/feature-flags.test.ts` checks every shipped definition against the id rules.
+`e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
+`e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
+a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
+in every open window.
+
+A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
+`settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search
+and the palette.

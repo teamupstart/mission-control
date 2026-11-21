@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -33,8 +34,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, 
 
 async function fixture() {
   const id = randomUUID(), repo = join(home, id);
-  mkdirSync(repo); git(repo, "init", "-q", "-b", "main");
-  git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial");
+  seedGitRepo(repo, { branch: "main", files: {}, message: "initial", name: "Test", email: "test@example.com", storeIdentity: false });
   const registry = new Registry();
   registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null, terminals: [], startedAt: 1 }]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: id, cwd: repo, transcriptPath: null, env: {} });

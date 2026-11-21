@@ -8,13 +8,19 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { stateDisplay } from "../lib/format.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
 import { reviewAskSummary } from "../lib/reviews.ts";
-import { toggleResidentCardCollapsed, useResidentCardsCollapsed } from "./card-fold.ts";
+import {
+  toggleResidentCardCollapsed,
+  toggleResidentProfilesCollapsed,
+  useResidentCardsCollapsed,
+  useResidentProfilesCollapsed,
+} from "./card-fold.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
 import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
 
 /** One live resident as the drawer lists it, in the dock's order. */
@@ -138,6 +144,10 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   const { entries, pinned, selectedId } = props;
   const { bindings } = useKeybindings();
   const collapsed = useResidentCardsCollapsed();
+  // The Profiles fold is a preview: off, the heading is plain text and the list always shows, so
+  // a fold left closed when the preview is switched off never strands the Launch buttons.
+  const profilesFoldable = useFeatureFlag("resident-profiles-fold");
+  const profilesCollapsed = useResidentProfilesCollapsed() && profilesFoldable;
   const rootRef = useRef<HTMLElement | null>(null);
   // The residents tour spotlights the drawer itself, then its Pin.
   const tourDrawerRef = useTourTargetRef<HTMLElement>("residents:drawer");
@@ -313,19 +323,36 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
           </>
         )}
       </div>
-      <footer className="residents-drawer-foot">
-        <h3 className="residents-drawer-sec" id="residents-drawer-profiles">Profiles</h3>
-        {props.profiles.length === 0 ? (
-          <p className="residents-drawer-empty">No resident profiles yet. Author one on the Residents page.</p>
-        ) : (
-          <ResidentProfileLaunchList
-            profiles={props.profiles}
-            launches={props.launcher.launches}
-            onLaunch={(profile) => void props.launcher.launch(profile).then((answer) => {
-              if (answer === "needs-repository") props.onOpenLaunch(profile.id);
-            })}
-          />
-        )}
+      <footer className={`residents-drawer-foot${profilesCollapsed ? " is-collapsed" : ""}`}>
+        <h3 className="residents-drawer-sec" id="residents-drawer-profiles">
+          {profilesFoldable ? (
+            <Tooltip label={profilesCollapsed ? "Show the profiles and their Launch buttons" : "Hide the profiles and their Launch buttons"}>
+              <button
+                type="button"
+                className="residents-drawer-sec-toggle"
+                aria-expanded={!profilesCollapsed}
+                aria-controls="residents-drawer-profiles-list"
+                onClick={toggleResidentProfilesCollapsed}
+              >
+                Profiles
+                <RepoGroupCaret />
+              </button>
+            </Tooltip>
+          ) : "Profiles"}
+        </h3>
+        <div id="residents-drawer-profiles-list" className="residents-drawer-profiles" hidden={profilesCollapsed}>
+          {props.profiles.length === 0 ? (
+            <p className="residents-drawer-empty">No resident profiles yet. Author one on the Residents page.</p>
+          ) : (
+            <ResidentProfileLaunchList
+              profiles={props.profiles}
+              launches={props.launcher.launches}
+              onLaunch={(profile) => void props.launcher.launch(profile).then((answer) => {
+                if (answer === "needs-repository") props.onOpenLaunch(profile.id);
+              })}
+            />
+          )}
+        </div>
       </footer>
     </aside>
   );

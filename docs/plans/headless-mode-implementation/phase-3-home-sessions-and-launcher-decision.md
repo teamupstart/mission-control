@@ -1,5 +1,7 @@
 # Phase 3: Home sessions and launcher decision (WP2a)
 
+> **Status: merged on main.** Built; no work remains in this phase. See `phased-plan.md` section 1.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
 **1. Outcome.** The daemon registers a home session, answers who is allowed to do what, decides whether to offer the launcher, and detects dispatch intent. These are the home-session rules every other route relies on.

@@ -1,5 +1,9 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import { getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
+import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
+import { getShapingConfig } from "./shaping/index.ts";
+import { daemonShapingView } from "./shaping/revisions.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
@@ -40,6 +44,7 @@ import type {
   RestoringSession,
   ServerEvent,
   Session,
+  SessionControlRequestView,
   SessionCost,
   SessionMeta,
   SessionGoal,
@@ -500,6 +505,7 @@ export type PrMatch = {
   state: PrState;
   /** Rolled-up CI status for the PR, or null when it carries no checks. */
   checks: PrChecks | null;
+  checkDetails?: import("@shared/pr-check-details.ts").PrCheckDetails | null;
   branch: string;
   agentSessionId: string | null;
   episodeId: string | null;
@@ -548,6 +554,7 @@ interface LivePrObservation {
   url: string;
   number: number;
   checks: PrChecks | null;
+  checkDetails?: import("@shared/pr-check-details.ts").PrCheckDetails | null;
 }
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
@@ -627,7 +634,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  * `settings_restored` is deliberately absent: it invalidates browser configuration and
  * catalogs, none of which is a Line fold input.
  */
-// feature_flags is not a Line input: the empty flag registry supplies no stage data.
+// feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
+// shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1003,6 +1011,12 @@ export class Registry extends EventEmitter {
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** Explicit grants, bounded by live sessions and never persisted. */
   private sessionControlGrants = new Map<string, string>();
+  /**
+   * Each session's pending ask for a grant, keyed by session id. `SessionControlRequests` is
+   * the only writer; the registry only decorates it onto every session it emits, as it does
+   * the grant. Bounded by live sessions, and never persisted: a restart forgets the ask.
+   */
+  private sessionControlRequests = new Map<string, SessionControlRequestView>();
   /** A terminal side effect must not cross the asynchronous reset boundary. */
   private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
@@ -1189,6 +1203,12 @@ export class Registry extends EventEmitter {
   private lastFleetCost: FleetCost | null = null;
   private lastFleetCostAt = 0;
   private lastFeatureFlags: FeatureFlagsConfig | null = null;
+  /**
+   * The last `shaping_config` frame, as canonical JSON, or null for a cleared one. Undefined
+   * until the first: a window may hold a snapshot's config that no frame has restated, so the
+   * first clear is never mistaken for a repeat.
+   */
+  private lastShaping: string | null | undefined = undefined;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1326,6 +1346,7 @@ export class Registry extends EventEmitter {
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
+    shaping?: ShapingConfigView;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1368,6 +1389,9 @@ export class Registry extends EventEmitter {
       // fleet must read "nothing waiting · no sessions open" rather than six blanks.
       lineSummary: this.lineSummaryNow(),
       featureFlags: getFeatureFlagsConfig(),
+      // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
+      // window is handed them. The view, never raw envelopes.
+      ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1471,6 +1495,18 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Publish task shaping's config view, or null to clear it, suppressing a frame that restates
+   * the last one. Only the caller knows whether the flag is on, so it decides which to send;
+   * `wireShapingConfigEvents` is that caller.
+   */
+  emitShapingConfig(config: ShapingConfigView | null): void {
+    const key = config === null ? null : canonicalJson(config);
+    if (this.lastShaping !== undefined && this.lastShaping === key) return;
+    this.lastShaping = key;
+    this.emitEvent({ type: "shaping_config", config });
+  }
+
+  /**
    * Emit the settings status tuple, dropping a frame that restates the last one.
    *
    * The suppression mirrors `recomputeFleetCost`: `publishSettingsStatus` recomposes on
@@ -1571,6 +1607,26 @@ export class Registry extends EventEmitter {
     const episode = this.workEpisodeForSession(id);
     if (!episode || episode.awaitingAgentRebind) return null;
     return JSON.stringify([session.pid, session.agentSessionId, session.cwd, episode.episodeId, this.taskForSession(id, session.cwd)?.id ?? null]);
+  }
+
+  /** The ask `SessionControlRequests` is drawing for one session, or null. */
+  sessionControlRequest(id: string): SessionControlRequestView | null {
+    return this.sessionControlRequests.get(id) ?? null;
+  }
+
+  /**
+   * Adopt `SessionControlRequests`' answer for one session and re-emit it. Returns false for a
+   * session the registry does not hold, so the manager can drop an ask that outlived it.
+   */
+  setSessionControlRequest(id: string, request: SessionControlRequestView | null): boolean {
+    const session = this.sessions.get(id);
+    if (request && session) this.sessionControlRequests.set(id, request);
+    else this.sessionControlRequests.delete(id);
+    if (!session) return false;
+    const next: Session = { ...session, sessionControlRequest: request };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+    return true;
   }
 
   /** Grants never survive a daemon restart, reset, or replacement work episode. */
@@ -2116,6 +2172,7 @@ export class Registry extends EventEmitter {
   }
   private emitSession(s: Session): void {
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
+    s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
     s.resumedAt = this.sessionResumes.get(s.id) ?? null;
     this.emitEvent({ type: "session_upsert", session: s });
@@ -2845,6 +2902,7 @@ export class Registry extends EventEmitter {
       // that decides the key.
       foremanInvite: null,
       sessionControlEnabled: prev?.sessionControlEnabled ?? false,
+      sessionControlRequest: this.sessionControlRequests.get(d.syntheticId) ?? null,
       // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
       // explicit null keeps `byJson` from reading absent-vs-null as a change every tick.
       pause: this.sessionPauses.get(d.syntheticId) ?? null,
@@ -2907,6 +2965,7 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       workCycle: undefined,
       pendingReviews: this.countPending(d.syntheticId),
+      openQuestions: this.countOpenQuestions(d.syntheticId),
       // Resolved below after `pipeline` is known. A first-seen provider worker is not in
       // `this.sessions` yet, so resolving here cannot follow its commission-to-task join.
       task: null,
@@ -2927,6 +2986,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prCheckDetails: prev?.prCheckDetails ?? null,
       prBranchUpdates: prev?.prBranchUpdates,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
@@ -3092,6 +3152,7 @@ export class Registry extends EventEmitter {
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
       // the operator kicked Foreman out.
       foremanInvite: null,
+      sessionControlRequest: this.sessionControlRequests.get(input.id) ?? null,
       // A restored SDK session that was paused before the restart is still paused.
       pause: this.sessionPauses.get(input.id) ?? null,
       resumedAt: this.sessionResumes.get(input.id) ?? null,
@@ -3128,11 +3189,13 @@ export class Registry extends EventEmitter {
       lastActivity: null,
       workCycle: undefined,
       pendingReviews: this.countPending(input.id),
+      openQuestions: this.countOpenQuestions(input.id),
       task: null,
       prUrl: null,
       prNumber: null,
       prState: null,
       prChecks: null,
+      prCheckDetails: null,
       meta: null,
       effortBaselineReady: false,
       pendingEffort: null,
@@ -3543,6 +3606,7 @@ export class Registry extends EventEmitter {
       prState: "open",
       // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
       prChecks: null,
+      prCheckDetails: null,
     };
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3724,6 +3788,7 @@ export class Registry extends EventEmitter {
             // Checks are unknown at creation; the poller fills them in. Reset so a
             // reused session can't carry the previous PR's status onto a new one.
             prChecks: null,
+            prCheckDetails: null,
           }
         : {};
       const agentSessionId = evt.sessionId ?? target.agentSessionId;
@@ -5269,6 +5334,25 @@ export class Registry extends EventEmitter {
     return { task: next, displaced };
   }
 
+  /**
+   * The durable half of binding a resumed hibernated task (`HibernationManager`), inside the
+   * caller's transaction: its row and, when the session's work episode is recorded, the
+   * work-episode binding - so a failure after the commit cannot leave the task pointing at the
+   * stopped session's episode. Publishes nothing and touches no other task: the caller
+   * publishes with `publishPersistedTask` after the commit, then runs `bindTaskToWorkEpisode`
+   * for the dependency bookkeeping, which may upsert and broadcast other tasks.
+   */
+  persistResumedTask(task: Task, sessionId: string, at = Date.now()): string[] {
+    const displaced = dbUpsertTask(task);
+    const episode = sessionWorkEpisodeFor(sessionId);
+    if (episode && !episode.awaitingAgentRebind) {
+      dbBindTaskWorkEpisode({ taskId: task.id, sessionId, episodeId: episode.episodeId,
+        agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
+        prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
+    }
+    return displaced;
+  }
+
   publishRuntimeTransferSession(sessionId: string, home: SpawnedHome): void {
     if (home.terminalResourceId) this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
     this.resyncSessionTask(sessionId);
@@ -5522,7 +5606,7 @@ export class Registry extends EventEmitter {
       const moved = this.recordLivePr(
         target.key,
         match && match.state === "open" && match.number !== null
-          ? { url: match.url, number: match.number, checks: match.checks }
+          ? { url: match.url, number: match.number, checks: match.checks, checkDetails: match.checkDetails }
           : null,
       );
       // A live observation moving changes this session's card and nothing in the DATABASE, so
@@ -5664,7 +5748,8 @@ export class Registry extends EventEmitter {
     if (
       prev?.url === observed?.url &&
       prev?.number === observed?.number &&
-      prev?.checks === observed?.checks
+      prev?.checks === observed?.checks &&
+      JSON.stringify(prev?.checkDetails) === JSON.stringify(observed?.checkDetails)
     ) {
       return false;
     }
@@ -5692,6 +5777,7 @@ export class Registry extends EventEmitter {
     return {
       prNumber: live.number,
       prChecks: live.checks,
+      prCheckDetails: live.checkDetails,
       inspector: this.inspectorSummaryForUrl(prUrl, this.sessions.get(sessionId)),
     };
   }
@@ -5886,6 +5972,7 @@ export class Registry extends EventEmitter {
       const number = match?.number ?? null;
       const state = match?.state ?? null;
       const checks = match?.checks ?? null;
+      const checkDetails = match?.checkDetails ?? null;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
@@ -5907,7 +5994,7 @@ export class Registry extends EventEmitter {
         this.recordLivePr(
           repoPrTargetKey(id, primaryRoot),
           match && state === "open" && number !== null
-            ? { url: match.url, number, checks }
+            ? { url: match.url, number, checks, checkDetails }
             : null,
         );
       }
@@ -5924,7 +6011,8 @@ export class Registry extends EventEmitter {
         live.prUrl === url &&
         live.prNumber === number &&
         live.prState === state &&
-        live.prChecks === checks
+        live.prChecks === checks &&
+        JSON.stringify(live.prCheckDetails) === JSON.stringify(checkDetails)
       )
         continue;
       const next: Session = {
@@ -5933,6 +6021,7 @@ export class Registry extends EventEmitter {
         prNumber: number,
         prState: state,
         prChecks: checks,
+        prCheckDetails: checkDetails,
         task,
       };
       // `prUrl` is the key the Inspector summary hangs off, so changing it here without
@@ -7107,6 +7196,7 @@ export class Registry extends EventEmitter {
     this.sdkLaunchTasks.delete(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
+    this.sessionControlRequests.delete(id);
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -7271,11 +7361,41 @@ export class Registry extends EventEmitter {
 
   // ---- reviews (used by phase 3) ----
 
+  /**
+   * Pending reviews this session's agent waits on inside a tool call. A message-mode question
+   * (`async-input`) is counted by `countOpenQuestions` instead, so every reader of
+   * `pendingReviews` keeps the meaning it has always had: an agent stopped inside a call.
+   */
   private countPending(sessionId: string): number {
     let n = 0;
     for (const r of this.reviews.values())
-      if (r.sessionId === sessionId && r.status === "pending") n++;
+      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode !== "message") n++;
     return n;
+  }
+
+  /** Pending message-mode questions: filed by an agent that kept working. Snoozed ones excluded. */
+  private countOpenQuestions(sessionId: string): number {
+    let n = 0;
+    for (const r of this.reviews.values())
+      if (r.sessionId === sessionId && r.status === "pending" && r.waitMode === "message") n++;
+    return n;
+  }
+
+  /**
+   * Whether an outstanding `request_input` question holds this session's completion: prompted
+   * completion, workflow resumption and automatic evidence preparation refuse while it does.
+   *
+   * Read from the reviews themselves, not from the bucket, because a snoozed question turns
+   * nothing amber and must hold completion all the same. Not conditional on session state: the
+   * gates already refuse a working session, so in practice this decides the outcome once the
+   * session has stopped. A resident has no completion to hold. The flag is read per check, so
+   * turning it off returns call-mode questions to today's behavior while message-mode questions
+   * keep the hold until they settle (`questionHoldsCompletion`).
+   */
+  completionHeldByQuestion(session: Pick<Session, "id" | "task">): boolean {
+    if (session.task?.kind === "resident") return false;
+    const flagOn = featureEnabled(ASYNC_INPUT_FLAG);
+    return this.outstandingReviews(session.id).some((review) => questionHoldsCompletion(review, flagOn));
   }
 
   upsertReview(review: ReviewItem): void {
@@ -7346,8 +7466,10 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return;
     const n = this.countPending(sessionId);
-    if (s.pendingReviews !== n) {
-      const next = { ...s, pendingReviews: n };
+    const open = this.countOpenQuestions(sessionId);
+    // Both counts in one `session_upsert`, so no frame shows a question counted twice or not at all.
+    if (s.pendingReviews !== n || s.openQuestions !== open) {
+      const next = { ...s, pendingReviews: n, openQuestions: open };
       this.sessions.set(sessionId, next);
       this.emitSession(next);
     }
@@ -8961,7 +9083,9 @@ export class Registry extends EventEmitter {
         error: `This session's task is already ${task.status}, so there is nothing for it to wait on.`,
       };
     }
-    const asking = this.pendingReviews(s.id).some((r) => r.kind === "input");
+    // A message-mode question (`async-input`) does not refuse: its agent kept working past it,
+    // so a blocker on someone else is a separate wait the operator should still see.
+    const asking = this.pendingReviews(s.id).some((r) => r.kind === "input" && r.waitMode !== "message");
     if (asking) {
       return {
         ok: false,
@@ -9108,6 +9232,11 @@ export class Registry extends EventEmitter {
     const liveKeys = new Set(
       [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
     );
+    // A hibernated task holds its conversation's key while nothing runs: Resume reopens that
+    // conversation, and it must come back still blocked however long it slept.
+    for (const task of this.tasks.values()) {
+      if (task.status === "hibernated" && task.hibernation) liveKeys.add(task.hibernation.noteKey);
+    }
     const held: string[] = [];
     let removed = 0;
     for (const [key, record] of this.blockers) {
@@ -10426,6 +10555,9 @@ export class Registry extends EventEmitter {
     if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
       return false;
     }
+    // Refused, not consumed: an outstanding request_input question, snoozed or not, keeps the
+    // generation for after it is answered (`async-input`'s completion hold).
+    if (this.completionHeldByQuestion(session)) return false;
     if (listQueueItems(input.logicalKey).length > 0) return false;
     if (!sessionIntentMatches(this.getGoal(id), input.expectedIntent)) return false;
     const cycle = session.workCycle;
@@ -10815,7 +10947,9 @@ export function summarizeQueue(
  *
  * `failed` and `cancelled` are in it because a merge UPGRADES them - the adopted decision
  * that a pull request which actually landed is the task's outcome, whatever was concluded
- * before anyone could see it merge. Only a merge does that; a closed-unmerged pull request
+ * before anyone could see it merge. `hibernated` is NOT in it: the operator parked that task
+ * and only their Resume moves it on, so a merge it shipped meanwhile waits until it is running
+ * again (issue #1547). Only a merge does that; a closed-unmerged pull request
  * changes nothing. `done` is not in it: its outcome is already recorded, and rewriting one
  * would overwrite what an operator typed. `backlog` is not either: a rescheduled task is
  * being re-run, so its previous attempt's merge is not this run's outcome.
@@ -10886,7 +11020,7 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
-export function noteKeyFor(s: Session): string {
+export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }
 
@@ -11066,6 +11200,8 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
   sessionControlEnabled: byValue,
+  // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
+  sessionControlRequest: byJson,
   // Nested and moves on its own: a pause, its after-turn freeze and its lift change nothing
   // else on the session, so leaving it out would let a card keep saying "paused" after resume.
   pause: byJson,
@@ -11101,6 +11237,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // SDK session whose next accepted turn suppresses the transient idle state.
   workCycle: byJson,
   pendingReviews: byValue,
+  openQuestions: byValue,
   task: byJson,
   prUrl: byValue,
   prNumber: byValue,
@@ -11135,6 +11272,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  prCheckDetails: byJson,
   prBranchUpdates: byJson,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.

@@ -141,7 +141,7 @@ policy**:
 | **Skip** | no task; every crossed instant is recorded as skipped |
 
 Then the **overlap policy** asks whether this mission's previous work is still in flight -
-a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
+a task in `backlog`, `dispatching`, `running` or `hibernated`. **Skip if active** (the default) records
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
 

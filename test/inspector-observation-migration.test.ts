@@ -209,7 +209,7 @@ test("a pull request retired after an action was delivered stays visible to it",
     false,
     "the fixture must reproduce the retirement, or this proves nothing",
   );
-  const visible = loadAdoptedInspectorPrsSince(delivered);
+  const visible = loadAdoptedInspectorPrsSince(delivered, null, null);
   const row = visible.find((pr) => pr.key === KEY);
   assert.ok(row, "a pull request retired while an action waited must remain decidable");
   assert.equal(row.observedState, "CLOSED");
@@ -222,13 +222,13 @@ test("a pull request retired BEFORE the action was delivered is history, not a c
   // must not pay for all of them on every fifteen-second sweep - and a pull request closed
   // before this turn began is not evidence about this turn anyway.
   assert.equal(
-    loadAdoptedInspectorPrsSince(9_000).some((pr) => pr.key === KEY),
+    loadAdoptedInspectorPrsSince(9_000, null, null).some((pr) => pr.key === KEY),
     false,
   );
   // And an open row is returned whatever the bound says, because the bound is only about
   // which RETIRED rows still matter.
   assert.equal(
-    loadAdoptedInspectorPrsSince(Number.MAX_SAFE_INTEGER).some((pr) => pr.key === "owner/repo#42"),
+    loadAdoptedInspectorPrsSince(Number.MAX_SAFE_INTEGER, null, null).some((pr) => pr.key === "owner/repo#42"),
     true,
   );
 });
@@ -236,10 +236,10 @@ test("a pull request retired BEFORE the action was delivered is history, not a c
 test("an older merged PR is visible only for the requested action branch", () => {
   updateInspectorPr(KEY, { state: "closed", observedState: "MERGED", observedAt: 1,
     headRefName: "already-published" }, 1);
-  assert.ok(loadAdoptedInspectorPrsSince(9000, "already-published").some(pr => pr.key === KEY));
-  assert.equal(loadAdoptedInspectorPrsSince(9000, "other").some(pr => pr.key === KEY), false);
+  assert.ok(loadAdoptedInspectorPrsSince(9000, "already-published", null).some(pr => pr.key === KEY));
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "other", null).some(pr => pr.key === KEY), false);
   updateInspectorPr(KEY, { observedState: "CLOSED" }, 1);
-  assert.equal(loadAdoptedInspectorPrsSince(9000, "already-published").some(pr => pr.key === KEY), false);
+  assert.equal(loadAdoptedInspectorPrsSince(9000, "already-published", null).some(pr => pr.key === KEY), false);
 });
 
 test("historical adoption pages retain every candidate across equal adoption timestamps", () => {

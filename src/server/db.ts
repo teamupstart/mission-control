@@ -15903,8 +15903,8 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
  */
 export function loadAdoptedInspectorPrsSince(
   observedSince: number,
-  mergedBranch: string | null = null,
-  after: { adoptedAt: number; key: string } | null = null,
+  mergedBranch: string | null,
+  after: { adoptedAt: number; key: string } | null,
 ): InspectorPr[] {
   const rows = openDb()
     .prepare(

@@ -1014,15 +1014,19 @@ export interface MergeQuestions {
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   mergedPublicationCoversCheckout?: typeof mergedPublicationCoversCheckout;
-  workflowDeliveredCurrentPrompt?: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
+  workflowDeliveredCurrentPrompt: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
   kill: typeof kill;
 }
 
-const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
-  mergedPublicationCoversCheckout,
-  resetWouldDestroyWork,
-  kill,
-};
+function defaultCloseMergedSessionDeps(): CloseMergedSessionDeps {
+  const workflows = new WorkflowStore();
+  return {
+    mergedPublicationCoversCheckout,
+    workflowDeliveredCurrentPrompt: (...args) => workflows.deliveredActionOwnsPrompt(...args),
+    resetWouldDestroyWork,
+    kill,
+  };
+}
 
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
@@ -1183,9 +1187,10 @@ export class TaskManager {
   private mergeQuestions?: MergeQuestions;
   /** Tasks inside `settleIfEpisodeFinished`'s close-then-complete, against re-entry. */
   private readonly mergeSettling = new Set<string>();
+  private readonly closeMergedSessionDeps: CloseMergedSessionDeps;
   constructor(
     private registry: Registry,
-    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    closeMergedSessionDeps: Partial<CloseMergedSessionDeps> = {},
     /**
      * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
      *
@@ -1217,6 +1222,7 @@ export class TaskManager {
      */
     private pause?: TaskPause,
   ) {
+    this.closeMergedSessionDeps = { ...defaultCloseMergedSessionDeps(), ...closeMergedSessionDeps };
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
     this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
@@ -1885,10 +1891,8 @@ export class TaskManager {
       .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0];
     if (!episode || episode.promptedAt === null || !latestRun || activeWorkflowOwnsSession([latestRun])) return;
     const promptRevision = this.registry.getGoal(session.id)?.promptRevision ?? null;
-    const ownsPrompt = this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt
-      ?? ((runId: string, sessionId: string, episodeId: string, promptedAt: number, revision: number | null) =>
-        new WorkflowStore().deliveredActionOwnsPrompt(runId, sessionId, episodeId, promptedAt, revision));
-    if (!ownsPrompt(latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
+    if (!this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt(
+      latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
     const outcome = this.mergeOutcomeFor(task);
     if (!outcome) return;
     const current = () => {

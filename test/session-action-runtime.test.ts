@@ -2361,3 +2361,50 @@ test("historical merge lookup bounds Git concurrency and reaches a later page's 
     assert.match(JSON.stringify(h.store.getAttempt(attemptId)), /paged\/repo\/pull\/154/);
   } finally { await h.stop(); }
 });
+
+for (const proof of ["known", "unknown", "missing-review"] as const) {
+  test(`historical publication tree reuse: ${proof}`, async () => {
+    const { adoptInspectorPr, retargetInspectorPrCheckout } = await import("../src/server/db.ts");
+    const candidate = "a".repeat(40);
+    let reads = 0;
+    const h = await harness(`tree-cache-${proof}`, { pullRequest: true, realLedger: true,
+      omitContentTree: proof === "missing-review",
+      resolveCommitTree: async (_root, oid) => {
+        if (oid !== candidate) return h.contentTree.oid;
+        reads++;
+        if (proof === "unknown") {
+          if (reads === 1) throw new Error("commit has not been fetched");
+          return h.contentTree.oid;
+        }
+        return h.full("different-tree");
+      },
+    });
+    h.repository.branch = `tree-cache-${proof}`;
+    const key = `cache-${proof}/repo#1`;
+    try {
+      adoptInspectorPr({ key, owner: `cache-${proof}`, repo: "repo", number: 1,
+        url: `https://github.com/cache-${proof}/repo/pull/1`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: candidate,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Cached publication", updatedAt: 1,
+        observedHeadSha: candidate, adoptedAt: 1, observedAt: 1 });
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+      h.runActionTurn();
+      await h.manager.sweepSessionActions(SETTLED());
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      await h.manager.sweepSessionActions(SETTLED());
+      assert.equal(reads, proof === "missing-review" ? 0 : proof === "known" ? 1 : 2);
+      if (proof === "unknown") {
+        await waitFor(() => h.store.getRun(runId)?.status === "completed", "unknown tree must retry after it becomes available");
+      } else if (proof === "known") {
+        h.repository.root = "/different-checkout";
+        assert.equal(retargetInspectorPrCheckout(key, h.repository.root, h.repository.root, Date.now()), true);
+        await h.manager.sweepSessionActions(SETTLED());
+        assert.equal(reads, 2, "the immutable tree cache is scoped to repository identity");
+      }
+    } finally { await h.stop(); }
+  });
+}

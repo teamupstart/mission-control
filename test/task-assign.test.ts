@@ -1980,3 +1980,30 @@ test("a checkout that moved while the handover's shapers ran is not handed guida
     setShaping(false);
   }
 });
+
+test("a checkout that moves during the handover's last pane probe is still caught before delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-moved-probe-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // Another terminal switches branch while the post-shaping pane probe runs.
+      paneReady: async () => {
+        if (++probes === 2) gitIn(clone, "checkout", "-b", "someone-else-during-probe");
+        return { ok: true };
+      },
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(probes, 2);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /checkout changed while the task's context was being shaped/);
+    assert.equal(typed, false);
+    assert.equal(r.getTask("t1")?.status, "backlog");
+  } finally {
+    setShaping(false);
+  }
+});

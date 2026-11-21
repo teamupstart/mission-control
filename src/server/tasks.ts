@@ -5377,18 +5377,7 @@ export class TaskManager {
         const changed = sessionChanged();
         if (changed) return { ok: false, error: changed, scope: "session" };
       }
-      if (shaped && live.cwd) {
-        // The context was chosen for this branch and commit; another terminal in the same checkout
-        // could have moved it while shapers ran, and then the guidance would describe the wrong code.
-        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
-        if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
-          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
-        }
-      }
       if (shaped) {
-        // The checkout read above is an await too: ask about the session again before probing it.
-        const changedSince = sessionChanged();
-        if (changedSince) return { ok: false, error: changedSince, scope: "session" };
         const receiving = this.registry.getSession(s.id);
         if (!receiving) {
           return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
@@ -5396,6 +5385,16 @@ export class TaskManager {
         const stillReady = await paneReady(receiving);
         if (!stillReady.ok) {
           return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
+        }
+      }
+      // The context was chosen for this branch and commit; another terminal in the same checkout
+      // could have moved it while shapers ran or the pane was probed. Read last, as the final await
+      // before delivery: the session and task are then rechecked by the guard `inject` runs at the
+      // write itself, which cannot run Git.
+      if (shaped && live.cwd) {
+        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
+        if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
         }
       }
       const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");

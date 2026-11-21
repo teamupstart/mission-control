@@ -1,5 +1,88 @@
 # Changelog
 
+## [2.3.0](https://github.com/teamupstart/mission-control/compare/v2.2.0...v2.3.0) (2026-11-21)
+
+
+### Features
+
+* **async-input:** show whether a question's agent is working or stopped on every dashboard surface ([#1616](https://github.com/teamupstart/mission-control/issues/1616)) ([2147ff3](https://github.com/teamupstart/mission-control/commit/2147ff336c03a8af9512aca369d7affd313bb49c))
+* **backlog:** change pinned revisions and origin dependencies together ([#1611](https://github.com/teamupstart/mission-control/issues/1611)) ([af3836f](https://github.com/teamupstart/mission-control/commit/af3836fc7cd014a11f75944bf9362ed5adbbfa7c))
+* **feature-flags:** add phase 1 flag core ([#1534](https://github.com/teamupstart/mission-control/issues/1534)) ([5e414b9](https://github.com/teamupstart/mission-control/commit/5e414b9cd44a9981e8e6698eaa96c0452d9438a8))
+* **github:** automatically update required PR branches ([#1553](https://github.com/teamupstart/mission-control/issues/1553)) ([27161d5](https://github.com/teamupstart/mission-control/commit/27161d52c30bcc5ad1082d06f946f79787f5aead))
+* **headless-mode:** dispatch options, drafts and banner (P5) ([#1582](https://github.com/teamupstart/mission-control/issues/1582)) ([19b13df](https://github.com/teamupstart/mission-control/commit/19b13dfd10250d97645cdb175aeac86f51a9f6fc))
+* **headless-mode:** home sessions, launcher decision and dispatch-intent rules ([#1564](https://github.com/teamupstart/mission-control/issues/1564)) ([891fd24](https://github.com/teamupstart/mission-control/commit/891fd246eb6f2cf160b4a554d76dee46ab3613c1))
+* **headless-mode:** mctl registry, mod and pane skeleton, and shared fakes (P2) ([#1563](https://github.com/teamupstart/mission-control/issues/1563)) ([2d62860](https://github.com/teamupstart/mission-control/commit/2d628607335f15cf276124307fd1fff0407925c8))
+* **headless-mode:** read-only inbox, receipted answers and revision-checked approval (P4) ([#1580](https://github.com/teamupstart/mission-control/issues/1580)) ([f1dde76](https://github.com/teamupstart/mission-control/commit/f1dde76fb41a53c0595668a5033d9cbf3d0a6291))
+* **line:** reach the Line's drawers from the Console when the Line is off ([#1520](https://github.com/teamupstart/mission-control/issues/1520)) ([3f64484](https://github.com/teamupstart/mission-control/commit/3f64484cdb9dcb4368bf729094ffd807a95cc708))
+* **residents:** attach multiple repositories to residents ([#1535](https://github.com/teamupstart/mission-control/issues/1535)) ([36204c8](https://github.com/teamupstart/mission-control/commit/36204c805a3dc7b06b575c462c72a21529465274))
+* **residents:** fold the Residents drawer's Profiles launch list behind a preview ([#1600](https://github.com/teamupstart/mission-control/issues/1600)) ([e894ec0](https://github.com/teamupstart/mission-control/commit/e894ec0e21b7be65c0757be2b4802628ab3191a4))
+* **residents:** let a resident sleep outside weekly active hours ([#1550](https://github.com/teamupstart/mission-control/issues/1550)) ([926ab4c](https://github.com/teamupstart/mission-control/commit/926ab4c9b573f8793adcd997158b46216b8d3972))
+* **reviews:** deliver async answers and manage open questions ([#1614](https://github.com/teamupstart/mission-control/issues/1614)) ([07af177](https://github.com/teamupstart/mission-control/commit/07af17780b65996e23e66f5162b184e3365f8377))
+* **reviews:** file request_input questions without stopping behind async-input ([#1607](https://github.com/teamupstart/mission-control/issues/1607)) ([97b76fb](https://github.com/teamupstart/mission-control/commit/97b76fb8278d882e06f84b9a20fc9190236bca94))
+* **reviews:** let the operator snooze request_input questions with Remind me later ([#1510](https://github.com/teamupstart/mission-control/issues/1510)) ([9df8e81](https://github.com/teamupstart/mission-control/commit/9df8e81ab0bc17cc9a30d3acdea43c98eebbf551))
+* **schedules:** let a recurring mission file a chat ([#1533](https://github.com/teamupstart/mission-control/issues/1533)) ([6045ad4](https://github.com/teamupstart/mission-control/commit/6045ad41eb9844b31ec10b9b43cf969bd19e403d))
+* **session-control:** let a session ask the operator for control of other sessions ([#1604](https://github.com/teamupstart/mission-control/issues/1604)) ([219f98b](https://github.com/teamupstart/mission-control/commit/219f98b9582e187d75fe59545769ad022f2a4aa6))
+* **sessions:** hide sessions started outside Mission Control by default ([#1500](https://github.com/teamupstart/mission-control/issues/1500)) ([ddf36e8](https://github.com/teamupstart/mission-control/commit/ddf36e811d804aaeada5c17f4c2e059782808572))
+* **settings:** add feature flags panel ([#1537](https://github.com/teamupstart/mission-control/issues/1537)) ([9706d8e](https://github.com/teamupstart/mission-control/commit/9706d8ec1e967af4655bfd30283a0749f3876719))
+* **settings:** enable all feature flags when opting in to alpha ([#1578](https://github.com/teamupstart/mission-control/issues/1578)) ([45f5915](https://github.com/teamupstart/mission-control/commit/45f59154715bde8c249a55ba23584110bcc90fde))
+* **setup:** hide the ai-conductor integration behind one switch ([#1523](https://github.com/teamupstart/mission-control/issues/1523)) ([8f5acf9](https://github.com/teamupstart/mission-control/commit/8f5acf9d26eb2898ca6d7838076b5cb8ee448cfe))
+* **shaping:** add the repository-files built-in gatherer (Phase 6) ([#1598](https://github.com/teamupstart/mission-control/issues/1598)) ([cc3eacd](https://github.com/teamupstart/mission-control/commit/cc3eacd587e2a0f1e512a31b250f0c8a3ff0de47))
+* **shaping:** add the task shaping core behind the task-shaping preview ([#1558](https://github.com/teamupstart/mission-control/issues/1558)) ([f949c1f](https://github.com/teamupstart/mission-control/commit/f949c1fa20be39605682040a640fa111632d92b0))
+* **shaping:** mcp and http transports, call-time references and scrubbing ([#1592](https://github.com/teamupstart/mission-control/issues/1592)) ([3c8e960](https://github.com/teamupstart/mission-control/commit/3c8e9609d60855bf24e452f74fa1ea7eb1c47fa3))
+* **shipping:** enable CodeRabbit follow-up by default ([#1556](https://github.com/teamupstart/mission-control/issues/1556)) ([d2de1d3](https://github.com/teamupstart/mission-control/commit/d2de1d31d2db2a1a920f5c998df8dd91ff5081f6))
+* **tasks:** give every task a work unit id ([#1619](https://github.com/teamupstart/mission-control/issues/1619)) ([3e68765](https://github.com/teamupstart/mission-control/commit/3e687657133cee66ed53c40d7f39cffa5c392439))
+* **tasks:** hibernate a task and resume its conversation later ([#1566](https://github.com/teamupstart/mission-control/issues/1566)) ([02dba52](https://github.com/teamupstart/mission-control/commit/02dba52a2048d852c04b1680feb27954d62280d2))
+* **telemetry:** distinguish confirmed dashboard chat interactions ([#1521](https://github.com/teamupstart/mission-control/issues/1521)) ([2db5a10](https://github.com/teamupstart/mission-control/commit/2db5a10c98cdbc40064873d1e0c78ec945bb141e))
+* **worktrees:** make task retention window configurable ([#1508](https://github.com/teamupstart/mission-control/issues/1508)) ([1c1f5a6](https://github.com/teamupstart/mission-control/commit/1c1f5a669a8443c9175bfa6cfa2c318dcc01cdb8))
+* **worktrees:** recover quarantined slots with operator approval ([#1507](https://github.com/teamupstart/mission-control/issues/1507)) ([59fad92](https://github.com/teamupstart/mission-control/commit/59fad92cdfed6252f736e29b26d0f9e7de2d5642))
+
+
+### Bug Fixes
+
+* **backups:** settle idle native backups and bound test waits ([#1601](https://github.com/teamupstart/mission-control/issues/1601)) ([ca25b6b](https://github.com/teamupstart/mission-control/commit/ca25b6bd8bc287fe70da8980d6db5fd03386d30f))
+* **conversation:** preview and link mock-ups presented beside a blocking request_input ([#1509](https://github.com/teamupstart/mission-control/issues/1509)) ([4036bfd](https://github.com/teamupstart/mission-control/commit/4036bfdad2c88579e8054df079ecd54c85c9c4ba))
+* **dispatch:** link environment warnings straight to their Setup row ([#1506](https://github.com/teamupstart/mission-control/issues/1506)) ([536ba37](https://github.com/teamupstart/mission-control/commit/536ba376173132f3a07e4fe8237259ef91d61c62))
+* **foreman:** retain captured evidence in completion review ([#1597](https://github.com/teamupstart/mission-control/issues/1597)) ([4460522](https://github.com/teamupstart/mission-control/commit/44605220ba68d679138b37aae46ed16c7184b8bb))
+* **headless-mode:** inbox follow-up: every pending request, takeover scoping, run ownership (P4) ([#1593](https://github.com/teamupstart/mission-control/issues/1593)) ([cb1b7d2](https://github.com/teamupstart/mission-control/commit/cb1b7d2086a5399896277dbb5c009b76ec72c304))
+* **inspector:** enable Live mode on fresh installs ([#1554](https://github.com/teamupstart/mission-control/issues/1554)) ([b8fe590](https://github.com/teamupstart/mission-control/commit/b8fe590b279a6d4061469145326ac25e47604a80))
+* **pi:** bundle OAuth providers and surface failed turns ([#1531](https://github.com/teamupstart/mission-control/issues/1531)) ([38cc5d4](https://github.com/teamupstart/mission-control/commit/38cc5d4da4ff9dcd36a8140036b2bf9d880ba23d))
+* **pr-checks:** clear a CI failure once a later run of the same check passes ([#1524](https://github.com/teamupstart/mission-control/issues/1524)) ([d038b9d](https://github.com/teamupstart/mission-control/commit/d038b9d9322cc8b59046693bb967dd1df9756645))
+* report CI conclusions and link directly to check jobs ([#1602](https://github.com/teamupstart/mission-control/issues/1602)) ([c8762c7](https://github.com/teamupstart/mission-control/commit/c8762c702033104bd6095b36ff462e48995c8884))
+* **residents:** keep the Board's gutter beside the Residents drawer ([#1599](https://github.com/teamupstart/mission-control/issues/1599)) ([b6db3e2](https://github.com/teamupstart/mission-control/commit/b6db3e2b0b5ce02292774cb09f9586c262827887))
+* **residents:** launch Codex with isolated home configuration ([#1522](https://github.com/teamupstart/mission-control/issues/1522)) ([25c7a93](https://github.com/teamupstart/mission-control/commit/25c7a93ea0a684b31333c0e91febb8b3e2fd892c))
+* **residents:** launch resident sessions with Foreman uninvited ([#1555](https://github.com/teamupstart/mission-control/issues/1555)) ([3528577](https://github.com/teamupstart/mission-control/commit/35285772c434b1f63bae1a37ffeba279a4c4a61a))
+* **residents:** let Codex native-MCP residents launch over Mission Control's own setup registration ([#1587](https://github.com/teamupstart/mission-control/issues/1587)) ([48049a6](https://github.com/teamupstart/mission-control/commit/48049a6dc4312423d24f7a6db18a69768907c422))
+* **residents:** let Codex use native MCP sources ([#1557](https://github.com/teamupstart/mission-control/issues/1557)) ([cdc89a1](https://github.com/teamupstart/mission-control/commit/cdc89a1daaad10012aa03bb9cc912b0f8282f5cc))
+* **reviews:** always offer text entry in request_input ([#1540](https://github.com/teamupstart/mission-control/issues/1540)) ([d4cf02c](https://github.com/teamupstart/mission-control/commit/d4cf02cb286fbaa455c062251e08ee48a18b5989))
+* **reviews:** withdraw a request_input card its own retry replaces ([#1538](https://github.com/teamupstart/mission-control/issues/1538)) ([942d8be](https://github.com/teamupstart/mission-control/commit/942d8be80533df88e13041546b2a75c49681be56))
+* **sessions:** stop a late hook from re-arming a completed work cycle ([#1497](https://github.com/teamupstart/mission-control/issues/1497)) ([bbfc0f3](https://github.com/teamupstart/mission-control/commit/bbfc0f399085bb404f4699464a8a29c16e57759f))
+* **setup:** offer Open cmux for stale control sockets ([#1515](https://github.com/teamupstart/mission-control/issues/1515)) ([f1ecb1e](https://github.com/teamupstart/mission-control/commit/f1ecb1e1a4d1fb1e71723ba68e6d8bbb07466737))
+* **setup:** start installers on the default terminal and install Herdr and CodeRabbit with Homebrew ([#1518](https://github.com/teamupstart/mission-control/issues/1518)) ([232ba84](https://github.com/teamupstart/mission-control/commit/232ba844acd853bef46c54b1d3677c8405916ad5))
+* **shaping:** daemon-bound revisions, guarded shaping writes, and the settings panel review fixes ([#1595](https://github.com/teamupstart/mission-control/issues/1595)) ([a71d680](https://github.com/teamupstart/mission-control/commit/a71d6804288f27c35f26b77b5e8b284e818f0e0d))
+* **skills:** respect planning workflow ownership ([#1496](https://github.com/teamupstart/mission-control/issues/1496)) ([ae82950](https://github.com/teamupstart/mission-control/commit/ae82950be9a0264d8ea3c53dd0741ac8e4f5cf86))
+* **stacking:** allow stacks up to ten pull requests deep ([#1536](https://github.com/teamupstart/mission-control/issues/1536)) ([366bc23](https://github.com/teamupstart/mission-control/commit/366bc23e71959286d64b308cfcab32ba96dada60))
+* **tasks:** keep chats open after pull requests merge ([#1532](https://github.com/teamupstart/mission-control/issues/1532)) ([5a3c1fd](https://github.com/teamupstart/mission-control/commit/5a3c1fd5c67de6c430b0f23b546c6ecf5672af61))
+* **tasks:** recover and cancel tasks without sessions ([#1501](https://github.com/teamupstart/mission-control/issues/1501)) ([59d2e63](https://github.com/teamupstart/mission-control/commit/59d2e639dac7dd7d0b5f64ce8f83c97707810e70))
+* **tests:** resolve a relative spawn-trace directory before descendants inherit it ([#1613](https://github.com/teamupstart/mission-control/issues/1613)) ([d5e8685](https://github.com/teamupstart/mission-control/commit/d5e8685ffdc6cacfeadc4da4c835c2b5843f9bef))
+* **trust:** finish adding after repository grants are saved ([#1514](https://github.com/teamupstart/mission-control/issues/1514)) ([c4696f9](https://github.com/teamupstart/mission-control/commit/c4696f94ab6d3383bac39b2f413c5ba977e129aa))
+* **workflows:** accept merged publication in pull request actions ([#1615](https://github.com/teamupstart/mission-control/issues/1615)) ([19b92e4](https://github.com/teamupstart/mission-control/commit/19b92e43a45c6524b8d5d59fc600a71e97bda862))
+* **workflows:** defer PR publication evidence until the PR action ([#1605](https://github.com/teamupstart/mission-control/issues/1605)) ([7d3fe30](https://github.com/teamupstart/mission-control/commit/7d3fe30fb1362ca5a3461c715cdb4dd72d725a89))
+* **workflows:** deliver Inspector findings across published-tree holds ([#1618](https://github.com/teamupstart/mission-control/issues/1618)) ([e8990fd](https://github.com/teamupstart/mission-control/commit/e8990fde84c6aabb5c47a1bc51725a063553fa80))
+* **workflows:** distinguish published changes needing fresh review ([#1609](https://github.com/teamupstart/mission-control/issues/1609)) ([a536656](https://github.com/teamupstart/mission-control/commit/a536656d2321bdcdb99c2064c843cf86785dde52))
+* **workflows:** quarantine pooled checks with ignored Go source ([#1603](https://github.com/teamupstart/mission-control/issues/1603)) ([5d8a8b3](https://github.com/teamupstart/mission-control/commit/5d8a8b34646f643e2435a8447383db1e3567b8d7))
+* **workflows:** recover frozen PR criteria and defer publication proof ([#1608](https://github.com/teamupstart/mission-control/issues/1608)) ([9f4db63](https://github.com/teamupstart/mission-control/commit/9f4db63087b86a44703ae2cbc94ed0f703fc88a0))
+* **workflows:** recover unsent Inspector feedback on session return ([#1552](https://github.com/teamupstart/mission-control/issues/1552)) ([a5f648f](https://github.com/teamupstart/mission-control/commit/a5f648fc8409d9855d85e9645c1a00a59b8f59eb))
+* **workflows:** retry recoverable CodeRabbit disconnects ([#1606](https://github.com/teamupstart/mission-control/issues/1606)) ([2c41720](https://github.com/teamupstart/mission-control/commit/2c41720a0ba5f5ef1594395885eacdd43648d9e0))
+* **workflows:** stop the Inspector gate reporting open pull requests as closed ([#1499](https://github.com/teamupstart/mission-control/issues/1499)) ([a843485](https://github.com/teamupstart/mission-control/commit/a84348595e14dbae9b03cd3d841edce2baeeca99))
+* **worktrees:** confirm idle slot HEAD changes before quarantine ([#1516](https://github.com/teamupstart/mission-control/issues/1516)) ([c67533c](https://github.com/teamupstart/mission-control/commit/c67533cc86daf5bcb80bdb5ed2ac408868a15210))
+* **worktrees:** let Destroy remove slots Git no longer recognizes ([#1517](https://github.com/teamupstart/mission-control/issues/1517)) ([18f61c7](https://github.com/teamupstart/mission-control/commit/18f61c76edae3fefda0fb49996d152e15e0415fc))
+* **worktrees:** reclaim quarantined orphan leases safely ([#1519](https://github.com/teamupstart/mission-control/issues/1519)) ([0c60dac](https://github.com/teamupstart/mission-control/commit/0c60dac0ee3e4cb06bdf0660c8174a17dc235d35))
+
+
+### Performance Improvements
+
+* **tests:** cut the git processes the test suite spawns ([#1591](https://github.com/teamupstart/mission-control/issues/1591)) ([9bd824f](https://github.com/teamupstart/mission-control/commit/9bd824fa2975623aa6709f120f9b01c1d6818126))
+
 ## [2.2.0](https://github.com/teamupstart/mission-control/compare/v2.1.0...v2.2.0) (2026-11-16)
 
 

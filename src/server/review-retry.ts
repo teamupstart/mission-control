@@ -3,7 +3,7 @@ import type { ReviewItem } from "@shared/types.ts";
 /**
  * Is `newer` the same decision as `older`, asked again in different words?
  *
- * An agent whose blocking `request_input` call timed out reissues the decision, usually
+ * An agent whose blocking (call-mode) `request_input` call timed out reissues the decision, usually
  * reworded, and usually saying so ("The previous prompt timed out..."). Not always: it can also
  * just rephrase. So there are two ways to qualify, and one way to be disqualified whatever the
  * wording says:

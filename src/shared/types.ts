@@ -792,8 +792,17 @@ export interface Session {
    * activity has been persisted for the current logical key, and consumers must fail closed.
    */
   workCycle?: WorkCycleSummary;
-  /** Count of pending review items for this session (denormalized for the card). */
+  /**
+   * Count of pending review items this session's agent is waiting on inside a tool call
+   * (denormalized for the card). Excludes message-mode questions, which `openQuestions` counts.
+   */
   pendingReviews: number;
+  /**
+   * Count of pending message-mode `request_input` questions (`ReviewItem.waitMode`): filed by an
+   * agent that kept working rather than waiting in the call. A snoozed question is in neither
+   * count. A snapshot from an older daemon may lack it; read it as zero.
+   */
+  openQuestions: number;
   /**
    * The current task projected onto this session's views.
    *
@@ -2885,6 +2894,10 @@ export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
  * the question is parked off the queue until `ReviewItem.snooze.until`, when the daemon puts it
  * back to `pending`. It is outstanding, never settled, so every reader that asks "is this
  * waiting on a person right now" keeps reading `pending` and leaves it out by construction.
+ *
+ * `withdrawn` is terminal and never a human resolution: the agent took back a question it filed
+ * and no longer needs answered (the asynchronous input inbox's `withdraw_question`). Appended,
+ * like every status here, because the spelling is persisted in `reviews.status`.
  */
 export type ReviewStatus =
   | "pending"
@@ -2894,7 +2907,12 @@ export type ReviewStatus =
   | "dismissed"
   | "orphaned"
   | "snoozed"
-  | "superseded";
+  | "superseded"
+  | "withdrawn";
+
+/** Why the daemon closed a question nobody answered. Persisted in `reviews.closed_reason`, so append-only. */
+export const REVIEW_CLOSED_REASONS = ["merged"] as const;
+export type ReviewClosedReason = (typeof REVIEW_CLOSED_REASONS)[number];
 
 /**
  * What the operator told the agent to do while a snoozed question is parked. Persisted in
@@ -3053,6 +3071,26 @@ export interface ReviewItem {
   snoozable?: boolean;
   /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
   snooze?: ReviewSnooze | null;
+  /**
+   * How the agent waits for this question's answer. `"message"`: `request_input` returned at
+   * once with a receipt (the `async-input` preview flag) and the answer reaches the agent later
+   * as a message in its conversation. Absent: the agent waits inside its tool call, which is
+   * every other review and every question asked with the flag off. Persisted
+   * (`reviews.wait_mode`).
+   */
+  waitMode?: "message";
+  /**
+   * The agent's own line on what it does while a message-mode question is open: the assumption
+   * it proceeds on, or what it holds back. At most 300 characters. Persisted
+   * (`reviews.meanwhile`); absent when the agent gave none.
+   */
+  meanwhile?: string | null;
+  /**
+   * Why the daemon closed this question unanswered, when it recorded one. `"merged"`: the task's
+   * pull request merged with the question still outstanding, which completes the task and settles
+   * the question `orphaned`. Persisted (`reviews.closed_reason`); absent on every other row.
+   */
+  closedReason?: ReviewClosedReason | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }

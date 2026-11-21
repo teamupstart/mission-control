@@ -1,6 +1,6 @@
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
-// Replaces only the registry module in reader tests. The shipped registry stays empty.
+// Replaces only the registry module in reader tests. The shipped registry is not touched.
 export const FEATURE_FLAGS = [{
   id: "fixture-preview", label: "Fixture preview", description: "Reader test fixture",
   stage: "preview", keywords: [],

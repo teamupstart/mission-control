@@ -1,3 +1,4 @@
+import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { observeEnsemble } from "../telemetry/automation.ts";
 import { createHash } from "node:crypto";
 import {
@@ -97,7 +98,7 @@ import {
  * question whose agent is gone would be asking the operator to answer nothing.
  */
 function sessionAwaitsOperator(session: Session): boolean {
-  return session.state !== "exited" && (session.pendingReviews > 0 || session.paneDialog !== null);
+  return session.state !== "exited" && (questionsAwaitingOperator(session) > 0 || session.paneDialog !== null);
 }
 
 /**

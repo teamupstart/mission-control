@@ -837,7 +837,7 @@ export class Dispatcher {
       // control stays only for a human swapping an existing session's mode from the card.
       const modeArgs = dispatchPermissionModeArgs(task.agent);
       // The ask channel rides along on every dispatch: it takes Claude's built-in
-      // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
+      // `AskUserQuestion` away and hands the agent our `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `modeArgs` is - we only reconfigure agents WE launched, never one the operator

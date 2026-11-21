@@ -19,7 +19,7 @@ const { closeDb } = await import("../src/server/db.ts");
 after(() => { closeDb(); hooks.deregister(); });
 
 test("declared preview flag changes both the daemon answer and route access after choices", async () => {
-  // The production type is never while the shipped registry is empty. Runtime imports
+  // The production type names only shipped ids, so the fixture id is cast. Runtime imports
   // above see the fixture registry, exactly as a build with a declared flag would.
   const id = "fixture-preview" as FeatureFlagId;
   let handlerCalls = 0;

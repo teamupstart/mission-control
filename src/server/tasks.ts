@@ -1,3 +1,4 @@
+import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
@@ -960,6 +961,12 @@ function closureRefusal(result: ActionResult): string {
   return result.error ?? "the agent could not be stopped";
 }
 
+/** See `TaskManager.useMergeQuestions`. */
+export interface MergeQuestions {
+  close(sessionId: string): void;
+  blockedInCall(sessionId: string): boolean;
+}
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   kill: typeof kill;
@@ -1122,6 +1129,10 @@ export class TaskManager {
    */
   private stackReadiness: StackReadiness;
   private readonly stackDispatching = new Set<string>();
+  /** How a merge reaches a session's request_input questions; see `useMergeQuestions`. */
+  private mergeQuestions?: MergeQuestions;
+  /** Tasks inside `settleIfEpisodeFinished`'s close-then-complete, against re-entry. */
+  private readonly mergeSettling = new Set<string>();
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -1704,7 +1715,15 @@ export class TaskManager {
    * `reopenIfWorkResumed`. Every other route to `done` is a human's and stays put.
    */
   private settleIfEpisodeFinished(s: Session): void {
-    if (s.state !== "idle") return;
+    // Deliberately no review hold (`async-input`): a merge is the operator's own conclusion, so
+    // an outstanding request_input question does not hold this completion. The questions are
+    // closed with the reason `merged` as part of it, below, rather than left behind it.
+    //
+    // The one non-idle state handled here: an agent blocked inside a request_input call. It can
+    // never go idle while it waits, so the merge closes its questions, the call returns, and the
+    // idle transition that follows completes the task through the ordinary path.
+    const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
+    if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
     // The one task this agent is executing, per the serial invariant - never "the task
     // this session ever ran", which is what the bindings are for.
@@ -1731,26 +1750,55 @@ export class TaskManager {
     if (!this.currentEpisodeLanded(t, binding)) return;
     const outcome = this.liveEpisodeOutcome(t, binding);
     if (!outcome) return;
-    // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
-    // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
-    // provenance that makes it reversible - still happens synchronously inside this call, so
-    // the reopen path sees exactly what it always did. For a scout it lands once the archive
-    // is verified, which is the only ordering that can be true: a scout is not done until its
-    // report is durable.
-    this.completeInBackground(t.id, {
-      outcome: outcome.outcome,
-      outcomeUrl: outcome.url,
-      satisfyDependents: false,
-      requireStopped: false,
-      confirmIncompleteScout: false,
-      inferredFrom: s.id,
-    }, undefined, () => {
-      this.closeMergedSessionAfterCompletion({
-        taskId: t.id,
-        sessionId: s.id,
-        episodeId: binding.episodeId,
+    // Closing a question publishes a `session_upsert`, which re-enters this listener for the
+    // same session before the close has returned. One settle per task at a time.
+    if (this.mergeSettling.has(t.id)) return;
+    this.mergeSettling.add(t.id);
+    try {
+      // Closure is a condition of completion: it commits every outstanding question in one
+      // transaction, and a failure leaves them all open and the task running, to be tried again
+      // on the next observation, rather than a finished task with questions still open.
+      try { this.mergeQuestions?.close(s.id); }
+      catch (error) {
+        console.error("[merge] closing open questions failed; the task stays running:", t.id, error);
+        return;
+      }
+      if (blockedInCall) return;
+      // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
+      // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
+      // provenance that makes it reversible - still happens synchronously inside this call, so
+      // the reopen path sees exactly what it always did. For a scout it lands once the archive
+      // is verified, which is the only ordering that can be true: a scout is not done until its
+      // report is durable.
+      this.completeInBackground(t.id, {
+        outcome: outcome.outcome,
+        outcomeUrl: outcome.url,
+        satisfyDependents: false,
+        requireStopped: false,
+        confirmIncompleteScout: false,
+        inferredFrom: s.id,
+      }, undefined, () => {
+        this.closeMergedSessionAfterCompletion({
+          taskId: t.id,
+          sessionId: s.id,
+          episodeId: binding.episodeId,
+        });
       });
-    });
+    } finally {
+      this.mergeSettling.delete(t.id);
+    }
+  }
+
+  /**
+   * Install how a merge reaches a session's request_input questions (`async-input`): `close`
+   * settles every outstanding one with the reason `merged` in one transaction, throwing and
+   * closing none on failure; `blockedInCall` says the agent is waiting inside a call-mode ask
+   * the merge must close before it can go idle. A setter rather than a constructor argument,
+   * like `useStackGitHub`, because the review manager is the daemon's and every focused test
+   * that never asks a question constructs this class without one.
+   */
+  useMergeQuestions(questions: MergeQuestions): void {
+    this.mergeQuestions = questions;
   }
 
   /**
@@ -4947,7 +4995,9 @@ export class TaskManager {
     // dashboard files such a session under "needs you" rather than "idle" and won't
     // offer it as a target; refuse it here too, so the API can't route around a rule
     // the operator can see being applied on screen.
-    if (s.pendingReviews > 0) {
+    // A message-mode question (`async-input`) counts too: its agent is waiting on the answer
+    // just as surely, and reassigning underneath it would lose the work it reconciles.
+    if (questionsAwaitingOperator(s) > 0) {
       return {
         ok: false,
         error: "that agent has a review waiting on you - clear it first",
@@ -5162,7 +5212,7 @@ export class TaskManager {
       !fresh ||
       !fresh.instrumented ||
       fresh.state !== "idle" ||
-      fresh.pendingReviews > 0
+      questionsAwaitingOperator(fresh) > 0
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }

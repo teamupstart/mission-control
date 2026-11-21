@@ -46,6 +46,7 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
+import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -674,10 +675,25 @@ export const CreateReviewSchema = z
      * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
      */
     snoozable: z.boolean().optional(),
+    /**
+     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
+     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
+     * older build never sends this and is always told `call`.
+     */
+    asyncCapable: z.boolean().optional(),
+    /** What the agent does while the question is open: one line, `input` only. */
+    meanwhile: z.string()
+      .transform((line) => oneLine(line))
+      .pipe(z.string().max(MEANWHILE_MAX_CHARS))
+      .optional(),
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",
     path: ["snoozable"],
+  })
+  .refine((r) => r.kind === "input" || r.meanwhile === undefined, {
+    message: "only kind 'input' can carry a meanwhile line",
+    path: ["meanwhile"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",

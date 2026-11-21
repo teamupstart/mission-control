@@ -18,7 +18,9 @@ import {
 // `actions.ts` that arrow through it and re-verify each label against a fresh capture. This
 // module removes the need for any of that on sessions WE launch: the built-in is disallowed
 // and the agent is pointed at `request_input`, our own MCP tool, which delivers the question
-// to the dashboard as structured arguments and BLOCKS until the human answers.
+// to the dashboard as structured arguments. It waits for the human's answer inside the call, or,
+// with the `async-input` preview flag, files the question and returns at once so the answer
+// arrives later as a message (`shared/async-input.ts`).
 //
 // ---- what the experiment established (docs/plans/ask-channel/plan.md) ----
 //

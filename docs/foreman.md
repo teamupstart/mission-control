@@ -272,6 +272,12 @@ any open task-owned pull request in any attached repository wins and makes the s
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
 
+Prompted completion is also refused while the session has an outstanding `request_input`
+question, pending or snoozed, under the `async-input` preview flag's
+[completion rules](sessions.md#asking-without-stopping); the same generation is consumed once
+the question is answered or dismissed. Foreman's answer to a question filed without stopping
+reaches the agent as a message, like yours.
+
 When prompted completion records a real held verdict for an eligible managed ship task, Foreman
 does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
 and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the

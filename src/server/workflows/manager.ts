@@ -5280,6 +5280,8 @@ export class WorkflowManager {
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      // An outstanding request_input question, snoozed or not, holds evidence preparation too.
+      && !this.registry.completionHeldByQuestion(session)
       && !hasBlocker(session);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
@@ -8025,6 +8027,10 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    // `async-input`'s completion hold: an outstanding request_input question, snoozed or not,
+    // is still the operator's to answer, so the run does not resume around it. Reported as the
+    // same reason, because to the operator it is the same fact: the session is waiting on them.
+    if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.

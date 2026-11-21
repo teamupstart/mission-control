@@ -17,6 +17,7 @@ import {
   createReviewContinuationPendingTurn,
   createSnoozeInstructionPendingTurn,
   SNOOZE_INSTRUCTION_TURN_PREFIX,
+  MESSAGE_ANSWER_TURN_PREFIX,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -139,13 +140,17 @@ interface ArmedDrain {
  */
 /**
  * Who WROTE a queued row, when it was not the operator. Every row is the operator's words
- * except a snoozed question's "carry on" instruction, which the daemon composed. That one is
- * reserved and recorded as `harness` authorship like any other daemon-typed text, so the
- * agent's prompt hook does not take it for the human's Goal and the scout trail does not
- * archive it as something the operator said.
+ * except two the daemon composes: a snoozed question's "carry on" instruction, and the answer
+ * to a message-mode question (`async-input`), whoever gave it. Those are reserved and recorded
+ * as `harness` authorship like any other daemon-typed text, so the agent's prompt hook does not
+ * take them for the human's Goal and the scout trail does not archive them as something the
+ * operator said. Authorship changes nothing about escalation: `nextDelivery` steers and
+ * interrupts these rows on the same clock as an operator message.
  */
 function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
-  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) ? "harness" : null;
+  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+    ? "harness"
+    : null;
 }
 
 export class PendingTurnManager {

@@ -41,7 +41,8 @@ Reviewers improve code quality and report bugs. They do not decide architecture.
 
 If a session is blocked on a product or feature decision only a human can make, tell the
 operator. If the session already asked through `request_input`, the operator has been told,
-so do not ask again.
+so do not ask again, whether that session is still working past its question or has stopped
+to wait for the answer.
 
 ## Sessions blocked on someone else
 
@@ -60,3 +61,5 @@ and a link to where the question lives.
 ## Each iteration
 
 Check what has changed since your last iteration, act on it, and end with a one-line status.
+Your own `request_input` questions may stay open across iterations: check whether earlier ones
+were answered before asking again, and never repeat a question that is still open.

@@ -8,7 +8,8 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
+import { questionHoldsCompletion } from "@shared/async-input.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -23,6 +24,7 @@ import {
   transferPendingReviews,
   loadReviewContinuationCandidates,
   loadSnoozeInstructionCandidates,
+  markReviewWaitAttached,
   markReviewWaitDetached,
   snoozeReviewRow,
   updateReviewStatus,
@@ -43,7 +45,7 @@ export const SNOOZE_SWEEP_MS = 15_000;
  * How close together two `request_input` asks from one session must arrive to be parallel calls
  * rather than a retry (`ReviewManager.retriesReplacedBy`).
  *
- * The call is blocking, so an agent still waiting on one question can only ask another in the
+ * A call-mode ask blocks, so an agent still waiting on one question can only ask another in the
  * same batch of parallel tool calls, which reach the daemon within milliseconds of each other.
  * A retry comes after the MCP client has given up, which takes minutes: five, in every
  * duplicate the live database recorded. Thirty seconds sits far from both.
@@ -248,7 +250,7 @@ export class ReviewManager {
    * Open a question and publish it - or hand back the identical one already open.
    *
    * The re-attach is the whole point, and it is not a nicety. Every tool that lands here
-   * (`request_input`, `request_plan_decisions`, `request_review`) BLOCKS until a human
+   * (`request_input` in call mode, `request_plan_decisions`, `request_review`) BLOCKS until a human
    * decides, for as long as that takes. The MCP client in front of it does not wait that
    * long: it abandons the tool call on its own timeout and hands the model an error, and
    * the model's natural recovery is to ask the identical question again. Nothing here
@@ -283,7 +285,23 @@ export class ReviewManager {
     title: string,
     body: string,
     incomingDecisions: PlanDecision[] | null = null,
-    options: { snoozable?: boolean; now?: number } = {},
+    options: {
+      snoozable?: boolean;
+      now?: number;
+      /**
+       * `"message"`: the agent's `request_input` call returns at once and the answer reaches it
+       * as a message (`async-input`). Decided by the route (`decideWaitMode`), applied only to
+       * `request_input`'s own asks; absent is today's call-mode wait.
+       */
+      waitMode?: "message";
+      /** The agent's one line on what it does while a message-mode question is open. */
+      meanwhile?: string | null;
+      /**
+       * The asker will long-poll for the answer whatever it is told: an MCP child from an older
+       * build, which never says `asyncCapable` and cannot read a receipt.
+       */
+      callerPolls?: boolean;
+    } = {},
   ): ReviewItem {
     // An MCP process may still be running a previous build. Compare retries using the form
     // the operator will see, regardless of which version produced the request.
@@ -294,7 +312,13 @@ export class ReviewManager {
     const existing = this.registry
       .outstandingReviews(sessionId)
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
-    if (existing) return existing;
+    if (existing) {
+      // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
+      // Attach the row now, before this response leaves, so an answer given before its first
+      // poll arrives is that poll's result and is never also queued as a message.
+      if (existing.waitMode === "message" && options.callerPolls === true) markReviewWaitAttached(existing.id);
+      return existing;
+    }
 
     const review: ReviewItem = {
       id: randomUUID(),
@@ -308,6 +332,8 @@ export class ReviewManager {
       selections: null,
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
+      ...(options.waitMode === "message" && options.snoozable === true && kind === "input" ? { waitMode: "message" as const } : {}),
+      ...(options.meanwhile && kind === "input" ? { meanwhile: options.meanwhile } : {}),
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
@@ -343,7 +369,7 @@ export class ReviewManager {
    * stays. Any
    * other older question stays exactly where it is, because a later, different ask is no
    * evidence that the operator no longer needs to answer it. Parallel calls are never retries:
-   * `request_input` blocks, so an agent still waiting on one question can only ask another in
+   * a call-mode `request_input` blocks, so an agent still waiting on one question can only ask another in
    * the same batch, and those arrive less than `PARALLEL_ASK_WINDOW_MS` apart.
    *
    * Only `request_input`'s own asks (`snoozable`), on both sides: plan approvals, diff reviews,
@@ -351,12 +377,18 @@ export class ReviewManager {
    * by it. A question the operator snoozed is excluded even after it comes back to `pending`,
    * because they chose to park it and its agent was told to carry on, so a later, different
    * question from that agent is expected rather than a retry.
+   *
+   * Message-mode questions (`async-input`) are excluded on either side. The withdrawal rests on
+   * the call being blocking: only a timed-out retry can arrive long after an open question. A
+   * message-mode ask never times out, so a later, similar question is a new question, and a
+   * call-mode retry is no evidence that a question filed to be answered later is spent.
    */
   private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
-    if (newer.snoozable !== true) return [];
+    if (newer.snoozable !== true || newer.waitMode === "message") return [];
     const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
     return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
       older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
+      older.waitMode !== "message" &&
       !older.snooze && older.createdAt <= cutoff && isRewordedRetry(older, newer));
   }
 
@@ -605,6 +637,12 @@ export class ReviewManager {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
+    // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+    // older build re-asked it word for word, was handed the open row, and long-polls it because
+    // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+    // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+    // hands it to the outbox. Without this the agent would hear the answer twice.
+    if (current.waitMode === "message") markReviewWaitAttached(id);
 
     return new Promise<ReviewItem | null>((resolve) => {
       let set = this.waiters.get(id);
@@ -682,6 +720,42 @@ export class ReviewManager {
     for (const r of this.registry.outstandingReviews(sessionId)) this.settle(r, "orphaned", null);
   }
 
+  /**
+   * A merge completed this session's task: close every outstanding `request_input` question as
+   * `orphaned`, with the close reason `merged`, at that moment rather than at a later eviction.
+   *
+   * The scope is the completion rules' (`questionHoldsCompletion`): pending or snoozed, a
+   * message-mode question always and a call-mode question while the flag is on. With the flag
+   * off a call-mode question is left exactly as before, to be orphaned without a reason when its
+   * session goes. Merging is the operator's own conclusion, so nothing here holds the
+   * completion; it only makes sure no question outlives it unexplained.
+   */
+  closeQuestionsForMerge(sessionId: string, flagOn: boolean): ReviewItem[] {
+    if (transferForSource(sessionId)) return [];
+    const closing = this.registry.outstandingReviews(sessionId).filter((review) => questionHoldsCompletion(review, flagOn));
+    if (closing.length === 0) return [];
+    // All or none: the caller completes the task only once every question is durably closed,
+    // so a failed write must not leave some closed and some open. Published only after commit.
+    const resolvedAt = Date.now();
+    inTransaction(() => {
+      for (const review of closing) updateReviewStatus(review.id, "orphaned", null, resolvedAt, null, null, "merged");
+    });
+    return closing.map((review) => this.publishSettled({
+      ...review, status: "orphaned", response: null, resolvedAt, resolvedBy: null, selections: null, closedReason: "merged",
+    }));
+  }
+
+  /**
+   * The agent is waiting inside a call-mode `request_input` call right now: a pending question
+   * of its own with a live long-poll attached. Such an agent cannot go idle until the question
+   * settles, which is why a merge has to close it rather than wait for idleness.
+   */
+  blockedInRequestInputCall(sessionId: string, flagOn: boolean): boolean {
+    // Pending in either count: a filed question an older child re-asked is waited on in a call too.
+    return this.registry.outstandingReviews(sessionId).some((review) =>
+      review.status === "pending" && questionHoldsCompletion(review, flagOn) && (this.waiters.get(review.id)?.size ?? 0) > 0);
+  }
+
   persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {
     return transferPendingReviews(sourceId, successorId);
   }
@@ -751,7 +825,8 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
-    if (isConversationResolvedReview(updated)) {
+    // A message-mode question owes Foreman's answer too: there is no call to return it through.
+    if (deliversContinuation(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }

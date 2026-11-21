@@ -872,6 +872,9 @@ A SessionAction is a durable side effect, not an evaluator:
   comparison policy; historical publication never borrows that looser fallback.
   A PR observed merging during the action wait retains the ordinary earlier-adoption path;
   adoption time alone does not establish that its merge predates delivery.
+  Ledger reads use bounded pages with adoption-time/key cursors, and Git lookups run
+  sequentially per action so branch history cannot create an unbounded subprocess burst.
+  Every page remains eligible; a matching historical publication is never truncated away.
 - Rolled-over task settlement requires the latest terminal run's confirmed action delivery
   to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
   receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after

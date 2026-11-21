@@ -24,6 +24,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
@@ -146,6 +147,7 @@ interface HarnessOptions {
    */
   pullRequest?: boolean;
   realLedger?: boolean;
+  resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
@@ -228,7 +230,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     adoptedPullRequests: options.realLedger ? undefined : () => adopted,
     readRepositoryId: async root => root,
     resolveCommit: async (_root, headSha) => full(headSha),
-    resolveCommitTree: async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid,
+    resolveCommitTree: options.resolveCommitTree ?? (async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid),
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -2319,3 +2321,43 @@ for (const restart of [false, true]) for (const humanFollowUp of [false, true]) 
     } finally { await tasks.stop(); await h.stop(); }
   });
 }
+
+test("historical merge lookup bounds Git concurrency and reaches a later page's matching publication", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  let active = 0;
+  let peak = 0;
+  const lookedUp = new Set<string>();
+  const h = await harness("paged-historical-merges", { pullRequest: true, realLedger: true,
+    resolveCommitTree: async (_root, oid) => {
+      active++;
+      peak = Math.max(peak, active);
+      lookedUp.add(oid);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      active--;
+      return oid === h.full("historical-54") ? h.contentTree.oid : h.full("different-content");
+    },
+  });
+  h.repository.branch = "paged-historical-merges";
+  try {
+    for (let i = 0; i < 55; i++) {
+      adoptInspectorPr({ key: `paged/repo#${100 + i}`, owner: "paged", repo: "repo", number: 100 + i,
+        url: `https://github.com/paged/repo/pull/${100 + i}`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: null,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Historical publication", updatedAt: 1,
+        observedHeadSha: h.full(`historical-${i}`), adoptedAt: 1, observedAt: 1 });
+    }
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    const attemptId = waitingActionAttemptId(h, runId);
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "later-page publication was lost");
+    assert.ok(Array.from({ length: 55 }, (_, i) => h.full(`historical-${i}`))
+      .every(oid => lookedUp.has(oid)), "every historical candidate remains eligible");
+    assert.equal(peak, 1, "one action must not burst Git processes for its entire history");
+    assert.match(JSON.stringify(h.store.getAttempt(attemptId)), /paged\/repo\/pull\/154/);
+  } finally { await h.stop(); }
+});

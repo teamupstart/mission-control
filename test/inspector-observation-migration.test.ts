@@ -241,3 +241,25 @@ test("an older merged PR is visible only for the requested action branch", () =>
   updateInspectorPr(KEY, { observedState: "CLOSED" }, 1);
   assert.equal(loadAdoptedInspectorPrsSince(9000, "already-published").some(pr => pr.key === KEY), false);
 });
+
+test("historical adoption pages retain every candidate across equal adoption timestamps", () => {
+  const template = getInspectorPr(KEY)!;
+  const expected: string[] = [];
+  for (let i = 0; i < 55; i++) {
+    const key = `history/repo#${100 + i}`;
+    expected.push(key);
+    adoptInspectorPr({ ...template, key, owner: "history", number: 100 + i,
+      url: `https://github.com/history/repo/pull/${100 + i}`, state: "closed",
+      observedState: "MERGED", observedAt: 1, headRefName: "paged-history", adoptedAt: 1 });
+  }
+  let cursor: { adoptedAt: number; key: string } | null = null;
+  const seen: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const rows = loadAdoptedInspectorPrsSince(9000, "paged-history", cursor);
+    assert.ok(rows.length <= 50, "each database read must bound its result set");
+    if (!rows.length) break;
+    seen.push(...rows.filter(row => row.key.startsWith("history/")).map(row => row.key));
+    cursor = rows.at(-1)!;
+  }
+  assert.deepEqual(seen, expected, "pagination must neither drop nor duplicate tied rows");
+});

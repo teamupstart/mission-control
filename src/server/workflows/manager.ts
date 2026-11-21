@@ -6292,28 +6292,36 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    // Historical merges remain proof candidates even after Inspector retires their rows.
-    const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null);
-    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
-    const trees = await Promise.all(rows.map((pr, index) =>
-      pr.observedState === "MERGED" && pr.observedHeadSha && repository
-        && resolved[index] === repository.repositoryId && pr.headRefName === repository.branch
-        ? (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null)
-        : null));
-    return rows.map((pr, index) => ({
-      mergedContentTreeOid: trees[index] ?? null,
-      key: pr.key,
-      url: pr.url,
-      number: pr.number,
-      repositoryRoot: resolved[index] ?? null,
-      branch: pr.headRefName,
-      observedHeadOid: pr.observedHeadSha,
-      observedState: pr.observedState,
-      observedAt: pr.observedAt,
-      sessionId: pr.sessionId,
-      adoptedAt: pr.adoptedAt,
-      checkout: pr.cwd,
-    }));
+    // Page retained merges without discarding older proof. Resolve sequentially so a reused
+    // branch cannot launch one Git process per historical PR in a single settle check.
+    const adopted: SessionActionAdoptedPullRequest[] = [];
+    let after: { adoptedAt: number; key: string } | null = null;
+    for (;;) {
+      const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null, after);
+      if (!rows.length) return adopted;
+      for (const pr of rows) {
+        const repositoryRoot = await identify(pr.repoRoot);
+        const mergedContentTreeOid = pr.observedState === "MERGED" && pr.observedHeadSha && repository
+          && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch
+          ? await (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null)
+          : null;
+        adopted.push({
+          mergedContentTreeOid,
+          key: pr.key,
+          url: pr.url,
+          number: pr.number,
+          repositoryRoot,
+          branch: pr.headRefName,
+          observedHeadOid: pr.observedHeadSha,
+          observedState: pr.observedState,
+          observedAt: pr.observedAt,
+          sessionId: pr.sessionId,
+          adoptedAt: pr.adoptedAt,
+          checkout: pr.cwd,
+        });
+      }
+      after = rows[rows.length - 1]!;
+    }
   }
 
   /**

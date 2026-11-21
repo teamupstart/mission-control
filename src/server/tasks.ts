@@ -1138,6 +1138,12 @@ export class TaskManager {
   private readonly subscriptions: (() => void)[] = [];
   private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
+  /**
+   * The running, sessionless rows this daemon inherited, by object identity: any write that
+   * replaces a row's object is this daemon's lifecycle claiming it. See the constructor and
+   * `reconcileTasksWithNoLiveSession`. `ensureWorkUnit` is the one write that does not count.
+   */
+  private readonly sessionlessAtStartup = new Set<Task>();
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
@@ -1223,9 +1229,10 @@ export class TaskManager {
     });
     // Only unchanged inherited rows are evidence of a lost binding. A task created,
     // assigned, or displaced during restore belongs to this daemon's live lifecycle.
-    const sessionlessAtStartup = new Set(registry.listTasks().filter(
-      (task) => task.status === "running" && task.sessionId === null,
-    ));
+    for (const task of registry.listTasks()) {
+      if (task.status === "running" && task.sessionId === null) this.sessionlessAtStartup.add(task);
+    }
+    const sessionlessAtStartup = this.sessionlessAtStartup;
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
@@ -3502,6 +3509,11 @@ export class TaskManager {
     if (live && live.workUnitId !== stored) {
       // Already saved, so broadcast without writing the row again.
       this.registry.publishPersistedTask({ ...live, workUnitId: stored }, []);
+      // An id is not a lifecycle change. A row restart reconciliation is still waiting to
+      // judge keeps its place under the object the board now holds, or a dispatch or assign
+      // that reached it before the first sweep would leave it running with no session.
+      const published = this.registry.getTask(task.id);
+      if (published && this.sessionlessAtStartup.delete(live)) this.sessionlessAtStartup.add(published);
     }
     return { ...task, workUnitId: stored };
   }

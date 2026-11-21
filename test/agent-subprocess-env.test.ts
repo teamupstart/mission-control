@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -220,11 +220,7 @@ test("a workflow-style environment gets disposable state without daemon credenti
   cleanupAgentSubprocessEnv(env);
 });
 
-/**
- * A stand-in agent that records how many arguments it got, the length of its last one, and
- * whether its wrapper left the fallback marker - read while it runs, since the wrapper's EXIT
- * trap removes the state home afterwards.
- */
+/** A stand-in agent that records how many arguments it got and the length of its last one. */
 function recordingAgent(name: string): { agent: string; out: string } {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
@@ -234,7 +230,6 @@ function recordingAgent(name: string): { agent: string; out: string } {
     "#!/bin/sh",
     `for last in "$@"; do :; done`,
     `printf '%s:%s' "$#" "\${#last}" > ${shellCommand([out])}`,
-    `if [ -e "$MISSION_HOME/turn-one-fallback" ]; then printf ':fallback' >> ${shellCommand([out])}; fi`,
     "",
   ].join("\n"), { mode: 0o755 });
   return { agent, out };
@@ -245,7 +240,12 @@ test("a launch with a fallback runs its own argv when it fits in the pane's envi
   const shaped = [agent, "--session-id", "s1", "x".repeat(20_000)];
   const argv = isolatedAgentArgv(shaped, { fallbackArgv: [agent, "--session-id", "s1", "short"] });
   execFileSync(argv[0]!, argv.slice(1), { env: process.env });
-  assert.equal(readFileSync(out, "utf8"), "3:20000", "the shaped turn one launched, with no marker");
+  assert.equal(readFileSync(out, "utf8"), "3:20000", "the shaped turn one launched");
+  // The answer outlives the state home the wrapper removed when the agent exited.
+  const stateHome = dirname(argv[1]!);
+  assert.equal(existsSync(stateHome), false);
+  assert.equal(readFileSync(`${stateHome}.turn-one`, "utf8"), "shaped");
+  rmSync(`${stateHome}.turn-one`, { force: true });
 });
 
 test("a launch whose argv would not fit in the pane's inherited environment runs the fallback and says so", () => {
@@ -272,8 +272,10 @@ test("a launch whose argv would not fit in the pane's inherited environment runs
 
   const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
   execFileSync(argv[0]!, argv.slice(1), { env: pane });
-  assert.equal(readFileSync(out, "utf8"), `3:${"the original prompt".length}:fallback`,
-    "the wrapper launched the original turn one and left the marker for the dispatcher");
+  assert.equal(readFileSync(out, "utf8"), `3:${"the original prompt".length}`, "the wrapper launched the original turn one");
+  const stateHome = dirname(argv[1]!);
+  assert.equal(readFileSync(`${stateHome}.turn-one`, "utf8"), "original", "and said so, where the dispatcher reads it");
+  rmSync(`${stateHome}.turn-one`, { force: true });
 });
 
 test("a launch with no fallback keeps its one-line agent command", () => {
@@ -296,4 +298,58 @@ test("a launch read back through the wrapper is the primary launch, fallback or 
   const plain = isolatedAgentArgv(original);
   assert.deepEqual(launchedArgv(plain), original);
   for (const argv of [withFallback, plain]) rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("at the exact limit where an interpreter re-exec fails, the wrapper launches the original prompt", () => {
+  // A Node-style entry point: it execs an interpreter deep in a version manager's tree with the
+  // whole argv a second time, so that second exec also charges the interpreter's long path.
+  const dir = join(root, "env-interpreter");
+  const deep = join(dir, ...Array.from({ length: 32 }, (_, n) => `node-v24.19.0-segment-${n}`), "bin");
+  mkdirSync(deep, { recursive: true });
+  const out = join(dir, "launched");
+  writeFileSync(join(deep, "mission-fake-node"), [
+    "#!/bin/sh",
+    `for last in "$@"; do :; done`,
+    `printf '%s' "\${#last}" > ${shellCommand([out])}`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  assert.ok(deep.length > 800, "an interpreter path well past what the `#!` line allows for");
+  const agent = join(dir, "agent");
+  writeFileSync(agent, `#!/bin/sh\nexec ${shellCommand([join(deep, "mission-fake-node")])} "$0" "$@"\n`, { mode: 0o755 });
+  const shaped = [agent, "--session-id", "s1", "x".repeat(60_000)];
+  const fallback = [agent, "--session-id", "s1", "the original prompt"];
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+
+  // An environment of `bytes` padding on top of the daemon's own, in ordinary-sized variables.
+  const paneWith = (bytes: number): Record<string, string> => {
+    const pane: Record<string, string> = { ...(process.env as Record<string, string>) };
+    for (let n = 0; bytes > 0; n++) {
+      const value = "p".repeat(Math.min(4000, bytes));
+      pane[`TERMINAL_SERVER_PAD_${n}`] = value;
+      bytes -= value.length;
+    }
+    return pane;
+  };
+  const runs = (file: string, args: readonly string[], env: Record<string, string>) =>
+    spawnSync(file, args, { env, stdio: "ignore" }).error === undefined;
+  // The largest padding under which the shaped launch itself still starts, found by bisection so
+  // the case holds on any platform's accounting.
+  let fits = 0;
+  let fails = argMax;
+  while (fails - fits > 1) {
+    const mid = Math.floor((fits + fails) / 2);
+    if (runs(agent, shaped.slice(1), paneWith(mid))) fits = mid;
+    else fails = mid;
+  }
+  const pane = paneWith(fails);
+  assert.equal(runs(agent, shaped.slice(1), pane), false, "the shaped launch cannot start in this environment");
+  assert.equal(runs(agent, fallback.slice(1), pane), true, "the original one can");
+
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
+  execFileSync(argv[0]!, argv.slice(1), { env: pane });
+  const stateHome = dirname(argv[1]!);
+  const outcome = readFileSync(`${stateHome}.turn-one`, "utf8");
+  rmSync(`${stateHome}.turn-one`, { force: true });
+  assert.equal(outcome, "original");
+  assert.equal(readFileSync(out, "utf8"), String("the original prompt".length), "and the agent started with it");
 });

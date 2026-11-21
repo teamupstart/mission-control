@@ -714,17 +714,13 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
   const dir = join(home, "pi-pane-env");
   mkdirSync(dir, { recursive: true });
   const out = join(dir, "launched");
-  const release = join(dir, "release");
-  // A stand-in Pi that records the turn one it was launched with and whether its wrapper fell
-  // back, then stays alive, as a real agent does, until the test releases it.
+  // A stand-in Pi that records the turn one it was launched with and exits at once - before the
+  // dispatcher looks - so its wrapper has already removed the state home by then.
   const piScript = join(dir, "pi");
   writeFileSync(piScript, [
     "#!/bin/sh",
     `for last in "$@"; do :; done`,
-    `printf '%s' "$last" > '${out}.tmp'`,
-    `if [ -e "$MISSION_HOME/turn-one-fallback" ]; then : > '${out}.fallback'; fi`,
-    `mv '${out}.tmp' '${out}'`,
-    `while [ ! -e '${release}' ]; do sleep 0.1; done`,
+    `printf '%s' "$last" > '${out}'`,
     "",
   ].join("\n"), { mode: 0o755 });
   const previousPi = process.env.MISSION_PI_BIN;
@@ -743,6 +739,7 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
   }
   let child: ChildProcess | null = null;
   let launched: string[] = [];
+  let launchHome = "";
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "pi-pane-env", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "short request", agent: "pi" }));
   try {
@@ -754,9 +751,12 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
       // The real wrapper, run by a shell under the pane's environment, as a terminal server runs it.
       spawn: async (_label, _short, cwd, bin, args, stateHome, _backend, extraEnv, fallback) => {
         launched = [bin, ...(args ?? [])];
+        launchHome = stateHome!;
         const argv = dispatchLaunchArgv(cwd, bin, args ?? [], stateHome!, extraEnv ?? {}, fallback ?? null);
-        child = spawnChild(argv[0]!, argv.slice(1), { env: pane, stdio: "ignore" });
-        for (let waited = 0; !existsSync(out) && waited < 15_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+        const wrapper = spawnChild(argv[0]!, argv.slice(1), { env: pane, stdio: "ignore" });
+        child = wrapper;
+        await new Promise((resolve) => wrapper.once("exit", resolve));
+        assert.equal(existsSync(stateHome!), false, "Pi has exited and its wrapper removed the state home");
         const discovered = mkDiscovered({ agent: "pi", cwd, syntheticId: `sid-pi-pane-env-${++seq}` });
         registry.applyDiscovery([discovered]);
         registry.applyHook({ agent: "pi", event: "SessionStart", sessionId: `native-pi-pane-env-${seq}`, cwd, transcriptPath: null,
@@ -774,7 +774,7 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
       (error: NodeJS.ErrnoException) => error.code === "E2BIG");
     // What ran instead: the original turn one, in the same conversation.
     assert.equal(readFileSync(out, "utf8"), await unshapedExpectation(task, "short request"));
-    assert.ok(existsSync(`${out}.fallback`), "the wrapper said it fell back");
+    assert.equal(existsSync(`${launchHome}.turn-one`), false, "the dispatcher consumed the wrapper's answer");
     // And the record says so, rather than claiming context that never arrived.
     const record = currentShaping(task);
     assert.equal(record?.state, "degraded");
@@ -785,13 +785,30 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
     assert.equal(record?.shapers[0]?.outcome, "ok", "the shaper itself answered");
     assert.equal(getTaskShapingText("pi-pane-env"), null, "no delivered text is kept");
   } finally {
-    writeFileSync(release, "");
     if (child) {
       const exited = child as ChildProcess;
-      if (exited.exitCode === null) await new Promise((resolve) => exited.once("exit", resolve));
+      if (exited.exitCode === null && exited.signalCode === null) await new Promise((resolve) => exited.once("exit", resolve));
     }
     process.env.MISSION_PI_BIN = previousPi;
   }
+});
+
+test("a dispatch that ended while its launch was being measured starts no shaper", async () => {
+  const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
+  const task = mkTask({ id: "measure-cancel", status: "dispatching", repoRoot: seedRepo("measure-cancel"), title: "Shaping", intent: "do it", agent: "pi" });
+  let dispatching = true;
+  const probe = standIn(SECTION);
+  const marks: boolean[] = [];
+  const shaped = await shapeLaunch({
+    task, runtime: "terminal", workflowName: () => null, trace: null, delivery: launchArgumentTurnOne("darwin"),
+    turnOnes: ["do it"],
+    // The cancel lands while the launch is being measured.
+    launch: async () => { dispatching = false; return { otherArgs: ["/p"], env: {}, argMax: 1_048_576 }; },
+    stillDispatching: () => dispatching, onShaping: (active) => { marks.push(active); },
+  }, { shapeTask: probe.shapeTask, enabled: true });
+  assert.equal(probe.calls.length, 0, "no shaper ran");
+  assert.deepEqual(shaped, { summary: null, section: "" });
+  assert.deepEqual(marks, [], "and no Shaping context mark was raised");
 });
 
 // ---- superseded and cancelled launches, and the step's own failures ----

@@ -171,6 +171,9 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
       console.warn("[shaping] could not measure the launch's arguments and environment:", error);
       return null;
     }) : null;
+    // Asked again now, synchronously, before any shaper is started: a cancel or a replacement
+    // that landed during the measurement must not run a single shaper for this launch.
+    if (!input.stillDispatching()) return EMPTY;
     const allowance = turnOneAllowance(input.delivery, largest, launch);
     const engineInput = {
       ...shapingInputFor({ ...input, workflowName: workflowNameOf(input.workflowName) }),

@@ -346,11 +346,14 @@ server, a Herdr login shell or an emulator can add variables the daemon never se
 final check happens at Pi's exec, inside the launch wrapper, under the pane's real environment.
 The shaped turn one is written into the wrapper script, never into the wrapper's own launch
 arguments. Before running Pi, the wrapper execs a no-op shell carrying the same arguments plus
-room for the exec's own overhead. If that exec is refused, the wrapper launches Pi with the
-original turn one instead: the same arguments, the same conversation id, and no section. It
-also leaves a marker in the launch's state home. Dispatch reads the marker before recording the
-launch, and records it as degraded. Nothing reached turn one, the shapers keep their outcomes,
-and `limit` says the terminal's environment left too little room. This is degraded rather than
+room for the exec's own overhead, including an interpreter such as `#!/usr/bin/env node` that
+execs again under its own path. If that exec is refused, the wrapper launches Pi with the
+original turn one instead: the same arguments, the same conversation id, and no section.
+Either way the wrapper writes which turn one it ran into a file beside the launch's state home,
+so the answer survives a Pi that exits at once and takes its state home with it. Dispatch reads
+that file before recording the launch, then removes it. Anything but the shaped answer,
+including no answer at all, is recorded as degraded. Nothing reached turn one, the shapers keep
+their outcomes, and `limit` says the terminal's environment left too little room. This is degraded rather than
 truncated because the daemon offered a section that the terminal could not carry, which points
 at that terminal's environment. A launch with no section has no check, and its wrapper is
 unchanged.

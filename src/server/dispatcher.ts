@@ -11,8 +11,8 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess, TURN_ONE_FALLBACK_FILE } from "./terminal/launch-process.ts";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { readLaunchProcess, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
@@ -458,6 +458,8 @@ export class Dispatcher {
     // Closes this attempt's own terminal home, once it has one. A replaced attempt calls it to
     // retire its worker without touching the task row, which belongs to its successor.
     let retireOwnHome: (() => Promise<void>) | null = null;
+    // The state home whose `turnOneOutcomePath` a Pi wrapper with a fallback writes, if any.
+    let outcomeStateHome: string | null = null;
     // What this launch RESOLVED, frozen at the resolver's own boundary and carried to
     // whichever exit this attempt takes. Held out here rather than read back at the end,
     // because the interesting row is the one that never reaches a running agent - and by then
@@ -1018,6 +1020,7 @@ export class Dispatcher {
       const piFallbackArgs = piUnshapedText !== null && piLaunch.sessionId
         ? [...leadingArgs, ...preparePiLaunch(piUnshapedText, piLaunch.sessionId).args]
         : null;
+      if (piFallbackArgs) outcomeStateHome = stateHome;
       // A launch registration is reported by the builders that actually produced it.
       // A machine install rides no argv: reuse the pre-worktree probe's answer.
       const missionMcpRegistered = missionTools?.mechanism === "mcp-client"
@@ -1225,10 +1228,10 @@ export class Dispatcher {
       }
       // Turn one has been handed to the worker: pasted and acknowledged, or for Pi carried by
       // the launch itself. Only now does this launch's shaping record replace the last one -
-      // saying what actually launched, if Pi's wrapper had to fall back to the original prompt.
-      // Its state home is alive while Pi is, which readiness has just shown.
+      // saying what actually launched. A Pi wrapper with a fallback wrote which turn one it ran;
+      // anything but `shaped`, including no answer at all, is never recorded as delivered.
       let delivered = shaping;
-      if (piFallbackArgs && existsSync(join(stateHome, TURN_ONE_FALLBACK_FILE))) {
+      if (piFallbackArgs && readTurnOneOutcome(stateHome) !== "shaped") {
         delivered = launchFellBack(shaping);
         this.recordLaunchPresentationForKey(piLaunch.sessionId!, piUnshapedText!, task.intent);
       }
@@ -1357,6 +1360,8 @@ export class Dispatcher {
     } finally {
       // Settled: nothing of this attempt writes after here. A successor's entry is its own.
       if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
+      if (outcomeStateHome) rmSync(turnOneOutcomePath(outcomeStateHome), { force: true });
     }
   }
 
@@ -3451,6 +3456,15 @@ export function sessionLabel(title: string, terminalBackend: string | null = nul
  */
 export function deriveTitle(intent: string): string {
   return deriveTaskTitle(intent);
+}
+
+/** Which turn one a Pi wrapper with a fallback ran (`shaped` or `original`), or null if it never said. */
+function readTurnOneOutcome(stateHome: string): string | null {
+  try {
+    return readFileSync(turnOneOutcomePath(stateHome), "utf8").trim();
+  } catch {
+    return null;
+  }
 }
 
 /**

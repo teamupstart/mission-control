@@ -86,10 +86,13 @@ export function shellStatements(script: string): string[] {
 
 /**
  * The agent command a launch wrapper runs (see `launchAndCleanupScript`): its last statement, or,
- * for a launch with a fallback (`fittingLaunch`), the primary launch under the probe's `then`.
+ * for a launch with a fallback (`fittingLaunch`), the primary launch under the probe's `then` -
+ * the statement after the one that records the outcome.
  */
 export function wrapperAgentCommand(script: string): string {
   const statements = shellStatements(script);
   const probe = statements.findIndex((statement) => statement.startsWith("if ") && statement.includes("mission-turn-one-probe"));
-  return (probe >= 0 ? statements[probe + 1] : statements.at(-1)) ?? "";
+  if (probe < 0) return statements.at(-1) ?? "";
+  const branch = statements.slice(probe + 1);
+  return branch.find((statement) => !statement.startsWith("printf ")) ?? "";
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import type { PrCheckDetails } from "@shared/pr-check-details.ts";
 import { prCheckSummary } from "@shared/pr-check-details.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -13,7 +14,8 @@ export function PrChecksStatus({ details, url }: { details?: PrCheckDetails | nu
       <button type="button" className="pr-checks-alert" aria-label={`${summary} - view check results`}
         onClick={event => { event.stopPropagation(); setOpen(true); }}>⚠</button>
     </Tooltip>
-    {open && <Overlay id={OVERLAY_IDS.prChecks} onClose={() => setOpen(false)}
+    {/* The board tile's hover transform must not contain or clip this fixed dialog. */}
+    {open && createPortal(<Overlay id={OVERLAY_IDS.prChecks} onClose={() => setOpen(false)}
       className="modal pr-checks-modal" role="dialog" ariaModal ariaLabel="Pull request checks">
       <header className="modal-head"><h2>Pull request checks</h2>
         <Tooltip label="Close pull request checks">
@@ -39,6 +41,6 @@ export function PrChecksStatus({ details, url }: { details?: PrCheckDetails | nu
           <a href={url} target="_blank" rel="noreferrer">Open pull request on GitHub</a>
         </Tooltip>
       </footer>
-    </Overlay>}
+    </Overlay>, document.body)}
   </>;
 }

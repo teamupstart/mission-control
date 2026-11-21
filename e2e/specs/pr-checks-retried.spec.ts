@@ -291,6 +291,92 @@ test("cancelled checks retain their actual conclusions and direct job links", as
   await expect(dialog).toBeHidden();
 });
 
+async function boardCheckWarning(page: Page, daemon: DaemonHandle): Promise<Locator> {
+  const session = await dispatch(page, daemon);
+  const worktree = await featureWorktree(daemon);
+  await announcePullRequest(daemon, session);
+  writeGhPullRequests(daemon.home, [{
+    cwd: worktree, url: PR_URL, number: PR_NUMBER, state: "OPEN",
+    createdAt: new Date().toISOString(), mergedAt: null, headRefOid: "0".repeat(40),
+    statusCheckRollup: [{ name: "Catalog Security review", status: "COMPLETED", conclusion: "CANCELLED",
+      detailsUrl: "https://github.com/acme/mission-e2e/actions/runs/1/job/1" }],
+  }]);
+  const layout = await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }) });
+  expect(layout.ok).toBe(true);
+  await page.reload();
+  const warning = page.locator("main.board").getByRole("button", { name: /CI includes 1 cancelled check/ });
+  await expect(warning).toBeVisible();
+  return warning;
+}
+
+test("the check dialog backdrop dismisses without opening its board session", async ({ dashboard, daemon }) => {
+  const warning = await boardCheckWarning(dashboard, daemon);
+  await warning.click();
+  const dialog = dashboard.getByRole("dialog", { name: "Pull request checks" });
+  await expectContentClearsBorder(dialog);
+  await expect(dialog.getByRole("link", { name: "Open pull request on GitHub" })).toBeInViewport();
+  const bounds = (await dialog.boundingBox())!;
+  await dashboard.mouse.click(bounds.x / 2, bounds.y - 20);
+  await expect(dialog).toBeHidden();
+  await expect(dashboard.locator("main.board")).toBeVisible();
+  await expect(dashboard.locator(".console-detail")).toHaveCount(0);
+  await expect(dashboard.locator(".board-detail")).toHaveAttribute("aria-hidden", "true");
+  await expect(warning).toBeFocused();
+});
+
+test("the check dialog contains keyboard focus and returns it to its opener", async ({ dashboard, daemon }) => {
+  const warning = await boardCheckWarning(dashboard, daemon);
+  await warning.focus();
+  await dashboard.keyboard.press("Enter");
+  const dialog = dashboard.getByRole("dialog", { name: "Pull request checks" });
+  await expectContentClearsBorder(dialog);
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  const job = dialog.getByRole("link", { name: "Catalog Security review: CANCELLED" });
+  const overview = dialog.getByRole("link", { name: "Open pull request on GitHub" });
+  await expect(close).toBeFocused();
+  await dashboard.keyboard.press("Shift+Tab");
+  await expect(overview).toBeFocused();
+  await dashboard.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await dashboard.keyboard.press("Tab");
+  await expect(job).toBeFocused();
+  await dashboard.keyboard.press("Tab");
+  await expect(overview).toBeFocused();
+
+  // Another overlay can arrive above this one; closing it restores the exact control
+  // that held focus, without re-initialising or closing the covered dialog.
+  await dashboard.getByRole("button", { name: /^Foreman - the auto-responder/ })
+    .evaluate((element: HTMLButtonElement) => element.click());
+  await dashboard.getByRole("button", { name: "About Foreman", exact: true })
+    .evaluate((element: HTMLButtonElement) => element.click());
+  const guide = dashboard.getByRole("dialog", { name: "About Foreman", exact: true });
+  await expectContentClearsBorder(guide);
+  await expect(guide.getByRole("button", { name: "Close", exact: true })).toBeFocused();
+  await dashboard.keyboard.press("Escape");
+  await expect(guide).toBeHidden();
+  await expect(overview).toBeFocused();
+  // The guide's settings popover remains open beneath it and owns its own Escape.
+  await dashboard.getByRole("button", { name: /^Foreman - the auto-responder/ })
+    .evaluate((element: HTMLButtonElement) => element.click());
+  await expect(dashboard.getByRole("dialog", { name: "Foreman settings", exact: true })).toBeHidden();
+
+  if (process.env.MC_E2E_OVERLAY_REVIEW_EVIDENCE === "1") {
+    const dir = artifactsDir("pr-checks-overlay-review");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await dashboard.screenshot({ path: join(dir, "keyboard-focus-contained.png") });
+  }
+  await dashboard.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(warning).toBeFocused();
+  await dashboard.keyboard.press("Enter");
+  await expect(close).toBeFocused();
+  await close.click();
+  await expect(dialog).toBeHidden();
+  await expect(warning).toBeFocused();
+});
+
 test("100 reported checks warn of an incomplete list while 99 are complete", async ({ dashboard, daemon }) => {
   const session = await dispatch(dashboard, daemon);
   const worktree = await featureWorktree(daemon);

@@ -174,7 +174,7 @@ test("a command's stderr cut inside a JSON-escaped spelling of a named value kee
   // tail; escaped, each copy is six times that, and the recorded stderr's front edge cuts one.
   process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("esc-");
   try {
-    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "2"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "40"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
     assert.equal(reply.kind, "failed");
     const reason = (reply as { reason: string }).reason;
     // No escape survives: the whole escaped copy was removed, and the cut one was dropped.
@@ -183,6 +183,37 @@ test("a command's stderr cut inside a JSON-escaped spelling of a named value kee
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
     else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut inside a named value escaped at the deepest supported level keeps no fragment of it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_ESCAPED;
+  // Escaped three levels deep, each copy is nine characters for each of the value's own, past the
+  // six a one-level margin keeps: the old margin's front edge fell inside the second copy.
+  process.env.SHAPER_FIXTURE_ESCAPED = longestEnvValue("deep-");
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-escaped", "SHAPER_FIXTURE_ESCAPED", "30", "3"], { env: ["SHAPER_FIXTURE_ESCAPED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("u00"), false, reason.slice(Math.max(0, reason.indexOf("u00") - 120), reason.indexOf("u00") + 60));
+    assert.match(reason, /^The command exited with code 5: /);
+    assert.match(reason, /\[SHAPER_FIXTURE_ESCAPED redacted\]/, "the whole copies are redacted");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_ESCAPED;
+    else process.env.SHAPER_FIXTURE_ESCAPED = saved;
+  }
+});
+
+test("a command's stderr cut where the margin a named value needs is over the cap is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_HUGE;
+  // 216 characters of margin for each of 5,000 is past the 1 MiB cap; 1.1 MB of filler cuts it.
+  process.env.SHAPER_FIXTURE_HUGE = `huge-${"h".repeat(5_000)}`;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "stderr-flood", "SHAPER_FIXTURE_HUGE", "1100000"], { env: ["SHAPER_FIXTURE_HUGE"] }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 6: its stderr is not quoted: it was too long to scrub safely" });
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_HUGE;
+    else process.env.SHAPER_FIXTURE_HUGE = saved;
   }
 });
 

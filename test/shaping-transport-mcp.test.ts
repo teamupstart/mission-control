@@ -758,13 +758,36 @@ test("a stderr cut inside a widened spelling of a passed value is not quoted at 
   assert.match(reason, /Its stderr is not quoted: it was too long to scrub safely\.$/);
 });
 
+test("a stderr cut inside a passed value escaped at the deepest supported level keeps no fragment of it", async () => {
+  // Nine characters for each of the value's own at three levels, past the six a one-level margin
+  // kept; long enough that the old margin's front edge fell inside the second copy.
+  const longest = Math.max(1_400, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
+  const value = `deep-${Array.from({ length: longest }, (_, i) => "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f"[(i * 7 + (i >> 5)) % 35]).join("")}`;
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "escaped-stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "escaped-stderr-exit", KEY_ENV, "30", "3"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+  const reason = (reply as { reason: string }).reason;
+  assert.equal(reason.includes("u00"), false, reason.slice(0, 300));
+  assert.match(reason, /^The MCP server exited/);
+});
+
+test("a stderr cut where the margin a passed value needs is over the cap is not quoted", async () => {
+  const value = `huge-${"h".repeat(5_000)}`;
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "1100000"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+  assert.match((reply as { reason: string }).reason, /^The MCP server exited\. Its stderr is not quoted: it was too long to scrub safely\.$/);
+});
+
 test("a stderr cut inside a JSON-escaped spelling of a passed value keeps no fragment of it", async () => {
   // Longer than anything else the server receives, so it alone sets the margin; escaped, each
   // copy is six times that, and the kept stderr's front edge cuts one of the two.
   const longest = Math.max(1_000, ...Object.values(process.env).map((value) => (value?.length ?? 0) + 64));
   const value = `esc-${Array.from({ length: longest }, (_, i) => "k7q9z2m4x8v1n6b3c5p0r8t2w4y6j1h3g5f"[(i * 7 + (i >> 5)) % 35]).join("")}`;
   const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "escaped-stderr-exit" }, "folded", {
-    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "escaped-stderr-exit", KEY_ENV, "2"], env: [KEY_ENV] } },
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "escaped-stderr-exit", KEY_ENV, "40"], env: [KEY_ENV] } },
   }), ctx()));
   assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
   const reason = (reply as { reason: string }).reason;

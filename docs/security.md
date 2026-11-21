@@ -435,8 +435,12 @@ legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
 whole and a non-ASCII value still matches exactly when it is redacted. It is kept with a margin
-six times the longest value the child received, that value's length spelled entirely in JSON
-`\u` escapes. Once the front is cut, the margin is dropped in the original text's positions,
+as long as the longest spelling the scrub can decode of any value it received: an inherited
+value's own length, and 216 characters for each character of a named value: six for a JSON
+`\u` escape, multiplied at each of the three levels of nested JSON text the scrub decodes. The
+margin is capped at 1,048,576 characters; a stderr cut while its margin is held at
+the cap is not quoted at all, as one is not when a named value has inner whitespace. Once the
+front is cut, the margin is dropped in the original text's positions,
 with every spelling of each named value already found there: a value cut at the front, as
 written or escaped, falls inside it, and a spelling that runs across it is removed whole, so
 neither leaves a fragment in a reason. Every kind of match, an inherited value, a named value as

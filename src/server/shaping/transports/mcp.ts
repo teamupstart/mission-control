@@ -11,7 +11,7 @@ import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch
 import { holdsResolvedValue, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
 import {
-  credentialBearingValues, escapedMargin, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, withTimeout,
+  credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, stderrMargin, withTimeout,
   type ReceivedValues,
 } from "./command.ts";
 import {
@@ -397,14 +397,14 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   // margin is dropped in the original text's positions before anything is recorded.
   let stderr = "";
   let stderrCut = false;
-  // Six times the longest value, as the `command` transport keeps it (`escapedMargin`).
-  const longest = escapedMargin(received);
+  // As wide as the `command` transport keeps it, for the longest spelling of any passed value.
+  const margin = stderrMargin(received, named);
   // Decoded as a stream, as the `command` transport decodes it: a character split across two
   // chunks is kept whole, so a non-ASCII value the child received still matches when redacted.
   const stderrDecoder = new StringDecoder("utf8");
   transport.stderr?.on("data", (chunk: Buffer) => {
     const joined = stderr + stderrDecoder.write(chunk);
-    const keep = STDERR_KEEP_CHARS + longest;
+    const keep = STDERR_KEEP_CHARS + margin.chars;
     if (joined.length > keep) stderrCut = true;
     stderr = joined.slice(-keep);
   });
@@ -412,11 +412,11 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   const scrubDiagnostic = (text: string, dropBefore = 0): string => scrubChildOutput(text, received, named, dropBefore);
   // A passed value with inner whitespace can be spelled with any amount of whitespace there, so
   // no margin bounds where a spelling cut at the front of the buffer ends. Once the buffer is cut,
-  // its stderr is then not quoted at all.
-  const unsafeCut = () => stderrCut && named.some(({ value }) => /\s/.test(value));
+  // its stderr is then not quoted at all, as it is not when the margin a spelling needs is over the cap.
+  const unsafeCut = () => stderrCut && (!margin.covers || named.some(({ value }) => /\s/.test(value)));
   const tail = (): string => {
     if (unsafeCut()) return ". Its stderr is not quoted: it was too long to scrub safely.";
-    const text = scrubDiagnostic(stderr, stderrCut ? longest : 0).slice(-500);
+    const text = scrubDiagnostic(stderr, stderrCut ? margin.chars : 0).slice(-500);
     return text ? `: ${text}` : ".";
   };
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });

@@ -10,8 +10,10 @@
 //                                    and exits before answering anything.
 //   json-stderr-exit <NAME>          Writes a JSON diagnostic that holds `NAME`'s value, every
 //                                    character a \u escape, to stderr, and exits.
-//   escaped-stderr-exit <NAME> <n>   Writes `NAME`'s value, every character a \u escape, on n lines of
-//                                    stderr, and exits before answering anything.
+//   escaped-stderr-exit <NAME> <n> [levels]
+//                                    Writes `NAME`'s value, every character a \u escape and then
+//                                    escaped once more per further level, on n lines of stderr, and
+//                                    exits before answering anything.
 //   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
 //                                    multibyte character, and exits before answering anything.
 //   spaced-stderr-exit <NAME> <pad>  Writes `NAME`'s value to stderr with each run of whitespace in it
@@ -37,7 +39,8 @@ if (mode === "json-stderr-exit") {
 }
 
 if (mode === "escaped-stderr-exit") {
-  const escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  let escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  for (let level = 1; level < Number(args[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
   process.stderr.write(`${escaped}\n`.repeat(Number(args[1] ?? 1)), () => process.exit(1));
 }
 

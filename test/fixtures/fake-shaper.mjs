@@ -93,12 +93,22 @@ switch (mode) {
     break;
   }
   case "leak-escaped": {
-    // The value spelled as JSON \u escapes, six characters for each of its own, repeated so the
-    // recorded tail's front edge cuts through one escaped copy of it.
+    // The value spelled as JSON \u escapes, six characters for each of its own, then escaped as
+    // the text of a JSON string once more for each further level, repeated so the recorded tail's
+    // front edge cuts through one escaped copy of it.
     const value = process.env[rest[0]] ?? "<unset>";
-    const escaped = [...value].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
-    process.stderr.write(`${escaped}\n`.repeat(Number(rest[1] ?? 12)));
-    process.exit(5);
+    let escaped = [...value].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    for (let level = 1; level < Number(rest[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
+    // Exits once the pipe has taken all of it: a large write is asynchronous on a pipe here.
+    process.stderr.write(`${escaped}\n`.repeat(Number(rest[1] ?? 12)), () => process.exit(5));
+    break;
+  }
+  case "stderr-flood": {
+    // The value, then this many bytes of filler, so the recorded tail is cut far past it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    process.stderr.write(`${value}\n`);
+    for (let left = Number(rest[1] ?? 0); left > 0; left -= 65_536) process.stderr.write("x".repeat(Math.min(left, 65_536)));
+    process.stderr.write("\n", () => process.exit(6));
     break;
   }
   case "leak-long": {

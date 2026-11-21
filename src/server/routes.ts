@@ -9716,7 +9716,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
     }
     const r = await tasks.update(id, patch, { backlogOnly });
-    return c.json(patch.previewOnly && r.ok ? { ...r, before: existing } : r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   }
 
   /**

@@ -348,3 +348,134 @@ for (const retained of [true, false]) test("change pinned revision previews and 
   await expect(dialog.getByRole("button", { name: "Remove dependency: Replacement origin" })).toBeDisabled();
   await shoot(dashboard, "revision-change-saved-" + retained);
 });
+
+async function revisionEditor(page: Page, daemon: DaemonHandle, episode: "same" | "later" | "merged" = "same") {
+  const origin = await savedPlan(daemon);
+  const task = await create(daemon, "Review staged revision", {
+    planInputs: [origin.input], dependencies: [{ type: "task", taskId: origin.source.id }],
+  });
+  await post(daemon, "/mcp/plans/save", {
+    env: {}, sessionId: origin.session.id, cwd: origin.session.cwd, repoSlot: "repo-01",
+    planId: origin.input.planId, slug: "dependency-plan", requestId: randomUUID(), expectedRevision: 1,
+    files: [{ name: "plan.md", content: "# Revised plan" }, { name: "plan.html", content: "<h1>Revised plan</h1>" }],
+  });
+  if (episode !== "same") {
+    // The old pin belongs to a completed episode; revision two belongs to the source's
+    // current, unmerged episode. The task ID deliberately stays the same across both.
+    await daemon.crash();
+    withDaemonDb(daemon, db => {
+      if (episode === "later") db.prepare("UPDATE managed_plan_revisions SET episode_id = ? WHERE plan_id = ? AND revision = 1")
+        .run("previous-episode", origin.input.planId);
+      db.prepare("UPDATE tasks SET dependencies = ? WHERE id = ?").run(JSON.stringify(task.dependencies.map(edge => ({
+        ...edge, ...(episode === "later" ? { episodeId: "previous-episode" } : {}),
+        satisfiedAt: 10, prUrl: "https://github.com/acme/demo-repo/pull/1",
+      }))), task.id);
+    });
+    await daemon.restart();
+  }
+  const flag = await fetch(daemon.baseURL + "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });
+  expect(flag.ok).toBe(true);
+  const dialog = await editor(page, daemon, task.title);
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByLabel("Revision", { exact: true }).fill("2");
+  const read = async () => (await (await fetch(daemon.baseURL + "/api/tasks")).json() as Task[]).find(t => t.id === task.id)!;
+  return { dialog, task, read };
+}
+
+test("revision preview shows replacement episodes and merge status for the same source task", async ({ dashboard, daemon }) => {
+  const { dialog, task, read } = await revisionEditor(dashboard, daemon, "later");
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  const preview = dialog.getByRole("region", { name: "Pinned revision preview" });
+  await expect(preview.locator("p").filter({ hasText: /^Remove:/ }))
+    .toHaveText("Remove: Planning origin (episode previous-episode, merged/published)");
+  await expect(preview.locator("p").filter({ hasText: /^Add:/ }))
+    .toHaveText(`Add: Planning origin (episode ${task.dependencies[0]!.episodeId}, waiting)`);
+  await expect(preview.locator("p").filter({ hasText: /^Retain:/ })).toHaveText("Retain: None");
+  await shoot(dashboard, "revision-change-preview-new-episode");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const saved = await read();
+  expect(saved.planInputs![0]!.revision).toBe(2);
+  expect(saved.dependencies[0]!.episodeId).toBe(task.dependencies[0]!.episodeId);
+  expect(saved.dependencies[0]!.satisfiedAt).toBeNull();
+});
+
+test("Revert discards a staged pin and its preview before a later Save", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon);
+  const before = await read();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Revert" })).toBeEnabled();
+  await dialog.getByRole("textbox", { name: /^Title/ }).fill("Also revert this title");
+  await dialog.getByRole("button", { name: "Revert" }).click();
+  await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue(before.title);
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Revert" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(await read()).toEqual(before);
+});
+
+test("Save waits for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon);
+  const before = await read();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  let saves = 0;
+  await dashboard.route(`**/api/tasks/${before.id}/update`, async route => {
+    if (route.request().postDataJSON().previewOnly) { started(); await held; }
+    else saves++;
+    await route.continue();
+  });
+  try {
+    await dialog.getByRole("button", { name: "Preview revision change" }).click();
+    await requested;
+    await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    await dashboard.keyboard.press("ControlOrMeta+Enter");
+    await expect(dialog).toBeVisible();
+    expect(saves).toBe(0);
+    expect(await read()).toEqual(before);
+  } finally { release(); }
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(saves).toBe(1);
+  expect((await read()).planInputs![0]!.revision).toBe(2);
+});
+
+test("a staged pin survives a rejected save and is consumed before retrying a rejected dispatch", async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  let saves = 0;
+  await dashboard.route(`**/api/tasks/${before.id}/update`, route => {
+    saves++;
+    return saves === 1 ? route.fulfill({ status: 409, json: { error: "Save refused for retry test" } }) : route.continue();
+  });
+  let launches = 0;
+  await dashboard.route(`**/api/tasks/${before.id}/dispatch`, route => {
+    launches++;
+    return route.fulfill(launches === 1
+      ? { status: 409, json: { error: "Launch refused for retry test" } }
+      : { json: { ok: true } });
+  });
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toContainText("Could not save task; dispatch was not attempted");
+  expect(launches).toBe(0);
+  expect(await read()).toEqual(before);
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toContainText("saved, but Launch refused for retry test");
+  expect((await read()).planInputs![0]!.revision).toBe(2);
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  expect(saves).toBe(2);
+  expect(launches).toBe(2);
+});

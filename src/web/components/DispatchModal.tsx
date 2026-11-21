@@ -1423,7 +1423,8 @@ function DispatchModal({
   // Which action is in flight, not merely whether one is: every footer button reaches the
   // daemon, and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete" | "push">(null);
-  const busy = pending !== null;
+  const [pinPreviewPending, setPinPreviewPending] = useState(false);
+  const busy = pending !== null || pinPreviewPending;
   /**
    * The refusal printed under the form, and the settings screen that would clear it.
    *
@@ -1545,6 +1546,7 @@ function DispatchModal({
   const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
   const [editingPin, setEditingPin] = useState<number | null>(null);
   const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
+  const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
   useEffect(() => {
@@ -2553,7 +2555,7 @@ function DispatchModal({
    * cannot be edited from here. Disabled with a tooltip that says which order to do it in,
    * rather than silently pushing something the operator can see is not what is on screen.
    */
-  const editDirty = editing !== null && !draftsEqual(draft, draftFromTask(editing));
+  const editDirty = editing !== null && (pinChange !== null || !draftsEqual(draft, draftFromTask(editing)));
 
   /**
    * File this task upstream, through the source the block has selected.
@@ -2606,6 +2608,9 @@ function DispatchModal({
   function clearDraft(): void {
     revokeAttachments(draft.attachments);
     onRevert();
+    setPinChange(null);
+    setEditingPin(null);
+    setPinReset(value => value + 1);
     setError(null);
     // A pass is part of how a guided dispatch OPENED, so putting the form back where it
     // started puts the questions back too - whether or not one is still on screen. Asking
@@ -2780,6 +2785,11 @@ function DispatchModal({
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
     // the modal open over a task whose text is already stored - nothing to lose, and
     // the same button to press again.
+    if (r.ok && pinChange) {
+      setPinChange(null);
+      setEditingPin(null);
+      setPinReset(value => value + 1);
+    }
     const launched =
       r.ok && editing && dispatchNow ? await api.dispatchBacklog(editing.id, true) : null;
     setPending(null);
@@ -3635,8 +3645,9 @@ function DispatchModal({
                           {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
                         </a>
                       </Tooltip>{" · "}{input.files.join(", ")}
-                      {(pinChangesEnabled || editingPin === inputIndex) && editing && <PinnedPlanChange task={editing} input={input}
+                      {(pinChangesEnabled || editingPin === inputIndex) && editing && <PinnedPlanChange key={pinReset} task={editing} input={input}
                         disabled={!pinChangesEnabled || busy || (editingPin !== null && editingPin !== inputIndex) || JSON.stringify(draft.dependencies) !== JSON.stringify(editing.dependencies.map(dependencyInputOf))}
+                        onPending={setPinPreviewPending}
                         onEditing={open => setEditingPin(open ? inputIndex : null)}
                         onChange={change => { setPinChange(change); if (change) update({}); }} />}
                     </div>)}

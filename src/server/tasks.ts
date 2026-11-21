@@ -4169,7 +4169,7 @@ export class TaskManager {
     id: string,
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
-  ): Promise<Ok & { task?: Task }> {
+  ): Promise<Ok & { task?: Task; before?: Task }> {
     // Preparation can await tool availability or the plan-storage lock after reading its base
     // row, and writing the prepared row would undo anything written meanwhile, a dispatch
     // included. A dashboard edit prepares once more from the newer row, which re-runs every
@@ -4184,7 +4184,7 @@ export class TaskManager {
       }
       if (current === prepared.base) {
         if (!patch.previewOnly) this.registry.upsertTask(prepared.task);
-        return { ok: true, task: prepared.task };
+        return { ok: true, task: prepared.task, ...(patch.previewOnly ? { before: prepared.base } : {}) };
       }
       if (options.backlogOnly || attempt > 0) {
         return { ok: false, error: "task changed while preparing the update; retry" };

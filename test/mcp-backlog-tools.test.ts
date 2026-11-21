@@ -896,6 +896,40 @@ test("concurrent backlog-only edits refuse a stale update and preserve the newer
   assert.equal(registry.getTask(task.id), saved.task);
 });
 
+test("update_task preview uses the preparation base after an in-flight title settles", async (t) => {
+  const f = await fixture(t);
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  const task = await f.create({ workflowId: null });
+  const titling = (f.tasks as unknown as { titling: Map<string, Promise<void>> }).titling;
+  let finishTitle!: () => void;
+  titling.set(task.id, new Promise<void>(resolve => { finishTitle = resolve; }));
+  t.after(() => { finishTitle(); titling.delete(task.id); });
+  let enteredUpdate!: () => void;
+  const entered = new Promise<void>(resolve => { enteredUpdate = resolve; });
+  const update = f.tasks.update.bind(f.tasks);
+  t.mock.method(f.tasks, "update", (...args: Parameters<typeof update>) => {
+    const result = update(...args);
+    enteredUpdate();
+    return result;
+  });
+  const previewing = f.call<{ before: Task; after: Task }>("update_task", {
+    taskId: task.id, priority: "high", previewOnly: true,
+  });
+  await entered;
+  const stored = f.registry.getTask(task.id)!;
+  const base = { ...stored, title: "Title settled meanwhile", updatedAt: stored.updatedAt + 1 };
+  f.registry.upsertTask(base);
+  const savedBase = getTask(task.id);
+  finishTitle();
+  const preview = (await previewing)!;
+  assert.equal(preview.before.title, base.title);
+  assert.equal(preview.after.title, base.title);
+  assert.equal(preview.before.priority, null);
+  assert.equal(preview.after.priority, "high");
+  assert.deepEqual(getTask(task.id), savedBase, "preview leaves the newly saved task unchanged");
+});
+
 test("MCP creates and edits storage overrides without changing global settings", async (t) => {
   const f = await fixture(t);
   applySkillsConfig({ planStorage: "repository" });

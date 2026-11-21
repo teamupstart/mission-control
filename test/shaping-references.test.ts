@@ -223,6 +223,20 @@ test("a value with a line break or a NUL is unresolved: a header could not carry
   }
 });
 
+test("a reply full of distinct spellings of a value is scrubbed in linear time", { timeout: 20_000 }, () => {
+  const spaced = [{ name: "caller.user", value: "Jane Doe" }];
+  // 8,000 copies, each spaced with a different pattern of spaces and tabs: every spelling distinct.
+  const spellings = Array.from({ length: 8_000 }, (_, i) => `Jane${[...i.toString(2).padStart(13, "0")].map((bit) => (bit === "1" ? "\t" : " ")).join("")}Doe`);
+  const body = spellings.join(" ");
+  assert.equal(new Set(spellings).size, 8_000);
+  const started = performance.now();
+  const scrubbed = scrubResolved({ guidance: [{ id: "a", body }] }, spaced);
+  const elapsed = performance.now() - started;
+  assert.equal(scrubbed.redacted, true);
+  assert.equal((scrubbed.data as { guidance: Array<{ body: string }> }).guidance[0]!.body.includes("Doe"), false);
+  assert.ok(elapsed < 3_000, `scrubbed in ${Math.round(elapsed)} ms`);
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

@@ -18,7 +18,7 @@ import {
   type ShapingReferenceStatus,
 } from "@shared/shaping.ts";
 import { STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
-import { forEachOccurrence, redactSpans } from "./redaction.ts";
+import { forEachOccurrence, redactSpans, type RedactionSpan } from "./redaction.ts";
 import { carriedEnvName, HTTP_OWNED_HEADERS, MCP_OWNED_HEADERS, withoutCarriedHeaders, withoutOwnedHeaders } from "./transports/carriers.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -267,20 +267,6 @@ function spacingPattern(value: string): RegExp | null {
   return new RegExp(parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
 }
 
-/** Every spacing variant of a resolved value that `text` holds, as a literal value under its name. */
-function spacingVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
-  // Each distinct spelling once: a reply that repeats one variant yields one target, not one per copy.
-  const out = new Map<string, ResolvedValue>();
-  for (const entry of resolved) {
-    const pattern = spacingPattern(entry.value);
-    if (!pattern) continue;
-    for (const match of text.matchAll(pattern)) {
-      if (match[0] !== entry.value) out.set(`${entry.name}\u0000${match[0]}`, { name: entry.name, value: match[0] });
-    }
-  }
-  return [...out.values()];
-}
-
 const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /**
@@ -313,45 +299,45 @@ function decodeEscapes(text: string): { decoded: string; starts: number[]; ends:
 }
 
 /**
- * Every escaped spelling in `text` of a resolved value, or of a spacing variant of one, as a
- * literal value under its name: the raw span whose decoding is the value. Only that span is
- * replaced, so text around it is left exactly as written.
+ * Every stretch of `text` that spells a resolved value other than as written, as a span with the
+ * value's name: a spacing variant (`Jane   Doe` for `Jane Doe`), and the raw text of an escaped
+ * spelling of the value or of a spacing variant of it, found through one level of decoding. Each
+ * value costs one linear pass and one regular-expression scan, over the text and over its
+ * decoding, and each match yields its span directly: however many distinct spellings a reply
+ * holds, nothing is searched for again.
  */
-function escapedVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
+function variantSpans(text: string, resolved: readonly ResolvedValue[]): RedactionSpan[] {
+  const out: RedactionSpan[] = [];
+  for (const entry of resolved) {
+    const pattern = spacingPattern(entry.value);
+    if (!pattern) continue;
+    for (const match of text.matchAll(pattern)) {
+      if (match[0] !== entry.value) out.push({ start: match.index, end: match.index + match[0].length, label: entry.name });
+    }
+  }
   const map = decodeEscapes(text);
-  if (!map) return [];
-  // One linear pass per value over the decoded text, taking each match's raw span straight from
-  // the map: the value by Knuth-Morris-Pratt, its spacing variants by one regular-expression scan.
-  // Nothing is searched again per match, so repeated text costs no more than the text itself.
-  const out = new Map<string, ResolvedValue>();
-  const take = (entry: ResolvedValue, start: number, length: number) => {
-    const raw = text.slice(map.starts[start], map.ends[start + length - 1]);
-    if (raw !== entry.value) out.set(`${entry.name}\u0000${raw}`, { name: entry.name, value: raw });
+  if (!map) return out;
+  const take = (label: string, start: number, length: number) => {
+    out.push({ start: map.starts[start]!, end: map.ends[start + length - 1]!, label });
   };
   for (const entry of resolved) {
     if (entry.value.length === 0) continue;
-    forEachOccurrence(map.decoded, entry.value, false, (start) => take(entry, start, entry.value.length));
+    forEachOccurrence(map.decoded, entry.value, false, (start) => take(entry.name, start, entry.value.length));
     const pattern = spacingPattern(entry.value);
-    if (pattern) for (const match of map.decoded.matchAll(pattern)) take(entry, match.index, match[0].length);
+    if (pattern) for (const match of map.decoded.matchAll(pattern)) take(entry.name, match.index, match[0].length);
   }
-  return [...out.values()];
+  return out;
 }
 
 function holdsOne(text: string, resolved: ResolvedValue): boolean {
   if (resolved.value.length === 0) return false;
   if (text.includes(resolved.value)) return true;
-  const pattern = spacingPattern(resolved.value);
-  if (pattern !== null && pattern.test(text)) return true;
-  return escapedVariants(text, [resolved]).length > 0;
+  return variantSpans(text, [resolved]).length > 0;
 }
 
-/**
- * What to remove from `text`: every value, every spacing variant of one, and every escaped
- * spelling of either that `text` holds.
- */
-function targets(resolved: readonly ResolvedValue[], text: string) {
-  return [...resolved, ...spacingVariants(text, resolved), ...escapedVariants(text, resolved)]
-    .map(({ name, value }) => ({ value, wholeToken: false, label: name }));
+/** The values to search `text` for, as written. Their other spellings come as spans. */
+function targets(resolved: readonly ResolvedValue[]) {
+  return resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name }));
 }
 
 /** What `scrubResolved` returns: the reply with every resolved value gone, and what it removed. */
@@ -392,7 +378,7 @@ function markerFor(values: readonly ResolvedValue[]): Marker {
  * it stays just over it, for the schema to refuse, without growing further.
  */
 function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number, marker: Marker): string {
-  return redactSpans(text, targets(resolved, text), marker.render, 0, text.length <= limit ? limit : limit + 1);
+  return redactSpans(text, targets(resolved), marker.render, 0, text.length <= limit ? limit : limit + 1, variantSpans(text, resolved));
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
@@ -495,7 +481,7 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
 export function redactResolved(text: string, resolved: readonly ResolvedValue[]): string {
   const values = resolved.filter(({ value }) => value.length > 0);
   if (values.length === 0) return text;
-  return redactSpans(text, targets(values, text), markerFor(values).render);
+  return redactSpans(text, targets(values), markerFor(values).render, 0, Number.POSITIVE_INFINITY, variantSpans(text, values));
 }
 
 /** Whether `text` holds any resolved value, which `redactResolved` would remove. */

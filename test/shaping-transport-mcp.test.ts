@@ -716,6 +716,18 @@ test("a resumable stream whose priming event's CRLF is split across chunks is st
   }
 });
 
+test("a stderr cut inside a widened spelling of a passed value is not quoted at all", async () => {
+  // 50,000 spaces between the two words: far past any margin, so the cut falls inside them.
+  const value = "Jane Doe";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "spaced-stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "spaced-stderr-exit", KEY_ENV, "50000"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+  const reason = (reply as { reason: string }).reason;
+  assert.equal(reason.includes("Doe"), false, reason);
+  assert.match(reason, /Its stderr is not quoted: it was too long to scrub safely\.$/);
+});
+
 test("a passed value whose multibyte character stderr splits across chunks is still redacted", async () => {
   const value = "sécret-ünïcode-4f2a";
   const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "split-utf8-exit" }, "folded", {

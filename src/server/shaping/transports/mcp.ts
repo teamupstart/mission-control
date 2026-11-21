@@ -386,7 +386,12 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     const named2 = redactResolved(scrubbed, named);
     return redactResolved(redactReceived(named2.replace(/\s+/g, " "), received), named).trim();
   };
+  // A passed value with inner whitespace can be spelled with any amount of whitespace there, so
+  // no margin bounds where a spelling cut at the front of the buffer ends. Once the buffer is cut,
+  // its stderr is then not quoted at all.
+  const unsafeCut = () => stderrCut && named.some(({ value }) => /\s/.test(value));
   const tail = (): string => {
+    if (unsafeCut()) return ". Its stderr is not quoted: it was too long to scrub safely.";
     const text = scrubDiagnostic(stderr, stderrCut ? longest : 0).slice(-500);
     return text ? `: ${text}` : ".";
   };

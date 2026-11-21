@@ -143,6 +143,21 @@ test("a named variable called __proto__ is an own property of the child's enviro
   assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
 });
 
+test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SPACED;
+  process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "50000"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("Doe"), false, reason);
+    assert.equal(reason, "The command exited with code 4: its stderr is not quoted: it was too long to scrub safely");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SPACED;
+    else process.env.SHAPER_FIXTURE_SPACED = saved;
+  }
+});
+
 test("a named __proto__ variable reaches a command shaper's process", async () => {
   const saved = Object.getOwnPropertyDescriptor(process.env, "__proto__")?.value as string | undefined;
   process.env["__proto__"] = "proto-value-77c1";

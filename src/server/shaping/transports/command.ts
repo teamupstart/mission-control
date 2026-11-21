@@ -340,6 +340,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       cleanup((text) => redactReceived(text, received));
     };
     const stderrTail = (): string => {
+      // A named value with inner whitespace can be spelled with any amount of whitespace there,
+      // so once the front was cut no margin bounds a spelling cut there: nothing is quoted.
+      if (stderrDropped && namedValues.some(({ value }) => /\s/.test(value))) return "its stderr is not quoted: it was too long to scrub safely";
       // Once the front was cut, the first `longestValue` characters may hold the tail end of a
       // value. They are dropped in the original text's positions, not after replacement.
       // Then collapsed and scrubbed again: the record collapses whitespace, which can make a

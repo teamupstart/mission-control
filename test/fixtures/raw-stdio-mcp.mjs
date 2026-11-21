@@ -12,6 +12,8 @@
 //                                    character a \u escape, to stderr, and exits.
 //   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
 //                                    multibyte character, and exits before answering anything.
+//   spaced-stderr-exit <NAME> <pad>  Writes `NAME`'s value to stderr with each run of whitespace in it
+//                                    widened to `pad` spaces, and exits before answering anything.
 //   garbage-reply                    Answers `initialize`, then answers the next request with a line
 //                                    that is not JSON, and stays running.
 import { renameSync, writeFileSync } from "node:fs";
@@ -39,6 +41,11 @@ if (mode === "split-utf8-exit") {
   process.stderr.write(bytes.subarray(0, at), () => {
     setTimeout(() => process.stderr.write(bytes.subarray(at), () => process.exit(1)), 100);
   });
+}
+
+if (mode === "spaced-stderr-exit") {
+  const spaced = (process.env[args[0] ?? ""] ?? "").replace(/\s+/g, " ".repeat(Number(args[1] ?? 1)));
+  process.stderr.write(`${spaced}\n`, () => process.exit(1));
 }
 
 if (mode === "stderr-exit") {

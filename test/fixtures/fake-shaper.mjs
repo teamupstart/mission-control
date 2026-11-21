@@ -59,6 +59,11 @@ switch (mode) {
     // Exactly this many bytes of stdout, so a test can stand on either side of the cap.
     process.stdout.write("x".repeat(Number(rest[0] ?? 300 * 1024)));
     break;
+  case "leak-spaced":
+    // The named value with each run of whitespace in it widened to that many spaces, then a failure.
+    process.stderr.write((process.env[rest[0]] ?? "").replace(/\s+/g, " ".repeat(Number(rest[1] ?? 1))));
+    process.exit(4);
+    break;
   case "leak":
     // Repeats the value it was handed on stderr, then fails: its reason must not carry it.
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);

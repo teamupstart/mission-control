@@ -920,6 +920,11 @@ export function workflowInspectorGate(
   return decodeWorkflowRunLifecycle(record).gate;
 }
 
+/** A different visible hold, such as disabling Inspector, cannot erase an unreviewed tree. */
+export function workflowInspectorGateNeedsFreshReview(gate: WorkflowInspectorGateState | null): boolean {
+  return gate?.waitReason === "reviewed_tree_changed" || gate?.reviewedContent != null;
+}
+
 /** The withheld check retry, only on a run actually blocked in the cleanup phase. */
 export function workflowCheckCleanupBlock(
   record: WorkflowRunLifecycleRecord,

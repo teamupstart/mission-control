@@ -114,6 +114,7 @@ import {
   workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -2354,7 +2355,7 @@ export class WorkflowManager {
      */
     // The latest snapshot is packaging evidence, not a semantic review of this tree.
     // An explicit fresh-review request must not demand another code change first.
-    const needsFreshReview = activeGate?.waitReason === "reviewed_tree_changed";
+    const needsFreshReview = workflowInspectorGateNeedsFreshReview(activeGate);
     if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);

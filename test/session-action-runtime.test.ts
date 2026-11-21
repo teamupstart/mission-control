@@ -1978,7 +1978,7 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, childProof, changed, number } of [
+for (const { parentProof, childProof, changed, number, disableInspector = false } of [
   { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
   { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
@@ -1988,8 +1988,9 @@ for (const { parentProof, childProof, changed, number } of [
   { parentProof: "legacy", childProof: "legacy", changed: true, number: 77 },
   { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
   { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
+  { parentProof: "publication", childProof: "publication", changed: true, number: 80, disableInspector: true },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}`, async (t) => {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}`, async (t) => {
     const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
@@ -1997,7 +1998,7 @@ for (const { parentProof, childProof, changed, number } of [
       pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
       omitContentTree: parentProof === "missing",
     };
-    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -2078,6 +2079,15 @@ for (const { parentProof, childProof, changed, number } of [
         assert.equal(PersonaVerdictSchema.parse(earned.verdict).verdict, "pass");
         assert.equal(h.store.priorPassedJudge(runId, "upstream", child.round + 1)?.id, earned.id,
           "the earlier pass must be eligible before the fresh published-head review boundary");
+        if (disableInspector) {
+          setInspectorConfig({ enabled: false });
+          t.after(() => setInspectorConfig({ enabled: true }));
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          await waitFor(() => h.store.getRun(runId)?.currentPhase === "inspector_disabled",
+            "disabling Inspector must replace the visible hold reason");
+          assert.deepEqual(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).reviewedContent,
+            gate.reviewedContent, "disabling Inspector must retain the outstanding review obligation");
+        }
         if (parentProof === "legacy" && childProof === "publication") {
           // Preview grants retain round_limit, with the review obligation carried in its gate.
           h.store.updateBinding(h.store.getRun(runId)!.bindingId, { deliveryMode: "preview" }, now);

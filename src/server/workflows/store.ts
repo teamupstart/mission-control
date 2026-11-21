@@ -127,6 +127,7 @@ import {
   WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -7152,7 +7153,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
-      const freshPublishedReview = inspectorGateState(this.mustRun(input.runId))?.waitReason === "reviewed_tree_changed";
+      const freshPublishedReview = workflowInspectorGateNeedsFreshReview(inspectorGateState(this.mustRun(input.runId)));
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(

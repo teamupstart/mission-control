@@ -28,6 +28,7 @@ It shows the reviewed and published commits and trees. **Review pushed head** ca
 current checkout and starts a fresh full review, spending one repair round. It does not require
 another edit or push, and passes earned before this review cannot be reused. Missing publication
 proof, unpublished deliverables, and missing retained artifact evidence still hold publication.
+The fresh-review requirement survives disabling Inspector or exhausting the repair budget.
 The earlier review never approves the changed tree.
 
 If an older binding lacks a repository root, normalization uses the pinned adopted PR's

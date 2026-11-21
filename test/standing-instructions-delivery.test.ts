@@ -529,6 +529,64 @@ test("a multi-repo dispatch's row holds the WHOLE composed block and one source 
   assert.equal(supervisor.starts[0]?.standingInstructions?.delivery.text, snapshot.text);
 });
 
+test("a multi-repo dispatch appends each attached repository's skill once, in manifest order", async () => {
+  const dispatchTwoRepos = async (taskId: string, primary: string, secondary: string) => {
+    const registry = new Registry();
+    registry.upsertTask(
+      mkTask({
+        id: taskId,
+        status: "dispatching",
+        repoRoot: primary,
+        extraRepos: [
+          { repoRoot: secondary, worktreePath: null, branch: null, provider: null, worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null },
+        ],
+        title: "Multi skills",
+        intent: "do the thing",
+        agent: "claude",
+        kind: "ship",
+      } as Parameters<typeof mkTask>[0]),
+    );
+    const supervisor = fakeSupervisor(registry);
+    setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      headlessModeEnabled: () => true,
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async () => ({ ok: true }),
+    }).dispatch(taskId);
+    assert.equal(registry.getTask(taskId)?.status, "running", registry.getTask(taskId)?.error ?? "");
+    return supervisor.starts[0]!;
+  };
+  const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+  // Both repositories ship a skill: both blocks, once each, primary first.
+  const a = seedRepo("skills-primary");
+  const b = seedRepo("skills-secondary");
+  commitSkill(a, "ship", "PRIMARY skill body\n");
+  commitSkill(b, "ship", "SECONDARY skill body\n");
+  const both = await dispatchTwoRepos("skills-multi", a, b);
+  const headingA = "## Repository ship skill: skills-primary";
+  const headingB = "## Repository ship skill: skills-secondary";
+  assert.equal(count(both.prompt, headingA), 1);
+  assert.equal(count(both.prompt, headingB), 1);
+  assert.equal(count(both.prompt, "PRIMARY skill body"), 1);
+  assert.equal(count(both.prompt, "SECONDARY skill body"), 1);
+  assert.ok(both.prompt.indexOf(headingA) < both.prompt.indexOf(headingB), "manifest order");
+  assert.ok(both.prompt.indexOf("PRIMARY skill body") < both.prompt.indexOf(headingB));
+  assert.ok(both.prompt.endsWith("SECONDARY skill body"));
+  assert.deepEqual(both.standingInstructions?.repoTaskSkills?.included.map((i) => i.repo), ["skills-primary", "skills-secondary"]);
+
+  // Only the second repository ships one: just its block, still named by repository.
+  const c = seedRepo("skills-none");
+  const d = seedRepo("skills-only-second");
+  commitSkill(d, "ship", "ONLY second body\n");
+  const one = await dispatchTwoRepos("skills-multi-one", c, d);
+  assert.equal(count(one.prompt, "## Repository ship skill: skills-only-second"), 1);
+  assert.ok(!one.prompt.includes("ship skill: skills-none"), "the repository with no file contributes nothing");
+  assert.equal(count(one.prompt, "## Repository ship skill"), 1);
+  assert.deepEqual(one.standingInstructions?.repoTaskSkills?.included.map((i) => i.repo), ["skills-only-second"]);
+});
+
 test("the out-of-band fallback turn one keeps manifest -> instructions -> intent order", async () => {
   // A Codex SDK launch can only discover at launch that its channel is unusable, so the
   // dispatcher hands the supervisor a SECOND turn one with the block already composed in. It

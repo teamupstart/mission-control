@@ -4268,8 +4268,8 @@ export interface TranscriptAdvisor {
  * has since become of the reviews it names. `reviewIds` come from that record, in delivery
  * order, never from the turn's text. The dashboard draws each as the answer card (or the snoozed
  * line) at this turn. A review it cannot find is still a card, never the raw text: loading while
- * the review history is in flight, "Couldn't load the question" when its reads failed through
- * every retry, and "no longer available" only once a read answered without it. Every form keeps
+ * the review history is in flight, "Couldn't load the question" when its reads were refused or
+ * failed through every retry, and "no longer available" only once a read answered without it. Every form keeps
  * the native text for "What the agent received".
  */
 export type TranscriptPresentation =

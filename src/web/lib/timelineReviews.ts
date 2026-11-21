@@ -40,8 +40,9 @@ export function useTimelineReviews(
   // The session whose durable history has come back (or failed to). Until it is this one, a
   // delivered answer whose review is not in hand is still loading, not gone.
   const [settledFor, setSettledFor] = useState<string | null>(null);
-  // The session whose history settled only because its retries ran out, with a source still
-  // unread. A question missing from it may exist all the same, so the card says the read failed.
+  // The session whose history settled without being read in full: a source refused (a 4xx) or
+  // its retries ran out. A question missing from it may exist all the same, so the card says the
+  // read failed.
   const [failedFor, setFailedFor] = useState<string | null>(null);
   const asyncInput = useFeatureFlag(ASYNC_INPUT_FLAG);
 
@@ -58,7 +59,7 @@ export function useTimelineReviews(
     let history: ReviewHistoryRead = NO_HISTORY;
     const load = (): void => {
       void loadReviewHistory(sessionId, undefined, history).then((next) => {
-        const { stored: rows, lineage: inherited, complete } = next;
+        const { stored: rows, lineage: inherited, complete, refused } = next;
         // Guarded against the session switching mid-flight: without this, a slow response for
         // the session you just left would land in the panel for the one you just opened, and
         // its answers would read as this session's.
@@ -68,7 +69,8 @@ export function useTimelineReviews(
         // own answers. A transient failure is not evidence that a question is gone, so the cards
         // stay loading and the read is retried, backing off, for a bounded number of attempts.
         // Once they are spent the history settles as failed, never as complete: a card whose
-        // question is still missing then says it could not be loaded, not that it is gone.
+        // question is still missing then says it could not be loaded, not that it is gone. A
+        // refused read (a 4xx) is not retried, but it is no read either, so it settles as failed.
         setStored(rows);
         setLineage(inherited);
         const wait = complete ? null : historyRetryDelay(attempt++);
@@ -76,7 +78,7 @@ export function useTimelineReviews(
           retry = setTimeout(load, wait);
           return;
         }
-        if (!complete) setFailedFor(sessionId);
+        if (!complete || refused) setFailedFor(sessionId);
         setSettledFor(sessionId);
       });
     };
@@ -124,8 +126,9 @@ export async function loadReviewHistory(
   ]);
   const outcome = (r: PromiseSettledResult<JsonRead<ReviewItem[]> | null>): JsonRead<ReviewItem[]> | null =>
     r.status === "fulfilled" ? r.value : { ok: false, definite: false };
-  // A definite answer (a 4xx, such as a session the daemon no longer holds) is final: asking
-  // again will not change it, so it answers the source with nothing in it.
+  // A definite answer (a 4xx: the route's only one is a session the daemon no longer holds) is
+  // final, so asking again will not change it. It ends that source's reads with nothing in it, but
+  // it is a refusal, not a read: `refused` keeps a missing question from reading as gone.
   const answered = (r: JsonRead<ReviewItem[]>) => r.ok || r.definite;
   const mine = outcome(own);
   const theirs = outcome(inherited);
@@ -138,12 +141,14 @@ export async function loadReviewHistory(
     ownAnswered,
     lineageAnswered,
     complete: ownAnswered && lineageAnswered,
+    refused: previous.refused || [mine, theirs].some((r) => r !== null && !r.ok && r.definite),
   };
 }
 
 /**
  * The review history read so far: what each source returned, and whether each has answered
- * (successfully, or with a definite 4xx). `complete` once both have.
+ * (successfully, or with a definite 4xx). `complete` once both have. `refused` once either
+ * answered with a 4xx, which ends its reads but says nothing about the reviews in it.
  */
 export interface ReviewHistoryRead {
   stored: ReviewItem[];
@@ -151,10 +156,11 @@ export interface ReviewHistoryRead {
   ownAnswered: boolean;
   lineageAnswered: boolean;
   complete: boolean;
+  refused: boolean;
 }
 
 /** Nothing read yet. */
-export const NO_HISTORY: ReviewHistoryRead = { stored: [], lineage: [], ownAnswered: false, lineageAnswered: false, complete: false };
+export const NO_HISTORY: ReviewHistoryRead = { stored: [], lineage: [], ownAnswered: false, lineageAnswered: false, complete: false, refused: false };
 
 /** The first retry's wait; each later one doubles, up to `HISTORY_RETRY_MAX_MS`. */
 export const HISTORY_RETRY_MS = 5_000;
@@ -177,15 +183,15 @@ export function historyRetryDelay(attempt: number): number | null {
  * What `useTimelineReviews` hands the conversation. `reviews` are this session's entries.
  * `loaded` says its durable history has settled, so a delivered answer naming a review that is
  * still missing is no longer loading. Read it with `failed`: settled with `failed` false, the
- * history was read and the question really is gone; settled with `failed` true, the retries ran
- * out with a source unread, so the question may still exist and the card says it could not be
+ * history was read and the question really is gone; settled with `failed` true, a source refused
+ * or its retries ran out unread, so the question may still exist and the card says it could not be
  * loaded. `lineage` is the same history for the sessions this conversation was transferred from,
  * used only to draw a delivered answer.
  */
 export interface TimelineReviews {
   reviews: ReviewItem[];
   loaded: boolean;
-  /** Settled only because its retries ran out with a source unread: a missing question may exist. */
+  /** Settled without a full read (a source refused, or its retries ran out): a missing question may exist. */
   failed: boolean;
   lineage: ReviewItem[];
 }

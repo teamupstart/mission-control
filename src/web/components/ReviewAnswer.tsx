@@ -92,7 +92,7 @@ export function ReviewAnswerCard({
 /**
  * A delivered answer (or Remind me later instruction) whose question this conversation does not
  * have, drawn in the card's place: still loading while the review history is in flight, unreadable
- * once its retries ran out without an answer, or no longer available once it has come back without
+ * once a read was refused or its retries ran out, or no longer available once it has come back without
  * it. Each says what it is and when the agent got it, and discloses exactly what the agent
  * received, so it never reads as raw text.
  */

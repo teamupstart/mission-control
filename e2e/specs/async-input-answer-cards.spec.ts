@@ -409,7 +409,7 @@ test("a review-history read that keeps failing ends in a read error, never \"no 
   await page.unroute("**/resolved-reviews*");
 });
 
-test("a review-history read the daemon refuses outright settles at once, and is not retried", async ({ dashboard: page, daemon }) => {
+test("a review-history read the daemon refuses outright settles at once as a read error, and is not retried", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   await enableAsyncInput(daemon);
   const session = await dispatch(daemon, "Add a linter to CI", "add a linter to CI", "idle");
@@ -423,7 +423,8 @@ test("a review-history read the daemon refuses outright settles at once, and is 
   await daemon.restart();
   await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.state,
     { timeout: 60_000 }).toBe("idle");
-  // A 4xx is the daemon's definite answer: asking again would not change it.
+  // A 4xx is the daemon's definite answer: asking again would not change it. It says the daemon
+  // no longer holds the session, not that the question is gone, so the card says it could not load.
   let ownReads = 0;
   await page.route("**/resolved-reviews*", async (route) => {
     if (route.request().url().includes("lineage")) return route.continue();
@@ -433,8 +434,13 @@ test("a review-history read the daemon refuses outright settles at once, and is 
   await page.goto(`${daemon.baseURL}/#/fleet`);
   const detail = await openSession(page, session);
   await expect(replyTo(detail, filed.id).first()).toBeVisible({ timeout: 30_000 });
-  await expect(detail.getByRole("note", { name: "Answer to a question no longer available" })).toBeVisible({ timeout: 15_000 });
+  const refused = detail.getByRole("note", { name: "Answer whose question could not be loaded" });
+  await expect(refused).toBeVisible({ timeout: 15_000 });
+  await expect(refused).toContainText("Couldn't load the question");
+  await expect(detail.getByText("This question is no longer available")).toHaveCount(0);
   await expect(detail.getByRole("note", { name: "Answer loading" })).toHaveCount(0);
+  await expect(rawUserTurns(detail, RAW)).toHaveCount(0);
+  await capture(refused, "11-refused-read-could-not-load", page);
   const reads = ownReads;
   await page.waitForTimeout(6_000); // past the first retry delay
   expect(ownReads, "a refused read is not retried").toBe(reads);

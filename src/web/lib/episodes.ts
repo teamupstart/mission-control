@@ -61,8 +61,9 @@ export type ConversationRow =
       /** The conversation's review history has not come back yet: the question may yet be found. */
       loading: boolean;
       /**
-       * The history settled only because its reads kept failing: the question may still exist,
-       * so the card says it could not be loaded rather than that it is no longer available.
+       * The history settled without being read in full (refused, or its retries ran out): the
+       * question may still exist, so the card says it could not be loaded rather than that it is
+       * no longer available.
        */
       unreadable: boolean;
     };
@@ -110,8 +111,8 @@ function precedesTranscript(row: ConversationRow, transcriptTs: number): boolean
  * one card per review it carried, in delivery order, keeping the turn's time and native id. A
  * review this conversation cannot draw still gets a card at that turn, so a delivered answer is
  * never shown as raw daemon text. What that card says follows the review history (`history`):
- * loading while it is in flight, unreadable once its reads failed through every retry, and "no
- * longer available" only once a read answered without the review. `delivered` collects
+ * loading while it is in flight, unreadable once its reads were refused or failed through every
+ * retry, and "no longer available" only once a read answered without the review. `delivered` collects
  * what was drawn here so the merge can drop those reviews' entries elsewhere. Returns the rows
  * unchanged, by reference, when no turn is a review message.
  */
@@ -156,9 +157,9 @@ function drawDeliveries(
 /**
  * What is known of the conversation's review history beyond the entries themselves. `loaded`
  * false means the durable read is still in flight, so a delivered answer whose review is not in
- * hand is drawn as loading rather than as gone. `failed` means it settled only because its reads
- * kept failing, so such an answer is drawn as unreadable: "no longer available" is reserved for
- * a read that answered. `lineage` adds reviews a runtime-transfer predecessor asked, for drawing
+ * hand is drawn as loading rather than as gone. `failed` means it settled without a full read (a
+ * source refused, or its retries ran out), so such an answer is drawn as unreadable: "no longer
+ * available" is reserved for a read that answered. `lineage` adds reviews a runtime-transfer predecessor asked, for drawing
  * a delivered answer only.
  */
 export interface ReviewHistory {

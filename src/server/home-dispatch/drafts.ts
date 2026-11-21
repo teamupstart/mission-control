@@ -141,7 +141,12 @@ async function resolveRepoSelector(selector: string, session: HomeSessionRow): P
   return { ok: true, repoRoot: matches[0]! };
 }
 
-/** The summary the mod shows the person (7.6). Everything on it is derived from the draft. */
+/**
+ * The summary the mod shows the person (7.6). The kind, repository, words and context are the
+ * draft's own. The after-work label is read when the summary is built: with no saved pick it
+ * follows the current workflow policy and plan storage, and its name comes from the currently
+ * published workflows, so the same draft can read differently after those change.
+ */
 function summarize(deps: HomeDispatchDeps, draft: Draft): HomeDispatchDraftSummary {
   const effective = draft.workflowId === undefined
     ? kindAfterWork(draft.kind, getWorkflowPolicy().kindWorkflowDefaults, defaultPlanStorage())

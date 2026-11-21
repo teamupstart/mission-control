@@ -107,7 +107,7 @@ import { planSkillsForAgent } from "./plans/skills.ts";
 import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import type { shapeTask } from "./shaping/engine.ts";
-import { launchFellBack, shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
+import { launchFellBack, launchUnconfirmed, shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
 import { sessionTraceContext } from "./telemetry/index.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { appleScriptPasteFits, pasteTravelsAsArgument, platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
@@ -1228,12 +1228,16 @@ export class Dispatcher {
       }
       // Turn one has been handed to the worker: pasted and acknowledged, or for Pi carried by
       // the launch itself. Only now does this launch's shaping record replace the last one -
-      // saying what actually launched. A Pi wrapper with a fallback wrote which turn one it ran;
-      // anything but `shaped`, including no answer at all, is never recorded as delivered.
+      // saying what actually launched. A Pi wrapper with a fallback wrote which turn one it ran.
+      // Only `shaped` is a delivery and only `original` a confirmed fallback, whose turn one the
+      // launch presentation then names; with no readable receipt neither is claimed.
       let delivered = shaping;
-      if (piFallbackArgs && readTurnOneOutcome(stateHome) !== "shaped") {
+      const outcome = piFallbackArgs ? readTurnOneOutcome(stateHome) : "shaped";
+      if (outcome === "original") {
         delivered = launchFellBack(shaping);
         this.recordLaunchPresentationForKey(piLaunch.sessionId!, piUnshapedText!, task.intent);
+      } else if (outcome !== "shaped") {
+        delivered = launchUnconfirmed(shaping);
       }
       this.commitShaping(taskId, attempt, delivered, deliverySession.id);
 

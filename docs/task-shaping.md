@@ -375,9 +375,18 @@ The mark rides `task_upsert` as `shapingContext` and is never stored. `shapingVi
 `src/shared/shaping.ts` is the reader for a surface that shows the wait as well as the
 outcome: it returns `{ state: "shaping" }` while a dispatch or a handover runs the step, and
 `currentShaping(task)` otherwise, so its `state` is always `shaping`, `ok` or `degraded`.
-A task cancelled during the step stops there. The step's own deadline bounds it; a step that
-somehow does not finish within the deadline and two more seconds is recorded as `timed_out`
-and the worker launches without a section.
+A task cancelled during the step stops there. The step's own deadline bounds all of it: the
+launch measurement, the shapers and the final paste check. A measurement that does not finish in
+time withholds the section, as an unmeasured one does. A step that does not finish within the
+deadline and two more seconds is recorded as `timed_out`. A final check that does not answer
+within two seconds after that drops the section, and its `limit` says so. In each case the
+worker launches without a section.
+
+A Pi launch with a section records exactly what its wrapper reports. `shaped` means the context
+was delivered, and `original` means the confirmed fallback described under
+[Where the section lands](#where-the-section-lands). With no readable report, neither is
+claimed: the record is degraded, nothing is counted as delivered, and `limit` says the launch
+could not confirm which turn one Pi received.
 
 ### On the session
 

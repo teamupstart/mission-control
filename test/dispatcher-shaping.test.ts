@@ -29,7 +29,7 @@ writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, dispatchLaunchArgv } = await import("../src/server/dispatcher.ts");
-const { TURN_ONE_FALLBACK_REASON } = await import("../src/server/shaping/launch.ts");
+const { TURN_ONE_FALLBACK_REASON, TURN_ONE_UNCONFIRMED_REASON } = await import("../src/server/shaping/launch.ts");
 const { openDb, getTaskShapingText, getTask: getDurableTask } = await import("../src/server/db.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
@@ -828,9 +828,40 @@ test("a Pi outcome file that cannot be removed never fails a launched dispatch",
   assertRunning(registry.getTask("pi-outcome-cleanup")!);
   assert.ok(existsSync(outcome), "the file could not be removed");
   assert.ok(warnings.some((w) => /could not remove task pi-outcome-cleanup's launch outcome file/.test(String(w))), "and that was logged");
-  // An unreadable answer is never taken as delivered.
-  assert.equal(currentShaping(registry.getTask("pi-outcome-cleanup")!)?.state, "degraded");
+  // An unreadable answer is never taken as delivered, nor as a confirmed fallback.
+  const record = currentShaping(registry.getTask("pi-outcome-cleanup")!);
+  assert.equal(record?.state, "degraded");
+  assert.equal(record?.entries, 0);
+  assert.deepEqual(record?.limit, { bytes: 0, reason: TURN_ONE_UNCONFIRMED_REASON });
   rmSync(outcome, { recursive: true, force: true });
+});
+
+test("a launch measurement or a final check that never settles cannot hold the launch past the step's deadline", async () => {
+  const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
+  assert.equal(shapingStore.applyShapingIntent({ kind: "settings", limits: { deadlineMs: 200 } }).ok, true);
+  const never = new Promise<never>(() => {});
+  const base = {
+    workflowName: () => null, trace: null, turnOnes: ["do it"], stillDispatching: () => true, onShaping: () => {},
+  };
+  // The measurement of a Pi launch argument hangs: the launch goes ahead with no section.
+  const pi = mkTask({ id: "stall-measure", status: "dispatching", repoRoot: seedRepo("stall-measure"), title: "Shaping", intent: "do it", agent: "pi" });
+  const probe = standIn(SECTION);
+  let started = performance.now();
+  const measured = await shapeLaunch({ ...base, task: pi, runtime: "terminal", delivery: launchArgumentTurnOne("darwin"),
+    launch: () => never }, { shapeTask: probe.shapeTask, enabled: true });
+  assert.ok(performance.now() - started < 5_000, "the step settled within its deadline");
+  // With no measurement the budget promises no room, which the engine is told (it cuts to it).
+  assert.equal(probe.calls[0]?.maxSectionBytes, 0, "and no section was promised room it could not measure");
+  assert.match(measured.summary?.limit?.reason ?? "", /could not be measured/);
+  // The final paste check hangs after the engine answered: the section is dropped, and the record says why.
+  const claude = mkTask({ id: "stall-check", status: "dispatching", repoRoot: seedRepo("stall-check"), title: "Shaping", intent: "do it", agent: "claude" });
+  started = performance.now();
+  const checked = await shapeLaunch({ ...base, task: claude, runtime: "terminal", delivery: HARNESSES.claude.turnOne.terminal,
+    launch: null, finalCheck: () => never }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
+  assert.ok(performance.now() - started < 8_000, "the step settled within its deadline and the check's own bound");
+  assert.equal(checked.section, "");
+  assert.equal(checked.summary?.entries, 0);
+  assert.match(checked.summary?.limit?.reason ?? "", /final check of turn one .* did not finish in time/);
 });
 
 test("a dispatch that ended while its launch was being measured starts no shaper", async () => {

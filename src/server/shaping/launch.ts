@@ -74,6 +74,18 @@ const EMPTY: LaunchShaping = Object.freeze({ summary: null, section: "" });
 const CANCEL_POLL_MS = 200;
 /** Past the step's own deadline, how long a call that never settles is waited for. */
 const BACKSTOP_GRACE_MS = 2000;
+/** The record's reason when the final check of a shaped turn one did not answer in time. */
+const FINAL_CHECK_TIMED_OUT = "the final check of turn one against its delivery path did not finish in time";
+
+/** `work`, or `fallback` once `ms` pass first. The timer never outlives the race. */
+async function settleWithin<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** The engine's input, from everything dispatch collected (constraint C2). */
 export function shapingInputFor(
@@ -165,12 +177,18 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
   try {
     // Budgeted against the larger variant, so whichever one is sent fits its path.
     const largest = input.turnOnes.reduce((a, b) => (Buffer.byteLength(b) > Buffer.byteLength(a) ? b : a), "");
-    // A measurement that cannot be taken never stops the launch it was measuring: the budget then
-    // withholds the section (`turnOneAllowance`), and the record says why.
-    const launch = input.launch ? await input.launch().catch((error: unknown) => {
-      console.warn("[shaping] could not measure the launch's arguments and environment:", error);
-      return null;
-    }) : null;
+    // One deadline for the whole step - measurement, engine and final check - taken from its start,
+    // so no phase that stalls can hold the launch: each falls back to the original turn one.
+    const stepEnds = started + config.limits.deadlineMs + BACKSTOP_GRACE_MS;
+    const remaining = () => Math.max(0, stepEnds - performance.now());
+    // A measurement that cannot be taken, or does not finish in time, never stops the launch it was
+    // measuring: the budget then withholds the section (`turnOneAllowance`), and the record says why.
+    const launch = input.launch
+      ? await settleWithin(input.launch(), remaining(), null).catch((error: unknown) => {
+        console.warn("[shaping] could not measure the launch's arguments and environment:", error);
+        return null;
+      })
+      : null;
     // Asked again now, synchronously, before any shaper is started: a cancel or a replacement
     // that landed during the measurement must not run a single shaper for this launch.
     if (!input.stillDispatching()) return EMPTY;
@@ -186,7 +204,7 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
     const run = await Promise.race([
       (deps.shapeTask ?? shapeTask)(engineInput, { config, enabled: true }),
       new Promise<"backstop">((resolve) => {
-        backstop = setTimeout(() => resolve("backstop"), config.limits.deadlineMs + BACKSTOP_GRACE_MS);
+        backstop = setTimeout(() => resolve("backstop"), remaining());
       }),
     ]).catch((error: unknown) => ({ error }));
     const durationMs = Math.round(performance.now() - started);
@@ -199,7 +217,12 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
       return { summary: stepRecord("failed", `The shaping step failed: ${message}`, startedAt, durationMs), section: "" };
     }
     const shaped = recordLimit(run, allowance, config.limits.totalBytes);
-    const unfit = shaped.section && input.finalCheck ? await input.finalCheck(shaped.section) : null;
+    // Its own short bound past the step's deadline, so an engine that answered just in time still
+    // gets its check, and a check that never settles drops the section rather than hold the launch.
+    const unfit = shaped.section && input.finalCheck
+      ? await settleWithin(input.finalCheck(shaped.section), remaining() + BACKSTOP_GRACE_MS, FINAL_CHECK_TIMED_OUT)
+        .catch((error: unknown) => `the final check of turn one failed (${error instanceof Error ? error.message : String(error)})`)
+      : null;
     if (!unfit || !shaped.summary) return shaped;
     return { summary: withoutDeliveredSection(shaped.summary, unfit), section: "" };
   } catch (error) {
@@ -247,6 +270,20 @@ export const TURN_ONE_FALLBACK_REASON =
 export function launchFellBack(shaping: LaunchShaping): LaunchShaping {
   if (!shaping.summary) return { summary: null, section: "" };
   return { summary: withoutDeliveredSection(shaping.summary, TURN_ONE_FALLBACK_REASON, "degraded"), section: "" };
+}
+
+/** Why a launch whose wrapper left no readable receipt is not recorded as delivered. */
+export const TURN_ONE_UNCONFIRMED_REASON =
+  "the launch could not confirm which turn one the agent received, so the context is not counted as delivered";
+
+/**
+ * The record for a launch whose wrapper had a fallback but left no readable receipt: the agent may
+ * hold either turn one. Neither is claimed - nothing is counted as delivered, the record is
+ * degraded and says it is unconfirmed, and no delivered text is kept.
+ */
+export function launchUnconfirmed(shaping: LaunchShaping): LaunchShaping {
+  if (!shaping.summary) return { summary: null, section: "" };
+  return { summary: withoutDeliveredSection(shaping.summary, TURN_ONE_UNCONFIRMED_REASON, "degraded"), section: "" };
 }
 
 function recordLimit(run: ShapingRun, allowance: ReturnType<typeof turnOneAllowance>, totalBytes: number): LaunchShaping {

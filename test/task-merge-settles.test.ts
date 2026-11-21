@@ -902,12 +902,32 @@ test("rolled-over settlement verifies the actual clean checkout against the merg
       git("config", "--unset", "status.showUntrackedFiles");
     }
   });
+  await t.test("a clean external commit during the final status check still prevents settlement", async () => {
+    const { run } = await import("../src/server/util/exec.ts");
+    const before = git("rev-parse", "HEAD");
+    let statusReads = 0;
+    try {
+      const exec: typeof run = async (...args) => {
+        const result = await run(...args);
+        if (args[1]?.includes("status") && ++statusReads === 2) {
+          writeFileSync(join(repo, "plan.md"), "Committed unpublished work");
+          git("add", "plan.md"); git("commit", "-m", "Concurrent unpublished work");
+        }
+        return result;
+      };
+      assert.equal(await mergedPublicationCoversCheckout(session, url, exec), false);
+      assert.equal(git("status", "--porcelain"), "");
+      assert.notEqual(git("rev-parse", "HEAD"), before);
+    } finally {
+      if (git("rev-parse", "HEAD") !== before) git("revert", "--no-edit", "HEAD");
+    }
+  });
   await t.test("rejects another repository with the same merged commit and clean content tree", async () => {
     const otherRepo = mkdtempSync(join(home, "other-publication-"));
     git("clone", "--no-hardlinks", repo, otherRepo);
     const otherGit = (...args: string[]) =>
       execFileSync("git", ["-C", otherRepo, ...args], { encoding: "utf8" }).trim();
-    assert.equal(otherGit("rev-parse", "HEAD"), head);
+    assert.equal(otherGit("rev-parse", "HEAD"), git("rev-parse", "HEAD"));
     assert.equal(otherGit("rev-parse", "HEAD^{tree}"), git("rev-parse", "HEAD^{tree}"));
     assert.equal(otherGit("status", "--porcelain"), "");
     assert.equal(otherGit("branch", "--show-current"), session.gitBranch);
@@ -1043,3 +1063,53 @@ test("workflow settlement releases only dependency edges pinned to the merged ep
   assert.ok(f.registry.getTask("dependent-merged")?.dependencies[0]?.satisfiedAt);
   assert.equal(f.registry.getTask("dependent-unmerged")?.dependencies[0]?.satisfiedAt, null);
 });
+
+test("a blocked workflow retains a merged task until the operator cancels its run", async () => {
+  const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+  const { activeWorkflowOwnsSession } = await import("../src/server/foreman/review-followup.ts");
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("blocked-merge-policy");
+  const run = { ...LADDER_SUMMARY, id: "blocked-publication", sessionId: f.id,
+    status: "blocked" as const, phase: "session_action_blocked" };
+  f.registry.upsertWorkflowRun(run);
+  merge(f);
+  assert.equal(activeWorkflowOwnsSession([run]), true);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running",
+    "a blocked publication action still owns its recovery, even after an earlier merge");
+  f.registry.upsertWorkflowRun({ ...run, status: "cancelled", phase: "done" });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+});
+
+for (const status of ["completed", "cancelled"] as const) {
+  test(`a driver-only SDK action settles its merged episode after ${status} without a prompt hook`, async () => {
+    const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const registry = new Registry();
+    const tasks = new TaskManager(registry);
+    const id = `sdk:no-hook-${status}`;
+    registry.registerSdkSession({ id, agent: "codex", name: "Driver-only plan", cwd: `/repo/${status}`,
+      agentSessionId: `native-${status}`, gitBranch: "feat/work" });
+    registry.applyDriverEvent(id, { kind: "state", state: "working", activity: "Finishing plan" });
+    const taskId = `driver-only-${status}`;
+    registry.upsertTask(baseTask({ id: taskId, kind: "plan", status: "running", sessionId: id,
+      worktreePath: null }));
+    registry.bindTaskToWorkEpisode(taskId, id);
+    const before = registry.workEpisodeForSession(id)!;
+    const run = { ...LADDER_SUMMARY, id: `workflow-${id}`, sessionId: id,
+      status: "waiting_for_action" as const, phase: "session_action" };
+    registry.upsertWorkflowRun(run);
+    registry.reconcilePrs(new Map([[id, prMatch({ state: "merged", agentSessionId: `native-${status}`,
+      episodeId: before.episodeId, createdAt: before.startedAt })]]), new Set());
+    // The driver acknowledges work and its eventual completion without manufacturing hooks.
+    registry.applyDriverEvent(id, { kind: "state", state: "working", activity: "Nothing remains to publish" });
+    registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+    const after = registry.recordedWorkEpisodeForSession(id)!;
+    assert.equal(after.episodeId, before.episodeId, "driver state alone does not roll the episode");
+    assert.equal(after.promptedAt, null);
+    assert.equal(registry.getTask(taskId)?.status, "running", "the live workflow still owns the session");
+    registry.upsertWorkflowRun({ ...run, status, phase: "done" });
+    assert.equal(registry.getTask(taskId)?.status, "done",
+      "the current merged episode uses ordinary settlement without a rolled-over receipt");
+    await tasks.stop();
+  });
+}

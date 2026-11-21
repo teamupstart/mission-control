@@ -1001,7 +1001,9 @@ export async function mergedPublicationCoversCheckout(session: Session, url: str
   if (!matches) return false;
   // Tree resolution may take time. Recheck after it, including files hidden by user config.
   const freshStatus = await git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]);
-  return freshStatus.code === 0 && !freshStatus.stdout.trim();
+  const freshTree = await git(session.cwd, ["rev-parse", "HEAD^{tree}"]);
+  return freshStatus.code === 0 && !freshStatus.stdout.trim()
+    && freshTree.code === 0 && freshTree.stdout.trim() === mergedTree;
 }
 
 /** See `TaskManager.useMergeQuestions`. */

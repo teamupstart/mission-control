@@ -878,12 +878,16 @@ A SessionAction is a durable side effect, not an evaluator:
   Successful immutable tree resolutions are cached by repository identity and commit in a
   bounded manager cache. Unknown objects retry after a one-minute cooldown, and missing
   accepted trees skip these lookups.
+  Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
 - Rolled-over task settlement requires the latest terminal run's confirmed action delivery
   to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
   receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
   the Registry records the episode. The receipt includes the human Goal revision so an
   operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
   fail closed; retained text labels alone never establish ownership after restart.
+  Driver state events without a prompt hook do not roll an episode; an unchanged merged
+  episode retains the ordinary settlement path. Blocked runs still own recovery and keep
+  the task running until the run completes, fails, or is cancelled.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
   tick the adapter needed to see its final state, leaving a completed publication reported

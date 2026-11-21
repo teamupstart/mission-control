@@ -148,6 +148,8 @@ interface HarnessOptions {
   pullRequest?: boolean;
   realLedger?: boolean;
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
+  readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
+  resumptionSettleMs?: number;
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
@@ -211,6 +213,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    resumptionSettleMs: options.resumptionSettleMs,
     ...(options.probeEvidence ? { readEvidenceProbe: async () => ({
       headSha: captureHead.sha ?? head.sha,
       workingTreeStatus: [],
@@ -228,7 +231,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       headCommittedAt: null,
     }),
     adoptedPullRequests: options.realLedger ? undefined : () => adopted,
-    readRepositoryId: async root => root,
+    readRepositoryId: options.readRepositoryId ?? (async root => root),
     resolveCommit: async (_root, headSha) => full(headSha),
     resolveCommitTree: options.resolveCommitTree ?? (async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid),
     requireSkill: options.requireSkill
@@ -2410,3 +2413,45 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
     } finally { await h.stop(); }
   });
 }
+
+test("overlapping sweep and Inspector observations share a pending publication-tree lookup", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const candidate = "b".repeat(40);
+  const root = "/repo/pending-publication";
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let treeReads = 0;
+  let identityReads = 0;
+  const h = await harness("pending-publication", { pullRequest: true, realLedger: true, resumptionSettleMs: 0,
+    readRepositoryId: async value => { if (value === root) identityReads++; return value; },
+    resolveCommitTree: async (_root, oid) => {
+      if (oid === candidate) { treeReads++; await gate; }
+      return h.contentTree.oid;
+    },
+  });
+  h.repository.root = root;
+  h.repository.branch = "pending-publication";
+  const key = "pending/repo#1";
+  try {
+    adoptInspectorPr({ key, owner: "pending", repo: "repo", number: 1,
+      url: "https://github.com/pending/repo/pull/1", sessionId: h.sessionId,
+      repoRoot: root, cwd: root, headRefName: h.repository.branch,
+      source: "hook", state: "closed", observedState: "MERGED", headSha: candidate,
+      reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+      lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+      mergeBlock: null, title: "Pending publication", updatedAt: 1,
+      observedHeadSha: candidate, adoptedAt: 1, observedAt: 1 });
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    h.runActionTurn();
+    const sweep = h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => treeReads === 1, "the periodic sweep did not start its lookup");
+    h.registry.inspectionUpdated(key, candidate, "MERGED");
+    await waitFor(() => identityReads >= 2, "the background observation did not reach publication proof");
+    for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(treeReads, 1, "the second observation must await the first lookup");
+    release();
+    await sweep;
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "shared proof did not complete the action");
+  } finally { release(); await h.stop(); }
+});

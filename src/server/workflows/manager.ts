@@ -660,6 +660,7 @@ export class WorkflowManager {
   private sessionActionSweepRunning = false;
   /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
   private readonly publicationTrees = new Map<string, { treeOid: string | null; retryAt: number }>();
+  private readonly pendingPublicationTrees = new Map<string, Promise<string | null>>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
    *
@@ -6312,8 +6313,16 @@ export class WorkflowManager {
           const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
           let cached = this.publicationTrees.get(key);
           if (!cached || (!cached.treeOid && cached.retryAt <= now)) {
-            const treeOid = await (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null);
-            cached = { treeOid, retryAt: now + 60_000 };
+            let pending = this.pendingPublicationTrees.get(key);
+            if (!pending) {
+              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null);
+              this.pendingPublicationTrees.set(key, pending);
+            }
+            try {
+              cached = { treeOid: await pending, retryAt: now + 60_000 };
+            } finally {
+              if (this.pendingPublicationTrees.get(key) === pending) this.pendingPublicationTrees.delete(key);
+            }
           }
           mergedContentTreeOid = cached.treeOid;
           this.publicationTrees.delete(key);

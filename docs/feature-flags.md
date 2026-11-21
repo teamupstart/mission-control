@@ -11,7 +11,10 @@ Settings > Feature flags controls these choices. The ai-conductor integration sw
 
 **Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
 [atomic pin change](dispatch-and-backlog.md#change-a-pinned-plan-revision-preview). Turning it off
-refuses new changes through the action; existing pins and dependencies stay unchanged.
+refuses `planInputChange` and `previewOnly` requests; it does not change saved pins or dependencies.
+This release also adds raw `planInputs` and `dependencies` edits to MCP `update_task`, independently
+of this flag. Those edits remain subject to authentication and existing task, repository, and
+dependency validation. The dashboard task-update endpoint already supported these raw atomic edits.
 
 ## Operator controls
 

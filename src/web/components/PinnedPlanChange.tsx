@@ -46,7 +46,8 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
         && pin.planId === change.from.planId && pin.revision === change.from.revision
         && JSON.stringify(pin.files) === JSON.stringify(change.from.files)) ?? -1;
       const replacement = result.task?.planInputs?.[inputIndex];
-      if (!result.ok || !result.task || !result.before || !replacement) setError(result.error ?? "Could not preview revision");
+      if (!result.ok && result.status === undefined) setError("Could not reach Mission Control");
+      else if (!result.ok || !result.task || !result.before || !replacement) setError(result.error ?? "Could not preview revision");
       else { setPreview({ before: result.before, after: result.task, replacement }); onChange(change); }
     } catch { setError("Could not reach Mission Control"); }
     finally { setPending(false); onPending(false); }

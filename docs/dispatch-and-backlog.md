@@ -2239,7 +2239,8 @@ The MCP **update_task** tool accepts the same action as
 `repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
 `before` and `after` without writing, then repeat with `previewOnly: false` to save.
 The optional timestamp binds the preview to the task configuration you read.
-It also accepts explicit `planInputs` and `dependencies` arrays together under existing
-validation, even when the preview flag is off. Do not combine those arrays with
-`planInputChange`. Only the new `planInputChange` action and `previewOnly` mode require
-the preview flag; omitted fields keep their saved values.
+This release also adds explicit `planInputs` and `dependencies` array edits to MCP `update_task`,
+independently of the preview flag. This extends to MCP the raw atomic edit already supported by
+the dashboard endpoint. MCP requests remain authenticated and use existing task, repository, and
+dependency validation. Do not combine those arrays with `planInputChange`. Only the `planInputChange`
+action and `previewOnly` mode require the flag; omitted fields keep their saved values.

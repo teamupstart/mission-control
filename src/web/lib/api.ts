@@ -2181,6 +2181,11 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
+  /** Validate a pinned revision change and return both task snapshots without saving. */
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }),
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -2189,12 +2194,6 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  previewPlanChange: async (id: string, planInputChange: TaskPlanInputChange): Promise<{ ok: boolean; task?: Task; before?: Task; error?: string }> => {
-    const response = await fetch("/api/tasks/" + encodeURIComponent(id) + "/update", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planInputChange, previewOnly: true }) });
-    return response.json();
-  },
-  taskPlanDependencies: (id: string) =>
-    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
     post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**

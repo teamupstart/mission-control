@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable"].includes(name) ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -485,6 +485,29 @@ test("a failed preview request shows the connection error and keeps Save and dis
   expect(rejectedPreviews).toBe(1);
   expect(await read()).toEqual(before);
   await shoot(dashboard, "revision-change-unreachable");
+});
+
+for (const failure of [
+  { status: 500, contentType: "text/html", body: "<html><body>Internal server error</body></html>" },
+  { status: 502, contentType: "text/plain", body: "" },
+]) test(`a non-JSON HTTP ${failure.status} preview error keeps Save and dispatch blocked`, async ({ dashboard, daemon }) => {
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const before = await read();
+  await dashboard.route(`**/api/tasks/${before.id}/update`, route => {
+    if (route.request().postDataJSON().previewOnly) return route.fulfill(failure);
+    return route.continue();
+  });
+
+  const preview = dialog.getByRole("button", { name: "Preview revision change" });
+  await preview.click();
+  await expect(dialog.getByRole("alert")).toHaveText(`HTTP ${failure.status}`);
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(preview).toBeEnabled();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Dispatch now", exact: true })).toBeDisabled();
+  expect(await read()).toEqual(before);
+  await shoot(dashboard, `revision-change-http-${failure.status}`);
 });
 
 test("Save and dependency edits wait for the pending revision preview, including keyboard submission", async ({ dashboard, daemon }) => {

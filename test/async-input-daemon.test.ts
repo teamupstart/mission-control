@@ -162,7 +162,7 @@ function pick(s: { pendingReviews: number; openQuestions: number }) {
   return { pendingReviews: s.pendingReviews, openQuestions: s.openQuestions };
 }
 
-test("a later, similar question never withdraws a message-mode one, on either side", () => {
+test("a later, similar question never withdraws a message-mode one, while a message-mode retry still withdraws a timed-out call", () => {
   const { registry, reviews } = fleet();
   const d = mkDiscovered();
   registry.applyDiscovery([d]);
@@ -180,7 +180,9 @@ test("a later, similar question never withdraws a message-mode one, on either si
   second.registry.applyDiscovery([e]);
   const blocking = second.reviews.create(e.syntheticId, "input", FIRST, FIRST, options(FIRST), { snoozable: true, now: T0 });
   second.reviews.create(e.syntheticId, "input", RETRY, RETRY, options(RETRY), { snoozable: true, waitMode: "message", now: later });
-  assert.equal(second.registry.getReview(blocking.id)?.status, "pending", "a filed question is a new question, not a retry");
+  // The call timed out (the flag was turned on meanwhile) and the agent re-asked it in new words:
+  // the stale call-mode card is withdrawn so the operator answers only the live one.
+  assert.equal(second.registry.getReview(blocking.id)?.status, "superseded", "a reworded retry of a timed-out call replaces it");
   assert.equal(registry.getReview(similar.id)?.status, "pending");
 });
 

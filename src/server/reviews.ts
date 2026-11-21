@@ -394,13 +394,15 @@ export class ReviewManager {
    * because they chose to park it and its agent was told to carry on, so a later, different
    * question from that agent is expected rather than a retry.
    *
-   * Message-mode questions (`async-input`) are excluded on either side. The withdrawal rests on
-   * the call being blocking: only a timed-out retry can arrive long after an open question. A
-   * message-mode ask never times out, so a later, similar question is a new question, and a
-   * call-mode retry is no evidence that a question filed to be answered later is spent.
+   * An older message-mode question (`async-input`) is never withdrawn. The withdrawal rests on
+   * the older call being blocking: only a timed-out call leaves a question its agent re-asks. A
+   * message-mode ask never times out, so a later, similar question is a new question. A newer
+   * message-mode ask CAN withdraw an older call-mode one: a call that timed out before the flag
+   * was turned on, re-asked in new words, is the same retry, and leaving both would let the
+   * operator answer a stale copy after the agent already heard the other.
    */
   private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
-    if (newer.snoozable !== true || newer.waitMode === "message") return [];
+    if (newer.snoozable !== true) return [];
     const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
     return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
       older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
@@ -653,13 +655,6 @@ export class ReviewManager {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    // A call is waiting on a question filed without one (`async-input`): an MCP child from an
-    // older build re-asked it word for word, was handed the open row, and long-polls it because
-    // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
-    // its answer is this call's result, and only a later detach (a cancelled or restarted call)
-    // hands it to the outbox. Without this the agent would hear the answer twice.
-    if (current.waitMode === "message") this.attachCall(current);
-
     return new Promise<ReviewItem | null>((resolve) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
@@ -677,6 +672,14 @@ export class ReviewManager {
       set.add(waiter);
       if (signal?.aborted) early();
       else signal?.addEventListener("abort", early, { once: true });
+      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+      // older build re-asked it word for word, was handed the open row, and long-polls it because
+      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+      // closure that event triggers must be able to release this very call.
+      if (current.waitMode === "message") this.attachCall(current);
     });
   }
 

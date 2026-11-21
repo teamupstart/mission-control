@@ -302,3 +302,38 @@ test("a task status write that fails rolls the question closure back with it", a
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
 });
+
+test("an older child polling a filed question after the merge is released at once by the closure its attach triggers", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-late-poll");
+  f.hook("UserPromptSubmit");
+  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getReview(filed.id)?.status, "pending", "working past a filed question: nothing to close yet");
+
+  // The older child's poll attaches the call, which makes the session blocked and triggers the
+  // merge closure from inside the attach. The poll must hear it now, not at its timeout.
+  const polled = await Promise.race([
+    f.reviews.wait(filed.id, 60_000),
+    new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 2_000)),
+  ]);
+  assert.notEqual(polled, "timed out", "the waiter was registered before the closure released it");
+  assert.equal((polled as { status: string }).status, "orphaned");
+  assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+});
+
+test("a scout blocked in a call keeps its question open on merge, since its archive may still refuse", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-blocked-scout", { times: 0 }, { ready: false });
+  f.hook("UserPromptSubmit");
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  void f.reviews.wait(asked.id, 60_000);
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getReview(asked.id)?.status, "pending", "still the operator's to answer");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  f.reviews.resolve(asked.id, "dismiss", null, "human");
+});

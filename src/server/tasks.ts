@@ -1776,7 +1776,11 @@ export class TaskManager {
     try {
       if (blockedInCall) {
         // No completion here: closing the call's question lets it return, and the idle turn that
-        // follows completes the task through the path below.
+        // follows completes the task through the path below. Not for a scout: its completion
+        // still waits on a verified archive, which may refuse, and closing first would strand a
+        // running scout with questions nobody can answer. A blocked scout waits for its answer as
+        // it does with the flag off; its questions close with its completion (`joinCompletion`).
+        if (this.scoutGateFor(t.id)) return;
         try { closeQuestions(); }
         catch (error) { console.error("[merge] closing a blocked call's question failed:", t.id, error); }
         return;

@@ -1200,9 +1200,11 @@ available:
   rows. A queued sibling links to **Open owning run**. Manual and preview reviews name the
   operator unless an independent blocker is withholding the next round, in which case its
   owner remains the next actor. An unsent Preview action asks the operator to deliver it;
-  delivered actions and healthy automatic reviews say **In progress**. Multiple repository runs each get
-  their own entry. These are live workflow projections, not session blockers: they disappear
-  when the hold ends and never clear an independent blocker or prevent automatic resumption.
+  delivered actions say **In progress** while awaiting pickup or working, and **Action needed · Operator**
+  when they need an operator answer or intervention. Healthy automatic reviews say **In progress**.
+  Multiple repository runs each get their own entry. These are live workflow projections, not
+  session blockers: they disappear when the hold ends and never clear an independent blocker
+  or prevent automatic resumption.
   Turning the preview off hides the explanations without changing any run.
 - **The idle column separates free agents from ones a workflow is holding.** A session bound
   to a live [Workflow](workflows.md#workflows-and-personas) run sits at `idle` for most of that run's life: it finished

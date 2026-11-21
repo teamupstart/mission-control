@@ -88,7 +88,7 @@ test("every skip reason, each recorded as one note, and none of them a failure",
   assert.deepEqual(result.guidance.map((entry) => entry.id), ["AGENTS.md"]);
   assert.equal(result.notes?.length, cases.length);
   cases.forEach(([configured, skip], at) => {
-    assert.equal(result.notes![at], `Skipped ${JSON.stringify(configured)} (${skip}).`);
+    assert.equal(result.notes![at], `Skipped include ${at + 2} ${JSON.stringify(configured)} (${skip}).`);
   });
   assert.equal(result.degraded, undefined, "a skip never marks the reply degraded");
   assert.ok(ShapingResultSchema.safeParse(result).success);
@@ -190,7 +190,7 @@ test("a whole file whose replacement characters outgrow the cap is cut, never re
   const result = await gatherRepositoryFiles(root, options({ include: [{ path: "invalid.md", maxBytes: 4 }] }), never);
   assert.deepEqual(result?.guidance, []);
   assert.equal(result?.truncated, true);
-  assert.deepEqual(result?.notes, ['Skipped "invalid.md" (cut to nothing at its 4-byte cap).']);
+  assert.deepEqual(result?.notes, ['Skipped include 1 "invalid.md" (cut to nothing at its 4-byte cap).']);
 });
 
 test("an include path longer than an entry id is skipped unread, and the other entries stay valid", async () => {
@@ -326,7 +326,7 @@ test("a file whose capped prefix is white space is cut, not empty: no entry, and
   assert.deepEqual([summaryOnly?.repo, summaryOnly?.truncated], [undefined, true], "a summary cut to nothing marks it too");
   assert.equal(result?.repo, undefined);
   assert.deepEqual(result?.notes, [
-    'Skipped "spaced.md" (cut to nothing at its 32-byte cap).',
+    'Skipped include 1 "spaced.md" (cut to nothing at its 32-byte cap).',
     `Skipped the summary "SUMMARY.md" (cut to nothing at its ${SHAPING_LIMITS.summaryBytes}-byte cap).`,
     'Skipped the facts file "facts.json" (larger than 64 KiB once decoded, so no facts).',
   ]);
@@ -357,6 +357,16 @@ test("a skipped path of control characters is quoted within its bound, so the re
   const [first, second] = [quotedPath(`${deep}/first.md`), quotedPath(`${deep}/second.md`)];
   assert.notEqual(first, second);
   assert.ok(first.endsWith('/first.md"') && second.endsWith('/second.md"'));
+  // Two long paths that share their start and their last 100 characters quote alike, so each
+  // include note names its position too, and the two skips still read differently.
+  const shared = "s".repeat(150);
+  const [left, right] = [`${deep}/a-${shared}.md`, `${deep}/b-${shared}.md`];
+  assert.equal(quotedPath(left), quotedPath(right), "the quotes alone cannot tell them apart");
+  const twins = await gatherRepositoryFiles(fixture().root, options({ include: [{ path: left }, { path: right }] }), never);
+  assert.deepEqual(twins?.notes, [
+    `Skipped include 1 ${quotedPath(left)} (missing).`,
+    `Skipped include 2 ${quotedPath(right)} (missing).`,
+  ]);
   assert.equal(quotedPath('a "b" \\ c'), JSON.stringify('a "b" \\ c'), "a short path is quoted whole, as JSON");
   // Both caps are enforced even for sentences no gatherer writes: none longer than a note, never more than the count.
   const huge = Array.from({ length: 40 }, (_, i) => `${i}`.padEnd(1500, "x"));
@@ -749,7 +759,7 @@ test("the engine hands the gatherer's facts and summary to a selector, and two w
   const record = result.summary!.shapers.find((entry) => entry.id === "files")!;
   assert.equal(record.outcome, "ok", "a skipped file is not a failure");
   assert.equal(result.summary!.state, "ok");
-  assert.match(record.reason ?? "", /Skipped "MISSING\.md" \(missing\)\./, "the skip is recorded");
+  assert.match(record.reason ?? "", /Skipped include 2 "MISSING\.md" \(missing\)\./, "the skip is recorded");
 });
 
 test("a registered built-in gatherer never reads a file its options do not name", async () => {

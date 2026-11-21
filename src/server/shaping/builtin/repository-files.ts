@@ -405,9 +405,13 @@ export function quotedPath(configured: string): string {
  * One skip as one short sentence: the role, the path and the reason's id, which the guide's table
  * explains. Kept short because the record holds a shaper's reason to 500 characters, so a terse
  * sentence lets that record name as many skipped files as it can.
+ *
+ * An include is named by its position as well as its path. A long path is quoted by its start and
+ * its end, so two long paths that differ only in the middle could otherwise read alike; their
+ * positions never do.
  */
-function skipNote(role: "file" | "summary" | "facts", configured: string, reason: string): string {
-  const what = role === "file" ? "" : role === "summary" ? "the summary " : "the facts file ";
+function skipNote(role: { include: number } | "summary" | "facts", configured: string, reason: string): string {
+  const what = typeof role === "object" ? `include ${role.include} ` : role === "summary" ? "the summary " : "the facts file ";
   return `Skipped ${what}${quotedPath(configured)} (${reason}).`;
 }
 
@@ -454,20 +458,22 @@ export async function gatherRepositoryFiles(
 
   // The schema already bounds `include` below the reply's entry cap; this keeps the reply valid
   // even for a build whose schema allows more.
-  for (const { path: configured, maxBytes } of options.include.slice(0, SHAPING_LIMITS.replyEntries)) {
+  for (const [index, { path: configured, maxBytes }] of options.include.slice(0, SHAPING_LIMITS.replyEntries).entries()) {
+    // The include's position, counted from 1, names it in a note even when two long paths read alike.
+    const position = index + 1;
     if (signal.aborted) return null;
     // An entry's id and title are its path, and both are held to fewer characters than a
     // configured path may have. A longer path is skipped unread: as an id it would make the whole
     // reply invalid, and every other entry with it.
     if (configured.length > Math.min(SHAPING_LIMITS.entryIdChars, SHAPING_LIMITS.entryTitleChars)) {
-      skips.push(skipNote("file", configured, `path longer than ${SHAPING_LIMITS.entryIdChars} characters, the limit on an entry's id`));
+      skips.push(skipNote({ include: position }, configured, `path longer than ${SHAPING_LIMITS.entryIdChars} characters, the limit on an entry's id`));
       continue;
     }
     const cap = Math.min(maxBytes, SHAPING_LIMITS.entryBytes);
     const read = await readWorktreeFile(root, configured, cap, fs, signal);
     if ("stopped" in read) return null;
-    if (!read.ok) { skips.push(skipNote("file", configured, read.skip)); continue; }
-    if (blankCut(read)) { cut = true; skips.push(skipNote("file", configured, blankCutReason(cap))); continue; }
+    if (!read.ok) { skips.push(skipNote({ include: position }, configured, read.skip)); continue; }
+    if (blankCut(read)) { cut = true; skips.push(skipNote({ include: position }, configured, blankCutReason(cap))); continue; }
     guidance.push({ id: configured, title: configured, path: configured, body: read.text, ...(read.truncated ? { truncated: true } : {}) });
   }
 

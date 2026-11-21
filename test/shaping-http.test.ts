@@ -309,7 +309,7 @@ test("a dry run of a registered repository-files gatherer returns the entries, s
   };
   assert.equal(run.summary.state, "ok", "a missing file is a note, not a degraded run");
   assert.deepEqual(run.summary.shapers.map((entry) => [entry.id, entry.outcome, entry.origin, entry.entries]), [["repo-files", "ok", "registered", 1]]);
-  assert.equal(run.summary.shapers[0]!.reason, 'Skipped "MISSING.md" (missing).');
+  assert.equal(run.summary.shapers[0]!.reason, 'Skipped include 2 "MISSING.md" (missing).');
   assert.deepEqual(run.entries.map((entry) => [entry.id, entry.title, entry.body]), [["AGENTS.md", "AGENTS.md", "# Agents\nRun the tests first.\n"]]);
   assert.match(run.section, /### Repository files: AGENTS\.md\n# Agents\nRun the tests first\.\n$/);
   assert.doesNotMatch(run.section, /never read|A billing service|django/, "the summary and facts go to selectors, never into the section");

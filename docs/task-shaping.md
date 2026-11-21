@@ -455,7 +455,7 @@ read. That process could read the file itself, so it is outside the threat model
 ### Skipped files
 
 A file that cannot be used is skipped, and each skip becomes one short sentence naming its path
-and reason, such as `Skipped "docs/architecture.md" (missing).` or
+and reason, such as `Skipped include 2 "docs/architecture.md" (missing).` or
 `Skipped the summary "docs/summary.md" (empty).` Every skip is kept: past the reply's 16 notes,
 consecutive sentences share a note. The sentences become the shaper's reason, which the record
 holds to 500 characters. A skip is not a failure: the outcome stays `ok`, the run is not

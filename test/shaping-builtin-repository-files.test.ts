@@ -161,6 +161,16 @@ test("a newline at offset zero is a line boundary, so a cut never publishes part
   assert.doesNotMatch(JSON.stringify(result), /x{5}|y{5}/);
 });
 
+test("a whole file whose replacement characters outgrow the cap is cut, never reported empty", async () => {
+  // Four bytes on disk, read whole: "\n" then two invalid bytes, which decode to seven bytes.
+  const { root } = fixture({ "invalid.md": Buffer.from([0x0a, 0xff, 0xfe]) });
+  assert.deepEqual(await readWorktreeFile(root, "invalid.md", 4), { ok: true, text: "", truncated: true });
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: "invalid.md", maxBytes: 4 }] }), never);
+  assert.deepEqual(result?.guidance, []);
+  assert.equal(result?.truncated, true);
+  assert.deepEqual(result?.notes, ['Skipped "invalid.md" (cut to nothing at its 4-byte cap).']);
+});
+
 test("an include path longer than an entry id is skipped unread, and the other entries stay valid", async () => {
   const { root } = fixture({ "AGENTS.md": "agents\n" });
   const long = Array.from({ length: 6 }, () => "d".repeat(100)).join("/");
@@ -194,7 +204,7 @@ test("a valid facts file becomes repo.facts; anything else is a note and no fact
     assert.equal(result?.repo, undefined, name);
     assert.equal(result?.notes?.length, 1, name);
     const why = name === "big.json"
-      ? "larger than 64 KiB, so no facts"
+      ? "larger than 64 KiB once decoded, so no facts"
       : "not a flat JSON object of strings or string lists with at most 64 names, so no facts";
     assert.deepEqual(result?.notes, [`Skipped the facts file "${name}" (${why}).`], name);
   }
@@ -266,9 +276,9 @@ test("a file whose capped prefix is white space is cut, not empty: no entry, and
   assert.deepEqual([summaryOnly?.repo, summaryOnly?.truncated], [undefined, true], "a summary cut to nothing marks it too");
   assert.equal(result?.repo, undefined);
   assert.deepEqual(result?.notes, [
-    'Skipped "spaced.md" (only white space within its first 32 bytes, so it was cut to nothing).',
-    `Skipped the summary "SUMMARY.md" (only white space within its first ${SHAPING_LIMITS.summaryBytes} bytes, so it was cut to nothing).`,
-    'Skipped the facts file "facts.json" (larger than 64 KiB, so no facts).',
+    'Skipped "spaced.md" (cut to nothing at its 32-byte cap).',
+    `Skipped the summary "SUMMARY.md" (cut to nothing at its ${SHAPING_LIMITS.summaryBytes}-byte cap).`,
+    'Skipped the facts file "facts.json" (larger than 64 KiB once decoded, so no facts).',
   ]);
   assert.ok(result!.notes!.every((note) => !note.includes("(empty)")));
 });

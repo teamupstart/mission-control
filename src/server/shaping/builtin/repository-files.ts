@@ -203,10 +203,13 @@ export async function readWorktreeFile(
     try { bounded = await readFileWithinCap(handle, cap); }
     catch { return { ok: false, skip: "unreadable" }; }
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
-    // `empty` is a claim about the whole file, so only a complete read can make it. A file whose
-    // first `cap` bytes are white space is not empty, only cut: it comes back truncated, and the
-    // caller decides what a blank cut is worth (a facts file still reports its size).
-    if (!bounded.exceeded && text.trim() === "") return { ok: false, skip: "empty" };
+    // `empty` is a claim about the whole decoded file, so only text that was neither a prefix of
+    // the file nor cut can make it. A file whose first `cap` bytes are white space is not empty,
+    // and neither is one whose replacement characters pushed it past the cap so the line cut left
+    // nothing: both come back truncated, and the caller decides what a blank cut is worth (a
+    // facts file still reports its size). White space is one byte a character, so decoded text
+    // that is blank and whole never needs cutting, and a cut text was never blank.
+    if (!bounded.exceeded && !truncated && text.trim() === "") return { ok: false, skip: "empty" };
     return { ok: true, text, truncated };
   } finally {
     await handle.close().catch(() => {});
@@ -249,16 +252,17 @@ function skipNote(role: "file" | "summary" | "facts", configured: string, reason
 }
 
 /**
- * A read that stopped at its cap with nothing but white space before it. The file is not empty,
- * so it is not reported as `empty`, but a blank cut is no context either: it is noted and
- * contributes nothing.
+ * A read that was cut and left nothing but white space: a capped prefix that is blank, or a whole
+ * file whose replacement characters outgrew the cap so no line fit. The file is not empty, so it
+ * is not reported as `empty`, but a blank cut is no context either: it is noted, marks the reply
+ * truncated, and contributes nothing.
  */
 function blankCut(read: Extract<FileRead, { ok: true }>): boolean {
   return read.truncated && read.text.trim() === "";
 }
 
 function blankCutReason(cap: number): string {
-  return `only white space within its first ${cap} bytes, so it was cut to nothing`;
+  return `cut to nothing at its ${cap}-byte cap`;
 }
 
 /** A facts file's text as `repo.facts`: one JSON object of strings or lists of strings, at most 64 names. */
@@ -319,7 +323,7 @@ export async function gatherRepositoryFiles(
     const read = await readWorktreeFile(root, options.facts, REPOSITORY_FACTS_MAX_BYTES, fs);
     if (!read.ok) skips.push(skipNote("facts", options.facts, read.skip));
     else if (read.truncated) {
-      skips.push(skipNote("facts", options.facts, `larger than ${REPOSITORY_FACTS_MAX_BYTES / KIB} KiB, so no facts`));
+      skips.push(skipNote("facts", options.facts, `larger than ${REPOSITORY_FACTS_MAX_BYTES / KIB} KiB once decoded, so no facts`));
     } else {
       const parsed = parseFacts(read.text);
       if (parsed) facts = parsed;

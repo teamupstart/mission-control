@@ -466,9 +466,10 @@ degraded, and the launch is never affected.
 | `unreadable` | The operator cannot read it |
 | `empty` | The whole file is nothing but white space once decoded |
 
-A longer file whose first bytes, up to its cap, are only white space is not `empty`. It is cut
-to nothing, so it is skipped with a sentence that says so, and a facts file like it still
-reports that it is larger than 64 KiB. An incomplete UTF-8 sequence at the very end of a file
+A file that is cut to nothing is not `empty`: a longer file whose first bytes, up to its cap,
+are only white space, or a short one whose replacement characters outgrow its cap so no whole
+line fits. It is skipped with a sentence that says so, and a facts file like it still
+reports that it is larger than 64 KiB once decoded. An incomplete UTF-8 sequence at the very end of a file
 is replaced like any other invalid byte, so a facts file with trailing garbage is not valid
 JSON. Only one at a cut, where the read stopped inside the file, is dropped.
 

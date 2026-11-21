@@ -17,13 +17,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
@@ -35,10 +36,11 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { Registry } = await import("../src/server/registry.ts");
+const { sessionMessages } = await import("../src/server/harness/index.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { boundedWorkflowTranscript, fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
 const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
@@ -144,6 +146,10 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  realLedger?: boolean;
+  resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
+  readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
+  resumptionSettleMs?: number;
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
@@ -194,6 +200,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const full = (sha: string): string =>
     ([...sha].map((char) => char.charCodeAt(0).toString(16)).join("") + "0".repeat(40)).slice(0, 40);
   const contentTree = { oid: full("reviewed-tree") };
+  const commitTrees = new Map<string, string>();
   const repository = { root: "/repo", branch: "feature" as string | null };
   /**
    * The commit evidence capture records, when it must differ from the one the PROOF read.
@@ -208,6 +215,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    resumptionSettleMs: options.resumptionSettleMs,
     ...(options.probeEvidence ? { readEvidenceProbe: async () => ({
       headSha: captureHead.sha ?? head.sha,
       workingTreeStatus: [],
@@ -224,9 +232,10 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       headOid: full(head.sha),
       headCommittedAt: null,
     }),
-    adoptedPullRequests: () => adopted,
+    adoptedPullRequests: options.realLedger ? undefined : () => adopted,
+    readRepositoryId: options.readRepositoryId ?? (async root => root),
     resolveCommit: async (_root, headSha) => full(headSha),
-    resolveCommitTree: async () => contentTree.oid,
+    resolveCommitTree: options.resolveCommitTree ?? (async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid),
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -248,6 +257,10 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     }) as never,
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
+      const session = _registry.getSession(binding.sessionId!);
+      const located = session ? sessionMessages(session) : null;
+      const transcript = boundedWorkflowTranscript(located?.read.window(located.path, 12, 68).messages ?? []);
+      const transcriptSize = located?.read.size(located.path) ?? null;
       const raw = {
         primaryGoal: { rawPrompt: "Ship it", refined: null, sourceNoteKey: binding.noteKey },
         humanDecisions: [],
@@ -276,9 +289,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
           workingTreeDirty: !!options.localReport,
           workingTreeStatus: [],
           workingTreeStatusTruncated: false,
-          transcript: [],
-          transcriptAnchor: 1,
-          transcriptTruncated: false,
+          transcript: transcript.transcript,
+          transcriptAnchor: transcriptSize ?? 1,
+          transcriptTruncated: transcript.truncated,
           standards: [],
           standardsTruncated: false,
         },
@@ -290,8 +303,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
           noteKey: binding.noteKey,
           sessionId: binding.sessionId!,
           headSha: captureHead.sha ?? head.sha,
-          transcriptPath: null,
-          transcriptSize: 0,
+          transcriptPath: located?.path ?? null,
+          transcriptSize: transcriptSize ?? 0,
           repositoryFingerprint: `repo-${captureHead.sha ?? head.sha}`,
         },
       };
@@ -450,13 +463,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   });
   manager.start();
 
-  const reportIdle = (): void => {
+  const reportIdle = (transcriptPath: string | null = null): void => {
     registry.applyHook({
       agent: "claude",
       event: "Stop",
       sessionId: `agent-${sessionId}`,
       cwd: "/repo",
-      transcriptPath: null,
+      transcriptPath,
       env: { tmuxPane: `%${sessionId.length}` },
       prCreated: false,
     });
@@ -505,6 +518,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     reportIdle();
   };
 
+  const reportPrompt = (prompt: string, ts?: number): void => {
+    const entered = Date.now();
+    while (Date.now() <= entered) { /* distinguish successive prompt receipts */ }
+    registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `agent-${sessionId}`,
+      cwd: "/repo", transcriptPath: null, env: { tmuxPane: `%${sessionId.length}` }, prompt, ...(ts === undefined ? {} : { ts }) });
+  };
+
   /** State that an open pull request for this branch now sits at the given captured head. */
   const adoptPr = (
     patch: Partial<SessionActionAdoptedPullRequest> & { atHead?: string } = {},
@@ -536,6 +556,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     head,
     captureHead,
     contentTree,
+    commitTrees,
     full,
     repository,
     adopted,
@@ -544,6 +565,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     versionId,
     reportIdle,
     reportWorking,
+    reportPrompt,
     runActionTurn,
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
@@ -555,10 +577,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
 type Harness = Awaited<ReturnType<typeof harness>>;
 
 /** Bind, submit, and wait for the first action to be waiting with its packet prepared. */
-async function runToAction(h: Harness): Promise<string> {
+async function runToAction(h: Harness, prompted = false): Promise<string> {
   const bound = h.manager.createBinding({
     workflowVersionId: h.versionId,
     sessionId: h.sessionId,
+    ...(prompted ? { triggerMode: "foreman_complete" as const } : {}),
   });
   assert.equal(bound.ok, true, "the binding was refused");
   const bindingId = bound.ok ? bound.value.id : "";
@@ -590,9 +613,30 @@ async function runToAction(h: Harness): Promise<string> {
         links: [{ clientItemId: evidenceId, role: "execution" }],
     }]);
   }
-  const submitted = await h.manager.submit(bindingId, { requestId: `submit-${h.sessionId}` });
-  assert.equal(submitted.ok, true, "the submission failed");
-  const runId = submitted.ok ? submitted.value.run.id : "";
+  let runId: string;
+  if (prompted) {
+    const objective = "Publish the reviewed plan";
+    h.registry.upsertGoal(h.sessionId, {
+      prompt: objective, text: objective, objective, focus: objective,
+      relationship: "initial", rationale: "Plan completion", objectiveVersion: 1,
+      promptRevision: 1, resolvedPromptRevision: 1, pendingPrompts: [], source: "heuristic",
+    }, Date.now());
+    h.runActionTurn();
+    const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
+    const claim = await h.manager.claimCompletion(h.sessionId, {
+      completionKind: "prompted", marker: "a".repeat(64), summary: "The plan review and handoff are complete",
+      evidenceFingerprint: "published-plan",
+      expectedIntent: { objective, objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
+      expectedWorkCycle: { logicalKey: cycle.logicalKey, generation: cycle.generation },
+    });
+    assert.ok(claim.claimed, JSON.stringify(claim));
+    runId = claim.runId;
+    assert.equal(h.store.getRun(runId)?.triggerSource, "foreman");
+  } else {
+    const submitted = await h.manager.submit(bindingId, { requestId: `submit-${h.sessionId}` });
+    assert.equal(submitted.ok, true, "the submission failed");
+    runId = submitted.ok ? submitted.value.run.id : "";
+  }
   await waitFor(
     () => h.store.listSubmissions(runId)
       .some((submission) => h.store.listAttempts(submission.id)
@@ -2209,3 +2253,316 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
     }
   });
 }
+
+for (const changed of [false, true]) {
+  test(`a plan's previously merged PR ${changed ? "does not cover new work" : "satisfies a later Pull Request action"}`, async () => {
+    const { adoptInspectorPr } = await import("../src/server/db.ts");
+    const { mkTask } = await import("./helpers/session-fixture.ts");
+    const h = await harness(`old-merge-${changed}`, { pullRequest: true, realLedger: true });
+    try {
+      h.repository.root = `/repo/old-merge-${changed}`;
+      h.registry.upsertTask(mkTask({ id: `plan-${changed}`, kind: "plan", status: "running", sessionId: h.sessionId }));
+      const head = h.full(h.head.sha);
+      const key = `owner/repo#${changed ? 1571 : 1570}`;
+      h.commitTrees.set(head, h.contentTree.oid);
+      const url = `https://github.com/owner/repo/pull/${changed ? 1571 : 1570}`;
+      adoptInspectorPr({ key, url, owner: "owner", repo: "repo", number: changed ? 1571 : 1570,
+        repoRoot: h.repository.root, cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "closed",
+        headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null,
+        failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
+        mergedAt: 1, mergeBlock: null, observedHeadSha: head, observedState: "MERGED", observedAt: 1,
+        headRefName: "feature", title: "Published plan", adoptedAt: 1, updatedAt: 1 });
+      const runId = await runToAction(h, true);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action packet");
+      const attemptId = waitingActionAttemptId(h, runId);
+      const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+      assert.ok(h.injected.includes(delivery.payload), "the session received the action packet");
+      if (changed) h.contentTree.oid = h.full("unpublished-plan");
+      h.reportPrompt(delivery.payload);
+      const report = `The plan is already published through merged pull request ${url}. Nothing remains to publish; no new pull request is needed.`;
+      const transcriptPath = join(home, `${h.sessionId}-response.jsonl`);
+      writeFileSync(transcriptPath, [
+        { type: "user", uuid: "pull-request-packet", timestamp: new Date(delivery.deliveredAt!).toISOString(),
+          message: { role: "user", content: delivery.payload } },
+        { type: "assistant", uuid: "publication-report", timestamp: new Date().toISOString(),
+          message: { role: "assistant", content: [{ type: "text", text: report }] } },
+      ].map(record => `${JSON.stringify(record)}\n`).join(""));
+      h.reportIdle(transcriptPath);
+      const located = sessionMessages(h.registry.getSession(h.sessionId)!);
+      assert.ok(located, "the Stop hook attached the session's response transcript");
+      const response = located.read.window(located.path, 12, 68).messages.at(-1)!;
+      assert.equal(response.role, "assistant");
+      assert.equal(response.text, report);
+      assert.ok(response.ts > delivery.deliveredAt!, "the report follows action delivery");
+      await h.manager.sweepSessionActions(SETTLED());
+      if (changed) {
+        await waitFor(() => h.store.getRun(runId)?.currentPhase === "session_action_blocked",
+          "unpublished continuation content must block historical publication");
+        assert.match(JSON.stringify(h.store.getAttempt(attemptId)), /published_content_changed/);
+      } else {
+        await waitFor(() => h.store.getRun(runId)?.status === "completed", "old merge stranded the run");
+        const attempt = h.store.getAttempt(attemptId)!;
+        assert.match(JSON.stringify(attempt), /Already published through merged pull request/);
+        assert.match(JSON.stringify(attempt), /1570/);
+        assert.equal(h.store.listDeliveries(runId).length, 1);
+        assert.equal(h.store.runSummary(runId)?.actionWait, null);
+        const [parent, continuation] = h.store.listSubmissions(runId);
+        assert.ok(parent && continuation);
+        assert.equal(WorkflowContextSnapshotSchema.parse(parent.context).evidence.transcript.length, 0,
+          "the prompted completion preceded the action response");
+        assert.ok(WorkflowContextSnapshotSchema.parse(continuation.context).evidence.transcript
+          .some(message => message.role === "assistant" && message.content === report),
+        "the continuation captures the session's post-delivery no-publication report");
+      }
+    } finally { await h.stop(); }
+  });
+}
+
+for (const repeatPacket of [false, true]) test(`workflow delivery owns only its consumed prompt, human repeats packet=${repeatPacket}`, async () => {
+  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+  const { forgetInjections } = await import("../src/server/injections.ts");
+  const h = await harness(`prompt-receipt-${repeatPacket}`, { pullRequest: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no delivered action");
+    const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+    h.reportPrompt(delivery.payload);
+    h.reportIdle();
+    const episode = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+    assert.ok(episode.promptedAt);
+    const restored = new WorkflowStore();
+    const revision = h.registry.getGoal(h.sessionId)?.promptRevision ?? null;
+    forgetInjections(h.sessionId);
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, h.sessionId, episode.episodeId, episode.promptedAt, revision), true,
+      "the exact receipt survives loss of in-memory authorship and a store restart");
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, "other-session", episode.episodeId, episode.promptedAt, revision), false);
+    h.reportPrompt(repeatPacket ? delivery.payload : "Now also handle X", episode.promptedAt);
+    h.reportIdle();
+    const followUp = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+    assert.equal(restored.deliveredActionOwnsPrompt(runId, h.sessionId, followUp.episodeId, followUp.promptedAt!,
+      h.registry.getGoal(h.sessionId)?.promptRevision ?? null), false,
+      "a later operator prompt cannot borrow the workflow's receipt");
+  } finally { await h.stop(); }
+});
+
+for (const restart of [false, true]) for (const humanFollowUp of [false, true]) {
+  test(`cancelled workflow settles only its own post-merge turn: restart=${restart}, human follow-up=${humanFollowUp}`, async () => {
+    const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+    const { mkTask } = await import("./helpers/session-fixture.ts");
+    const { setShippingConfig } = await import("../src/server/shipping/config.ts");
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const h = await harness(`settle-receipt-${restart}-${humanFollowUp}`, { pullRequest: true });
+    const deps = { resetWouldDestroyWork: async () => null, kill: async () => ({ ok: true as const }),
+      mergedPublicationCoversCheckout: async () => true };
+    let tasks = new TaskManager(h.registry, deps);
+    try {
+      const taskId = `task-${h.sessionId}`;
+      h.registry.upsertTask(mkTask({ id: taskId, kind: "plan", status: "running", sessionId: h.sessionId,
+        worktreePath: null }));
+      h.registry.bindTaskToWorkEpisode(taskId, h.sessionId);
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no delivered action");
+      const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+      const before = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+      h.registry.reconcilePrs(new Map([[h.sessionId, {
+        url: "https://github.com/owner/repo/pull/1570", number: 1570, state: "merged" as const,
+        checks: "passing" as const, branch: "feature", agentSessionId: `agent-${h.sessionId}`,
+        episodeId: before.episodeId, createdAt: before.startedAt, mergedAt: Date.now(),
+        headSha: h.full(h.head.sha), worktreeHeadSha: h.full(h.head.sha),
+      }]]), new Set());
+      h.reportPrompt(delivery.payload);
+      assert.notEqual(h.registry.recordedWorkEpisodeForSession(h.sessionId)?.episodeId, before.episodeId);
+      h.reportIdle();
+      if (humanFollowUp) { h.reportPrompt("Now also handle X"); h.reportIdle(); }
+      if (restart) await tasks.stop();
+      assert.equal(h.manager.cancel(runId, `cancel-${h.sessionId}`).ok, true);
+      if (restart) tasks = new TaskManager(h.registry, deps);
+      if (humanFollowUp) {
+        for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(h.registry.getTask(taskId)?.status, "running");
+      } else {
+        await waitFor(() => h.registry.getTask(taskId)?.status === "done", "workflow-owned merged task did not settle");
+      }
+    } finally { await tasks.stop(); await h.stop(); }
+  });
+}
+
+test("historical merge lookup bounds Git concurrency and reaches a later page's matching publication", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  let active = 0;
+  let peak = 0;
+  const lookedUp = new Set<string>();
+  const h = await harness("paged-historical-merges", { pullRequest: true, realLedger: true,
+    resolveCommitTree: async (_root, oid) => {
+      active++;
+      peak = Math.max(peak, active);
+      lookedUp.add(oid);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      active--;
+      return oid === h.full("historical-54") ? h.contentTree.oid : h.full("different-content");
+    },
+  });
+  h.repository.branch = "paged-historical-merges";
+  try {
+    for (let i = 0; i < 55; i++) {
+      adoptInspectorPr({ key: `paged/repo#${100 + i}`, owner: "paged", repo: "repo", number: 100 + i,
+        url: `https://github.com/paged/repo/pull/${100 + i}`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: null,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Historical publication", updatedAt: 1,
+        observedHeadSha: h.full(`historical-${i}`), adoptedAt: 1, observedAt: 1 });
+    }
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    const attemptId = waitingActionAttemptId(h, runId);
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "later-page publication was lost");
+    assert.ok(Array.from({ length: 55 }, (_, i) => h.full(`historical-${i}`))
+      .every(oid => lookedUp.has(oid)), "every historical candidate remains eligible");
+    assert.equal(peak, 1, "one action must not burst Git processes for its entire history");
+    assert.match(JSON.stringify(h.store.getAttempt(attemptId)), /paged\/repo\/pull\/154/);
+  } finally { await h.stop(); }
+});
+
+for (const proof of ["known", "unknown", "missing-review"] as const) {
+  test(`historical publication tree reuse: ${proof}`, async (t) => {
+    const { adoptInspectorPr, retargetInspectorPrCheckout } = await import("../src/server/db.ts");
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args.join(" ")));
+    const candidate = "a".repeat(40);
+    let reads = 0;
+    const h = await harness(`tree-cache-${proof}`, { pullRequest: true, realLedger: true,
+      omitContentTree: proof === "missing-review",
+      resolveCommitTree: async (_root, oid) => {
+        if (oid !== candidate) return h.contentTree.oid;
+        reads++;
+        if (proof === "unknown") {
+          if (reads === 1) throw Object.assign(new Error("private checkout detail"), { code: "ENOENT" });
+          return h.contentTree.oid;
+        }
+        return h.full("different-tree");
+      },
+    });
+    h.repository.branch = `tree-cache-${proof}`;
+    const key = `cache-${proof}/repo#1`;
+    try {
+      adoptInspectorPr({ key, owner: `cache-${proof}`, repo: "repo", number: 1,
+        url: `https://github.com/cache-${proof}/repo/pull/1`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: candidate,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Cached publication", updatedAt: 1,
+        observedHeadSha: candidate, adoptedAt: 1, observedAt: 1 });
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+      h.runActionTurn();
+      await h.manager.sweepSessionActions(SETTLED());
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      await h.manager.sweepSessionActions(SETTLED());
+      assert.equal(reads, proof === "missing-review" ? 0 : 1);
+      const failures = warnings.filter(line => line.includes("event=session_action_publication_tree_unavailable"));
+      assert.equal(failures.length, proof === "unknown" ? 1 : 0, "failed lookups log once during their cooldown");
+      if (proof === "unknown") {
+        assert.ok(failures[0]?.includes(`call=${key}`));
+        assert.match(failures[0]!, /error=ENOENT/);
+        assert.doesNotMatch(failures[0]!, /private checkout detail/);
+        await h.manager.sweepSessionActions(SETTLED() + 60_001);
+        await waitFor(() => h.store.getRun(runId)?.status === "completed", "unknown tree must retry after it becomes available");
+        assert.equal(reads, 2, "missing objects retry after their cooldown, not every sweep");
+      } else if (proof === "known") {
+        h.repository.root = "/different-checkout";
+        assert.equal(retargetInspectorPrCheckout(key, h.repository.root, h.repository.root, Date.now()), true);
+        await h.manager.sweepSessionActions(SETTLED());
+        assert.equal(reads, 2, "the immutable tree cache is scoped to repository identity");
+      }
+    } finally { await h.stop(); }
+  });
+}
+
+test("missing publication cooldown survives more candidates than the successful-tree cache holds", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const candidates = new Set<string>();
+  let reads = 0;
+  let available = false;
+  const h = await harness("missing-tree-overflow", { pullRequest: true, realLedger: true,
+    resolveCommitTree: async (_root, oid) => {
+      if (!candidates.has(oid)) return h.contentTree.oid;
+      reads++;
+      if (available && oid === h.full("missing-256")) return h.contentTree.oid;
+      throw new Error("commit has not been fetched");
+    },
+  });
+  h.repository.branch = "missing-tree-overflow";
+  try {
+    for (let i = 0; i < 257; i++) {
+      candidates.add(h.full(`missing-${i}`));
+      adoptInspectorPr({ key: `missing-overflow/repo#${1000 + i}`, owner: "missing-overflow", repo: "repo", number: 1000 + i,
+        url: `https://github.com/missing-overflow/repo/pull/${1000 + i}`, sessionId: h.sessionId,
+        repoRoot: h.repository.root, cwd: h.repository.root, headRefName: h.repository.branch,
+        source: "hook", state: "closed", observedState: "MERGED", headSha: null,
+        reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+        lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+        mergeBlock: null, title: "Unavailable publication", updatedAt: 1,
+        observedHeadSha: h.full(`missing-${i}`), adoptedAt: 1, observedAt: 1 });
+    }
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    assert.equal(reads, 257);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    await h.manager.sweepSessionActions(now + 1);
+    assert.equal(reads, 257, "all missing heads retain their cooldown across the next scan");
+    available = true;
+    await h.manager.sweepSessionActions(now + 60_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "the last candidate must retry after expiry");
+    assert.equal(reads, 514, "expired misses retry, including the candidate beyond cache capacity");
+  } finally { await h.stop(); }
+});
+
+test("overlapping sweep and Inspector observations share a pending publication-tree lookup", async () => {
+  const { adoptInspectorPr } = await import("../src/server/db.ts");
+  const candidate = "b".repeat(40);
+  const root = "/repo/pending-publication";
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let treeReads = 0;
+  let identityReads = 0;
+  const h = await harness("pending-publication", { pullRequest: true, realLedger: true, resumptionSettleMs: 0,
+    readRepositoryId: async value => { if (value === root) identityReads++; return value; },
+    resolveCommitTree: async (_root, oid) => {
+      if (oid === candidate) { treeReads++; await gate; }
+      return h.contentTree.oid;
+    },
+  });
+  h.repository.root = root;
+  h.repository.branch = "pending-publication";
+  const key = "pending/repo#1";
+  try {
+    adoptInspectorPr({ key, owner: "pending", repo: "repo", number: 1,
+      url: "https://github.com/pending/repo/pull/1", sessionId: h.sessionId,
+      repoRoot: root, cwd: root, headRefName: h.repository.branch,
+      source: "hook", state: "closed", observedState: "MERGED", headSha: candidate,
+      reviewPosture: "live", round: 1, lastReviewedAt: 1, lastError: null, failCount: 0,
+      lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: 1,
+      mergeBlock: null, title: "Pending publication", updatedAt: 1,
+      observedHeadSha: candidate, adoptedAt: 1, observedAt: 1 });
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    h.runActionTurn();
+    const sweep = h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => treeReads === 1, "the periodic sweep did not start its lookup");
+    h.registry.inspectionUpdated(key, candidate, "MERGED");
+    await waitFor(() => identityReads >= 2, "the background observation did not reach publication proof");
+    for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(treeReads, 1, "the second observation must await the first lookup");
+    release();
+    await sweep;
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "shared proof did not complete the action");
+  } finally { release(); await h.stop(); }
+});

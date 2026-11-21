@@ -374,6 +374,8 @@
   "POST /mcp/plans/save": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/product-issues": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/product-issues/preview": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/questions/:id/withdraw": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/questions/list": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/retros/no-change": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/reviews": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/reviews/:id/detach": "401 {\"error\":\"unauthorized\"}",

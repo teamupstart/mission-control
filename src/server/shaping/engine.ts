@@ -314,12 +314,21 @@ async function runShaping(
     let abandon: ReturnType<typeof setTimeout> | undefined;
     let onStop: (() => void) | undefined;
     let reply: TransportReply | "abandoned";
+    // When the transport settled: first as the transport itself reports it, where it produced the
+    // reply, then as its promise settles. The continuation below can run later than either on a
+    // busy event loop, and a reply in time must not be judged by when it was read.
+    let producedAt: number | undefined;
+    let settledAt: number | undefined;
     try {
       reply = await Promise.race([
         // The parsed request, so a transport receives only the fields the wire contract declares.
         callTransport(wire.data, entry.shaper, {
           deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
-        }, transports),
+          settled: () => { producedAt ??= performance.now(); },
+        }, transports).then((settled) => {
+          settledAt = performance.now();
+          return settled;
+        }),
         new Promise<"abandoned">((done) => {
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
           onStop = () => done("abandoned");
@@ -333,8 +342,9 @@ async function runShaping(
       if (onStop) run.signal.removeEventListener("abort", onStop);
       call.abort();
     }
-    const late = performance.now() - callStart > timeoutMs;
     if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
+    // The transport's own moment first, then the engine's, then now: each is earlier than this read.
+    const late = (producedAt ?? settledAt ?? performance.now()) - callStart > timeoutMs;
     // The call's deadline applies to every reply, not only to data. A busy event loop can let a
     // transport settle after the deadline before the overdue timer runs: whatever it says then
     // is a timeout, keeping the transport's own timeout diagnostic when it gave one.

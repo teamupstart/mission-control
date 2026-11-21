@@ -8,7 +8,7 @@ import type { Session } from "../src/shared/types.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "../src/shared/pipeline.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
-import { RuntimeMetaRow } from "../src/web/components/session-bits.tsx";
+import { RuntimeMetaRow, WorkflowActionWait } from "../src/web/components/session-bits.tsx";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
 // The board tile is meant to be triaged WITHOUT opening it, so what's worth testing is the
@@ -252,8 +252,8 @@ test("the idle column splits into free and held, with the held ones last", () =>
   assert.match(html, /fleet-section-free/);
   assert.match(html, /fleet-section-held/);
   assert.match(html, /held by a workflow/);
-  // The rule carries the explanation once, so no tile below it has to.
-  assert.match(html, /it sends the next round on its own/);
+  // The section no longer promises that every held run advances automatically.
+  assert.match(html, /Open its run for the current step and available actions/);
   // Free rule before held rule, and the held tile after both.
   assert.ok(
     html.indexOf("fleet-section-free") < html.indexOf("fleet-section-held"),
@@ -429,4 +429,21 @@ test("the meter joins beside the cluster head rather than replacing it", () => {
   assert.match(html, /board-pipeline-head/);
   assert.match(html, /tile-phase-meter/);
   assert.doesNotMatch(html, /class="tile-phase-meter"[^>]*>[\s\S]{0,400}?<button/);
+});
+
+test("Fleet action waits remain visible across multiple repositories and disappear at completion", () => {
+  const waiting = { ...workflowRun, status: "waiting_for_action" as const,
+    actionWait: "awaiting_pull_request" as const, workflowName: "Plan validation" };
+  const operator = { ...waiting, id: "other-run", workflowName: "Other repository",
+    actionWait: "needs_operator" as const };
+  const html = renderToStaticMarkup(createElement(WorkflowActionWait, { runs: [waiting, operator] }));
+  assert.match(html, /Plan validation/);
+  assert.match(html, /Next: the session must open or identify the pull request/);
+  assert.match(html, /Other repository/);
+  assert.match(html, /Next: you must answer/);
+  for (const status of ["completed", "cancelled", "failed"] as const) {
+    assert.equal(renderToStaticMarkup(createElement(WorkflowActionWait, {
+      runs: [{ ...waiting, status }],
+    })), "");
+  }
 });

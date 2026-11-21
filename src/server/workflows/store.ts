@@ -9077,6 +9077,19 @@ export class WorkflowStore {
     return row ? parseWorkflowDeliveryRow(row) : null;
   }
 
+  /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events e
+      JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
+        AND d.run_id = e.run_id
+      WHERE e.run_id = ? AND e.event_kind = 'session_action_prompt_observed'
+        AND json_extract(e.payload_json, '$.episodeId') = ?
+        AND json_extract(e.payload_json, '$.promptedAt') = ?
+        AND json_extract(e.payload_json, '$.promptRevision') IS ?
+        AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
+        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
+  }
+
   deliveryForPacket(
     submissionId: string,
     kind: WorkflowDelivery["kind"],

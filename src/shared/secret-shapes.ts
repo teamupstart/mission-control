@@ -16,6 +16,8 @@ export const SECRET_TOKEN_SHAPES: readonly RegExp[] = [
   // Anthropic, OpenAI.
   /\bsk-ant-[A-Za-z0-9_-]{16,}/,
   /\bsk-[A-Za-z0-9]{32,}/,
+  // OpenAI project, service-account and admin keys, whose prefix carries its own hyphen.
+  /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/,
   // AWS access key ids.
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
   // Google, Slack.

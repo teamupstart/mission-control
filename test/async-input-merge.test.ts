@@ -14,12 +14,15 @@ import type { PlanDecision } from "../src/shared/types.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-async-input-merge-"));
 process.env.HARNESS_HOME = home;
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { applyFeatureFlagIntent, featureEnabled } = await import("../src/server/feature-flags/index.ts");
-const { openDb } = await import("../src/server/db.ts");
+const {
+  openDb, createSnoozeInstructionPendingTurn, createPendingTurn, listPendingTurns,
+  claimNextPendingTurn, markPendingTurnUncertain,
+} = await import("../src/server/db.ts");
 const { reserveSessionTransfer, updateSessionTransfer } = await import("../src/server/session-transfers/store.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
 
@@ -82,6 +85,86 @@ function fleet(id: string, closeFails = { times: 0 }, scout?: { ready: boolean }
   return { registry, reviews, id, taskId: `task-${id}`, merge, hook };
 }
 
+function queuedSnooze(f: ReturnType<typeof fleet>, waitMode?: "message") {
+  const review = f.reviews.create(f.id, "input", "Carry on?", "Carry on?", null, { snoozable: true, waitMode });
+  if (!waitMode) f.reviews.detachWait(review.id, f.id);
+  f.reviews.snooze(review.id, 60 * 60_000, { mode: "hold" });
+  const noteKey = noteKeyFor(f.registry.getSession(f.id)!);
+  const instruction = createSnoozeInstructionPendingTurn({
+    reviewId: review.id, noteKey, text: "Do not do work that depends on this answer", now: Date.now(),
+  });
+  assert.ok(instruction);
+  assert.equal(instruction.state, "queued");
+  assert.equal(instruction.claimedAt, null);
+  f.registry.refreshPendingTurns(noteKey);
+  return { review, instruction: listPendingTurns(noteKey)[0]!, noteKey };
+}
+
+for (const [waitMode, flagOn] of [["message", true], ["message", false], [undefined, true]] as const) {
+  test(`merge cancels an unclaimed ${waitMode ?? "call"} snooze instruction with async-input ${flagOn}`, async () => {
+    setShippingConfig({ closeSessionAfterMerge: false });
+    applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: flagOn });
+    const f = fleet(`s-merge-snooze-${waitMode ?? "call"}-${flagOn}`);
+    const { review, noteKey } = queuedSnooze(f, waitMode);
+    const ordinary = createPendingTurn({ id: `ordinary:${review.id}`, noteKey, text: "An unrelated message", now: Date.now() });
+    f.registry.refreshPendingTurns(noteKey);
+
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+    assert.equal(f.registry.getReview(review.id)?.closedReason, "merged");
+    assert.deepEqual(listPendingTurns(noteKey), [ordinary], "cancel only the closed question's instruction");
+    assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, [ordinary], "publish the committed outbox change");
+  });
+}
+
+for (const state of ["sending", "uncertain"] as const) {
+  test(`merge preserves ${state} snooze instructions for reconciliation`, async () => {
+    setShippingConfig({ closeSessionAfterMerge: false });
+    applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+    const f = fleet(`s-merge-snooze-${state}`);
+    const { review, noteKey } = queuedSnooze(f, "message");
+    const claimed = claimNextPendingTurn(noteKey, Date.now())!;
+    if (state === "uncertain") markPendingTurnUncertain(claimed.id, claimed.revision, "Not confirmed", Date.now());
+    f.registry.refreshPendingTurns(noteKey);
+    const before = listPendingTurns(noteKey);
+
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+    assert.equal(f.registry.getReview(review.id)?.closedReason, "merged");
+    assert.deepEqual(listPendingTurns(noteKey), before);
+    assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, before);
+  });
+}
+
+test("a failed snooze cancellation rolls back merge completion and question closure", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-snooze-delete-fails");
+  const { review, instruction, noteKey } = queuedSnooze(f, "message");
+  const db = openDb();
+  db.exec(`CREATE TRIGGER refuse_merge_snooze_delete BEFORE DELETE ON pending_turns
+    WHEN OLD.id = '${instruction.id}' BEGIN SELECT RAISE(ABORT, 'snooze deletion refused'); END`);
+  try {
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+    const row = db.prepare("SELECT status, closed_reason FROM reviews WHERE id = ?").get(review.id);
+    assert.deepEqual({ ...row }, { status: "snoozed", closed_reason: null });
+    assert.deepEqual(listPendingTurns(noteKey), [instruction]);
+    assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, [instruction]);
+  } finally {
+    db.exec("DROP TRIGGER refuse_merge_snooze_delete");
+  }
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(review.id)?.closedReason, "merged");
+  assert.deepEqual(listPendingTurns(noteKey), []);
+});
+
 test("a merge completes the task past open questions and closes each with the reason merged", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
@@ -105,13 +188,13 @@ test("a merge completes the task past open questions and closes each with the re
 test("with the flag off a merge records no reason on a snoozed call-mode question, as today", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-merge-off");
-  const parked = f.reviews.create(f.id, "input", "Parked?", "Parked?", decisions("Parked?"), { snoozable: true });
-  f.reviews.snooze(parked.id, 60 * 60_000);
+  const { review: parked, instruction, noteKey } = queuedSnooze(f);
   f.merge();
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.equal(f.registry.getReview(parked.id)?.status, "snoozed");
   assert.equal(f.registry.getReview(parked.id)?.closedReason, undefined);
+  assert.deepEqual(listPendingTurns(noteKey), [instruction], "flag-off call-mode questions are outside the merge closure");
 });
 
 test("merge-driven completion reads no review hold: closing the questions is part of it, never a reason to wait", () => {
@@ -277,7 +360,7 @@ test("a task status write that fails rolls the question closure back with it", a
   setShippingConfig({ closeSessionAfterMerge: false });
   applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
   const f = fleet("s-merge-write-fails");
-  const filed = f.reviews.create(f.id, "input", "Filed?", "Filed?", decisions("Filed?"), { snoozable: true, waitMode: "message" });
+  const { review: filed, instruction, noteKey } = queuedSnooze(f, "message");
   const db = openDb();
   // The task's own completion write is refused after the question settles were written.
   for (const event of ["INSERT", "UPDATE"]) {
@@ -288,9 +371,11 @@ test("a task status write that fails rolls the question closure back with it", a
     f.merge();
     await tick();
     assert.equal(f.registry.getTask(f.taskId)?.status, "running");
-    assert.equal(f.registry.getReview(filed.id)?.status, "pending", "nothing was published");
+    assert.equal(f.registry.getReview(filed.id)?.status, "snoozed", "nothing was published");
     const row = db.prepare("SELECT status, closed_reason FROM reviews WHERE id = ?").get(filed.id) as { status: string; closed_reason: string | null };
-    assert.deepEqual({ ...row }, { status: "pending", closed_reason: null }, "the settle rolled back with the failed write");
+    assert.deepEqual({ ...row }, { status: "snoozed", closed_reason: null }, "the settle rolled back with the failed write");
+    assert.deepEqual(listPendingTurns(noteKey), [instruction], "instruction deletion rolls back with task completion");
+    assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, [instruction]);
   } finally {
     db.exec("DROP TRIGGER refuse_done_insert; DROP TRIGGER refuse_done_update;");
   }
@@ -300,6 +385,8 @@ test("a task status write that fails rolls the question closure back with it", a
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.equal(f.registry.getReview(filed.id)?.closedReason, "merged");
+  assert.deepEqual(listPendingTurns(noteKey), []);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
 });
 
 test("an older child polling a filed question after the merge is released at once by the closure its attach triggers", async () => {
@@ -366,4 +453,20 @@ test("an agent blocked in a call whose task status write fails keeps its questio
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.match(reviewToolResult((await call)!).text, /pull request merged/);
+});
+
+test("a merge releases a blocked request_input call even with a non-terminal workflow", async () => {
+  const { LADDER_SUMMARY } = await import("./helpers/workflow-ladder.ts");
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-blocked-workflow");
+  f.hook("UserPromptSubmit");
+  f.registry.upsertWorkflowRun({ ...LADDER_SUMMARY, id: "blocked-call-workflow", sessionId: f.id,
+    status: "waiting_for_session", phase: "persona_review" });
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  const call = f.reviews.wait(asked.id, 60_000);
+  f.merge(); await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(asked.id)?.closedReason, "merged");
+  assert.ok(await call);
 });

@@ -125,9 +125,17 @@ test("gather settles before select starts, and selectors receive merged facts an
 
 test("calls in a stage run in parallel", async () => {
   const config = configWith([shaper("a", "select"), shaper("b", "select"), shaper("c", "select")]);
-  const started = Date.now();
-  const result = await run(config, async () => { await sleep(150); return data({}); });
-  assert.ok(Date.now() - started < 400, "six calls of 150 ms did not run one after another");
+  // Overlap, measured directly: elapsed time would also grow under a scheduler pause.
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(config, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(150);
+    inFlight--;
+    return data({});
+  });
+  assert.equal(peak, Math.min(6, SHAPING_LIMITS.concurrentCalls), "six calls were in flight together, up to the bound");
   assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok", "ok", "ok"]);
 });
 
@@ -778,4 +786,20 @@ test("a dry run calls exactly one shaper, switched off or not", async () => {
   assert.deepEqual(await dryRunShaper("ghost", input(1), { config, discovered: [] }), {
     ok: false, error: "unknown_shaper", reason: 'No shaper has the id "ghost".',
   });
+});
+
+test("a reply the transport produced in time is kept, though the engine reads it after the deadline", async () => {
+  const config = configWith([shaper("s", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } });
+  const result = await run(config, (_request, _entry, ctx) => {
+    // The transport reports its outcome at once, inside the call's 100 ms.
+    ctx.settled?.();
+    // Synchronous work then runs ahead of the engine reading the reply, until well past the deadline.
+    queueMicrotask(() => {
+      const until = performance.now() + 250;
+      while (performance.now() < until) { /* busy */ }
+    });
+    return data({ guidance: [{ id: "on-time", body: "answered on time" }] });
+  }, input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok"], "judged by when the transport produced it");
+  assert.deepEqual(result.entries.map((entry) => entry.id), ["on-time"]);
 });

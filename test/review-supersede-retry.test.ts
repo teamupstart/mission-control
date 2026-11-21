@@ -831,3 +831,16 @@ test("a failed withdrawal leaves neither the new card nor the withdrawal", () =>
   assert.equal(registry.getReview(first.id)?.status, "superseded");
   assert.deepEqual(loadPendingReviews().filter((r) => r.sessionId === session).map((r) => r.id), [retry.id]);
 });
+
+test("a recognized call-mode retry can replace its question at the async-input limit", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false }));
+  const { session, registry, reviews, ask } = fixture();
+  const first = ask(FIRST, FIRST_OPTIONS, T0);
+  for (let i = 0; i < 9; i++) ask(`Unrelated question ${i}?`, ["Yes", "No"], T0);
+  const retry = ask(RETRY, RETRY_OPTIONS, AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "superseded");
+  assert.equal(registry.getReview(retry.id)?.status, "pending");
+  assert.equal(reviews.openQuestions(session).length, 10, "replacement does not grow the outstanding set");
+});

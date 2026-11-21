@@ -184,12 +184,17 @@ function seedSubmission(
 }
 
 async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const started = Date.now();
+  const started = performance.now();
   while (!check()) {
-    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
+    if (performance.now() - started > timeoutMs) throw new Error("timed out waiting for workflow engine");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("workflow polling times out while Date is frozen", { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000 });
+  await assert.rejects(waitFor(() => false, 20), /timed out waiting for workflow engine/);
+});
 
 test("concurrent provider-neutral Personas share one snapshot and Join aggregates fail receipts", async () => {
   seedVersion();

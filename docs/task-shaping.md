@@ -458,7 +458,13 @@ degraded, and the launch is never affected.
 | `not-a-regular-file` | A directory, a named pipe, a device or a socket, or a link swapped in after the lookup |
 | `too-large` | Larger than 4 MiB |
 | `unreadable` | The operator cannot read it |
-| `empty` | Nothing but white space once decoded |
+| `empty` | The whole file is nothing but white space once decoded |
+
+A longer file whose first bytes, up to its cap, are only white space is not `empty`. It is cut
+to nothing, so it is skipped with a sentence that says so, and a facts file like it still
+reports that it is larger than 64 KiB. An incomplete UTF-8 sequence at the very end of a file
+is replaced like any other invalid byte, so a facts file with trailing garbage is not valid
+JSON. Only one at a cut, where the read stopped inside the file, is dropped.
 
 A facts file that is not valid JSON, not a flat object of strings or string lists, or larger
 than 64 KiB is skipped with a sentence that says so. A worktree that is not on this machine

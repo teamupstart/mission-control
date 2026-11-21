@@ -113,10 +113,13 @@ function pathIsConfinable(configured: string): boolean {
  * file, so the line they end in is incomplete even when it fits.
  */
 export function fileText(bytes: Buffer, cap: number, exceeded: boolean): { text: string; truncated: boolean } {
-  // A whole-character decode: an incomplete sequence at a cut is dropped, never rendered as
-  // U+FFFD. Invalid bytes elsewhere become U+FFFD, which is three bytes, so the cap is applied
-  // to the decoded text rather than to the bytes that were read.
-  let text = decodeUtf8Whole(bytes);
+  // At a cut, a whole-character decode: the read stopped inside the file, so an incomplete
+  // sequence at its end is where the cut fell, and is dropped rather than rendered as U+FFFD.
+  // When the whole file was read, its last bytes are the file's own, so an incomplete sequence
+  // there is malformed input and is replaced like any other: dropping it could turn a facts file
+  // with trailing garbage into valid JSON. Each U+FFFD is three bytes, so the cap is applied to
+  // the decoded text rather than to the bytes that were read.
+  let text = exceeded ? decodeUtf8Whole(bytes) : bytes.toString("utf8");
   if (text.startsWith("﻿")) text = text.slice(1);
   if (!exceeded && utf8Length(text) <= cap) return { text, truncated: false };
   if (!exceeded) return { text: cutAtLineBoundary(text, cap), truncated: true };
@@ -192,7 +195,10 @@ export async function readWorktreeFile(
     try { bounded = await readFileWithinCap(handle, cap); }
     catch { return { ok: false, skip: "unreadable" }; }
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
-    if (text.trim() === "") return { ok: false, skip: "empty" };
+    // `empty` is a claim about the whole file, so only a complete read can make it. A file whose
+    // first `cap` bytes are white space is not empty, only cut: it comes back truncated, and the
+    // caller decides what a blank cut is worth (a facts file still reports its size).
+    if (!bounded.exceeded && text.trim() === "") return { ok: false, skip: "empty" };
     return { ok: true, text, truncated };
   } finally {
     await handle.close().catch(() => {});
@@ -234,6 +240,19 @@ function skipNote(role: "file" | "summary" | "facts", configured: string, reason
   return `Skipped ${what}${quotedPath(configured)} (${reason}).`;
 }
 
+/**
+ * A read that stopped at its cap with nothing but white space before it. The file is not empty,
+ * so it is not reported as `empty`, but a blank cut is no context either: it is noted and
+ * contributes nothing.
+ */
+function blankCut(read: Extract<FileRead, { ok: true }>): boolean {
+  return read.truncated && read.text.trim() === "";
+}
+
+function blankCutReason(cap: number): string {
+  return `only white space within its first ${cap} bytes, so it was cut to nothing`;
+}
+
 /** A facts file's text as `repo.facts`: one JSON object of strings or lists of strings, at most 64 names. */
 function parseFacts(text: string): ShapingFacts | null {
   let value: unknown;
@@ -262,16 +281,19 @@ export async function gatherRepositoryFiles(
   // even for a build whose schema allows more.
   for (const { path: configured, maxBytes } of options.include.slice(0, SHAPING_LIMITS.replyEntries)) {
     if (signal.aborted) return null;
-    const read = await readWorktreeFile(root, configured, Math.min(maxBytes, SHAPING_LIMITS.entryBytes), fs);
+    const cap = Math.min(maxBytes, SHAPING_LIMITS.entryBytes);
+    const read = await readWorktreeFile(root, configured, cap, fs);
     if (!read.ok) { skips.push(skipNote("file", configured, read.skip)); continue; }
+    if (blankCut(read)) { skips.push(skipNote("file", configured, blankCutReason(cap))); continue; }
     guidance.push({ id: configured, title: configured, path: configured, body: read.text, ...(read.truncated ? { truncated: true } : {}) });
   }
 
   if (options.summary !== undefined) {
     if (signal.aborted) return null;
     const read = await readWorktreeFile(root, options.summary, SHAPING_LIMITS.summaryBytes, fs);
-    if (read.ok) summary = read.text;
-    else skips.push(skipNote("summary", options.summary, read.skip));
+    if (!read.ok) skips.push(skipNote("summary", options.summary, read.skip));
+    else if (blankCut(read)) skips.push(skipNote("summary", options.summary, blankCutReason(SHAPING_LIMITS.summaryBytes)));
+    else summary = read.text;
   }
 
   if (options.facts !== undefined) {

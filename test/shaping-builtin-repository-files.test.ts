@@ -209,6 +209,39 @@ test("the limits: at most 16 includes of at most 16 KiB each, and notes stay wit
   assert.deepEqual(skipNotes(many), [many.join(" ")]);
 });
 
+test("an incomplete UTF-8 sequence at the true end of a file is replaced, and one at a cut is dropped", async () => {
+  // é is 0xC3 0xA9: a file ending in a lone 0xC3 is malformed, not cut.
+  const object = Buffer.from(JSON.stringify({ language: "python" }));
+  const { root } = fixture({ "facts.json": Buffer.concat([object, Buffer.from([0xc3])]), "tail.md": Buffer.from([0x61, 0x0a, 0x62, 0xc3]) });
+  assert.deepEqual(await readWorktreeFile(root, "tail.md", 1024), { ok: true, text: "a\nb�", truncated: false });
+  const result = await gatherRepositoryFiles(root, options({ facts: "facts.json" }), never);
+  assert.equal(result?.repo, undefined, "trailing malformed bytes never let the valid prefix through as facts");
+  assert.match(result!.notes![0]!, /^Skipped the facts file "facts\.json" \(not a flat JSON object/);
+  // At a cut, the bytes after the cap are still in the file: the partial character is dropped.
+  assert.deepEqual(fileText(Buffer.from("aé"), 2, true), { text: "a", truncated: true });
+  assert.deepEqual(fileText(Buffer.from([0x61, 0xc3]), 4, false), { text: "a�", truncated: false }, "U+FFFD is three bytes, within a cap of four");
+});
+
+test("a file whose capped prefix is white space is cut, not empty: no entry, and a facts file still reports its size", async () => {
+  const { root } = fixture({
+    "spaced.md": `${" ".repeat(64)}\n${"text".repeat(8)}\n`,
+    "SUMMARY.md": `${"\n".repeat(5000)}summary\n`,
+    "facts.json": `${" ".repeat(70 * 1024)}{"language":"python"}`,
+  });
+  const read = await readWorktreeFile(root, "spaced.md", 32);
+  assert.ok(read.ok, "not reported empty");
+  assert.equal(read.truncated, true);
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: "spaced.md", maxBytes: 32 }], summary: "SUMMARY.md", facts: "facts.json" }), never);
+  assert.deepEqual(result?.guidance, [], "a blank cut is no context");
+  assert.equal(result?.repo, undefined);
+  assert.deepEqual(result?.notes, [
+    'Skipped "spaced.md" (only white space within its first 32 bytes, so it was cut to nothing).',
+    `Skipped the summary "SUMMARY.md" (only white space within its first ${SHAPING_LIMITS.summaryBytes} bytes, so it was cut to nothing).`,
+    'Skipped the facts file "facts.json" (larger than 64 KiB, so no facts).',
+  ]);
+  assert.ok(result!.notes!.every((note) => !note.includes("(empty)")));
+});
+
 test("a skipped path of control characters is quoted within its bound, so the reply and its read entries stay valid", async () => {
   // Every \u0001 escapes to six characters: a raw 200-character clip would quote 1,200.
   const control = "\u0001".repeat(100);

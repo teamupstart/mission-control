@@ -1548,7 +1548,7 @@ function DispatchModal({
   const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
   const pinPreviewRequired = editingPin !== null && pinChange === null;
   const pinPreviewHint = "Preview or cancel the revision change before saving or dispatching";
-  const dependencyEditsBlocked = pinPreviewPending || pinChange !== null;
+  const dependencyEditsBlocked = busy || pinChange !== null;
   const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
@@ -1567,6 +1567,7 @@ function DispatchModal({
   const dependencyKey = dependencyInputKey;
   function removalReason(key: string): string | null {
     if (pinPreviewPending) return "Wait for the revision preview before editing dependencies.";
+    if (busy) return "Wait for the current task action before editing dependencies.";
     if (pinChange) return "Cancel the revision change before editing dependencies.";
     if (planRequirementsProblem) return planRequirementsProblem;
     const required = planRequirementsResult?.requirements.filter(requirement =>
@@ -1728,8 +1729,10 @@ function DispatchModal({
   const repoSetBlocked = multiRepoBlocked || collidingRepo !== null;
 
   // Merge one field's change into the lifted draft.
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
   function update(patch: Partial<DispatchDraft>): void {
-    onDraftChange({ ...draft, ...patch });
+    onDraftChange({ ...latestDraft.current, ...patch });
   }
 
   /**
@@ -2758,7 +2761,7 @@ function DispatchModal({
     // Typed as the refusal shape every branch satisfies, so a Workflow block's `fix` survives
     // whichever call produced it rather than being narrowed away by the branch that cannot
     // carry one.
-    const r: DispatchResult = mode.kind === "edit"
+    const r: DispatchResult & { task?: Task } = mode.kind === "edit"
       ? patch
         ? await api.updateTask(mode.task.id, patch)
         : { ok: true }
@@ -2818,6 +2821,7 @@ function DispatchModal({
       ? `${dispatchNow ? "Could not save task; dispatch was not attempted" : "Could not save task"}: ${r.error ?? "save rejected"}`
       : r.error ?? "dispatch failed", r.fix);
     else if (launched && !launched.ok) {
+      if (pinChange && r.task) update({ dependencies: r.task.dependencies.map(dependencyInputOf) });
       fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
     }
     else onSubmitted(submitted);

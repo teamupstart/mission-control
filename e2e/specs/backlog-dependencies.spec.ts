@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: name === "revision-change-awaiting-preview" ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry"].includes(name) ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -491,6 +491,8 @@ test("Save and dependency edits wait for the pending revision preview, including
     await expect(remove).toBeDisabled();
     await expect(mode.getByRole("button", { name: "Stack", exact: true })).toBeDisabled();
     await expect(mode.getByRole("button", { name: "After merge", exact: true })).toBeDisabled();
+    await dialog.getByRole("textbox", { name: /^Title/ }).fill("Title edited during preview");
+    await dialog.getByPlaceholder("What should this agent do?").fill("Intent edited during preview");
     // A queued change event must also be refused by the handler, not just the DOM guard.
     await add.evaluate((select: HTMLSelectElement, id) => {
       select.value = `task:${id}`;
@@ -503,6 +505,8 @@ test("Save and dependency edits wait for the pending revision preview, including
     expect(await read()).toEqual(before);
   } finally { release(); }
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue("Title edited during preview");
+  await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("Intent edited during preview");
   await expect(add).toBeDisabled();
   await dialog.getByRole("button", { name: "Cancel revision change" }).click();
   await expect(add).toBeEnabled();
@@ -517,6 +521,8 @@ test("Save and dependency edits wait for the pending revision preview, including
   const saved = await read();
   expect(saved.planInputs![0]!.revision).toBe(2);
   expect(saved.dependencies).toEqual(before.dependencies);
+  expect(saved.title).toBe("Title edited during preview");
+  expect(saved.intent).toBe("Intent edited during preview");
 });
 
 test("revision preview keeps its returned snapshots when a retained prerequisite is satisfied live", async ({ dashboard, daemon }) => {
@@ -543,8 +549,12 @@ test("revision preview keeps its returned snapshots when a retained prerequisite
 });
 
 test("a staged pin survives a rejected save and is consumed before retrying a rejected dispatch", async ({ dashboard, daemon }) => {
-  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged");
+  const replacement = await savedPlan(daemon, false, "replacement-plan");
+  const { dialog, read } = await revisionEditor(dashboard, daemon, "merged", [replacement.source]);
   const before = await read();
+  await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
+  await dialog.getByLabel("Revision", { exact: true }).fill(String(replacement.input.revision));
+  await dialog.getByRole("textbox", { name: /^Title/ }).fill("Keep this title through launch retry");
   await dialog.getByRole("button", { name: "Preview revision change" }).click();
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
   let saves = 0;
@@ -566,10 +576,16 @@ test("a staged pin survives a rejected save and is consumed before retrying a re
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toContainText("saved, but Launch refused for retry test");
-  expect((await read()).planInputs![0]!.revision).toBe(2);
+  const saved = await read();
+  expect(saved.planInputs).toEqual([replacement.input]);
+  expect(saved.dependencies).toEqual([before.dependencies[1]]);
   await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: /^Remove dependency: Planning origin/ })).toHaveCount(0);
+  await expect(dialog.getByRole("textbox", { name: /^Title/ })).toHaveValue("Keep this title through launch retry");
+  await shoot(dashboard, "revision-change-launch-retry");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
   expect(saves).toBe(2);
   expect(launches).toBe(2);
+  expect((await read()).dependencies).toEqual(saved.dependencies);
 });

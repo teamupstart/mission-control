@@ -2196,7 +2196,7 @@ export const api = {
   taskPlanDependencies: (id: string) =>
     fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+    post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
    * which is not writable through `updateTask` or any create body.

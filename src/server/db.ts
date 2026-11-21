@@ -169,6 +169,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { isWorkUnitId } from "@shared/work-unit.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
@@ -277,7 +278,10 @@ let db: DatabaseSync | undefined;
 // 39: the asynchronous input inbox (`reviews.wait_mode`, `meanwhile`, `closed_reason`), nullable
 //     with no backfill: every existing row is a question its agent waited for inside the call,
 //     filed no meanwhile line, and was never closed by a merge.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
+// 40: a task's work unit id (`tasks.work_unit_id`, @shared/work-unit.ts) and its index, nullable
+//     with no backfill: an older task gets its id at its next dispatch or assign, and nothing is
+//     inferred for it. Written once, enforced by `upsertTask`.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 40;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -487,6 +491,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS tasks (
       id            TEXT PRIMARY KEY,
+      -- The work unit, wu_ and a ULID (@shared/work-unit.ts). Written once. NULL for a resident
+      -- run, and for a task filed before the column until its next dispatch or assign.
+      work_unit_id  TEXT,
       title         TEXT NOT NULL,
       intent        TEXT NOT NULL,
       kind          TEXT NOT NULL,
@@ -3636,6 +3643,7 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   migrateHomeDispatch(d);
+  migrateTaskWorkUnit(d);
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -5316,6 +5324,15 @@ function migrateHomeDispatch(d: DatabaseSync): void {
   `);
 }
 
+/**
+ * Schema 40: a task's work unit id. The column before the index that names it, so an upgraded
+ * database never indexes a column it does not have yet. No backfill (decision D3).
+ */
+function migrateTaskWorkUnit(d: DatabaseSync): void {
+  addColumn(d, "tasks", "work_unit_id", "TEXT");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_work_unit ON tasks(work_unit_id)");
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -6506,6 +6523,8 @@ export function sessionsBoundToAgents(agentSessionIds: Iterable<string>): Set<st
 interface TaskRow {
   workspace_kind: string | null;
   id: string;
+  /** Optional: a row read before `migrate` added the column has none. */
+  work_unit_id?: string | null;
   title: string;
   intent: string;
   kind: string;
@@ -6944,6 +6963,9 @@ function rowToTask(
 ): Task {
   return {
     id: r.id,
+    // Validated, not cast, like `kind` below: a hand-edited or malformed value reads as no work
+    // unit rather than reaching a consumer that would send it to another service.
+    workUnitId: isWorkUnitId(r.work_unit_id) ? r.work_unit_id : null,
     title: r.title,
     intent: r.intent,
     // Validated, not cast. The column is unconstrained TEXT, so the value is whatever
@@ -7082,7 +7104,7 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
+         id, work_unit_id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
          model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
@@ -7092,8 +7114,11 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         -- Written once. A stored id is never replaced, whatever this copy of the task carries:
+         -- a writer holding a copy read before the id was given must not erase or change it.
+         work_unit_id=COALESCE(tasks.work_unit_id, excluded.work_unit_id),
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
@@ -7129,7 +7154,7 @@ export function upsertTask(t: Task): string[] {
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
-      t.id, t.title, t.intent, t.kind, t.agent, t.priority,
+      t.id, t.workUnitId ?? null, t.title, t.intent, t.kind, t.agent, t.priority,
       // Stored as NULL rather than "[]" when empty, so the column reads the same for a
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
@@ -7202,6 +7227,27 @@ export function upsertTask(t: Task): string[] {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * Give task `taskId` the work unit `candidate` unless it already has one, and return the id it
+ * has afterwards: `candidate` when this write was first, the stored one when another write got
+ * there first, or null when no such task exists. A caller uses the returned value and never its
+ * own candidate, so two operations initializing the same task at once end up with one id.
+ */
+export function claimTaskWorkUnitId(taskId: string, candidate: string): string | null {
+  if (!isWorkUnitId(candidate)) throw new TypeError(`not a work unit id: ${candidate}`);
+  const d = openDb();
+  d.prepare(`UPDATE tasks SET work_unit_id = ? WHERE id = ? AND work_unit_id IS NULL`).run(candidate, taskId);
+  return storedTaskWorkUnitId(taskId);
+}
+
+/** The work unit id stored for `taskId`, or null when it has none or no such task exists. */
+export function storedTaskWorkUnitId(taskId: string): string | null {
+  const row = openDb().prepare(`SELECT work_unit_id FROM tasks WHERE id = ?`).get(taskId) as
+    | { work_unit_id: string | null }
+    | undefined;
+  return isWorkUnitId(row?.work_unit_id) ? row.work_unit_id : null;
 }
 
 /**

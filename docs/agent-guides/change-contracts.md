@@ -137,6 +137,14 @@ Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never r
 `feature-flags` settings backup domain id is also persisted and final; its surface is
 `settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
 
+The work unit id format and its four carrier names are final, because other services
+query them by exact value: the format `wu_` and a ULID, checked by
+`^wu_[0-9A-HJKMNP-TV-Z]{26}$` (Agent Platform's check); the environment variable
+`WORK_UNIT_ID`; the HTTP header `x-work-unit-id`; the MCP `params._meta` key `work_unit_id`;
+and the span attribute `work_unit_id`. They are spelled once, in `src/shared/work-unit.ts`,
+and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
+choose one. See [Work units](../work-units.md).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs

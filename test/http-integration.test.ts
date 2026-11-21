@@ -461,6 +461,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   // only the route can enforce it - hence the wiring check here.
   registry.upsertTask({
     id: "stale-xyzzy",
+    workUnitId: null,
     title: "T",
     intent: "done, awaiting reclaim",
     kind: "ship",

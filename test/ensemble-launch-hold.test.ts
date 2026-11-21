@@ -351,6 +351,7 @@ test("the finalizer's replacement dispatch claims no pause override", async () =
   const deps = createFinalizeDeps({ registry: fakeRegistry as never, tasks: fakeTasks as never, workflows: {} as never });
   const result = await deps.materializeReplacement({
     taskId: "r1",
+    workUnitFrom: [],
     runId: "run-1",
     repoRoot: "/repo",
     title: "selected result",

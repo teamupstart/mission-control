@@ -1121,3 +1121,34 @@ test("read tools include durable attached-repository PRs without live session fe
       "the distinct abandoned open PR is preserved and never returned");
   }
 });
+
+test("the MCP tools carry the work unit: a plan's phase task shares it, and list_tasks filters by it", async (t) => {
+  const f = await fixture(t);
+  const createTool = (await f.client.listTools()).tools.find((tool) => tool.name === "create_task")!;
+  assert.deepEqual((createTool.inputSchema.properties?.workUnit as { enum?: string[] }).enum, ["inherit", "new"]);
+  const listTool = (await f.client.listTools()).tools.find((tool) => tool.name === "list_tasks")!;
+  assert.ok(listTool.inputSchema.properties?.workUnitId);
+
+  // The MCP child identifies itself as `sdk:backlog-test`; make that session a running plan task.
+  const plan = f.tasks.create({
+    repoRoot: repoA, intent: "Phase the plan", title: "Plan", kind: "plan", agent: "claude",
+    workflowId: null, backlog: true,
+  });
+  f.registry.registerSdkSession({ id: "sdk:backlog-test", agent: "claude", name: "Plan", cwd: repoA });
+  f.registry.upsertTask({ ...f.registry.getTask(plan.id)!, status: "running", sessionId: "sdk:backlog-test" });
+
+  const phase = await f.create({ workflowId: null });
+  assert.equal(phase.workUnitId, plan.workUnitId, "the create_task result carries the plan's work unit");
+  const own = await f.create({ workflowId: null, workUnit: "new" });
+  assert.ok(own.workUnitId);
+  assert.notEqual(own.workUnitId, plan.workUnitId);
+  // Every route the child picks carries the choice: configuration selects /mcp/v3/tasks.
+  const configured = await f.create({ workflowId: null, priority: "high", workUnit: "inherit" });
+  assert.equal(configured.workUnitId, plan.workUnitId);
+
+  const got = (await f.call<ReadTask>("get_task", { taskId: phase.id }))!;
+  assert.equal(got.workUnitId, plan.workUnitId);
+  const page = (await f.call<TaskPage>("list_tasks", { workUnitId: plan.workUnitId, limit: 100 }))!;
+  assert.deepEqual(page.tasks.map((task) => task.id).sort(), [plan.id, phase.id, configured.id].sort());
+  await f.call("list_tasks", { workUnitId: "wu_not-a-work-unit" }, /workUnitId must be a work unit id/);
+});

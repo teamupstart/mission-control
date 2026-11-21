@@ -68,6 +68,7 @@ const WRAPUP_CFG = {
 function mkTask(): Task {
   return {
     id: "task-1",
+    workUnitId: null,
     title: "Idle sessions are never submitted",
     intent: INTENT,
     kind: "ship",

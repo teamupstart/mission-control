@@ -71,8 +71,11 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
   taskRequeueRefusal,
+  taskKindHasWorkUnit,
   MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
+import { isWorkUnitId } from "@shared/work-unit.ts";
+import { mintWorkUnitId } from "./work-unit.ts";
 import {
   isPersonaLaunchRefusal,
   personaLaunchRefusal,
@@ -106,6 +109,7 @@ import {
   type InjectResult,
 } from "./actions.ts";
 import {
+  claimTaskWorkUnitId,
   clearTaskSessionClosure,
   completeTaskWithSessionClosure,
   getTask as getDurableTask,
@@ -394,6 +398,22 @@ export type InternalCreateOptions =
       /** The run that owns this task. Identity only; the run row stays the source of truth. */
       resident: { runId: string; workspaceDir?: string | null };
     };
+
+/**
+ * Where a new task's work unit id comes from. Internal, like `InternalCreateOptions`, and a
+ * separate argument for the same reason: no request body can name a work unit. Omitted, the
+ * task gets a new one. See `docs/work-units.md`.
+ *
+ *  - `inherit`: the first task in `from` that exists and whose kind has a work unit. A task that
+ *    predates the column is given its id first, and the new task copies it. When no task in
+ *    `from` qualifies the new task gets its own: an automatic inheritor never fails for want of
+ *    a source. A refusal to inherit is the caller's to make before it creates anything.
+ *  - `supplied`: a well-formed id chosen by an internal producer, kept for the later Agent
+ *    Platform handoff. A malformed one is a programming error and throws.
+ */
+export type TaskWorkUnitSource =
+  | { inherit: readonly string[] }
+  | { supplied: string };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
 export class TaskIdCollisionError extends Error {}
@@ -3187,6 +3207,7 @@ export class TaskManager {
     internal?: InternalCreateOptions,
     manualDispatch?: symbol,
     creationPolicy?: TaskCreationPolicy,
+    workUnit?: TaskWorkUnitSource,
   ): Task {
     const creator = taskKindCreator(input.kind);
     const refusal = taskKindBacklogRefusal(input.kind);
@@ -3348,8 +3369,12 @@ export class TaskManager {
     // would put a number in the column that means nothing. `reschedule` is what gives one
     // to a task that arrives in the backlog later.
     const backlogRank = backlogged ? this.allocateBacklogRank("bottom") : null;
+    // Last, after every refusal above: inheriting can give an older parent its id, and a
+    // creation that is then refused should not have written to another task.
+    const workUnitId = taskKindHasWorkUnit(input.kind) ? this.creationWorkUnitId(workUnit) : null;
     const task: Task = {
       id,
+      workUnitId,
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
@@ -3444,6 +3469,43 @@ export class TaskManager {
     return task;
   }
 
+  /** The work unit id a task being created gets from `source`. See `TaskWorkUnitSource`. */
+  private creationWorkUnitId(source: TaskWorkUnitSource | undefined): string {
+    if (source && "supplied" in source) {
+      if (!isWorkUnitId(source.supplied)) throw new TypeError(`not a work unit id: ${source.supplied}`);
+      return source.supplied;
+    }
+    for (const taskId of source?.inherit ?? []) {
+      const parent = this.registry.getTask(taskId) ?? getDurableTask(taskId);
+      if (!parent || !taskKindHasWorkUnit(parent.kind)) continue;
+      const inherited = this.ensureWorkUnit(parent).workUnitId;
+      if (inherited) return inherited;
+    }
+    return mintWorkUnitId();
+  }
+
+  /**
+   * `task` with the work unit id it has once this returns. A task that predates the column, and
+   * whose kind has a work unit, is given one here and the row is saved before this returns, so
+   * whatever reads the task next - a launch, an assign, a child inheriting from it - sees it.
+   *
+   * The write is conditional (`claimTaskWorkUnitId`) and the stored value is what is returned,
+   * never the id minted here: when two operations reach the same task at once, the first write
+   * wins and every other one uses it. A null in this copy is not trusted either, because the
+   * copy may have been read before another operation gave the id.
+   */
+  ensureWorkUnit(task: Task): Task {
+    if (task.workUnitId !== null || !taskKindHasWorkUnit(task.kind)) return task;
+    const stored = claimTaskWorkUnitId(task.id, mintWorkUnitId());
+    if (stored === null) return task;
+    const live = this.registry.getTask(task.id);
+    if (live && live.workUnitId !== stored) {
+      // Already saved, so broadcast without writing the row again.
+      this.registry.publishPersistedTask({ ...live, workUnitId: stored }, []);
+    }
+    return { ...task, workUnitId: stored };
+  }
+
   /**
    * Create or recover the one post-merge retro task owned by a source work episode.
    *
@@ -3472,6 +3534,9 @@ export class TaskManager {
         backlog: true,
       },
       { id: reserved.retroTaskId },
+      undefined,
+      undefined,
+      { inherit: [input.sourceTask.id] },
     );
     // A completed source may remain clickable after the bounded board projection evicted this
     // older follow-up. Re-admit the durable row before `dispatch` inspects it; the upsert does
@@ -3644,8 +3709,11 @@ export class TaskManager {
   async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task" };
+    // First, before anything in this dispatch reads the task: an older row gets its work unit
+    // here (decision D3), and the launch that follows reads it.
+    const t = this.ensureWorkUnit(found);
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is being assigned", task: t };
     }
@@ -4859,8 +4927,10 @@ export class TaskManager {
    * window they hold open is where this method's ordering rules can be broken.
    */
   async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task", scope: "task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task", scope: "task" };
+    // First, as in `dispatch`: an older row gets its work unit before this assign reads it.
+    const t = this.ensureWorkUnit(found);
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }

@@ -545,6 +545,24 @@ or returns something else is recorded as an outcome, never an error reply.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling
 them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The `mcp` and `http` transports, the shapers folder and the built-in gatherer are
-declared but not yet reachable: each answers `unavailable` until its phase lands, and its
-egress and folder ownership rules are documented with it.
+later phase. The `mcp` and `http` transports and the shapers folder are declared but not yet
+reachable: each answers `unavailable` until its phase lands, and its egress and folder
+ownership rules are documented with it.
+
+**The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
+in the daemon and reads the paths its options list, nothing else. Containment and size are
+checked on the file it opened, not on a path looked up beforehand: the open does not follow a
+final link, and it is non-blocking, so it does not wait for a writer on a named pipe, or on a
+device whose driver honours non-blocking opens. The opened file must be a regular file of at
+most 4 MiB with the same device and inode as the link-free real path inside the worktree, and
+the read stops at its cap. These checks run once the open has returned, so they do not bound
+how long an open on a hung network filesystem takes.
+This proves no file outside the worktree is read while the worktree's directories are not being
+rearranged during the read. A process running as the operator that swaps a directory on the
+path in a tight race can still get an outside file read, and that process could read the file
+itself. Every `repository-files` filesystem call in the daemon goes through one of two gates,
+one call at a time each, one for lookups and reads and one for closes, so a hung network mount
+can hold at most two of Node's shared file-I/O threads and never keeps another run's file open.
+The gatherer also holds at most one open file at a time, daemon-wide, released only once its
+close finishes, so a stalled close cannot make descriptors pile up.
+[The guide](task-shaping.md#the-built-in-gatherer) states every rule.

@@ -411,7 +411,7 @@ Like every registered shaper it is stored switched off. Dry-run it, then switch 
   it was cut. Entries share the shaper's and the run's budget like any other shaper's. An entry's
   id is at most 512 characters, so a longer path is skipped unread with a note.
 - **`summary`.** One path, cut to 4 KiB and returned as the repository's `summary`. A cut summary
-  marks the reply `truncated`.
+  marks the reply `truncated`, and so does an include or summary cut to nothing.
 - **`facts`.** One path to a JSON object whose values are strings or lists of strings, at most
   64 KiB in all, such as
   `{ "language": "python", "framework": ["django"] }`. It is returned as the repository's

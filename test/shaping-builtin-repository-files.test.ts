@@ -157,6 +157,7 @@ test("a newline at offset zero is a line boundary, so a cut never publishes part
   assert.deepEqual(fileText(Buffer.from("x".repeat(50)), 20, false), { text: "x".repeat(20), truncated: true }, "no boundary: one long line still contributes");
   const result = await gatherRepositoryFiles(root, options({ include: [{ path: "blank-first.md", maxBytes: 20 }, { path: "two.md", maxBytes: 20 }] }), never);
   assert.deepEqual(result?.guidance, [], "a cut to nothing is no entry");
+  assert.equal(result?.truncated, true, "but the reply still says content was cut");
   assert.doesNotMatch(JSON.stringify(result), /x{5}|y{5}/);
 });
 
@@ -260,6 +261,9 @@ test("a file whose capped prefix is white space is cut, not empty: no entry, and
   assert.equal(read.truncated, true);
   const result = await gatherRepositoryFiles(root, options({ include: [{ path: "spaced.md", maxBytes: 32 }], summary: "SUMMARY.md", facts: "facts.json" }), never);
   assert.deepEqual(result?.guidance, [], "a blank cut is no context");
+  assert.equal(result?.truncated, true, "a blank cut still marks the reply truncated");
+  const summaryOnly = await gatherRepositoryFiles(root, options({ summary: "SUMMARY.md" }), never);
+  assert.deepEqual([summaryOnly?.repo, summaryOnly?.truncated], [undefined, true], "a summary cut to nothing marks it too");
   assert.equal(result?.repo, undefined);
   assert.deepEqual(result?.notes, [
     'Skipped "spaced.md" (only white space within its first 32 bytes, so it was cut to nothing).',

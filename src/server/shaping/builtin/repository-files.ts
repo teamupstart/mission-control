@@ -283,8 +283,9 @@ export async function gatherRepositoryFiles(
   const guidance: ShapingEntry[] = [];
   const skips: string[] = [];
   let summary: string | undefined;
-  // The summary was cut to fit: selectors get a prefix, so the reply says its context is incomplete.
-  let summaryCut = false;
+  // Content was cut: a summary cut to fit, or a file cut to nothing. Selectors or the section get
+  // less than the file holds, so the reply says its context is incomplete, entry or not.
+  let cut = false;
   let facts: ShapingFacts | undefined;
 
   // The schema already bounds `include` below the reply's entry cap; this keeps the reply valid
@@ -301,7 +302,7 @@ export async function gatherRepositoryFiles(
     const cap = Math.min(maxBytes, SHAPING_LIMITS.entryBytes);
     const read = await readWorktreeFile(root, configured, cap, fs);
     if (!read.ok) { skips.push(skipNote("file", configured, read.skip)); continue; }
-    if (blankCut(read)) { skips.push(skipNote("file", configured, blankCutReason(cap))); continue; }
+    if (blankCut(read)) { cut = true; skips.push(skipNote("file", configured, blankCutReason(cap))); continue; }
     guidance.push({ id: configured, title: configured, path: configured, body: read.text, ...(read.truncated ? { truncated: true } : {}) });
   }
 
@@ -309,8 +310,8 @@ export async function gatherRepositoryFiles(
     if (signal.aborted) return null;
     const read = await readWorktreeFile(root, options.summary, SHAPING_LIMITS.summaryBytes, fs);
     if (!read.ok) skips.push(skipNote("summary", options.summary, read.skip));
-    else if (blankCut(read)) skips.push(skipNote("summary", options.summary, blankCutReason(SHAPING_LIMITS.summaryBytes)));
-    else { summary = read.text; summaryCut = read.truncated; }
+    else if (blankCut(read)) { cut = true; skips.push(skipNote("summary", options.summary, blankCutReason(SHAPING_LIMITS.summaryBytes))); }
+    else { summary = read.text; cut ||= read.truncated; }
   }
 
   if (options.facts !== undefined) {
@@ -331,7 +332,7 @@ export async function gatherRepositoryFiles(
 
   return {
     guidance,
-    ...(summaryCut ? { truncated: true } : {}),
+    ...(cut ? { truncated: true } : {}),
     ...(summary !== undefined || facts !== undefined ? { repo: { ...(facts ? { facts } : {}), ...(summary !== undefined ? { summary } : {}) } } : {}),
     ...(skips.length ? { notes: skipNotes(skips) } : {}),
   };

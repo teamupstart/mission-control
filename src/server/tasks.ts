@@ -5339,6 +5339,10 @@ export class TaskManager {
     // probe below is itself an await a turn could start during.
     const sessionChanged = (): string | null => {
       if (!shapingOn) return null;
+      // The task too: still in the backlog, with the inputs its context was chosen for.
+      const current = this.registry.getTask(t.id);
+      if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
+      if (inputs(current) !== shapedFrom) return "the task was edited while its context was being shaped, so it was not typed - hand it over again";
       const receiving = this.registry.getSession(s.id);
       const changed = !receiving ? "went away"
         : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`

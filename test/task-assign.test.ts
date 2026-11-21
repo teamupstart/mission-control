@@ -1751,3 +1751,36 @@ test("a turn that starts during the handover's last pane probe is caught by the 
     setShaping(false);
   }
 });
+
+test("an edit that lands during the handover's last pane probe is caught by the guard at delivery", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-probe-edit-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "the original request" }));
+    let probes = 0;
+    let typed = false;
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      shapeTask: handoverStandIn(HANDOVER_SECTION, r).shapeTask,
+      // A writer that bypasses the assign lock rewrites the card during the second probe.
+      paneReady: async () => {
+        if (++probes === 2) r.upsertTask({ ...r.getTask("t1")!, intent: "the rewritten request" });
+        return { ok: true };
+      },
+      inject: async (_session, _text, _deps, beforeWrite) => {
+        const refused = beforeWrite?.() ?? null;
+        if (refused) return { ok: false, pasted: false, submitVerified: false, error: refused };
+        typed = true;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(probes, 2);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /edited while its context was being shaped/);
+    assert.equal(typed, false, "the older text and its context were not handed over");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.intent, "the rewritten request");
+  } finally {
+    setShaping(false);
+  }
+});

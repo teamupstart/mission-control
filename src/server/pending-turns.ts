@@ -36,6 +36,7 @@ import {
   confirmHumanEcho,
   expectHumanEcho,
   markHumanEchoCaptured,
+  notePersonDelivery,
   recordInjection,
   releaseHumanEcho,
   releaseInjection,
@@ -957,6 +958,9 @@ export class PendingTurnManager {
     // report it back while the send is still in flight (see `reserveInjection`).
     const author = daemonAuthorOf(turn);
     if (author) reserveInjection(session.id, turn.text, author);
+    // The operator's own words: always the session's wake, even when they repeat an automated
+    // delivery still on its way (see `notePersonDelivery`).
+    else notePersonDelivery(session.id, turn.text);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -1087,6 +1091,8 @@ export class PendingTurnManager {
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
     const author = daemonAuthorOf(turn);
     if (author) reserveInjection(session.id, turn.text, author);
+    // The operator's own words, announced as `deliverSdk` does.
+    else notePersonDelivery(session.id, turn.text);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);

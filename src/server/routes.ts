@@ -353,6 +353,7 @@ import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs"
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
 import {
   confirmReservedInjection,
+  notePersonDelivery,
   releaseInjection,
   reserveInjection,
 } from "./injections.ts";
@@ -6189,6 +6190,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
     // Mission Control, so it stays in flight until the race window closes.
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
+    // A person's words (the operator's, or a controlling session's) are always the session's
+    // wake, even when they repeat an automated delivery still on its way, so say so first.
+    if (origin === "human" || origin === "session") notePersonDelivery(session.id, parsed.data.text);
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -6586,6 +6590,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
     if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
+    // A person's words, the operator's or a controller's, announced as such before the write,
+    // for the reason `/send` gives.
+    if (origin === "human" || origin === "session") notePersonDelivery(session.id, text);
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.

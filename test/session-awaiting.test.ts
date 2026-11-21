@@ -29,6 +29,7 @@ const { isAwaiting, awaitingOverdue } = await import("../src/shared/session.ts")
 const { detectStall, NO_UNPUSHED } = await import("../src/shared/stall.ts");
 const {
   reserveInjection, releaseInjection, recordInjection, confirmReservedInjection, onAutomatedDelivery, forgetInjections,
+  onPersonDelivery, notePersonDelivery, injectionFingerprint,
 } = await import("../src/server/injections.ts");
 
 type ReviewManagerT = import("../src/server/reviews.ts").ReviewManager;
@@ -121,11 +122,17 @@ function clearedEvents(sessionId: string): Array<Record<string, unknown>> {
 }
 
 /**
- * Wire Mission Control's automated deliveries into this registry's waits, exactly as the daemon
- * does at startup (`src/server/index.ts`). Returns the unsubscribe.
+ * Wire Mission Control's automated deliveries, and a person's own, into this registry's waits,
+ * exactly as the daemon does at startup (`src/server/index.ts`). Returns the unsubscribe.
  */
 function wireNudges(registry: RegistryT): () => void {
-  return onAutomatedDelivery((delivery) => registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+  const stopAutomated = onAutomatedDelivery((delivery) =>
+    registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+  const stopPerson = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery.sessionId, delivery.at, delivery.key));
+  return () => {
+    stopAutomated();
+    stopPerson();
+  };
 }
 
 /** Two discovered sessions, live together, each in the middle of the turn that declares a wait. */
@@ -661,6 +668,86 @@ test("a delivery claimed just before the wait is declared still counts as Missio
   assert.equal(registry.reportAwaiting(spent.syntheticId, body()).ok, true);
   const spentKey = noteKeyFor(registry.getSession(spent.syntheticId)!);
   assert.deepEqual(loadSessionAwaitings().find((row) => row.noteKey === spentKey)?.pendingNudges, []);
+});
+
+test("a person's message in the same words as a pending automated delivery is the wake, in either order and across a restart", () => {
+  const WRAP = "Please wrap up and open the pull request.";
+  const stored = (registry: RegistryT, d: DiscoveredSession) =>
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!;
+
+  // Foreman claims a delivery, then the operator sends the very same words. Either turn of
+  // those words may land first and neither says whose it is, so the pending delivery is
+  // contested, and stored that way so a restart in between still knows.
+  const first = new Registry();
+  const stopFirst = wireNudges(first);
+  let d: DiscoveredSession;
+  try {
+    d = working(first);
+    assert.equal(first.reportAwaiting(d.syntheticId, body()).ok, true);
+    hook(first, d, "Stop");
+    reserveInjection(d.syntheticId, WRAP, "foreman");
+    assert.equal(stored(first, d).pendingNudges[0]?.contested, undefined);
+    notePersonDelivery(d.syntheticId, WRAP);
+    assert.equal(stored(first, d).pendingNudges[0]?.contested, true, "the person's identical words did not contest the nudge");
+  } finally {
+    stopFirst();
+  }
+  forgetInjections();
+  const second = new Registry();
+  second.applyDiscovery([d]);
+  hook(second, d, "Stop");
+  hook(second, d, "UserPromptSubmit", WRAP);
+  assert.equal(second.getAwaiting(d.syntheticId), null, "the person's turn was used up as Mission Control's nudge");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+
+  // The other order: the operator's words go first, and Foreman claims the same words before
+  // the operator's turn has started. The delivery is contested from the moment it is stored.
+  const registry = new Registry();
+  const stop = wireNudges(registry);
+  try {
+    const e = working(registry);
+    assert.equal(registry.reportAwaiting(e.syntheticId, body()).ok, true);
+    hook(registry, e, "Stop");
+    notePersonDelivery(e.syntheticId, WRAP);
+    reserveInjection(e.syntheticId, WRAP, "foreman");
+    assert.equal(stored(registry, e).pendingNudges[0]?.contested, true);
+    hook(registry, e, "UserPromptSubmit", WRAP);
+    assert.equal(registry.getAwaiting(e.syntheticId), null);
+    assert.equal(clearedEvents(e.syntheticId).at(-1)?.actor, "wake");
+
+    // A person's message in other words contests nothing: the nudge's turn is still the nudge.
+    const f = working(registry);
+    assert.equal(registry.reportAwaiting(f.syntheticId, body()).ok, true);
+    hook(registry, f, "Stop");
+    reserveInjection(f.syntheticId, WRAP, "foreman");
+    notePersonDelivery(f.syntheticId, "Also bump the version, please.");
+    assert.equal(stored(registry, f).pendingNudges[0]?.contested, undefined);
+    hook(registry, f, "UserPromptSubmit", WRAP);
+    assert.ok(registry.getAwaiting(f.syntheticId), "an uncontested nudge's turn read as the wake");
+  } finally {
+    stop();
+  }
+});
+
+test("the dashboard's send and inject doors announce the operator's words as a person's", async (t) => {
+  const registry = new Registry();
+  const app = mkApp(registry);
+  const sdk = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "claude", name: "embedded", cwd: "/repo", agentSessionId: `agent-aw-doors-${seq}` });
+  const heard: Array<{ sessionId: string; key: string }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ sessionId: delivery.sessionId, key: delivery.key }); }));
+  const post = (path: string, body: unknown) => app.request(path, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  // The deliveries themselves fail here (no driver is attached); the announcement is made
+  // before the write, as the reservation it sits beside is.
+  await post(`/api/sessions/${sdk.id}/send`, { text: "Send words", origin: "human" });
+  await post(`/api/sessions/${sdk.id}/inject`, { text: "Inject words", origin: "human" });
+  assert.deepEqual(heard, [
+    { sessionId: sdk.id, key: injectionFingerprint("Send words") },
+    { sessionId: sdk.id, key: injectionFingerprint("Inject words") },
+  ]);
 });
 
 test("a note-key rotation carries the wait to the new key, as it carries a blocker", () => {

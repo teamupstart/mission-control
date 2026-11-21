@@ -1077,10 +1077,18 @@ export class Registry extends EventEmitter {
   private awaitingSeenAt = new Map<string, number>();
   /**
    * The state each waiting session was last emitted in. In memory only: the declaring turn's
-   * end is an observed TRANSITION into idle, so a state that lagged the declaration (already
-   * idle when the tool was called) cannot settle the turn that is still making the call.
+   * end is an observed TRANSITION into idle, or a fresher idle reading after the declaration
+   * (`declaringTurnEnded`), so a state that lagged the declaration (already idle when the tool
+   * was called) cannot settle the turn that is still making the call.
    */
   private awaitingLastState = new Map<string, Session["state"]>();
+  /**
+   * The person deliveries (`notePersonDelivery`) written into each waiting session recently,
+   * by wait key, so an automated delivery of the same words claimed just after one is stored as
+   * contested too. In memory only: the window is a couple of minutes, and what outlives it (a
+   * nudge already contested) is stored on the wait itself.
+   */
+  private awaitingPersonSends = new Map<string, PendingNudge[]>();
   /**
    * The prompt fingerprints of the hook event being applied right now, for
    * `observeAwaitingTurn` to read while that event's emit is in flight. Set and cleared around
@@ -9389,6 +9397,7 @@ export class Registry extends EventEmitter {
     this.awaitings.delete(key);
     this.awaitingSeenAt.delete(key);
     this.awaitingLastState.delete(key);
+    this.awaitingPersonSends.delete(key);
     logEvent(sessionId, now, "session_awaiting_cleared", {
       actor,
       durationMs: now - record.awaiting.startedAt,
@@ -9507,7 +9516,8 @@ export class Registry extends EventEmitter {
         // delivery Mission Control types reports its prompt, so a turn without one is the
         // session's own: the wake. Without hooks no turn reports one, and the oldest delivery
         // still outstanding is the best reading of whose turn it was.
-        if (s.hooksSeen) {
+        // A contested oldest delivery is not a nudge either (see `useUpAwaitingNudge`).
+        if (s.hooksSeen || record.pendingNudges[0]?.contested) {
           this.endAwaitingFromTurn(s, key, "wake", now);
           return;
         }
@@ -9538,6 +9548,11 @@ export class Registry extends EventEmitter {
    * If one of `prompt`'s fingerprints is a pending delivery of Mission Control's, use that one
    * up (the turn is its nudge), write `patch` with it, and answer true. False leaves the record
    * untouched: the prompt is someone else's.
+   *
+   * A contested delivery is never used up: a person also sent those exact words, so this turn
+   * is either theirs or the nudge's with theirs still to come, and a person's turn is the wake
+   * either way. Answering false ends the wait now rather than one turn late, or never, when the
+   * automated delivery is folded into the person's turn or never lands.
    */
   private useUpAwaitingNudge(
     key: string,
@@ -9546,7 +9561,7 @@ export class Registry extends EventEmitter {
     patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn">>,
   ): boolean {
     const i = record.pendingNudges.findIndex((nudge) => prompt.includes(nudge.key));
-    if (i < 0) return false;
+    if (i < 0 || record.pendingNudges[i]!.contested) return false;
     const next = {
       ...record,
       ...patch,
@@ -9610,12 +9625,48 @@ export class Registry extends EventEmitter {
       if (i < 0) return;
       pendingNudges = [...record.pendingNudges.slice(0, i), ...record.pendingNudges.slice(i + 1)];
     } else {
+      // A person sent these exact words moments ago and their turn may not have started yet:
+      // this delivery is contested from the start (see `notePersonDelivery`).
+      const contested = this.recentPersonSends(key, at).some((send) => send.key === textKey);
       // Bounded like the claims behind it: far more than ever overlap, never unbounded.
-      pendingNudges = [...record.pendingNudges, { at, key: textKey }].slice(-32);
+      pendingNudges = [...record.pendingNudges, { at, key: textKey, ...(contested ? { contested: true as const } : {}) }]
+        .slice(-32);
     }
     const next = { ...record, pendingNudges };
     upsertSessionAwaiting(next);
     this.awaitings.set(key, next);
+  }
+
+  /**
+   * Store on a waiting session's wait that a person's own words (from `onPersonDelivery`) are
+   * about to be written into it: the operator's, or a controlling session's.
+   *
+   * A person's turn is always the wake, and it needs no help being one when its prompt is its
+   * own. It does when the words are byte-for-byte those of an automated delivery still pending
+   * on the wait: the prompt then matches that nudge, and the person's turn would be used up as
+   * Mission Control's. So every pending delivery of the same words is marked contested, and
+   * stored that way, which `useUpAwaitingNudge` reads as the wake. The send is also remembered
+   * for a couple of minutes, for an automated delivery of the same words claimed after it.
+   */
+  notePersonDelivery(sessionId: string, at: number, textKey: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const key = noteKeyFor(s);
+    const record = this.awaitings.get(key);
+    if (!record) return;
+    this.awaitingPersonSends.set(key, [...this.recentPersonSends(key, at), { at, key: textKey }].slice(-32));
+    if (!record.pendingNudges.some((nudge) => nudge.key === textKey && !nudge.contested)) return;
+    const next = {
+      ...record,
+      pendingNudges: record.pendingNudges.map((nudge) => nudge.key === textKey ? { ...nudge, contested: true as const } : nudge),
+    };
+    upsertSessionAwaiting(next);
+    this.awaitings.set(key, next);
+  }
+
+  /** The person deliveries into this wait's session still inside the contest window at `now`. */
+  private recentPersonSends(key: string, now: number): PendingNudge[] {
+    return (this.awaitingPersonSends.get(key) ?? []).filter((send) => now - send.at <= AWAITING_CONTEST_WINDOW_MS);
   }
 
   /**
@@ -9630,7 +9681,7 @@ export class Registry extends EventEmitter {
     moveSessionAwaiting(fromKey, toKey);
     this.awaitings.delete(fromKey);
     this.awaitings.set(toKey, { ...record, noteKey: toKey });
-    for (const map of [this.awaitingSeenAt, this.awaitingLastState] as Map<string, unknown>[]) {
+    for (const map of [this.awaitingSeenAt, this.awaitingLastState, this.awaitingPersonSends] as Map<string, unknown>[]) {
       if (!map.has(fromKey)) continue;
       map.set(toKey, map.get(fromKey));
       map.delete(fromKey);
@@ -11591,6 +11642,13 @@ const AWAITING_LIVENESS_GRACE_MS = 3 * 60_000;
  * Mission Control's own; one claimed long before has long since been read or dropped.
  */
 const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
+
+/**
+ * How long a person's delivery into a waiting session contests an automated delivery of the
+ * same words claimed after it. A delivery starts its turn within moments of being written, so
+ * this only has to outlast a slow hook; past it, the person's turn has long since been judged.
+ */
+const AWAITING_CONTEST_WINDOW_MS = 2 * 60_000;
 
 /**
  * Has the turn that declared (or re-declared) this wait ended, as `s` reads now? `last` is

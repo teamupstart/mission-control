@@ -187,6 +187,50 @@ function announceAutomated(delivery: AutomatedDelivery): void {
   }
 }
 
+/** A person's words Mission Control is about to write into a session (`notePersonDelivery`). */
+export interface PersonDelivery {
+  sessionId: string;
+  at: number;
+  /** `injectionFingerprint` of the text, as an automated delivery's `key` is. */
+  key: string;
+}
+
+export type PersonDeliveryListener = (delivery: PersonDelivery) => void;
+
+const personListeners = new Set<PersonDeliveryListener>();
+
+/**
+ * Hear every delivery of a person's own words Mission Control writes into a session: the
+ * operator's composer turns and sends, and a controlling session's messages. Returns the
+ * unsubscribe.
+ *
+ * The declared-wait writer's other half (`Registry.notePersonDelivery`). Its nudge matching
+ * reads a turn's prompt, and a person can send the very words an automated delivery still on
+ * its way carries. Neither turn of those words says whose it is, so the registry needs to know
+ * the two are contested, and a person's turn is always the session's wake.
+ */
+export function onPersonDelivery(listener: PersonDeliveryListener): () => void {
+  personListeners.add(listener);
+  return () => personListeners.delete(listener);
+}
+
+/**
+ * Announce that a person's words are about to be written into this session. Called by every
+ * door Mission Control carries them through, before the write, like `reserveInjection`: the
+ * prompt hook can report the text back while the send is still in flight. Nothing is stored
+ * here; the listeners decide what it means.
+ */
+export function notePersonDelivery(sessionId: string, text: string): void {
+  const delivery: PersonDelivery = { sessionId, at: Date.now(), key: injectionFingerprint(text) };
+  for (const listener of personListeners) {
+    try {
+      listener(delivery);
+    } catch {
+      /* a listener that cannot record must not break the delivery it was told about */
+    }
+  }
+}
+
 /**
  * Count one automated delivery into this session, once. A delivery recorded as landed after its
  * own reservation (the resident loop reserves, then records on acceptance) is the same delivery,

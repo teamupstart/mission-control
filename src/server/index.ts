@@ -28,7 +28,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections, onAutomatedDelivery } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery, onPersonDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
@@ -237,6 +237,10 @@ const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
 // the turn one starts is never taken for the session's wake, even across a restart.
 const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
   registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+// And a person's own words, so an automated delivery of the same words cannot pass off the
+// person's turn as Mission Control's nudge.
+const stopPersonDeliveries = onPersonDelivery((delivery) =>
+  registry.notePersonDelivery(delivery.sessionId, delivery.at, delivery.key));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
@@ -1063,6 +1067,7 @@ async function shutdown(): Promise<void> {
   stopFeatureFlags();
   stopAwaitingFlag();
   stopAutomatedDeliveries();
+  stopPersonDeliveries();
   stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();

@@ -2636,7 +2636,9 @@ Mission Control started. Each delivery is recorded on the stored wait as it is c
 fingerprint of its text, and matched to the turn whose prompt it is: that turn is the nudge, and
 a turn with any other prompt, such as your message arriving first, is the wake. So two deliveries
 are two nudged turns, a delivery that never lands is not counted, and a daemon restart between a
-delivery and its turn changes nothing. A delivery claimed just before the session declares the
+delivery and its turn changes nothing. A message you or a controlling session send through
+Mission Control in exactly the words of a delivery still pending contests that delivery: nothing
+says which of the two turns of those words is whose, so the first of them is read as the wake. A delivery claimed just before the session declares the
 wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
 arrives after it starts is decided when it arrives, even across a restart; a turn that never
 reports one is the session's own wake on a hook-instrumented session, and uses up the oldest

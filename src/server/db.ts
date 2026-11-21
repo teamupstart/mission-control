@@ -12723,6 +12723,11 @@ export interface PendingNudge {
   at: number;
   /** `injectionFingerprint` of the delivered text, matched against the turn's prompt. */
   key: string;
+  /**
+   * A person also sent these exact words while this delivery was pending, so the turn whose
+   * prompt matches cannot be told apart from theirs and is read as the wake. Absent otherwise.
+   */
+  contested?: true;
 }
 
 /** A stored `pending_nudges` array, or empty for NULL or anything that is not one. */
@@ -12734,7 +12739,8 @@ function parsePendingNudges(raw: string | null): PendingNudge[] {
     return v.filter((n): n is PendingNudge =>
       typeof n === "object" && n !== null
       && typeof (n as PendingNudge).at === "number" && Number.isFinite((n as PendingNudge).at)
-      && typeof (n as PendingNudge).key === "string");
+      && typeof (n as PendingNudge).key === "string")
+      .map((n) => ({ at: n.at, key: n.key, ...(n.contested === true ? { contested: true as const } : {}) }));
   } catch {
     return [];
   }

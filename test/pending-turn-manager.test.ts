@@ -31,7 +31,9 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
-const { claimHumanEcho, HUMAN_ECHO_TTL_MS, observeInjections, originOf } = await import("../src/server/injections.ts");
+const {
+  claimHumanEcho, HUMAN_ECHO_TTL_MS, injectionFingerprint, observeInjections, onPersonDelivery, originOf,
+} = await import("../src/server/injections.ts");
 const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
 const { SNOOZE_INSTRUCTION_TURN_PREFIX } = await import("../src/server/db.ts");
 
@@ -625,6 +627,30 @@ test("a dialog raised on a stopping session still refuses the queued row", async
   await tick();
   assert.deepEqual(f.calls, [], "a stopping session drained a row it should have held");
   f.manager.stop();
+});
+
+test("the operator's queued words are announced as a person's delivery on both runtimes", async (t) => {
+  // A declared wait reads a person's turn as the wake even when its words repeat an automated
+  // delivery still pending, and it can only do that if the outbox says the words are a person's.
+  const heard: Array<{ sessionId: string; key: string }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ sessionId: delivery.sessionId, key: delivery.key }); }));
+
+  const sdk = sdkFixture("person-sdk", async () => "started");
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+
+  const terminal = terminalFixture("person-terminal", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  terminal.manager.submit(terminal.id, "Please wrap up and open the pull request.");
+  await tick();
+  assert.deepEqual(terminal.injected, ["Please wrap up and open the pull request."]);
+  terminal.manager.stop();
+
+  const key = injectionFingerprint("Please wrap up and open the pull request.");
+  assert.deepEqual(heard, [{ sessionId: sdk.id, key }, { sessionId: terminal.id, key }]);
 });
 
 test("terminal rows remain sending until a hook proves prompt pickup", async () => {

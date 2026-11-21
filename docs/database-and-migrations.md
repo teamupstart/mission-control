@@ -46,7 +46,9 @@ automation claimed into the session while the wait stood, or in the ten minutes 
 declared with its prompt not yet back from the session, and that has not yet started its turn,
 with the delivered text's fingerprint, so the turn whose prompt it is reads as that nudge rather
 than as the wake, even when deliveries overlap, another message starts a turn first, or the
-daemon restarts in between. A delivery that provably never landed is removed. `undecided_turn`
+daemon restarts in between. A delivery that provably never landed is removed. An entry carries
+`contested` when a person's own message in exactly the same words was sent through Mission Control
+while it was pending, and the turn whose prompt matches it is then read as the wake. `undecided_turn`
 marks a turn that started while a delivery was pending and whose prompt has not been reported
 yet, so a restart before that prompt arrives can still decide whose turn it was.
 

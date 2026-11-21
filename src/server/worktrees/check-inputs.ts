@@ -10,11 +10,18 @@ import { describeCommandFailure, run } from "../util/exec.ts";
 export async function inspectPooledCheckInputs(path: string): Promise<
   { ok: true } | { ok: false; category: "state" | "observation"; reason: string }
 > {
+  const env = isolatedGitEnvironment();
+  // This scan owns its wildcard semantics, including matching nested Go paths.
+  for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) {
+    delete env[key];
+  }
   const result = await run("git", ["-C", path, "ls-files", "--others", "--ignored",
     "--exclude-standard", "-z", "--", "*.go"], {
-    env: isolatedGitEnvironment(), timeoutMs: 15_000, maxBuffer: 1024 * 1024,
+    env, timeoutMs: 15_000, maxBuffer: 1024 * 1024,
   });
-  if (result.code !== 0 || result.outcomeUnknown || result.overflowed) {
+  // Git can skip unreadable directories with only a warning and exit zero. Any stderr
+  // makes completeness unproven; never turn partial traversal into a clean inspection.
+  if (result.code !== 0 || result.outcomeUnknown || result.overflowed || result.stderr.trim()) {
     return { ok: false, category: "observation",
       reason: `Pool contamination inspection could not complete in ${path}: ${describeCommandFailure("git ls-files", result)}` };
   }

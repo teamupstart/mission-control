@@ -1030,6 +1030,54 @@ test("archiving a binding stops the claims of the run it cancels", async () => {
 });
 
 // Issue #1567: Git-clean does not mean filesystem discovery sees only this task's source.
+for (const observation of ["occupied", "unknown"] as const) {
+  test(`a check slot becoming ${observation} during its scan is refused before reset`, async () => {
+    const { clone, sha } = repository("mission-check-scan-occupancy-");
+    const fake = steps(() => ok);
+    let reservedObservations = 0;
+    let target: string | null = null;
+    const edits = "tracked edits made during the scan\n";
+    const manager = new WorktreeManager(db, {
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null, claim: LOCK_CLAIM }),
+      runClaimStep: fake.runClaimStep,
+      occupancy: async (paths) => {
+        if (target && paths.includes(target)
+          && db.prepare("SELECT state FROM worktree_slots WHERE path = ?").get(target)?.state === "provisioning") {
+          reservedObservations++;
+          if (reservedObservations === 1) {
+            // The first empty observation becomes stale while the scan runs. Tracked
+            // edits do not affect its ignored-source listing, but reset would erase them.
+            writeFileSync(join(target, "lock.txt"), edits);
+          } else {
+            const state: WorktreeOccupancy = observation === "unknown"
+              ? { status: "unknown", reason: "process listing unavailable after scan" }
+              : { status: "known", occupants: [{ pid: 91, ppid: 1, startRaw: "now", startMs: 1,
+                command: "editor", cwd: target, knownOwner: null }] };
+            return new Map([[target, state]]);
+          }
+        }
+        return emptyOccupancy(paths);
+      },
+    });
+    const prior = await manager.acquire({ repositoryPath: clone, baseSha: sha,
+      owner: { kind: "task", key: `prior-scan-${observation}` } });
+    assert.equal(prior.outcome, "acquired");
+    if (prior.outcome !== "acquired") return;
+    assert.equal((await manager.release(prior.lease)).outcome, "released");
+    target = prior.lease.path;
+    const leases = checkLeases(manager);
+    await assert.rejects(leases.acquireForAttempt({ ...attempt(), repoRoot: clone, headSha: sha }),
+      observation === "occupied" ? /process entered.*before reset/ : /process listing unavailable after scan/);
+    assert.equal(reservedObservations, 2, "occupancy must be checked again after scanning");
+    assert.equal(readFileSync(join(target, "lock.txt"), "utf8"), edits);
+    assert.equal(fake.ran.length, 0, "no dependency claim may start");
+    const slot = manager.store.slots().find((entry) => entry.path === target);
+    assert.equal(slot?.state, observation === "occupied" ? "quarantined" : "available");
+    assert.equal(slot?.activeLeaseId, null);
+    assert.deepEqual(leaseRows.listLive(), []);
+  });
+}
+
 test("a failed contamination scan blocks the check lease and preserves the slot", async () => {
   const { clone, sha } = repository("mission-check-scan-failure-");
   const fake = steps(() => ok);

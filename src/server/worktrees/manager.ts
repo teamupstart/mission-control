@@ -1122,6 +1122,9 @@ export class WorktreeManager {
               // or replaced by a cold fallback in this same check attempt.
               return { outcome: "outcomeUnknown", reason: inputs.reason };
             }
+            // The scan can take seconds. Do not reset using the earlier occupancy proof.
+            const enteredAfterScan = await this.enteredSinceReservation(reservation, "reset");
+            if (enteredAfterScan) return { outcome: "outcomeUnknown", reason: enteredAfterScan };
           }
         }
 

@@ -1,6 +1,6 @@
 // A clean Git status must not vouch for ignored source left in a reusable check slot.
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { inspectPooledCheckInputs } from "../src/server/worktrees/check-inputs.ts";
@@ -58,6 +58,45 @@ test("an unreadable checkout is an observation failure, never clean", async (t) 
   assert.equal(result.category, "observation");
   assert.match(result.reason, /inspection could not complete/);
 });
+
+test("an unreadable ignored directory rejects Git's successful but incomplete scan", async (t) => {
+  const path = fixture(t);
+  const hidden = join(path, ".local");
+  mkdirSync(hidden);
+  writeFileSync(join(hidden, "diagnostic.go"), "package old\n");
+  chmodSync(hidden, 0);
+  try {
+    const result = await inspectPooledCheckInputs(path);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.category, "observation");
+    assert.match(result.reason, /inspection could not complete/);
+    assert.match(result.reason, /Permission denied/i);
+  } finally {
+    chmodSync(hidden, 0o700);
+  }
+  assert.equal(readFileSync(join(hidden, "diagnostic.go"), "utf8"), "package old\n");
+});
+
+for (const variable of ["GIT_LITERAL_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) {
+  test(`inherited ${variable} cannot change the Go source scan`, async (t) => {
+    const path = fixture(t);
+    mkdirSync(join(path, ".local"));
+    writeFileSync(join(path, ".local/diagnostic.go"), "package old\n");
+    const previous = process.env[variable];
+    process.env[variable] = "1";
+    try {
+      const result = await inspectPooledCheckInputs(path);
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.equal(result.category, "state");
+      assert.match(result.reason, /\.local\/diagnostic\.go/);
+    } finally {
+      if (previous === undefined) delete process.env[variable];
+      else process.env[variable] = previous;
+    }
+  });
+}
 
 test("inherited Git selectors cannot redirect the contamination scan", async (t) => {
   const path = fixture(t);

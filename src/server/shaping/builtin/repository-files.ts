@@ -11,7 +11,6 @@ import {
   type ShapingRequest,
   type ShapingResult,
 } from "@shared/shaping.ts";
-import { readFileWithinCap } from "../../session-files.ts";
 import { decodeUtf8Whole } from "../../util/utf8.ts";
 import type { TransportContext, TransportReply } from "../transports/types.ts";
 
@@ -135,8 +134,7 @@ const LINE_END_LOOKAHEAD = 2;
 
 /** How many bytes a read of a file capped at `cap` asks for: a byte order mark and the lookahead on top. */
 export function boundedReadBytes(cap: number): number {
-  // `readFileWithinCap` reads one byte past what it is asked for, which is the first lookahead byte.
-  return cap + UTF8_BOM.length + LINE_END_LOOKAHEAD - 1;
+  return cap + UTF8_BOM.length + LINE_END_LOOKAHEAD;
 }
 
 /**
@@ -176,6 +174,24 @@ function sameFile(a: BigIntStats, b: BigIntStats): boolean {
 }
 
 /**
+ * At most `limit` bytes from the start of `handle`, read until the limit or the end of the file,
+ * whichever comes first, so a file that grows during the read is still cut off. `stopped` is
+ * checked before every read, because one read on a slow mount can return after the deadline:
+ * null means the call stopped and no further read was started.
+ */
+async function readUpTo(handle: Pick<FileHandle, "read">, limit: number, stopped: () => boolean): Promise<Buffer | null> {
+  const buffer = Buffer.allocUnsafe(limit);
+  let length = 0;
+  while (length < limit) {
+    if (stopped()) return null;
+    const { bytesRead } = await handle.read(buffer, length, limit - length, length);
+    if (bytesRead === 0) break;
+    length += bytesRead;
+  }
+  return buffer.subarray(0, length);
+}
+
+/**
  * Read one configured file from the worktree whose real path is `root`, at most `cap` bytes of
  * text. The order is the guarantee: the path, then an open that cannot block or follow a final
  * link, then the identity of the handle, and only then the read, from that handle.
@@ -188,12 +204,18 @@ export async function readWorktreeFile(
   signal?: AbortSignal,
 ): Promise<FileRead> {
   if (!pathIsConfinable(configured)) return { ok: false, skip: "outside-worktree" };
+  // Every filesystem call below can stall on a slow mount. The signal is checked before each one
+  // starts, so a call stopped at its deadline starts no further I/O: a lookup that returns late is
+  // the last one, and an open handle goes straight to `finally` to be closed.
+  const stopped = () => signal?.aborted === true;
+  if (stopped()) return { ok: false, stopped: true };
 
   // Path. The real path, with every link resolved, must lie inside the worktree's real path.
   let real: string;
   try { real = await fs.realpath(path.join(root, configured)); }
   catch (error) { return { ok: false, skip: lookupSkip(error) }; }
   if (!inside(root, real)) return { ok: false, skip: "outside-worktree" };
+  if (stopped()) return { ok: false, stopped: true };
   try {
     const info = await fs.lstat(real);
     // Never opened: a directory, a socket, a pipe or a device is skipped on its lookup alone.
@@ -202,8 +224,8 @@ export async function readWorktreeFile(
     return { ok: false, skip: lookupSkip(error) };
   }
 
-  // Open. A lookup can stall past the deadline; a stopped call starts no new I/O when it returns.
-  if (signal?.aborted) return { ok: false, stopped: true };
+  // Open.
+  if (stopped()) return { ok: false, stopped: true };
   let handle: Awaited<ReturnType<RepositoryFilesFs["open"]>>;
   try { handle = await fs.open(real, OPEN_FLAGS); }
   catch (error) {
@@ -212,11 +234,13 @@ export async function readWorktreeFile(
   }
   try {
     // Identity. Everything is decided on the handle, which is the file that will be read.
+    if (stopped()) return { ok: false, stopped: true };
     let opened: BigIntStats;
     try { opened = await handle.stat(); }
     catch { return { ok: false, skip: "unreadable" }; }
     if (!opened.isFile()) return { ok: false, skip: "not-a-regular-file" };
     if (opened.size > BigInt(REPOSITORY_FILE_MAX_BYTES)) return { ok: false, skip: "too-large" };
+    if (stopped()) return { ok: false, stopped: true };
     // The real path, looked up again, must still be free of links, inside the worktree, and name
     // the same device and inode as the handle. A directory on the way swapped while the open ran
     // leaves the handle naming some other file, whose inode is not the one inside the worktree.
@@ -224,23 +248,22 @@ export async function readWorktreeFile(
     // worktree is a worktree file.
     let again: string;
     let named: BigIntStats;
-    try {
-      again = await fs.realpath(real);
-      named = await fs.lstat(real);
-    } catch (error) {
-      return { ok: false, skip: lookupSkip(error) };
-    }
+    try { again = await fs.realpath(real); }
+    catch (error) { return { ok: false, skip: lookupSkip(error) }; }
+    if (stopped()) return { ok: false, stopped: true };
+    try { named = await fs.lstat(real); }
+    catch (error) { return { ok: false, skip: lookupSkip(error) }; }
     if (again !== real || !inside(root, again) || !named.isFile() || !sameFile(named, opened)) {
       return { ok: false, skip: "outside-worktree" };
     }
 
-    // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off. A call
-    // stopped while the identity checks ran reads nothing; the handle is still closed below.
-    if (signal?.aborted) return { ok: false, stopped: true };
-    // The read allows a byte order mark and the line-end lookahead on top of the cap.
-    let bounded: { bytes: Buffer; exceeded: boolean };
-    try { bounded = contentWithinCap((await readFileWithinCap(handle, boundedReadBytes(cap))).bytes, cap); }
+    // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off. The
+    // read allows a byte order mark and the line-end lookahead on top of the cap.
+    let read: Buffer | null;
+    try { read = await readUpTo(handle, boundedReadBytes(cap), stopped); }
     catch { return { ok: false, skip: "unreadable" }; }
+    if (read === null) return { ok: false, stopped: true };
+    const bounded = contentWithinCap(read, cap);
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
     // `empty` is a claim about the whole decoded file, so only text that was neither a prefix of
     // the file nor cut can make it. A file whose first `cap` bytes are white space is not empty,
@@ -417,14 +440,18 @@ export async function callRepositoryFiles(
 ): Promise<TransportReply> {
   const worktree = request.repo.path;
   if (!worktree) return { kind: "unavailable", reason: "The repository's worktree is not available on this machine." };
+  const stoppedReply: TransportReply = { kind: "timed_out", reason: "The shaping step stopped before every configured file was read." };
+  // The worktree's own lookups are checked like every file's: none starts once the call stopped.
+  if (ctx.signal.aborted) return stoppedReply;
   let root: string;
   try {
     root = await fs.realpath(worktree);
+    if (ctx.signal.aborted) return stoppedReply;
     if (!(await fs.lstat(root)).isDirectory()) throw new Error("not a directory");
   } catch {
     return { kind: "unavailable", reason: "The repository's worktree is not available on this machine." };
   }
   const result = await gatherRepositoryFiles(root, options, ctx.signal, fs);
-  if (!result) return { kind: "timed_out", reason: "The shaping step stopped before every configured file was read." };
+  if (!result) return stoppedReply;
   return { kind: "data", data: result };
 }

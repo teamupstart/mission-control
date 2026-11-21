@@ -174,7 +174,7 @@ test("a CRLF separator just past the cap keeps the line it ends, and a cut leave
   assert.deepEqual(await readWorktreeFile(root, "crlf.md", 7), { ok: true, text: "one", truncated: true });
   // A complete read cut by the cap follows the same rule.
   assert.deepEqual(fileText(Buffer.from(`${crlf}�`), 8, false), { text: "one\r\ntwo", truncated: true });
-  assert.equal(boundedReadBytes(8), 8 + 3 + 1, "the read asks for the cap, a byte order mark and the lookahead past its own extra byte");
+  assert.equal(boundedReadBytes(8), 8 + 3 + 2, "the read asks for the cap, a byte order mark and the two-byte lookahead");
 });
 
 test("a whole file whose replacement characters outgrow the cap is cut, never reported empty", async () => {
@@ -526,6 +526,42 @@ test("a signal that fires during a file's lookup or its identity checks starts n
   const identity = counted("identity");
   assert.deepEqual(await readWorktreeFile(root, "one.md", 1024, identity.fs, identity.stop.signal), { ok: false, stopped: true });
   assert.deepEqual(identity.seen, { opens: 1, reads: 0, closes: 1 });
+
+  // Every point: stopped as the Nth filesystem call returns, the reader starts no other call but
+  // the handle's close. Unstopped, the calls are realpath, lstat, open, stat, realpath, lstat, read.
+  const recording = (stopAfter: number) => {
+    const stop = new AbortController();
+    const calls: string[] = [];
+    const note = (name: string) => { calls.push(name); if (calls.length === stopAfter) stop.abort(); };
+    const fs: RepositoryFilesFs = {
+      async realpath(target) { const value = await NODE_REPOSITORY_FILES_FS.realpath(target); note("realpath"); return value; },
+      async lstat(target) { const info = await NODE_REPOSITORY_FILES_FS.lstat(target); note("lstat"); return info; },
+      async open(target, flags) {
+        const handle = await NODE_REPOSITORY_FILES_FS.open(target, flags);
+        note("open");
+        return {
+          read: (async (...args: Parameters<typeof handle.read>) => { const result = await handle.read(...args); note("read"); return result; }) as typeof handle.read,
+          close: () => { calls.push("close"); return handle.close(); },
+          async stat() { const info = await handle.stat(); note("stat"); return info; },
+        };
+      },
+    };
+    return { stop, calls, fs };
+  };
+  const whole = recording(Infinity);
+  assert.equal((await readWorktreeFile(root, "one.md", 1024, whole.fs, whole.stop.signal)).ok, true);
+  const unstopped = whole.calls.filter((call) => call !== "close");
+  assert.deepEqual(unstopped.slice(0, 6), ["realpath", "lstat", "open", "stat", "realpath", "lstat"]);
+  for (let at = 1; at < unstopped.length; at++) {
+    const run = recording(at);
+    assert.deepEqual(await readWorktreeFile(root, "one.md", 1024, run.fs, run.stop.signal), { ok: false, stopped: true }, `stopped after call ${at}`);
+    const opened = run.calls.slice(0, at).includes("open");
+    assert.deepEqual(run.calls, [...unstopped.slice(0, at), ...(opened ? ["close"] : [])], `nothing starts after call ${at} (${unstopped[at - 1]})`);
+  }
+  // The worktree's own lookups: a stop as its realpath returns starts no lstat.
+  const rootRun = recording(1);
+  assert.equal((await callRepositoryFiles(gatherRequest(root), options({ include: [{ path: "one.md" }] }), { signal: rootRun.stop.signal }, rootRun.fs)).kind, "timed_out");
+  assert.deepEqual(rootRun.calls, ["realpath"]);
 
   // The gatherer stops there too, with no skip recorded for the file it did not read.
   const gathered = counted("identity");

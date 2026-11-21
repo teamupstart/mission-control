@@ -102,7 +102,9 @@ export async function shapeTask(input: ShapeTaskInput, deps: ShapeTaskDeps = {})
   try {
     if (!(deps.enabled ?? featureEnabled("task-shaping"))) return emptyRun();
     const config = deps.config ?? getShapingConfig();
-    const discovered = deps.discovered ?? await discoverShapers();
+    // The folder is read at the start of every run, against the same config snapshot, so a
+    // folder dropped in or replaced since the last launch takes effect now, with no restart.
+    const discovered = deps.discovered ?? await discoverShapers({ config });
     const resolved = resolveShapers(config, discovered, {
       kind: input.context.kind, repositories: input.context.repositories, ...(input.turn ? { turn: input.turn } : {}),
     });
@@ -121,7 +123,7 @@ export type DryRunResult =
 /** Run exactly one shaper, whatever its stored choice and filters, as `shapeTask` would. */
 export async function dryRunShaper(id: string, input: ShapeTaskInput, deps: ShapeTaskDeps = {}): Promise<DryRunResult> {
   const config = deps.config ?? getShapingConfig();
-  const discovered = deps.discovered ?? await discoverShapers();
+  const discovered = deps.discovered ?? await discoverShapers({ config });
   const found = resolveShaperById(config, discovered, id, {
     kind: input.context.kind, repositories: input.context.repositories,
   });

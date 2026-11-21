@@ -553,9 +553,14 @@ contract. Nothing a shaper does can stop the launch: a shaper that fails, times 
 something else is recorded as `degraded` and the worker starts without its text, and the
 section is cut to what the delivery path can carry, so it never makes a launch that works today
 fail. What each session received is recorded on the task and shown only for that session. The
-`mcp` and `http` transports and the shapers folder are declared but not yet reachable: each
-answers `unavailable` until its phase lands, and its egress and folder ownership rules are
-documented with it.
+`mcp` and `http` transports are declared but not yet reachable: each answers `unavailable`
+until its phase lands, and its egress rules are documented with it.
+
+**The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
+the state home can run at the next dispatch without a click, so anything that can write that
+folder can add one, worker agents included. The ownership checks, what Mission Control shows
+and records, and the full trust statement are in
+[the shaper folder](task-shaping.md#the-shaper-folder).
 
 **The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
 in the daemon and reads the paths its options list, nothing else. Containment and size are

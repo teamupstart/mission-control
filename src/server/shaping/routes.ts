@@ -11,7 +11,7 @@ import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
-import { discoverShapers } from "./discovery.ts";
+import { discoverShapers, scanShaperFolder } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
 import { taskShapingForReads } from "./reads.ts";
@@ -37,7 +37,8 @@ import { referenceStatus } from "./references.ts";
  * Task shaping's API, all behind the `task-shaping` flag: with it off every route answers 404
  * before its handler runs, so nothing reads the stored config.
  *
- * - `GET /api/shaping` returns `{ config, discovered, references }`.
+ * - `GET /api/shaping` returns `{ config, discovered, folder, references }`, reading the shapers
+ *   folder afresh: `folder` names where it looked and how many entries past the bound it left.
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
@@ -122,7 +123,8 @@ export function registerShapingRoutes(
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
-    return c.json({ config: daemonShapingView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
+    const { shapers: discovered, folder } = await scanShaperFolder({ config });
+    return c.json({ config: daemonShapingView(config), discovered, folder, references: referenceStatus(config) });
   });
 
   app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {

@@ -928,6 +928,14 @@ function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reas
   return `${at}${message}`.slice(0, maxChars);
 }
 
+/**
+ * A schema failure as one sentence that names where the problem is and never a value, for a
+ * manifest in the shapers folder as for a stored entry.
+ */
+export function describeShapingIssue(error: z.ZodError): string {
+  return issueSentence(error);
+}
+
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
 export function classifyShaper(
   stored: StoredShaper,
@@ -1188,6 +1196,12 @@ export const DiscoveredShaperSchema = z.object({
 });
 export type DiscoveredShaper = z.output<typeof DiscoveredShaperSchema>;
 
+/** Where the folder scan looked, and how many entries beyond its bound it left unread. */
+export interface ShapingFolderStatus {
+  path: string;
+  ignored: number;
+}
+
 /** Set or not set, per `{env:NAME}` any shaper references. Never a value. */
 export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 
@@ -1195,6 +1209,8 @@ export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 export interface ShapingReply {
   config: ShapingConfigView;
   discovered: DiscoveredShaper[];
+  /** The folder that was scanned. Absent from a daemon older than the shapers folder. */
+  folder?: ShapingFolderStatus;
   references: ShapingReferenceStatus;
 }
 
@@ -1213,7 +1229,15 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
    * a replacement written meanwhile.
    */
   z.object({ kind: z.literal("remove"), id: z.string().min(1).max(64), expect: ShapingRevisionSchema.optional() }),
-  z.object({ kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional() }),
+  /**
+   * `manifest`, when sent, is the SHA-256 of the folder manifest the sender showed. Switching on
+   * is refused once the folder holds another manifest for the id, or a registered shaper has
+   * taken the id, so a click never switches on a definition the operator was not shown.
+   */
+  z.object({
+    kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional(),
+    manifest: z.string().regex(/^[0-9a-f]{64}$/, { message: "A manifest hash is 64 hexadecimal digits." }).optional(),
+  }),
   z.object({ kind: z.literal("reorder"), order: z.array(z.string().min(1).max(64)).max(SHAPING_LIMITS.choices) }),
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
@@ -1362,6 +1386,13 @@ export function applyShapingIntent(
       const found = discovered.find((entry) => entry.id === intent.id);
       if (at === -1 && !found) return refuse("unknown_shaper", `No shaper has the id "${intent.id}".`);
       if (stale(intent.id, intent.expect)) return changed(intent.id);
+      // Bound to the manifest the sender showed: switching on what replaced it, or a registration
+      // that took its id, needs a fresh look first. Switching off is always safe.
+      if (intent.enabled && intent.manifest !== undefined && (at !== -1 || found?.sha256 !== intent.manifest)) {
+        return refuse("shaper_changed", at !== -1
+          ? `A registered shaper now has the id "${intent.id}", so the folder's shaper was not switched on. Review it again first.`
+          : `"${intent.id}" changed in the shapers folder since it was shown here, so it was not switched on. Review it again first.`);
+      }
       if (intent.enabled) {
         if (at !== -1) {
           const classified = classifyShaper(shapers[at]!, definitions);

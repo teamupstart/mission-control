@@ -2644,15 +2644,20 @@ A message of yours that provably never lands lifts that contest again, unless an
 same words still stands; one whose outcome is unknown keeps it. A delivery claimed just before the session declares the
 wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
 arrives after it starts is decided when it arrives, even across a restart; a turn that never
-reports one is the session's own wake on a hook-instrumented session, and uses up the oldest
-delivery on a harness without hooks. Only confirmed readings of the session's state count:
+reports one is the session's own wake on a session whose hooks report prompts, and uses up the
+oldest delivery on one that never does (a harness without hooks, or an SDK launch with no prompt
+hook). A turn a session without hooks starts and finishes between two discovery sweeps is
+still judged, from the turn marker its transcript records. Only confirmed readings of the
+session's state count:
 rediscovering a session after a restart is never itself read as a wake, and a turn already
 under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made
 during a turn that Mission Control could not yet attribute still lets that turn use up the
 delivery that started it, so the agent's next real wake is not mistaken for it. It also ends on `clear_awaiting`, when you or a
-controlling session clear it, when the task it was declared for reaches a terminal status, and
-when the agent process exits or has not been seen live for three minutes, because the wake
-source it declared was its own and is presumed gone with it. Switching the preview off ends
+controlling session clear it, when the task it was declared for reaches a terminal status
+(including a reset that cancels it), and when the session is removed after its process exits or
+has not been seen live for three minutes, because the wake source it declared was its own and is
+presumed gone with it. The exited card a missed discovery sweep draws is not that removal: a
+process the next sweep sees again keeps its wait. Switching the preview off ends
 every wait.
 
 While a wait stands and its deadline has not passed, the same idle-triggered automation a

@@ -1038,7 +1038,7 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   assert.deepEqual(actions.slice(-3), ["flag_blocker_reply", "clear_blocker", "clear_blocker"]);
 });
 
-test("residents list sessions awaiting a background process, overdue ones included, and clear one through the dashboard route", async () => {
+test("residents list sessions awaiting a background process, overdue ones included, and clear one through the dashboard route", async (t) => {
   const f = fixture(); await f.grant(true);
   const now = Date.now();
   const wait = (what: string, expectedBy: number) => ({
@@ -1066,6 +1066,9 @@ test("residents list sessions awaiting a background process, overdue ones includ
   // clear_awaiting maps onto the dashboard route: a stale id is refused, the current one clears
   // the target's wait, sends the session nothing and leaves the other session's wait alone.
   const shown = f.registry.getSession(f.target.id)!.awaiting!.id;
+  // Watched directly: `f.messages` records `send` only, and a clear must use neither path.
+  const sends = t.mock.method(f.sdk, "send");
+  const idleSends = t.mock.method(f.sdk, "sendWhenIdle");
   assert.equal((await f.act({ action: "clear_awaiting", awaitingId: "a-wait-that-was-replaced" })).status, 409);
   assert.ok(f.registry.getSession(f.target.id)!.awaiting, "a stale resident clear removed the wait");
   const cleared = await f.act({ action: "clear_awaiting", awaitingId: shown, resolution: "CI was cancelled" });
@@ -1074,6 +1077,8 @@ test("residents list sessions awaiting a background process, overdue ones includ
   assert.equal(f.registry.getSession(f.target.id)!.awaiting, null);
   assert.ok(f.registry.getSession(f.other.id)!.awaiting, "clearing one session's wait touched another's");
   assert.equal(f.messages.length, 0, "a clear sends nothing to the session");
+  assert.equal(sends.mock.callCount(), 0, "a clear called send");
+  assert.equal(idleSends.mock.callCount(), 0, "a clear called sendWhenIdle");
   const after = await (await f.request("/mcp/session-control/read", { awaiting: true })).json() as { sessions: Array<{ id: string }> };
   assert.deepEqual(after.sessions.map((s) => s.id), [f.other.id]);
 

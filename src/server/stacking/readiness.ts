@@ -192,7 +192,13 @@ export class StackReadiness {
     if (hasBlocker(session)) return null;
     // Waiting on its own CI or build inside the deadline it declared: not finished yet, so
     // nothing stacks on it. Read on this reconciler's own clock, like every other time here.
-    if (isAwaiting(session, this.now())) return null;
+    if (isAwaiting(session, this.now())) {
+      // Nothing announces the deadline passing, so arrange to look again at it: past
+      // `expectedBy` the hold lifts and the episode is judged as usual. Re-armed on every pass,
+      // so a re-declared deadline moves the look, and `stop()` cancels it.
+      this.retryLater(parent.id, session.awaiting!.expectedBy - this.now() + 1);
+      return null;
+    }
     if (session.queue && session.queue.openCount > 0) return null;
     const binding = this.registry.workEpisodeForTask(parent.id);
     if (!binding || binding.sessionId !== session.id || !binding.prUrl) return null;

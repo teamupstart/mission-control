@@ -32,12 +32,14 @@ for reaches a terminal status, and prunes a key no session has held for the goal
 `last_held_at` records when a live session was last seen holding the key, so that window counts
 observed absence and a restart does not reset it.
 
-`session_awaitings` (schema 39) holds one [declared wait on a background process](sessions.md#sessions-awaiting-a-background-process)
+`session_awaitings` (schema 39) holds one [declared wait on a background process](sessions.md#sessions-awaiting-a-background-process-preview)
 per note key, with the bound `task_id` recorded for the terminal-task clear. It is created in
 `migrate()`, so an older database gains an empty table on its next open. The Registry loads it at
 construction, moves a row on every note-key rotation as it moves a blocker, and deletes a row on
-the session's next turn, on exit, after three minutes with no live session holding its key, on a
-clear, when its task reaches a terminal status, and when the `session-awaiting` preview is off.
+the session's next turn, when the session is removed after it exits, after three minutes with no
+live session holding its key, on a clear, when its task reaches a terminal status, and when the
+`session-awaiting` preview is off. A blocker replacing a wait deletes the wait's row in the same
+transaction that writes the blocker.
 `settled_at` records when the declaring turn was seen to end, which is what tells the wake from
 the rest of that turn: a reading that leaves the session's turn for idle, or, for a wait declared
 while the session already read idle, the first time its hooks or its transcript report it idle

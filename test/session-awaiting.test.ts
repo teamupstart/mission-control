@@ -54,8 +54,10 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     tty: `ttys20${n}`,
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: `%${200 + n}` })],
     startedAt: 0,
+    gitRoot: null,
+    repoRoot: null,
     ...over,
-  } as DiscoveredSession;
+  };
 }
 
 const WHAT = "CI checks on PR #1612";
@@ -283,6 +285,9 @@ test("report_status inside a turn that declared while the registry read idle doe
   assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
 
   registry.applyStatus({ tmuxPane: (d.terminals[0] as { paneId: string }).paneId }, `agent-${d.syntheticId}`, "watching CI");
+  // The status really landed on this session, with an activity stamp newer than the declaration.
+  assert.equal(registry.getSession(d.syntheticId)?.activity, "watching CI");
+  assert.ok((registry.getSession(d.syntheticId)?.lastActivity ?? 0) > at, "report_status did not stamp the session");
   assert.equal(registry.getSession(d.syntheticId)?.state, "idle");
   hook(registry, d, "PreToolUse", "go", at + 500);
   assert.ok(registry.getAwaiting(d.syntheticId), "a report_status mid-turn settled the wait, so the turn's next tool call read as the wake");
@@ -703,6 +708,50 @@ test("on a hook-instrumented session a re-declaration inside an undecided turn l
   assert.equal(stored(silent).pendingNudges.length, 1);
 });
 
+test("a delivery's turn on a driver session that never reports prompts uses up the delivery rather than waking", (t) => {
+  // A Codex SDK launch has no prompt hook, though its driver marks the session instrumented:
+  // a turn ending with no prompt reported says nothing about whose turn it was there.
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const sdk = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "codex", name: "embedded", cwd: "/repo", agentSessionId: `agent-aw-codex-${seq}` });
+  const drive = (state: "working" | "idle") => registry.applyDriverEvent(sdk.id, { kind: "state", state, activity: null });
+  registry.applyDriverEvent(sdk.id, { kind: "bound", agentSessionId: `${sdk.id}-native`, transcriptPath: null, modelId: null, pid: null });
+  assert.equal(registry.getSession(sdk.id)?.hooksSeen, true, "the fixture is not marked instrumented as a bound driver is");
+  drive("working");
+  assert.equal(registry.reportAwaiting(sdk.id, body()).ok, true);
+  drive("idle");
+  reserveInjection(sdk.id, "Please wrap up and open the pull request.", "foreman");
+  drive("working");
+  drive("idle");
+  assert.ok(registry.getAwaiting(sdk.id), "Mission Control's own delivery ended the wait as a wake");
+  assert.deepEqual(
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(sdk.id)!))!.pendingNudges,
+    [],
+    "the delivery's turn did not use it up",
+  );
+  // Nothing outstanding now: the session's own next turn is the wake.
+  drive("working");
+  assert.equal(registry.getAwaiting(sdk.id), null);
+  assert.equal(clearedEvents(sdk.id).at(-1)?.actor, "wake");
+});
+
+test("a delivery listener that fails is logged with the session and delivery, and the delivery goes on", (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const stop = onAutomatedDelivery(() => { throw new Error("listener down"); });
+  const heard: string[] = [];
+  const stopNext = onAutomatedDelivery((delivery) => { heard.push(delivery.sessionId); });
+  try {
+    reserveInjection("sdk:listener-check", "Please wrap up and open the pull request.", "foreman");
+  } finally {
+    stop();
+    stopNext();
+  }
+  assert.deepEqual(heard, ["sdk:listener-check"], "one failing listener kept the next from hearing the delivery");
+  const logged = errors.mock.calls.map((call) => String(call.arguments[0]));
+  assert.ok(logged.some((line) => line.includes("sdk:listener-check") && line.includes(injectionFingerprint("Please wrap up and open the pull request."))),
+    "the failing listener left no log line naming the session and delivery");
+});
+
 test("a turn left undecided at a restart is still decided by its prompt after it", () => {
   const WRAP = "Please wrap up and open the pull request.";
   // Two sessions, each with Foreman's delivery pending and a turn under way whose prompt has
@@ -887,6 +936,16 @@ test("the dashboard's send and inject doors announce the operator's words as a p
   ]);
   assert.equal(heard[1]!.id, heard[0]!.id, "the withdrawal named a different send");
   assert.equal(heard[3]!.id, heard[2]!.id);
+
+  // A terminal session whose pane cannot be reached: refused before anything is written, so the
+  // announcement is taken back there too.
+  const paneless = mkDiscovered({ terminals: [] });
+  registry.applyDiscovery([paneless]);
+  heard.length = 0;
+  await post(`/api/sessions/${paneless.syntheticId}/send`, { text: "Terminal words", origin: "human" });
+  assert.deepEqual(heard.map((h) => [h.key, h.released]), [
+    [injectionFingerprint("Terminal words"), false], [injectionFingerprint("Terminal words"), true],
+  ]);
 });
 
 test("a person's send that never landed lifts its contest, unless another send of the same words still stands", (t) => {
@@ -988,14 +1047,148 @@ test("a note-key rotation carries the wait to the new key, as it carries a block
   assert.ok(!keys.includes(d.syntheticId), "the wait stranded under the old key");
 });
 
-test("a session that exits takes its wait with it, unlike a blocker", () => {
+test("a session that exits takes its wait with it on its removal, and a provisional exit does not", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const registry = new Registry();
   const d = working(registry);
   assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  // A discovery miss: exited is drawn at once, but the eviction is only under way.
   registry.applyDiscovery([]);
   assert.equal(registry.getSession(d.syntheticId)?.state, "exited");
-  assert.equal(registry.getSession(d.syntheticId)?.awaiting, null);
+  assert.ok(registry.getAwaiting(d.syntheticId), "a provisional exit ended the wait");
+  // The next sweep sees the same process again and cancels the eviction: the wait still stands.
+  registry.applyDiscovery([d]);
+  assert.notEqual(registry.getSession(d.syntheticId)?.state, "exited");
+  assert.ok(registry.getAwaiting(d.syntheticId), "the cancelled eviction lost the wait");
+  assert.deepEqual(clearedEvents(d.syntheticId), []);
+  // Gone for good: the removal after the linger ends the wait.
+  registry.applyDiscovery([]);
+  t.mock.timers.tick(8_000);
+  assert.equal(registry.getSession(d.syntheticId), undefined);
+  assert.ok(!loadSessionAwaitings().some((row) => row.noteKey === key), "the removed session's wait was kept");
   assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "exit");
+});
+
+test("a blocker that fails to write keeps the wait it would have replaced", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  assert.throws(() => registry.reportBlocker(d.syntheticId, { ...BLOCKER, reason: null as unknown as string }));
+  assert.ok(registry.getAwaiting(d.syntheticId), "the failed blocker write dropped the wait");
+  assert.ok(loadSessionAwaitings().some((row) => row.noteKey === key), "the failed blocker write deleted the wait's row");
+  assert.equal(registry.getSession(d.syntheticId)?.blocker, null);
+  assert.deepEqual(clearedEvents(d.syntheticId), []);
+});
+
+test("a wake publishes the cleared wait of every session sharing its key", () => {
+  const registry = new Registry();
+  const conversation = `shared-conv-${++seq}`;
+  const a = mkDiscovered({ agent: "codex", agentSessionId: conversation });
+  const b = mkDiscovered({ agent: "codex", agentSessionId: conversation });
+  registry.applyDiscovery([a, b]);
+  let at = Date.now() - 60_000;
+  const read = (d: DiscoveredSession, state: "idle" | "working") => {
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity: at += 1_000 });
+    registry.applyDiscovery([a, b]);
+  };
+  read(a, "working");
+  read(b, "idle");
+  assert.equal(noteKeyFor(registry.getSession(a.syntheticId)!), noteKeyFor(registry.getSession(b.syntheticId)!));
+  assert.equal(registry.reportAwaiting(a.syntheticId, body()).ok, true);
+  assert.ok(registry.getSession(b.syntheticId)?.awaiting, "the sibling did not show the shared wait");
+  read(a, "idle");
+  const published: Array<{ id: string; awaiting: unknown }> = [];
+  const listen = (e: { type: string; session?: { id: string; awaiting: unknown } }) => {
+    if (e.type === "session_upsert" && e.session) published.push({ id: e.session.id, awaiting: e.session.awaiting });
+  };
+  registry.on("event", listen);
+  try {
+    read(a, "working");
+  } finally {
+    registry.off("event", listen);
+  }
+  assert.equal(registry.getAwaiting(a.syntheticId), null);
+  assert.ok(
+    published.some((p) => p.id === b.syntheticId && p.awaiting === null),
+    "the sibling's cleared wait was never published",
+  );
+});
+
+test("a reset that cancels the session's task ends the wait declared for it", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  const sid = d.syntheticId;
+  registry.upsertTask(mkTask({ id: `task-reset-${++seq}`, status: "running", sessionId: sid }));
+  assert.ok(registry.getSession(sid)?.task, "the fixture task is not bound to the session");
+  assert.equal(registry.reportAwaiting(sid, body()).ok, true);
+  registry.resetWorkEpisode(sid);
+  assert.equal(registry.getAwaiting(sid), null, "the reset cancelled the task but kept its wait");
+  assert.equal(clearedEvents(sid).at(-1)?.actor, "task");
+});
+
+test("a turn a session without hooks starts and ends between sweeps is still judged", (t) => {
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const d = mkDiscovered({ agent: "codex" });
+  registry.applyDiscovery([d]);
+  let at = Date.now() - 60_000;
+  const read = (state: "idle" | "working", turnStartedAt?: number) => {
+    at += 1_000;
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity: at, ...(turnStartedAt ? { turnStartedAt } : {}) });
+    registry.applyDiscovery([d]);
+  };
+  read("working", at);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  read("idle");
+  const settled = loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!.settledAt!;
+  assert.ok(settled);
+
+  // A delivery of Mission Control's lands, and its whole turn falls between two sweeps: the
+  // transcript is idle again, with a newer turn marker. It uses up the delivery.
+  reserveInjection(d.syntheticId, "Please wrap up and open the pull request.", "foreman");
+  read("idle", settled + 1_000);
+  assert.ok(registry.getAwaiting(d.syntheticId), "a missed nudge turn ended the wait");
+  assert.deepEqual(
+    loadSessionAwaitings().find((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!))!.pendingNudges,
+    [],
+    "the missed nudge turn did not use up its delivery",
+  );
+
+  // The session's own wake, just as quick: nothing is outstanding, so it is the wake.
+  read("idle", settled + 5_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "a turn missed between sweeps was never judged");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("a declaration whose request body is read after the preview switched off is refused", async () => {
+  const registry = new Registry();
+  const app = mkApp(registry);
+  const sdk = registry.registerSdkSession({ id: `sdk:awaiting-${++seq}`, agent: "claude", name: "embedded", cwd: "/repo", agentSessionId: `agent-aw-flag-${seq}` });
+  applyFeatureFlagIntent({ kind: "flag", id: SESSION_AWAITING_FLAG_ID, enabled: true });
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify({ env: {}, sessionId: sdk.id, ...wire() }));
+    // The preview is switched off while the body is still arriving, after the route's gate ran.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        applyFeatureFlagIntent({ kind: "flag", id: SESSION_AWAITING_FLAG_ID, enabled: false });
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+    const res = await app.request("/mcp/awaiting", {
+      method: "POST",
+      headers: { host: "127.0.0.1", "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    assert.equal(res.status, 404, "a declaration landed after the preview was switched off");
+    assert.equal((await res.json()).feature, SESSION_AWAITING_FLAG_ID);
+    assert.equal(registry.getAwaiting(sdk.id), null);
+  } finally {
+    applyFeatureFlagIntent({ kind: "flag", id: SESSION_AWAITING_FLAG_ID, enabled: false });
+  }
 });
 
 test("a restart reloads the wait, and drops it once its session has been gone past the grace", () => {
@@ -1125,7 +1318,14 @@ test("the MCP routes bind to the caller and follow the preview; the session clea
     const { expectedBy: _required, ...missing } = wire();
     assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...missing })).status, 400, "expectedBy is required");
     assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire("in twenty minutes") })).status, 400);
-    assert.equal((await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire("2026-11-20T15:40:00") })).status, 400, "a date-time with no zone");
+    // Inside the allowed window, so the missing zone is the only thing wrong with it.
+    const zoneless = new Date(Date.now() + 20 * MIN).toISOString().slice(0, 19);
+    const noZone = await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire(zoneless) });
+    assert.equal(noZone.status, 400, "a date-time with no zone");
+    const noZoneError = JSON.stringify(await noZone.json());
+    assert.match(noZoneError, /expectedBy/);
+    assert.match(noZoneError, /datetime|date-time|ISO/i, "the refusal did not name the date-time format");
+    assert.doesNotMatch(noZoneError, /in the future|at most 240 minutes/, "the refusal came from the deadline bounds, not the zone rule");
     const past = await mcp("/mcp/awaiting", { env: {}, sessionId: sdk.id, ...wire(Date.now() - MIN) });
     assert.equal(past.status, 400);
     assert.match((await past.json()).error, /in the future/);

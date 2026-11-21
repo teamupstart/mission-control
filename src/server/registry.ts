@@ -1102,6 +1102,14 @@ export class Registry extends EventEmitter {
    * the one emit in `applyHook`.
    */
   private awaitingTurnPrompts = new Map<string, string[]>();
+  /**
+   * Sessions whose own hooks have reported a turn's prompt at least once. A turn that ends with
+   * no prompt reported reads as the session's own wake only on these: a session whose prompts
+   * never reach the registry (a Codex SDK launch has no prompt hook, though its driver marks
+   * it instrumented) would otherwise have every delivery of Mission Control's read as a wake.
+   * In memory: after a restart a session is judged as a prompt-less one until its next prompt.
+   */
+  private promptReporters = new Set<string>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
   private retiredMissionTargets = new Map<string, Session>();
@@ -3939,6 +3947,9 @@ export class Registry extends EventEmitter {
       logEvent(next.id, ts, evt.event, fromSubagent ? { activity, state, agentId: evt.agentId } : { activity, state });
       // A prompt hook names the turn it starts: a waiting session's wait reads it during the emit
       // (whose turn is starting) and after it (a turn whose prompt arrives late).
+      if (!fromSubagent && (spec.promptText(evt)?.trim() || spec.submittedPromptText(evt)?.trim())) {
+        this.promptReporters.add(next.id);
+      }
       const promptKeys = this.awaitings.size > 0 ? this.hookPromptKeys(spec, evt) : null;
       if (promptKeys) this.awaitingTurnPrompts.set(next.id, promptKeys);
       try {
@@ -4806,10 +4817,16 @@ export class Registry extends EventEmitter {
       }
     }
     for (const task of updates.values()) {
+      const previous = this.tasks.get(task.id);
       this.tasks.set(task.id, task);
       this.emitEvent({ type: "task_upsert", task });
       this.syncSessionsForWorktree(task.worktreePath);
       if (task.sessionId) this.resyncSessionTask(task.sessionId);
+      // A task this episode change cancelled ends the wait declared for it, as a terminal
+      // write through `upsertTask` does: a reset that cancels the task leaves nothing to wait for.
+      if (isTerminalTask(task.status) && previous && !isTerminalTask(previous.status)) {
+        this.clearAwaitingsForTask(task, previous, at);
+      }
     }
     this.resyncSessionTask(sessionId);
   }
@@ -7262,9 +7279,20 @@ export class Registry extends EventEmitter {
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
     this.sdkLaunchTasks.delete(id);
+    this.promptReporters.delete(id);
+    const leaving = this.sessions.get(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
     this.sessionControlRequests.delete(id);
+    // The session is gone for good, so a wait it declared ends with it: the wake source it
+    // named was its own command, monitor or wakeup, presumed gone with the process. Here and
+    // not on its `exited` reading, which an eviction a later sweep cancels also emits. Kept
+    // when another live session still holds the key, as a rotation or a resumed process does.
+    if (leaving) {
+      const key = noteKeyFor(leaving);
+      const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
+      if (!held) this.clearAwaitingKey(key, id, "exit", undefined, Date.now());
+    }
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -9095,9 +9123,6 @@ export class Registry extends EventEmitter {
       };
     }
     const key = noteKeyFor(s);
-    // A human answer outranks a process: a blocker replaces any declared wait, so the two
-    // never stand together and the card never shows both a red and a grey hold.
-    this.clearAwaitingKey(key, s.id, "blocker", undefined, now);
     const prev = this.blockers.get(key)?.blocker ?? null;
     const blocker: SessionBlocker = {
       // A re-report keeps the blocker's identity; a first report mints one.
@@ -9115,7 +9140,16 @@ export class Registry extends EventEmitter {
     };
     // Reported by a live session, so the key is held right now.
     const record: SessionBlockerRecord = { noteKey: key, taskId: s.task?.id ?? null, blocker, lastHeldAt: now };
-    upsertSessionBlocker(record);
+    // A human answer outranks a process: a blocker replaces any declared wait, so the two
+    // never stand together and the card never shows both a red and a grey hold. The wait's
+    // row goes in the same transaction the blocker's lands in, so a failed blocker write keeps
+    // the wait rather than leaving the session with neither; the caches follow the commit.
+    const replacesWait = this.awaitings.has(key);
+    inTransaction(() => {
+      if (replacesWait) deleteSessionAwaiting(key);
+      upsertSessionBlocker(record);
+    });
+    if (replacesWait) this.clearAwaitingKey(key, s.id, "blocker", undefined, now);
     this.blockers.set(key, record);
     logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
       actor: "session",
@@ -9485,11 +9519,11 @@ export class Registry extends EventEmitter {
     const record = this.awaitings.get(key);
     if (!record) return;
     const now = Date.now();
-    if (s.state !== "exited") this.awaitingSeenAt.set(key, now);
-    if (s.state === "exited") {
-      this.endAwaitingFromTurn(s, key, "exit", now);
-      return;
-    }
+    // An `exited` reading is provisional: `beginEviction` emits it before its linger, and a
+    // process the next sweep sees again cancels the eviction. The wait ends when the session
+    // is actually removed (`remove`), never here.
+    if (s.state === "exited") return;
+    this.awaitingSeenAt.set(key, now);
     // A presumed state says nothing about turns: discovery presumes `working` until a hook, a
     // transcript or a driver confirms what the session is doing. Only confirmed readings move
     // the watch, so the first one after a restart is a real observation, not a guess.
@@ -9524,15 +9558,35 @@ export class Registry extends EventEmitter {
       this.awaitings.set(key, undecided);
       return;
     }
+    // A turn a session without hooks started and finished between two discovery sweeps: the
+    // transcript read is idle again, but its turn marker has moved past the wait's settle. It is
+    // judged as a turn that has already ended, the way an undecided turn's end is: with no
+    // delivery outstanding it is the wake, and otherwise it uses up the oldest delivery unless
+    // that one is contested.
+    if (record.settledAt !== null && !turnStarted && s.state === "idle" && !s.hooksSeen) {
+      const started = this.passiveTurnStartedAt(s);
+      if (started !== null && started > record.settledAt) {
+        const oldest = record.pendingNudges[0];
+        if (!oldest || nudgeContested(oldest)) {
+          this.endAwaitingFromTurn(s, key, "wake", now);
+          return;
+        }
+        const next = { ...record, settledAt: Math.max(now, started), pendingNudges: record.pendingNudges.slice(1) };
+        upsertSessionAwaiting(next);
+        this.awaitings.set(key, next);
+        return;
+      }
+    }
     if (record.settledAt === null && this.declaringTurnEnded(s, record, last)) {
       if (record.undecidedTurn) {
-        // The turn ended with no prompt ever reported. On a hook-instrumented session every
-        // delivery Mission Control types reports its prompt, so a turn without one is the
-        // session's own: the wake. Without hooks no turn reports one, and the oldest delivery
-        // still outstanding is the best reading of whose turn it was.
+        // The turn ended with no prompt ever reported. On a session whose hooks report prompts,
+        // every delivery Mission Control types reports its prompt, so a turn without one is the
+        // session's own: the wake. On one that never reports a prompt (no hooks, or a driver with
+        // no prompt hook, though marked instrumented) no turn does, and the oldest delivery still
+        // outstanding is the best reading of whose turn it was.
         // A contested oldest delivery is not a nudge either (see `useUpAwaitingNudge`).
         const oldest = record.pendingNudges[0];
-        const ownTurn = s.hooksSeen || (oldest !== undefined && nudgeContested(oldest));
+        const ownTurn = this.promptReporters.has(s.id) || (oldest !== undefined && nudgeContested(oldest));
         // Unless the session declared its wait again during this very turn: then the wake, if
         // this turn was one, came and went inside it, and the wait it declared stands.
         if (ownTurn && !record.redeclaredInTurn) {
@@ -9600,7 +9654,12 @@ export class Registry extends EventEmitter {
     this.clearAwaitingKey(key, s.id, actor, undefined, now, false);
     s.awaiting = null;
     for (const [id, other] of this.sessions) {
-      if (other !== s && noteKeyFor(other) === key && other.awaiting) this.sessions.set(id, { ...other, awaiting: null });
+      if (noteKeyFor(other) !== key || !other.awaiting) continue;
+      const cleared = { ...other, awaiting: null };
+      this.sessions.set(id, cleared);
+      // A sibling sharing the key has no emit of its own coming, so a client holding its wait
+      // would keep drawing it. The waking session is published by the emit this runs inside.
+      if (id !== s.id) this.emitSession(cleared);
     }
   }
 

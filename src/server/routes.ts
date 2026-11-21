@@ -5552,6 +5552,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpReportAwaitingSchema);
     if (!parsed.ok) return parsed.res;
+    // Read again past the body's await: the preview switched off meanwhile ends every wait, and
+    // a declaration let through after that would stand until the next restart. No await
+    // separates this from the write below.
+    if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: SESSION_AWAITING_FLAG_ID }, 404);
+    }
     const { env, sessionId, ...body } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId);
     if (!session) return c.json({ error: "no matching session" }, 404);
@@ -6238,6 +6244,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
+    // Refused before anything reached the pane (no handle, the pane lock held, a guard): the
+    // person's words never landed. A write that was attempted, even one whose Enter failed and
+    // left a draft, keeps the announcement.
+    if (!r.ok && r.pasted === false) withdrawPersonDelivery(personSend);
     observeSessionOperation({
       session,
       // An unsubmitted write leaves a draft in somebody's composer and starts no turn, which

@@ -149,7 +149,7 @@ rules (open work and a parked run): it is waiting on someone other than you, and
 already explains the silence, with its age on the card. A blocker raises no alert of its own,
 a flagged reply is a card pill only, and neither counts as an answer you owe.
 
-A session [awaiting a background process](sessions.md#sessions-awaiting-a-background-process) is
+A session [awaiting a background process](sessions.md#sessions-awaiting-a-background-process-preview) is
 exempt from the same two rules only until the deadline it declared. Once that passes the card
 reads Overdue and the rules apply again from that point, so a watcher that died cannot keep a
 stalled session out of the alerts. An Overdue wait raises no alert of its own; the stuck-session

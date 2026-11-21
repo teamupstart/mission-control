@@ -81,6 +81,8 @@ test("the Conversation band names the wait, how it wakes, its link and a Clear, 
   const band = render(createElement(SessionAwaitingBand, { session }), true);
   assert.match(band, /aria-label="Session awaiting"/);
   assert.match(band, />Awaiting</);
+  // The flag alone is a polite live region, so Awaiting turning Overdue is announced once.
+  assert.match(band, /class="awaiting-band-flag" role="status">Awaiting</);
   assert.match(band, /CI checks on PR #1612/);
   assert.match(band, /wakes when its background command finishes/);
   // The wait's age, beside its deadline: declared twelve minutes ago.

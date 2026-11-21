@@ -110,6 +110,12 @@ export interface FleetToneGroup extends ToneGroup {
    * pin decides where a card sits, not whether it is free to take work. Zero outside Idle.
    */
   awaitingCount: number;
+  /**
+   * How many sessions above the held split are paused and not awaiting: idle, but held back
+   * from automatic assignment, so the head does not count them as free. Never labelled held,
+   * which is a workflow run's claim. Zero outside Idle.
+   */
+  pausedCount: number;
 }
 
 /**
@@ -125,15 +131,15 @@ export function idleHeadCounts(group: FleetToneGroup): {
 } {
   if (group.heldFrom === null) {
     // Nothing held, but some awaiting: the total beside "N awaiting" would not say how many
-    // can take work, so the rest are counted as free.
+    // can take work, so the rest are counted as free, less any paused.
     return group.awaitingCount > 0
-      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount, held: null }
+      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount - group.pausedCount, held: null }
       : { awaiting: 0, free: null, held: null };
   }
   // Pinned and awaiting sessions all sit before `heldFrom`, never in the held partition.
   return {
     awaiting: group.awaitingCount,
-    free: group.heldFrom - group.awaitingCount,
+    free: group.heldFrom - group.awaitingCount - group.pausedCount,
     held: group.sessions.length - group.heldFrom,
   };
 }
@@ -459,14 +465,17 @@ function clusterGroup(
   // of things coming back. Only Idle splits them; a wait anywhere else is drawn on its card.
   // That queue is kept as it is, never grouped by repository or clustered by run (see below).
   const pinnedPart = pinned.size > 0 ? group.sessions.filter((s) => pinned.has(s.id)) : [];
+  // Pinned residents inside a wait are their own partition, ahead of the other pinned ones, so
+  // the Free rule can start below them rather than drawing them as free (`fleetRows`). Split
+  // rather than sorted, so repository grouping inside the pinned side cannot reorder them.
+  const pinnedWaiting = group.tone === "idle" && awaiting.size > 0 ? pinnedPart.filter((s) => awaiting.has(s.id)) : [];
+  const pinnedRest = pinnedWaiting.length > 0 ? pinnedPart.filter((s) => !awaiting.has(s.id)) : pinnedPart;
   const unpinnedAll = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinned.has(s.id)) : group.sessions;
   const awaitingPart = group.tone === "idle" && awaiting.size > 0
     ? unpinnedAll.filter((s) => awaiting.has(s.id)).sort(byAwaitingDue)
     : [];
   // A pinned resident inside a wait keeps its pinned place but still counts as awaiting.
-  const pinnedAwaiting = group.tone === "idle" && awaiting.size > 0
-    ? pinnedPart.filter((s) => awaiting.has(s.id)).length
-    : 0;
+  const pinnedAwaiting = pinnedWaiting.length;
   const rest = awaitingPart.length > 0 ? unpinnedAll.filter((s) => !awaiting.has(s.id)) : unpinnedAll;
   const unpinned = group.tone === "idle" && rest.some((s) => held.has(s.id))
     ? [
@@ -474,12 +483,16 @@ function clusterGroup(
         rest.filter((s) => held.has(s.id)),
       ]
     : [rest];
+  const leading = [
+    ...(pinnedWaiting.length > 0 ? [pinnedWaiting] : []),
+    ...(pinnedRest.length > 0 ? [pinnedRest] : []),
+  ];
   const partitions = [
-    ...(pinnedPart.length > 0 ? [pinnedPart] : []),
+    ...leading,
     ...(awaitingPart.length > 0 ? [awaitingPart] : []),
     ...unpinned,
   ];
-  const awaitingPartition = awaitingPart.length > 0 ? (pinnedPart.length > 0 ? 1 : 0) : -1;
+  const awaitingPartition = awaitingPart.length > 0 ? leading.length : -1;
   const heldPartition = unpinned.length > 1 ? partitions.length - 1 : -1;
 
   const sessions: Session[] = [];
@@ -520,9 +533,13 @@ function clusterGroup(
       sessions.push(...run.sessions);
     }
   }
+  // Paused sessions above the held split that are not awaiting: idle, but not free to take work.
+  const pausedCount = group.tone === "idle"
+    ? (heldFrom === null ? sessions : sessions.slice(0, heldFrom)).filter((s) => s.pause && !awaiting.has(s.id)).length
+    : 0;
   return {
     ...group, sessions, clusters, repos, heldFrom, awaiting: awaitingSpan,
-    awaitingCount: awaitingPart.length + pinnedAwaiting,
+    awaitingCount: awaitingPart.length + pinnedAwaiting, pausedCount,
   };
 }
 
@@ -740,6 +757,7 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
   // always was, at the top, and only when something is held.
   const awaitingEnd = awaiting ? awaiting.startIndex + awaiting.length : null;
   const freeEnd = heldFrom ?? group.sessions.length;
+  const pinnedAwaiting = group.awaitingCount - (awaiting?.length ?? 0);
 
   const repoAt = new Map(group.repos.map((span) => [span.startIndex, span]));
   const rows: FleetRow[] = [];
@@ -758,8 +776,11 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
       rows.push({ kind: "section", section: "free", count: freeEnd - awaitingEnd });
     }
     if (heldFrom !== null) {
-      if (awaitingEnd === null && index === 0 && heldFrom > 0) {
-        rows.push({ kind: "section", section: "free", count: heldFrom });
+      // Pinned residents inside a wait lead the group as their own partition (`clusterGroup`) and
+  // are not free, so with
+      // no Awaiting span the Free rule starts after them and counts only what follows.
+      if (awaitingEnd === null && index === pinnedAwaiting && heldFrom > pinnedAwaiting) {
+        rows.push({ kind: "section", section: "free", count: heldFrom - pinnedAwaiting });
       }
       if (index === heldFrom) {
         rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });

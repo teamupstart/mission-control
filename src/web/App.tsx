@@ -3931,6 +3931,28 @@ export function App(): React.JSX.Element {
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // A session awaiting a background process draws its band's controls (Open, Clear,
+        // Details) in the Conversation pane, which the tab strip walk below would skip: without
+        // this a hold could only be ended with a pointer. Tab order inside the reader is
+        // therefore body, then the band's controls, then the tab strip; Shift+Tab walks back to
+        // the body. Only while a band is drawn, so every other reader tabs exactly as before.
+        if ((chord === "Tab" || chord === "shift+Tab") && inReader) {
+          const band = target?.closest(".awaiting-band") ?? null;
+          const onBody = Boolean(target?.matches(".detail-body"));
+          const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          const controls = scope
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")]
+            : [];
+          if (controls.length > 0) {
+            const at = band ? controls.indexOf(target as HTMLElement) : -1;
+            const next = controls[at + (chord === "Tab" ? 1 : -1)];
+            e.preventDefault();
+            if (next) next.focus({ preventScroll: true });
+            else if (chord === "Tab") readerTabbers.current.get(readerSession.id)?.(1);
+            else focusReaderBody();
+            return;
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {

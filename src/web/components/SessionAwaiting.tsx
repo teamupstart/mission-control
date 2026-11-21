@@ -166,7 +166,9 @@ function AwaitingBand({ sessionId, awaiting, now }: { sessionId: string; awaitin
     <section className={`awaiting-band${r.overdue ? " is-late" : ""}`} aria-label="Session awaiting">
       <div className="awaiting-band-top">
         <Hourglass size={12} />
-        <span className="awaiting-band-flag">{r.overdue ? "Overdue" : "Awaiting"}</span>
+        {/* A polite live region on the flag alone: the Awaiting to Overdue change is announced
+            once, and the countdown ticking elsewhere in the band is not. */}
+        <span className="awaiting-band-flag" role="status">{r.overdue ? "Overdue" : "Awaiting"}</span>
         <span className="awaiting-band-what">{awaiting.what}</span>
         <span className="awaiting-band-wake">
           <WakeGlyph source={awaiting.wakeSource} /> {r.wakePhrase}

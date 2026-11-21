@@ -105,6 +105,17 @@ test("a declared wait draws a deadline track under Idle's Awaiting rule, survive
   await expect(band.locator("code", { hasText: "gh pr checks 1612 --watch" })).toBeVisible();
   await settled(band);
   await shoot(page, "02-conversation-band");
+  // The band's controls are on the reader's keyboard path: from the conversation body Tab
+  // reaches Open, then Clear, and Shift+Tab walks back to the body.
+  await page.locator(".cdetail .detail-body").focus();
+  await page.keyboard.press("Tab");
+  await expect(band.getByRole("link", { name: "Open ↗" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(band.getByRole("button", { name: "Clear" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(band.getByRole("link", { name: "Open ↗" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.locator(".cdetail .detail-body")).toBeFocused();
   await page.keyboard.press("Escape");
 
   // A daemon restart reloads the wait for the rediscovered session.
@@ -180,8 +191,12 @@ test("with repositories grouped, the Awaiting section keeps soonest-due order ac
     { name: "Bravo middle", repo: daemon.secondRepo, minutes: 10 },
     { name: "Alpha soonest", repo: daemon.repo, minutes: 5 },
   ];
+  const leaf = (path: string | null | undefined) => (path ?? "").split("/").filter(Boolean).at(-1);
   for (const wait of waits) {
     const agent = await dispatch(daemon, wait.name, wait.repo);
+    // Each agent really is in the repository it was dispatched into, so the ordering below is
+    // proved across two repositories and not within one.
+    expect(leaf((await session(daemon, agent.id))?.repoRoot), `${wait.name}'s repository`).toBe(leaf(wait.repo));
     const client = await connect(daemon, agent);
     try {
       const expectedBy = new Date(Date.now() + wait.minutes * 60_000).toISOString();
@@ -205,6 +220,8 @@ test("with repositories grouped, the Awaiting section keeps soonest-due order ac
   await expect(idle.locator(".board-repo .tile").filter({
     has: page.getByRole("progressbar", { name: "Time until its deadline" }),
   })).toHaveCount(0);
+  // Grouping is on: the free agent below the section sits inside its repository's frame.
+  await expect(idle.locator(".board-repo .tile").filter({ hasText: "Delta free" })).toHaveCount(1);
   await settled(idle);
   await shoot(page, "06-board-awaiting-across-repos");
 

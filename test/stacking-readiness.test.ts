@@ -941,6 +941,55 @@ test("a prerequisite awaiting its own background process stamps no dependent unt
   assert.equal(childEdge(w).stackReadyAt, 1_000, "the deadline passing did not release the stamp");
 });
 
+test("a prerequisite's wait arms a readiness pass at its deadline, and stopping cancels it", async () => {
+  // Nothing announces a deadline passing, so readiness must look again at `expectedBy` itself.
+  let clock = 1_000;
+  const armed: Array<{ fn: () => void; ms: number; handle: string }> = [];
+  const cleared: string[] = [];
+  const w = world();
+  w.sessions.set("sA", mkSession({
+    id: "sA", state: "idle",
+    awaiting: {
+      id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 5_000,
+      referenceUrl: null, details: null, startedAt: 500, updatedAt: 500,
+    },
+  }));
+  const s = script();
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), () => clock, {
+    set: (fn, ms) => {
+      const handle = `timer-${armed.length + 1}`;
+      armed.push({ fn, ms, handle });
+      return handle;
+    },
+    clear: (handle) => { cleared.push(handle as string); },
+  });
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+  assert.equal(armed.at(-1)?.ms, 4_001, "no pass was armed for the deadline");
+
+  // The deadline passes with nobody waking the session: the armed pass stamps the dependent.
+  clock = 5_001;
+  armed.at(-1)!.fn();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 5_001, "the deadline pass did not stamp the dependent");
+
+  // A fresh wait arms a fresh pass; stopping cancels it.
+  w.sessions.set("sA", mkSession({
+    id: "sA", state: "idle",
+    awaiting: {
+      id: "aw-again", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 9_000,
+      referenceUrl: null, details: null, startedAt: 5_500, updatedAt: 5_500,
+    },
+  }));
+  r.reconcile();
+  await settle();
+  const pending = armed.at(-1)!.handle;
+  r.stop();
+  assert.ok(cleared.includes(pending), "stopping left the deadline pass armed");
+});
+
 test("a blocker reported while the parent pull request is read stamps nothing", async () => {
   const w = world();
   const s = script();

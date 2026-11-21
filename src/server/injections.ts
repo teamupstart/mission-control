@@ -181,8 +181,14 @@ function announceAutomated(delivery: AutomatedDelivery): void {
   for (const listener of automatedListeners) {
     try {
       listener(delivery);
-    } catch {
-      /* a listener that cannot record must not break the delivery it was told about */
+    } catch (err) {
+      // A listener that cannot record must not break the delivery it was told about, but its
+      // failure is logged: a nudge the declared-wait writer failed to store would later read
+      // as the session's wake, and this line is the only trace of why.
+      console.error(
+        `[injections] automated delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
     }
   }
 }
@@ -222,8 +228,12 @@ function announcePerson(delivery: PersonDelivery): void {
   for (const listener of personListeners) {
     try {
       listener(delivery);
-    } catch {
-      /* a listener that cannot record must not break the delivery it was told about */
+    } catch (err) {
+      // Logged and passed over, for `announceAutomated`'s reason.
+      console.error(
+        `[injections] person delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
     }
   }
 }

@@ -419,7 +419,7 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 ### Sessions awaiting a background process
 
 While the **Awaiting background work** preview is on, sessions can declare that they are
-[idle on purpose](sessions.md#sessions-awaiting-a-background-process) while a background process
+[idle on purpose](sessions.md#sessions-awaiting-a-background-process-preview) while a background process
 they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`, `wakeSource`,
 `expectedBy`, `referenceUrl`, `startedAt` and `overdue`) to every row of its list and accepts
 `awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one

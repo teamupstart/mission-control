@@ -14,6 +14,7 @@ import {
   fleetBlocks,
   fleetRows,
   idleHeadCounts,
+  type FleetToneGroup,
   orderSessions,
   repoSessionTotals,
   type FleetRow,
@@ -688,6 +689,45 @@ test("with repository grouping on, the Awaiting section keeps its deadline order
   // The free part below the section is still grouped by repository as usual.
   assert.deepEqual(idle.repos.map((r) => [r.repoRoot, r.startIndex, r.length]), [[REPO_A, 3, 1], [REPO_B, 4, 1]]);
   assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
+});
+
+test("a pinned resident inside a wait sits above the Free rule, which counts only free sessions", () => {
+  const rowsOf = (idle: FleetToneGroup) =>
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster"));
+  // Nothing free beside the waiting resident: no Free rule labels it as free.
+  const lone = [awaiting("alpha-resident", 30 * 60_000), plain("delta", IDLE)];
+  const loneIdle = orderSessions(
+    lone, new Set(["plain-delta"]), false, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
+    awaitingSessionIds(lone, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(rowsOf(loneIdle), ["alpha-resident", "--held:1", "delta"]);
+  assert.deepEqual(idleHeadCounts(loneIdle), { awaiting: 1, free: 0, held: 1 });
+
+  // With a free pinned resident and a free session too, the waiting resident leads, and the
+  // Free rule below it counts the two free ones the head counts.
+  const fleet = [
+    plain("bravo-resident", IDLE), awaiting("alpha-resident", 30 * 60_000), plain("charlie", IDLE), plain("delta", IDLE),
+  ];
+  const idle = orderSessions(
+    fleet, new Set(["plain-delta"]), false, undefined, undefined,
+    new Set(["plain-alpha-resident", "plain-bravo-resident"]), undefined, awaitingSessionIds(fleet, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(rowsOf(idle), ["alpha-resident", "--free:2", "bravo-resident", "charlie", "--held:1", "delta"]);
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 2, held: 1 });
+});
+
+test("a paused idle session is not counted as free beside a wait, and is not labelled held", () => {
+  const pause = { reason: "operator", phase: "frozen", since: AT - 60_000, interrupted: null, stopped: false } as unknown as Session["pause"];
+  const fleet = [awaiting("bravo", 60_000), plain("charlie", { ...IDLE, pause }), plain("delta", IDLE)];
+  const idle = orderSessions(
+    fleet, new Set(), false, undefined, undefined, undefined, undefined, awaitingSessionIds(fleet, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 1, held: null });
+  // With something held, the same: the paused one is neither free nor held.
+  const held = orderSessions(
+    fleet, new Set(["plain-delta"]), false, undefined, undefined, undefined, undefined, awaitingSessionIds(fleet, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(idleHeadCounts(held), { awaiting: 1, free: 0, held: 1 });
 });
 
 test("an overdue wait leaves the section, and the preview off draws no section at all", () => {

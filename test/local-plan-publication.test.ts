@@ -899,9 +899,10 @@ test("explicit revision changes refuse a completed replacement origin without me
   assert.deepEqual(loadActiveTasks().find(task => task.id === dependent.id), persistedBefore, "refusal persists neither half of the pin/origin change");
 });
 
-test("explicit revision changes preserve shared origins and never reinterpret mixed local work as publication", async () => {
+test("explicit revision changes preserve shared origins and never reinterpret mixed local work as publication", async (t) => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
   const f = await fixture(false, "ship");
   const from = { ...f.input, files: ["plan.md"] };
   const shared = { ...f.input, files: ["phase-1.md"] };
@@ -931,5 +932,4 @@ test("explicit revision changes preserve shared origins and never reinterpret mi
   assert.equal(moved.task!.dependencies[0]!.type, "task");
   assert.equal(moved.task!.dependencies[0]!.episodeId, authority.episodeId);
   assert.equal(moved.task!.dependencies[0]!.satisfiedAt, null, "an older merge cannot satisfy the new episode");
-  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false });
 });

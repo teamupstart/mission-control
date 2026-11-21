@@ -275,7 +275,7 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
   assert.deepEqual(read.planInputs, planInputs);
   assert.deepEqual(read.dependencies, stored.dependencies);
 
-  await t.test("update_task previews and atomically replaces exact pins and prerequisites", async () => {
+  await t.test("update_task previews and atomically replaces exact pins and prerequisites", async (t) => {
     const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
     const subject = await f.create({ workflowId: null, planInputs, planPrerequisites: [identity],
       dependencies: [{ type: "task", taskId: code.id }] });
@@ -289,6 +289,7 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
     const planInputChange = { from: planInputs[0], to, expectedUpdatedAt: before.updatedAt };
     await f.call("update_task", { taskId: subject.id, planInputChange, previewOnly: true }, /preview is disabled/);
     applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+    t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
     for (const conflicting of [{ planInputs: [to] }, { dependencies: [] }]) {
       await f.call("update_task", { taskId: subject.id, planInputChange, ...conflicting },
         /Use planInputChange separately from planInputs and dependencies/);
@@ -900,6 +901,7 @@ test("update_task preview uses the preparation base after an in-flight title set
   const f = await fixture(t);
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
   const task = await f.create({ workflowId: null });
   const titling = (f.tasks as unknown as { titling: Map<string, Promise<void>> }).titling;
   let finishTitle!: () => void;

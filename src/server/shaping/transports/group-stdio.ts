@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import type { ReadBuffer } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import { killGroup, releaseStdio } from "./command.ts";
+import { EXIT_DRAIN_MS, killGroup, releaseStdio } from "./command.ts";
 
 /** The SDK's own stdio framing: one JSON-RPC message per line, read through a bounded buffer. */
 export type StdioFraming = typeof import("@modelcontextprotocol/sdk/shared/stdio.js");
@@ -31,7 +31,10 @@ export interface GroupStdioParams {
  * cancelled, and repeated runs accumulated them. Here closing ends stdin, waits, sends SIGTERM to
  * the whole group, waits again, and then sends SIGKILL to whatever is left of it, so the server and
  * every helper in its group stop together. A server that exits on its own has its group reaped
- * the same way. A helper that leaves the group on purpose (`setsid`) is out of reach, exactly as it
+ * the same way, and is seen to have exited when it exits: Node holds a child's `close` until every
+ * copy of its pipes is closed, and a helper that inherited them can hold them open indefinitely,
+ * so the exit is taken from `exit`, its pipes get the `command` transport's bounded drain to deliver
+ * what the server wrote, and then the connection is closed and the group stopped. A helper that leaves the group on purpose (`setsid`) is out of reach, exactly as it
  * is for a `command` shaper.
  *
  * The environment is the one given and nothing else: the SDK's transport adds inherited defaults
@@ -46,6 +49,9 @@ export class GroupStdioTransport implements Transport {
   private child: ChildProcess | undefined;
   private exited = false;
   private closing: Promise<void> | null = null;
+  /** Settled once the server is gone and its group stopped, by its pipes closing or its drain ending. */
+  private finished = false;
+  private onFinished: Array<() => void> = [];
   private readonly readBuffer: ReadBuffer;
 
   constructor(private readonly params: GroupStdioParams, private readonly framing: StdioFraming) {
@@ -76,13 +82,15 @@ export class GroupStdioTransport implements Transport {
         this.onerror?.(error);
       });
       child.on("spawn", () => resolve());
+      child.on("exit", () => {
+        this.exited = true;
+        // The pipes deliver what is left of the server's output, for a bounded time only: a helper
+        // that inherited them would otherwise keep the connection looking live until a timeout.
+        setTimeout(() => this.finish(child), EXIT_DRAIN_MS).unref();
+      });
       child.on("close", () => {
         this.exited = true;
-        // Whatever the server left running in its group goes with it, as it does for a `command`.
-        killGroup(child);
-        releaseStdio(child);
-        this.readBuffer.clear();
-        this.onclose?.();
+        this.finish(child);
       });
       child.stdin?.on("error", (error) => this.onerror?.(error));
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -98,6 +106,17 @@ export class GroupStdioTransport implements Transport {
       child.stdout?.on("error", (error) => this.onerror?.(error));
       child.stderr?.pipe(this.stderr);
     });
+  }
+
+  /** The server is gone: whatever it left running in its group goes with it, as for a `command`. */
+  private finish(child: ChildProcess): void {
+    if (this.finished) return;
+    this.finished = true;
+    killGroup(child);
+    releaseStdio(child);
+    this.readBuffer.clear();
+    for (const done of this.onFinished.splice(0)) done();
+    this.onclose?.();
   }
 
   /** Every complete message in the buffer, in order; a line that is not one is reported and skipped. */
@@ -134,13 +153,13 @@ export class GroupStdioTransport implements Transport {
     const child = this.child;
     if (!child) return;
     const closed = new Promise<void>((done) => {
-      if (this.exited) done();
-      else child.once("close", () => done());
+      if (this.finished) done();
+      else this.onFinished.push(done);
     });
     const settle = () => Promise.race([closed, new Promise<void>((done) => setTimeout(done, CLOSE_GRACE_MS).unref())]);
     try { child.stdin?.end(); } catch { /* Already closed. */ }
     await settle();
-    if (!this.exited) {
+    if (!this.finished && !this.exited) {
       try {
         if (child.pid) process.kill(-child.pid, "SIGTERM");
         else child.kill("SIGTERM");

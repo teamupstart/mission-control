@@ -14,12 +14,16 @@
 //                                    Writes `NAME`'s value, every character a \u escape and then
 //                                    escaped once more per further level, on n lines of stderr, and
 //                                    exits before answering anything.
+//   helper-exit <pidfile>            Starts a helper that inherits its stdout and stderr and runs until
+//                                    killed, writes the helper's pid to `pidfile`, writes a line to
+//                                    stderr, and exits before answering anything.
 //   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
 //                                    multibyte character, and exits before answering anything.
 //   spaced-stderr-exit <NAME> <pad>  Writes `NAME`'s value to stderr with each run of whitespace in it
 //                                    widened to `pad` spaces, and exits before answering anything.
 //   garbage-reply                    Answers `initialize`, then answers the next request with a line
 //                                    that is not JSON, and stays running.
+import { spawn } from "node:child_process";
 import { renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -42,6 +46,14 @@ if (mode === "escaped-stderr-exit") {
   let escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
   for (let level = 1; level < Number(args[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
   process.stderr.write(`${escaped}\n`.repeat(Number(args[1] ?? 1)), () => process.exit(1));
+}
+
+if (mode === "helper-exit") {
+  const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+  writeFileSync(`${args[0]}.partial`, String(helper.pid));
+  renameSync(`${args[0]}.partial`, args[0]);
+  helper.unref();
+  process.stderr.write("the server crashed on startup\n", () => process.exit(3));
 }
 
 if (mode === "split-utf8-exit") {

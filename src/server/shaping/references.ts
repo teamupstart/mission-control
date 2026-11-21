@@ -267,15 +267,44 @@ export interface ResolvedValue {
 }
 
 /**
- * The pattern that finds a value written with other whitespace where it has some, such as
- * `Jane   Doe` or `Jane\nDoe` for `Jane Doe`, or null when the value has no inner whitespace.
- * Collapsing whitespace, as a section heading and a recorded reason do, turns such a spelling
- * back into the value, so it is a copy of the value and is found as one.
+ * The form every spelling of `value` with other whitespace collapses to: its words joined by single
+ * spaces, such as `Jane Doe` for `Jane   Doe` or `Jane\nDoe`; or null when it has no inner
+ * whitespace. Collapsing whitespace, as a section heading and a recorded reason do, turns such a
+ * spelling back into the value, so it is a copy of the value and is found as one.
  */
-function spacingPattern(value: string): RegExp | null {
+function spacingKey(value: string): string | null {
   const parts = value.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return null;
-  return new RegExp(parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
+  return parts.length < 2 ? null : parts.join(" ");
+}
+
+const WHITESPACE = /\s/;
+
+/**
+ * `text` with every run of whitespace written as one space, and for each of its characters the
+ * span of `text` it stands for. A spacing variant of a value in `text` is exactly an occurrence of
+ * the value's `spacingKey` here, so it is found by the linear search used for every other match,
+ * overlapping occurrences included. A regular expression would scan the same long prefix again
+ * from every candidate start, which a value of many repeated words makes quadratic in the reply.
+ */
+function collapsedView(text: string): { collapsed: string; starts: Int32Array; ends: Int32Array } {
+  const starts = new Int32Array(text.length);
+  const ends = new Int32Array(text.length);
+  const pieces: string[] = [];
+  let length = 0;
+  for (let at = 0; at < text.length;) {
+    let end = at + 1;
+    if (WHITESPACE.test(text[at]!)) {
+      while (end < text.length && WHITESPACE.test(text[end]!)) end += 1;
+      pieces.push(" ");
+    } else {
+      pieces.push(text[at]!);
+    }
+    starts[length] = at;
+    ends[length] = end;
+    length += 1;
+    at = end;
+  }
+  return { collapsed: pieces.join(""), starts: starts.subarray(0, length), ends: ends.subarray(0, length) };
 }
 
 /**
@@ -285,22 +314,6 @@ function spacingPattern(value: string): RegExp | null {
  * and decoding until nothing changes would cost the text's length squared.
  */
 export const JSON_ESCAPE_LEVELS = 3;
-
-/**
- * Every match of a `spacingPattern` in `text`, overlapping ones included. `matchAll` resumes after
- * each match's end, so in `ab  ab  ab` it finds `ab  ab` and never the `ab  ab` that shares its
- * last word: replacing only the first would leave the rest of the second behind. The search
- * resumes one character past each match's start instead, and the spans merge where they meet.
- * A pattern's first word must match at a start, so this stays linear in the text for any value
- * whose words do not themselves repeat a run of whitespace.
- */
-function forEachSpacingMatch(text: string, pattern: RegExp, visit: (index: number, length: number) => void): void {
-  pattern.lastIndex = 0;
-  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    visit(match.index, match[0].length);
-    pattern.lastIndex = match.index + 1;
-  }
-}
 
 const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
@@ -364,12 +377,22 @@ export function variantSpans(text: string, resolved: readonly ResolvedValue[]): 
       out.push(last);
     };
   };
-  for (const [value, labels] of byValue) {
-    const pattern = spacingPattern(value);
-    if (!pattern) continue;
-    const add = collect(value, labels);
-    forEachSpacingMatch(text, pattern, (index, length) => add(index, index + length));
-  }
+  // The values that have inner whitespace, each with the form its spacing variants collapse to.
+  const spaced = [...byValue].flatMap(([value, labels]) => {
+    const key = spacingKey(value);
+    return key ? [{ value, labels, key }] : [];
+  });
+  // Every spacing variant in `view`, found as its key in the collapsed view, overlapping ones
+  // included, and mapped back to the original text through `toOriginal`.
+  const spacedIn = (view: string, toOriginal: (start: number, end: number) => [number, number]) => {
+    if (spaced.length === 0) return;
+    const { collapsed, starts, ends } = collapsedView(view);
+    for (const { value, labels, key } of spaced) {
+      const add = collect(value, labels);
+      forEachOccurrence(collapsed, key, false, (at) => add(...toOriginal(starts[at]!, ends[at + key.length - 1]!)));
+    }
+  };
+  spacedIn(text, (start, end) => [start, end]);
   // Each level is decoded from the one before, and each of its characters keeps the span of the
   // original text it came from, so a value found at any level is removed there as written.
   let map = decodeEscapes(text);
@@ -378,11 +401,8 @@ export function variantSpans(text: string, resolved: readonly ResolvedValue[]): 
     for (const [value, labels] of byValue) {
       const exact = collect(value, labels);
       forEachOccurrence(decoded, value, false, (start) => exact(starts[start]!, ends[start + value.length - 1]!));
-      const pattern = spacingPattern(value);
-      if (!pattern) continue;
-      const spaced = collect(value, labels);
-      forEachSpacingMatch(decoded, pattern, (index, length) => spaced(starts[index]!, ends[index + length - 1]!));
     }
+    spacedIn(decoded, (start, end) => [starts[start]!, ends[end - 1]!]);
     const next = level + 1 < JSON_ESCAPE_LEVELS ? decodeEscapes(decoded) : null;
     map = next && { decoded: next.decoded, starts: next.starts.map((at) => starts[at]!), ends: next.ends.map((at) => ends[at - 1]!) };
   }

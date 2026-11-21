@@ -30,7 +30,7 @@ import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./ty
 export const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
 /** After the shaper exits, how long its pipes get to deliver the rest of its output. */
-const EXIT_DRAIN_MS = 500;
+export const EXIT_DRAIN_MS = 500;
 /** How far before the call's deadline a drain ends, so its reply still counts as on time. */
 const EXIT_DEADLINE_MARGIN_MS = 50;
 

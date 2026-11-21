@@ -174,6 +174,20 @@ test("the status leaves out a variable named only in a header the transport repl
   assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
 });
 
+test("a value of many repeated words is matched in linear time against a reply of near-matches", () => {
+  // 4,000 words, and a 256 KiB reply of that word repeated with one space between: every start is
+  // a near-match that runs almost the whole value before failing on the final word. A search that
+  // rescans from each start takes seconds here; the collapsed-view search takes milliseconds.
+  const value = `${"tok ".repeat(3_999)}end`;
+  const reply = "tok ".repeat(64 * 1024);
+  const started = performance.now();
+  assert.equal(redactResolved(reply, [{ name: "KEY", value }]), reply);
+  assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms`);
+  // A real spacing variant among them is still found.
+  const spaced = `${"tok ".repeat(100)}${value.replace(/ /g, "  ")} tok`;
+  assert.equal(redactResolved(spaced, [{ name: "KEY", value }]).includes("end"), false);
+});
+
 test("spans for a value shared by several names stay bounded by the text, not by its matches", () => {
   // Five references resolving to one short value, in a field that holds one escape, so every
   // level is decoded, and 50,000 literal copies of the value that the caller's own search finds.

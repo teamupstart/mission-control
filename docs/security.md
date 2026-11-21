@@ -583,7 +583,10 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
   for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
   whitespace and would turn that spelling back into the value. Overlapping spellings, such as the
-  two `ab  ab` in `ab  ab  ab` for `ab ab`, are each found and removed together. A value spelled with any JSON
+  two `ab  ab` in `ab  ab  ab` for `ab ab`, are each found and removed together. They are found
+  by collapsing every run of whitespace to one space, with each position mapped back to the text
+  as written, and searching that for the value's words in linear time, so a value of many
+  repeated words cannot make a reply under the cap stall the daemon. A value spelled with any JSON
   escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
   is replaced. That holds up to three levels of JSON text nested inside JSON strings, such as a
   serialized diagnostic inside a serialized log line, where a value is escaped once per level,
@@ -615,7 +618,10 @@ started and no resolved header is sent. The server runs in a process
 group of its own, as a `command` shaper does, with the SDK's message framing but not its
 process handling: closing the connection ends its stdin, then signals the whole group with
 SIGTERM and then SIGKILL, and a server that exits on its own has what is left of its group
-killed too, so a helper the server started does not outlive the run. A helper that leaves the
+killed too, so a helper the server started does not outlive the run. The server's exit is seen
+when it happens, not when its pipes close: a helper that inherited them could hold them open,
+so after the exit its pipes get the same 500 ms drain a `command` shaper's do, and then the
+connection fails with what the server wrote and the group is stopped. A helper that leaves the
 group on purpose is out of reach, as it is for a `command` shaper.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling

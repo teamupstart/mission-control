@@ -596,6 +596,30 @@ test("a value cut at the front of the retained stderr leaves no fragment in the 
   assert.equal(reason.includes(value.slice(-6)), false);
 });
 
+test("a stdio server that exits while a helper holds its pipes fails at once, and the helper is stopped", async () => {
+  const pidFile = join(home, "stdio-exit-helper.pid");
+  rmSync(pidFile, { force: true });
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  let pid = 0;
+  try {
+    const started = Date.now();
+    const reply = await callMcp(request(), shaper({ type: "stdio", mode: "helper-exit" }, "folded", {
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "helper-exit", pidFile], env: [] } },
+    }), ctx());
+    assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+    assert.match((reply as { reason: string }).reason, /^The MCP server exited: the server crashed on startup/);
+    assert.ok(Date.now() - started < 5_000, `answered after ${Date.now() - started} ms, not at the 30 s budget`);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the helper holding the pipes was stopped with the group");
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+  }
+});
+
 test("a helper a stdio server started stops with it when the run ends", async () => {
   const pidFile = join(home, "stdio-helper.pid");
   rmSync(pidFile, { force: true });

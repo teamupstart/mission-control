@@ -2162,6 +2162,12 @@ for (const { parentProof, childProof, changed, number, disableInspector = false,
           assert.deepEqual(findingGate.findingFingerprints, [`posted-${number}`]);
           assert.deepEqual(findingGate.reviewedContent, gate.reviewedContent);
           assert.equal(h.store.getRun(runId)?.status, "waiting_for_session", "publication mismatch forbids Inspector-only bypass");
+          assert.ok(packet.deliveredAt !== null);
+          assert.ok((h.registry.getSession(h.sessionId)?.lastActivity ?? 0) <= packet.deliveredAt);
+          await h.manager.sweepResumptions(SETTLED());
+          assert.equal(h.store.latestSubmission(runId)?.id, child.id,
+            "idle from before feedback delivery must not start the fresh review before the session acts");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
           // Resolving by reply on the same head must not complete the old review or send twice.
           upsertInspectorComment({
             id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,

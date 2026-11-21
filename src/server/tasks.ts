@@ -5340,10 +5340,12 @@ export class TaskManager {
             : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
           : {}),
       }, { shapeTask: opts.shapeTask, enabled: shapingOn });
-      // Whether a shaper actually ran. The session and task checks below are cheap and run whenever
-      // the handover waited on shaping at all; the extra pane probe runs only when a shaper did, so a
-      // handover nothing applied to gains no new probe that could time out.
-      const shaped = shapingOn && shaping.summary !== null;
+      // Whether the turn carries context. The session and task checks below are cheap and run whenever
+      // the handover waited on shaping at all; the extra pane probe and checkout comparison guard the
+      // context itself, so they run only when there is a section to deliver. A run that added nothing
+      // - no shaper applied, or one failed or timed out - goes on with the original prompt, and its
+      // record is still settled after the inject.
+      const carriesContext = shapingOn && shaping.section.length > 0;
       const after = this.registry.getTask(t.id);
       if (after?.status !== "backlog") {
         return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
@@ -5377,7 +5379,7 @@ export class TaskManager {
         const changed = sessionChanged();
         if (changed) return { ok: false, error: changed, scope: "session" };
       }
-      if (shaped) {
+      if (carriesContext) {
         const receiving = this.registry.getSession(s.id);
         if (!receiving) {
           return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
@@ -5391,7 +5393,7 @@ export class TaskManager {
       // could have moved it while shapers ran or the pane was probed. Read last, as the final await
       // before delivery: the session and task are then rechecked by the guard `inject` runs at the
       // write itself, which cannot run Git.
-      if (shaped && live.cwd) {
+      if (carriesContext && live.cwd) {
         const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
         if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
           return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };

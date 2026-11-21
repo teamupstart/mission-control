@@ -2007,3 +2007,28 @@ test("a checkout that moves during the handover's last pane probe is still caugh
     setShaping(false);
   }
 });
+
+test("a handover whose shaper failed falls back to the original prompt, past the context-only checks", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-failed-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    let probes = 0;
+    let typed = "";
+    const res = await tasks.assign("t1", sessionId, {
+      reset: cleanReset,
+      // The step ran and failed: a degraded record, and no section.
+      shapeTask: async () => { throw new Error("the guidance server is down"); },
+      // A second probe would fail; with no context to protect there must not be one.
+      paneReady: async () => (++probes === 1 ? { ok: true } : { ok: false, error: "the pane timed out" }),
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, true, res.ok ? "" : res.error);
+    assert.equal(probes, 1, "no context-only probe");
+    assert.doesNotMatch(typed, /## Task context/, "the original prompt was delivered");
+    assert.equal(r.getTask("t1")?.status, "running");
+    assert.equal(currentShaping(r.getTask("t1")!)?.state, "degraded", "and the failure is recorded");
+  } finally {
+    setShaping(false);
+  }
+});

@@ -322,6 +322,7 @@ import {
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  storedTaskWorkUnitId,
   inTransaction,
   upsertUsageCell,
   loadInspectorInspections,
@@ -7836,8 +7837,13 @@ export class Registry extends EventEmitter {
     const published: Task = written.kind === "resident"
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
-    const task = this.withProvisioning(published);
-    const previous = this.tasks.get(task.id);
+    const previous = this.tasks.get(published.id);
+    const workUnitId = this.publishedWorkUnitId(published, previous);
+    // Copied only when it differs, so a caller that wrote a task still holds the object the
+    // board shows.
+    const task = this.withProvisioning(
+      workUnitId === published.workUnitId ? published : { ...published, workUnitId },
+    );
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
     );
@@ -7864,6 +7870,17 @@ export class Registry extends EventEmitter {
     if (isTerminalTask(task.status)) this.clearAwaitingsForTask(task, previous);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
     if (dependenciesChanged && !deferDependencyCleanup) this.cleanupDependencyProvenance();
+  }
+
+  /**
+   * The work unit id to show for a task just written. The column is written once
+   * (`upsertTask` keeps a stored value), so a writer holding a copy read before the id was given
+   * must not erase it here either: the board would then disagree with the database. A value
+   * already shown wins, and a null is checked against the row.
+   */
+  private publishedWorkUnitId(written: Task, previous: Task | undefined): string | null {
+    if (previous?.workUnitId) return previous.workUnitId;
+    return written.workUnitId ?? storedTaskWorkUnitId(written.id);
   }
 
   /**

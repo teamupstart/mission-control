@@ -347,7 +347,9 @@ import {
   TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
+  type TaskWorkUnitSource,
 } from "./tasks.ts";
+import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import { openEndedRequests } from "./http-shutdown.ts";
@@ -5333,6 +5335,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const blocked = manager.workflowSelectionBlock(workflowId);
       if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
+    // Resolved on every call, not only for plan inputs: a plan task's session shares its work
+    // unit with the tasks it creates (decision D1). A caller that resolves to no session is not
+    // an error unless it asked to inherit.
+    const caller = registry.findSessionByEnv(env, sessionId, cwd);
+    const callerTask = caller ? registry.taskForSession(caller.id, caller.cwd) ?? null : null;
+    const workUnit = mcpCreateWorkUnitSource(data.workUnit, callerTask);
+    if (!workUnit.ok) return c.json({ error: workUnit.error }, 409);
 
     try {
       const task = tasks.create({
@@ -5352,7 +5361,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         labels: data.labels,
         backlog: true,
         dependencies, planInputs,
-      }, undefined, undefined, creationPolicy);
+      }, undefined, undefined, creationPolicy, workUnit.source);
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
@@ -9243,6 +9252,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    */
   async function createTaskFromDispatch(
     data: TypeOf<typeof DispatchSchema>,
+    workUnit?: TaskWorkUnitSource,
   ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
     const prepared = await prepareTaskRepositories({
       primary: data.repoRoot,
@@ -9293,6 +9303,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           undefined,
           MANUAL_DISPATCH_TASK_CREATE,
           creationPolicy,
+          workUnit,
         ),
       };
     } catch (error) {
@@ -9491,7 +9502,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       labels: task.labels,
     });
     if (!input.success) return c.json({ error: input.error.issues[0]?.message ?? "this task cannot be filed again" }, 400);
-    const created = await createTaskFromDispatch(input.data);
+    // The same piece of work tried again, so the same work unit.
+    const created = await createTaskFromDispatch(input.data, { inherit: [task.id] });
     if (!created.ok) return c.json(created.body, created.status);
     // A report session filed again is still a report session.
     const filed = task.launchReportFor
@@ -10312,7 +10324,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 }
 
 export { hostIsLoopback } from "./loopback.ts";
-
 
 /**
  * What a write into somebody's session is attributed to.

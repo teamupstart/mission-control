@@ -53,7 +53,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpCancelTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpWorkUnitChoiceSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpCancelTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -582,6 +582,8 @@ server.registerTool(
 function taskConfiguration(task: Task) {
   return {
     id: task.id,
+    // Null for a resident run, and for an older task until it is next dispatched or assigned.
+    workUnitId: task.workUnitId ?? null,
     title: task.title,
     intent: task.intent,
     status: task.status,
@@ -620,7 +622,8 @@ server.registerTool(
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
       "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id, saved configuration, and canonical repository set. " +
+      "authority later. A task created from a plan task's session joins that plan's work unit; any other gets its own " +
+      "unless workUnit is \"inherit\". Returns the new task id, its workUnitId, saved configuration, and canonical repository set. " +
       TASK_REFERENCE_RULE,
     inputSchema: {
       ...McpTaskConfigurationSchema.shape,
@@ -670,6 +673,7 @@ server.registerTool(
         .boolean()
         .default(false)
         .describe("Make the session calling this tool a direct prerequisite of the new task"),
+      workUnit: McpWorkUnitChoiceSchema.optional(),
     },
   },
   async ({
@@ -680,6 +684,7 @@ server.registerTool(
     dependsOnTaskIds,
     dependsOnCurrentSession,
     planInputs, planPrerequisites,
+    workUnit,
     ...configuration
   }) => {
     try {
@@ -695,6 +700,8 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
+        // Every creation route accepts it, so it does not choose the route.
+        ...(workUnit !== undefined ? { workUnit } : {}),
         ...configuration,
       };
       const path = pinnedPlans || Object.keys(configuration).length > 0
@@ -771,7 +778,8 @@ server.registerTool(
       "Uses the same daemon-token access as create_task and update_task; no Control other sessions opt-in is required. " +
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
-      "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
+      "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
+      "Pass workUnitId to list the tasks of one work unit. " +
       "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
       TASK_REFERENCE_RULE,
     inputSchema: McpListTasksSchema,
@@ -822,7 +830,12 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, planInputs, " +
+      "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
+      "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +
+      "superseded originating prerequisites, preserving unrelated dependencies. Do not combine it with " +
+      "planInputs or dependencies. previewOnly validates without saving; inspect before and after, then " +
+      "repeat with previewOnly false to save. Never choose a newer revision automatically. Supports " +
       "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
       "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
       "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
@@ -842,8 +855,8 @@ server.registerTool(
       if (!res.ok) {
         return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
       }
-      const result = (await res.json()) as { task: Task };
-      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+      const result = (await res.json()) as { task: Task; before?: Task };
+      return textResult(JSON.stringify(result.before ? { before: taskConfiguration(result.before), after: taskConfiguration(result.task) } : taskConfiguration(result.task), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

@@ -209,6 +209,18 @@ export interface TaskKindBehavior {
    * Foreman triage, wrap-up and follow-through there would compete with the profile.
    */
   foremanInvite: boolean;
+  /**
+   * Whether a task of this kind is a piece of work with a work unit id (`Task.workUnitId`).
+   * False only for a resident run: a standing agent, not a piece of work (decision D6 in
+   * `docs/plans/work-unit-id/plan.md`). Read through `taskKindHasWorkUnit`.
+   */
+  workUnit: boolean;
+  /**
+   * Whether a task created through MCP by a session running this kind joins that session's
+   * work unit when the caller does not say otherwise. True only for a plan, so its phase tasks
+   * share its id (decision D1). Read through `taskKindSessionJoinsWorkUnit`.
+   */
+  sessionTasksJoinWorkUnit: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
   constraint: string | null;
 }
@@ -224,6 +236,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: true,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   ship: {
@@ -231,6 +245,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: true,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   bugfix: {
@@ -238,6 +254,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: true,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   scout: {
@@ -245,6 +263,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: true,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   plan: {
@@ -252,6 +272,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: true,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: true,
     constraint: null,
   },
   pipeline: {
@@ -259,6 +281,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "pipeline",
     autopilot: false,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
@@ -267,6 +291,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "harness",
     autopilot: false,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   },
   resident: {
@@ -274,6 +300,8 @@ export const TASK_KIND_BEHAVIOR = {
     launch: "resident",
     autopilot: false,
     foremanInvite: false,
+    workUnit: false,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Resident tasks launch only from a resident profile, in the Agent SDK, with the profile's harness, model and effort.",
   },
@@ -345,6 +373,19 @@ export function taskKindTerminalHandoffRefusal(kind: TaskKind): string | null {
   return taskKindForcedRuntime(kind) === "sdk"
     ? `A ${TASK_KIND_INFO[kind].label} runs only in the Agent SDK, so it cannot continue in a terminal.`
     : null;
+}
+
+/** Whether a task of this kind has a work unit id. Every kind but a resident run's. */
+export function taskKindHasWorkUnit(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].workUnit;
+}
+
+/**
+ * Whether a task created through MCP by a session running this kind joins that session's
+ * work unit by default. A plan's phase tasks do; work any other session files is its own.
+ */
+export function taskKindSessionJoinsWorkUnit(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].sessionTasksJoinWorkUnit;
 }
 
 /** Whether Foreman's unattended backlog loop may schedule this kind. */

@@ -41,7 +41,7 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
       effort: request.effort ?? undefined,
       workflowId: null,
       backlog: true,
-    }, { id: request.taskId });
+    }, { id: request.taskId }, undefined, undefined, { inherit: request.workUnitFrom });
   }
 
   async dispatch(request: MemberDispatchRequest): Promise<void> {

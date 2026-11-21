@@ -2,7 +2,7 @@ export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -42,6 +42,7 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { WORK_UNIT_ID_PATTERN } from "./work-unit.ts";
 import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
@@ -929,6 +930,13 @@ export const ProductIssuePreflightSchema = z.object({
 /** Defined beside the task kinds so resident launch schemas share it without a cycle. */
 export { MAX_TASK_EXTRA_REPOS };
 
+/** MCP `create_task`'s `workUnit`: join the calling session's task's work unit, or start one. */
+export const McpWorkUnitChoiceSchema = z.enum(["inherit", "new"]).describe(
+  "Work unit for the new task. \"inherit\" joins the work unit of the task this session is running; " +
+    "\"new\" starts its own. Omit it to let the session's task kind decide: a plan task's session " +
+    "shares its work unit with the tasks it creates, every other session's tasks get their own",
+);
+
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
@@ -938,6 +946,10 @@ const McpCreateTaskBaseSchema = z.object({
   intent: z.string().min(1),
   dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
+  // Which work unit the new task joins - never an id: no request body chooses one. On the base
+  // shape so all three creation routes accept it. Omitted, the calling session's task kind
+  // decides (see `mcpCreateWorkUnitSource`).
+  workUnit: McpWorkUnitChoiceSchema.optional(),
 });
 
 const mcpTaskDependenciesAreBounded = ({
@@ -1792,6 +1804,8 @@ const UpdateTaskFieldsSchema = z
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
+    planInputChange: TaskPlanInputChangeSchema.optional(),
+    previewOnly: z.boolean().optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
@@ -1825,6 +1839,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   title: true,
   intent: true,
   planInputs: true,
+  planInputChange: true,
+  previewOnly: true,
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
@@ -1850,7 +1866,6 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
-  planInputs: true,
   personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
@@ -1869,6 +1884,7 @@ export const McpListTasksSchema = z.object({
   priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
   enabled: z.boolean().optional(),
   dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  workUnitId: z.string().trim().regex(WORK_UNIT_ID_PATTERN, "workUnitId must be a work unit id (wu_ and 26 Crockford base32 characters)").optional().describe("Match the tasks of one work unit exactly"),
   limit: z.number().int().min(1).max(100).default(50),
   cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
   includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),

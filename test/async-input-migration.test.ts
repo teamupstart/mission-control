@@ -29,7 +29,7 @@ test("version 38 upgrade adds the async-input columns, and an open question read
   const columns = new Set((d.prepare("PRAGMA table_info(reviews)").all() as Array<{ name: string }>).map((c) => c.name));
   for (const column of COLUMNS) assert.ok(columns.has(column), column);
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  // The async-input columns arrive at 39; a later schema version must keep them.
+  // Later schemas build on 39; a 38 file goes all the way to the current one.
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 39);
 
   const question = db.loadPendingReviews().find((r) => r.id === "open-question");

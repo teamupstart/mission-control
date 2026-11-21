@@ -194,9 +194,10 @@ export const UNATTRIBUTED_ITEM_PREFIX = "review:";
 export function unattributedItems(
   deps: Pick<HomeDispatchDeps, "registry">,
   resolved: ResolvedCaller,
+  /** The request's own origins map when the caller has one already, so it is read once per request. */
+  origins: Map<string, TaskOrigin> = taskOrigins(),
 ): HomeDispatchInboxItem[] {
   const out: HomeDispatchInboxItem[] = [];
-  const origins = taskOrigins();
   for (const review of deps.registry.pendingReviews()) {
     const owner = taskOwningSession(deps, review.sessionId, review.createdAt);
     if (!owner) continue;
@@ -332,7 +333,7 @@ export function buildInbox(
     for (const review of furtherPending) items.push(furtherPendingItem(review, item, resident !== undefined));
   }
 
-  items.push(...unattributedItems(deps, resolved));
+  items.push(...unattributedItems(deps, resolved, origins));
 
   const needsYou = needsYouOrder(items);
   const counts = Object.fromEntries(INBOX_STATES.map((s) => [s, 0])) as Record<InboxState, number>;

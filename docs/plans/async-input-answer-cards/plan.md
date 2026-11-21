@@ -1,7 +1,7 @@
 # Asynchronous input: answers render as answer cards
 
 Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
-phased in `phased-plan.md`. Revisions 3 to 5 bind recognition to a recorded daemon delivery after
+phased in `phased-plan.md`. Revisions 3 to 6 bind recognition to a recorded daemon delivery after
 the plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
@@ -65,6 +65,8 @@ Mission Control review 1b0c9f4e-... was answered ...
   characters are fragile.
 - The line also tells the agent what the message is, so it costs nothing in clarity. The
   receipt and the tool description already tell the agent that answers arrive as messages.
+- The marker is valid only as the literal first line of the message. A leading blank line or
+  leading whitespace means there is no marker.
 - One browser-safe module owns the format, its writer and its parser:
   `src/shared/review-message-envelope.ts`. The daemon writes the line, and the transcript reader
   and the tests parse it, through the same functions. No other module matches the string.
@@ -101,9 +103,10 @@ marker is only a cheap filter and a label for the agent.
   time, or pasting one after the delivery's turn has been bound. A bound turn gets:
 
 - `origin: "harness"`, so its byline, find scope and the rail's Yours tab treat it as Mission
-  Control's, including after a restart, when the in-memory record is gone.
+  Control's, including after a restart, when the in-memory record is gone. The origin comes from
+  the bound delivery alone, so it holds even after the reviews it carried are deleted.
 - a new presentation kind, `{ kind: "review-message", envelope: "answer" | "remind-later",
-  reviewIds: string[] }`. It is added to the `TranscriptPresentation` union in
+  reviewIds: string[] }`, set only while every review it names still resolves. It is added to the `TranscriptPresentation` union in
   `src/shared/types.ts` beside `launch` and `resident`, not by repurposing either.
 
 Recognition reads only the delivery table, the reviews table and the transcript, all durable, so
@@ -144,7 +147,9 @@ native message kept as the panel's state.
   shows the raw delivered text. Find in conversation searches the card's visible text and the
   raw text inside the disclosure.
 - **A turn whose ids are not all resolved or known** (an old row, or a review deleted by
-  retention) falls back to today's raw rendering, bylined Mission Control.
+  retention) falls back to the raw text, still bylined Mission Control because the bound delivery
+  keeps its `harness` origin. Only once the delivery row itself is pruned does the turn read as
+  it did before this plan.
 
 ### 4. One card per answer, placed where the agent received it
 
@@ -238,7 +243,8 @@ two renderings.
 ## Verification
 
 - Unit (`test/`): envelope write and parse round trip, coalesced ids, malformed and partial
-  lines, non-ASCII rejection; a card is drawn only for a turn bound to a recorded delivery; a
+  lines, a marker after a leading blank line rejected, non-ASCII rejection; a bound turn whose
+  reviews were deleted keeps the Mission Control byline after a restart; a card is drawn only for a turn bound to a recorded delivery; a
   pasted copy of a delivered message, a marker with a different body, and a marker with valid ids
   but no delivery all render as plain operator text; a turn that lands before delivery is
   confirmed still binds; a composer send of the same words inside the race window contests the

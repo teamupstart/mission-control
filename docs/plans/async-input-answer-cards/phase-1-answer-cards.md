@@ -54,9 +54,9 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
 1. **Envelope module.** Create `src/shared/review-message-envelope.ts` (browser-safe, no `node:`
    import). Export the kinds (`answer`, `remind-later`), `formatReviewEnvelope(kind, ids)`
    returning `[mission-control:<kind> review=<id>]` or `reviews=<id>,<id>`, and
-   `parseReviewEnvelope(text)` returning `{ kind, reviewIds, rest }` or `null`. Parse only the
-   first non-blank line, accept only the exact grammar and UUID-shaped ids, and reject non-ASCII
-   lines. No other module matches the string.
+   `parseReviewEnvelope(text)` returning `{ kind, reviewIds, rest }` or `null`. The marker is
+   valid only as the literal first line: a leading blank line or leading whitespace means no
+   marker. Accept only the exact grammar and UUID-shaped ids, and reject non-ASCII lines. No other module matches the string.
 2. **Writer.** Where the outbox row text is written for a review (`queueReviewPendingTurn` and
    Phase 2's fold of a new answer into an unclaimed row), write the marker line, a blank line,
    then the row's existing text. When a fold adds an id, rewrite the line to list every id in
@@ -76,10 +76,12 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
    `noteOtherSend` and `session_other_sends` record, and contests nothing it does not race.
    Do not fork the rule.
 4. **Recognition.** In `attributeTranscript`, change a user turn only when a delivery row is bound
-   to it. Take the review ids from the row, confirm they still exist for this session or its
-   runtime-transfer lineage, then set `origin: "harness"` and
-   `presentation: { kind: "review-message", envelope, reviewIds }`. A turn with a marker but no
-   bound row is left exactly as it would be today. Do not consult the flag.
+   to it. A bound turn always gets `origin: "harness"`, from the delivery row alone. Add
+   `presentation: { kind: "review-message", envelope, reviewIds }`, with the ids from the row,
+   only when every id still exists for this session or its runtime-transfer lineage. Otherwise
+   leave the raw text with the `harness` origin, so a review deleted by retention still reads as
+   Mission Control's. A turn with a marker but no bound row is left exactly as it would be today.
+   Do not consult the flag.
 5. **Goal reader.** In `Registry.captureHookGoalPrompt`, account for delivery echoes by count, in
    the existing order: owed daemon echoes are checked before an operator follow-up's echo ticket
    is claimed. Each delivery row owes one echo, persisted on the row. An arrival matching a row
@@ -114,14 +116,16 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
 - With the flag off, no marker is written for call-mode late answers or snooze instructions.
   Marked turns already in a conversation still render as cards.
 - An old MCP child is unaffected; the daemon writes the marker.
-- A review deleted by retention makes its turn fall back to raw text. So does a delivery row
-  pruned by retention.
+- A review deleted by retention makes its turn fall back to raw text, still bylined Mission
+  Control through the bound delivery. Once the delivery row itself is pruned by retention, the
+  turn reads as it did before this phase.
 - The new table is additive and created idempotently; an older database gains it on open.
 
 ## 7. Tests and verification
 
 - Unit: format and parse round trip; coalesced ids; malformed, partial, non-ASCII and
-  non-first-line markers rejected; writer output for message-mode, call-mode-with-flag,
+  non-first-line markers rejected, including a marker after a leading blank line; a bound turn
+  whose reviews were deleted keeps `origin: harness` and no presentation, after a restart too; writer output for message-mode, call-mode-with-flag,
   call-mode-without-flag and snooze rows; a fold rewrites the line with every id; a delivery
   reserves exactly one row before the send, with the offset read before the send, and it binds to
   exactly one turn, including a turn that lands before delivery is confirmed; a refused delivery
@@ -175,5 +179,8 @@ about a review. Retiring the flag makes the writer unconditional; it must not ch
 - Plan pull request review (#1612, revision 5): Goal-reader echo accounting is stated as a
   count in the existing daemon-before-human order, with arrival-order tests, so an operator copy
   arriving before the delivery's echo cannot leave that echo to be captured.
+- Plan pull request review (#1612, revision 6): the marker is valid only as the literal first
+  line, in both the grammar and the tests, and a bound delivery keeps its `harness` origin when
+  its reviews are deleted.
 - Final audit: owns every requirement of the source plan, sections 1 to 5, and all three adopted
   decisions.

@@ -107,6 +107,10 @@ Revision 5 applies one more finding: echo accounting in the Goal reader is state
 `captureHookGoalPrompt` already does for other daemon-typed text, so an operator copy that
 arrives before the delivery's echo cannot leave the delivery's echo to be captured in its place.
 
+Revision 6 settles two details from the same review: the marker is valid only as the literal
+first line, and a bound delivery keeps its `harness` origin even after the reviews it carried are
+deleted, so the raw fallback stays bylined Mission Control.
+
 ## Final verification
 
 With async-input Phases 1 to 3 and this phase merged and the flag on: `npm run typecheck`,

@@ -206,7 +206,9 @@ Every agent process Mission Control starts for a task that has a work unit gets
 
 - One pure helper, beside `withAgentTraceContext`: remove any inherited `WORK_UNIT_ID`, then
   set the task's. The daemon may itself have been started from a worker's shell, and a
-  session must never carry another unit's id.
+  session must never carry another unit's id. A terminal agent starts inside a pane that
+  already has the terminal server's environment, so the script that starts it unsets the
+  variable before it applies the launch's decision.
 - Paths: Claude Agent SDK launch, restore and in-session relaunch; Codex app-server; Pi's
   tool environment; terminal dispatch (the wrapper script's exports); the two pipeline
   hosts; managed terminal resume and runtime transfer.
@@ -232,9 +234,10 @@ agent was started with.**
   carries none removes it. A launch that fails changes nothing, so the record always
   describes the agent that is running. It is installed before a launched session's first
   event is published.
-- Every later reader uses the record and never the flag. A session emits its recorded id
-  while its task has that same id. Spans (section 6), the dashboard row (section 3) and
-  shaping (section 7) read it.
+- Every later reader uses the record and never the flag. A session's spans carry its recorded
+  id (section 6). A reader with a task in hand, which is the dashboard row (section 3) and
+  shaping for an agent that is already running (section 7), uses it while that task has the
+  same id.
 - A launch is a new dispatch, an embedded restore, a managed resume or a runtime transfer,
   and each decides again. So a switch of the preview takes effect at an agent's next start.
   Until then a running agent keeps its variable and its spans keep the attribute, or it has
@@ -273,7 +276,7 @@ with OAuth is not known to keep its sign-in once the header is added: the sign-i
 under a key that includes the server's headers after `${...}` is filled in, so a value that
 differs per work unit is expected to give every work unit its own key. That is read in
 Claude Code's program text and not run. Phase 2 checks it against a local OAuth fixture
-before it writes the guide (D8). Until then the guide tells an owner not to add the reference to such a server, and a worker's calls to it carry no work unit. The check asks the same of Codex, and the guide answers for each agent on its own.
+before it writes the guide (D8). Until then the guide tells an owner not to add the reference to such a server, and a worker's calls to it carry no work unit. The check asks the same of Codex, and the guide answers for each agent on its own. If the check cannot keep its sign-in apart from real ones it stops, and the guide then leaves the reference off every server that signs in with OAuth.
 
 Residents (D6). A resident run has no work unit, so Mission Control has no value to send
 for it. The resident
@@ -327,12 +330,15 @@ unset, like any session outside a work unit.
 - The catalog lint enforces three rules. Only a listed key may be exported unscoped. Every
   span-bearing event that declares `session_id` or `task_id` also declares `work_unit_id`,
   so a new event cannot forget it. And `work_unit_id` is a forbidden metric dimension.
-- The value is the work unit the session emits (section 4), read at capture through one
-  helper: the id the session's agent was started with, while its task has that id. The start span reads the launch record itself, because a session is announced before its task is bound, and the record is installed before that first event for every kind of launch. A span that reports a launch attempt, dispatch finished, carries
-  that launch's decision whether or not an agent started. A session with no task gets none,
-  and neither does a resident's, nor a session whose agent was started without the variable.
-  A task event with no session in scope, such as a task outcome, reads the record of the
-  session the task points to, and carries none when it points to no session.
+- The value is the session's launch record (section 4), read at capture through one helper:
+  the id the session's agent was started with. A span belongs to its session, so capture
+  needs no task, and every span has the id from the session's first event on: the record is
+  installed before that event for every kind of launch. A span that reports a launch
+  attempt, dispatch finished, carries that launch's decision whether or not an agent
+  started. A discovered session gets none, and neither does a resident's, nor a session
+  whose agent was started without the variable. A task event with no session in scope, such
+  as a task outcome, reads the record of the session the task points to, and carries none
+  when it points to no session.
 - Only `mission.session.start` is in the session's trace today. Every other session span is
   the root of its own trace. That is why the attribute goes on each span, and why a query on
   it returns all of them.
@@ -458,6 +464,9 @@ flowchart LR
   session-start span carries the id the agent was started with.
 - Shaping succeeds and the agent then fails to start: the shaper call carried the task's id,
   and no launch record is written.
+- A terminal launch from a pane whose shell already has `WORK_UNIT_ID`: the agent has the
+  launch's value, or none when the launch carries none.
+- A span captured before a session's task is bound carries the id.
 - The OAuth check at the start of Phase 2 records what a local OAuth fixture received, and
   the config guide follows it.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned

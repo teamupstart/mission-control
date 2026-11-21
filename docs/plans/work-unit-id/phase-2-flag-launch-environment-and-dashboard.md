@@ -63,6 +63,11 @@ that it can take another work unit's task (decision D7).
   `session-transfers/coordinator.ts`.
 - `agentSubprocessEnv` copies the inherited environment, applies `extraEnv`, then removes
   only state-home and token names.
+- A terminal agent starts through a wrapper script, `launchAndCleanupScript` in
+  `agent-subprocess-env.ts`. It runs inside the pane, "after a long-lived terminal server
+  contributes its own inherited environment". The script unsets only the state-home names
+  and then exports what the launch built. So a variable the launch leaves out is not
+  removed from the pane: an agent can still see the value the terminal server had.
 - Reused agents. `TaskManager.assign` (`src/server/tasks.ts`) hands a backlog task to an
   agent that is already running, after a reset: "An agent may take SEVERAL tasks over its
   life, one after another". `agentIsFree` is the same choice when the backlog makes it. No
@@ -135,7 +140,7 @@ that it can take another work unit's task (decision D7).
    - Run Claude Code against it under a config directory made for the check
      (`CLAUDE_CONFIG_DIR`), never the operator's. First confirm that this directory has its
      own credential store. If the fixture's sign-in would be written beside the operator's
-     real ones, stop and report that instead of signing in.
+     real ones, stop and report that instead of signing in. The check then has no answers.
    - Never read, copy, export or pass a real credential. The fixture logs header names, and
      values only for `x-work-unit-id`.
    - Answer three questions, each with what the fixture received:
@@ -168,6 +173,11 @@ that it can take another work unit's task (decision D7).
        harness cannot be worse. The guide and `docs/residents.md` then say that a pinned
        resident loses that server's sign-in once the reference is added, and that an owner
        should leave the reference off a server a pinned resident signs in to.
+     - No answers. If the check stopped because it could not keep its sign-in apart from
+       real ones, that does not block the phase either. Every answer is recorded as not
+       verified. The guide takes the cautious branch for both agents: it tells an owner
+       not to add the reference to a server that signs in with OAuth. `docs/residents.md`
+       says that a pinned resident's sign-in after the reference is added is not verified.
 2. **Flag.** In `src/shared/feature-flag-registry.ts` add `WORK_UNIT_ID_FLAG_ID =
    "work-unit-id"`, stage `preview`, label "Work unit id", with a description that says it
    tags a task's sessions with one id so its traces and MCP calls can be found together.
@@ -185,8 +195,14 @@ that it can take another work unit's task (decision D7).
 4. **The helper.** A pure module beside `agent-trace-context.ts` with
    `withWorkUnit(env, id)`: delete `WORK_UNIT_ID`, then set it when `id` is given.
 5. **Never inherit.** `agentSubprocessEnv` removes `WORK_UNIT_ID` from the inherited
-   environment before it applies `extraEnv`. That covers terminal launches, resume,
-   workflow checks and one-shot model calls, none of which may carry the daemon's own.
+   environment before it applies `extraEnv`. That covers every process the daemon spawns
+   itself: embedded agents, workflow checks and one-shot model calls. None of them may
+   carry the daemon's own. An agent that starts inside a pane needs more, because the pane
+   already has the terminal server's environment. The wrapper script unsets `WORK_UNIT_ID`
+   with the state-home names, before its `export` lines. The launch's decision is then the
+   only source of the variable: set when the launch carries a work unit, absent when it
+   does not. This holds wherever a terminal launch, a managed resume or a runtime transfer
+   starts an agent in a pane.
 6. **Embedded launches.** Add `workUnitId` to `SdkLaunchOptions`. `supervisor.start` and
    the restore path fill it with the launch's decision (step 3). Apply `withWorkUnit`
    where each adapter applies `withAgentTraceContext`: the Claude adapter, the Codex
@@ -224,10 +240,13 @@ that it can take another work unit's task (decision D7).
      launch intent is. A runtime transfer leaves the source's record alone, and a target
      that is discarded takes its record with it. Prune rows as the standing instructions
      snapshot is pruned.
-   - Add `sessionWorkUnitId(session, task)` to `src/server/work-unit.ts`: the recorded id
-     when the task's `workUnitId` is that same id, otherwise null. Every later reader uses
-     it: the dashboard row here, capture in Phase 3, and the shaping seam in Phase 4 when a
-     task goes to an agent that is already running.
+   - Add two readers to `src/server/work-unit.ts`. `launchWorkUnitFor(session)` is the
+     recorded id, or null: what the session's agent carries. `sessionWorkUnitId(session,
+     task)` is that id when the task's `workUnitId` is the same, otherwise null. A reader
+     with a task in hand uses the second: the dashboard row here, and the shaping seam in
+     Phase 4 when a task goes to an agent that is already running. Capture in Phase 3 uses
+     the first, because a span belongs to its session, and the reuse guard keeps every task
+     a session runs in that one work unit.
    - A session that was running before this phase has no row, so it emits nothing until
      its next start.
 9. **Reuse guard (decision D7).** An agent that was started with one work unit must not run
@@ -330,12 +349,16 @@ that it can take another work unit's task (decision D7).
 
 ## Tests and verification
 
-- The OAuth check's method and answers are in `docs/work-units.md` and in the pull request.
+- The OAuth check's method and answers, or the reason it could not run, are in
+  `docs/work-units.md` and in the pull request.
 - Unit: `withWorkUnit` sets, replaces and removes; `agentSubprocessEnv` drops an inherited
   value and keeps a launch's own; `launchWorkUnitId` is null with the flag off and for a
   malformed id; the supervisor passes the field on launch and on restore; the Claude, Codex
   and Pi environments carry it; the wrapper script has the `export` line; resume carries
   it. Update the exact-equality tests only for the cases that now carry a value.
+- The wrapper script, run in a shell that already has `WORK_UNIT_ID` set: with a launch
+  that carries none, the agent's environment has none; with a launch that carries an id,
+  it has the launch's and not the shell's.
 - Launch record: a launch writes the row and a later launch replaces it; a launch that
   carries none removes it; the row survives a `/clear`, an assign and every note-key
   rotation the standing instructions snapshot survives; rows load at daemon start;
@@ -394,8 +417,9 @@ that it can take another work unit's task (decision D7).
 
 ## Merge and exit criteria
 
-- The OAuth check ran, its answers are recorded, and the guide and `docs/residents.md`
-  follow them. No answer blocks this phase.
+- The OAuth check ran, or stopped because it could not keep its sign-in apart from real
+  ones. Its answers, or that they are not verified, are recorded, and the guide and
+  `docs/residents.md` follow them. Neither outcome blocks this phase.
 - Flag on when an agent is started: every launch path for a task-bound session sets
   `WORK_UNIT_ID` to the task's id and, once the launch has succeeded, records it. A
   session with no task has none.
@@ -403,7 +427,8 @@ that it can take another work unit's task (decision D7).
   when the flag is switched while the launch is in flight.
 - The launch record is installed before a launched session's first event is published.
 - An older task's first dispatch carries the id it has just been given.
-- No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
+- No agent ever carries a `WORK_UNIT_ID` it inherited: not from the daemon's environment,
+  and not from the terminal server its pane runs in.
 - Flag off when an agent is started: the launch has no variable and no record. While the
   flag is off the session detail is unchanged. The resident catalog rule in the last
   criterion below, and the reuse guard, apply with the flag on or off.
@@ -425,9 +450,10 @@ that it can take another work unit's task (decision D7).
 ## Handoff
 
 Phases 3 and 4 may rely on `WORK_UNIT_ID_FLAG_ID`, on the one decision a launch carries,
-and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not call
-`launchWorkUnitId` themselves, and must not emit a work unit for a session that
-`sessionWorkUnitId` does not return.
+and on the two readers of the launch record, `launchWorkUnitFor(session)` and
+`sessionWorkUnitId(session, task)`. They must not read the flag, must not call
+`launchWorkUnitId` themselves, and must not emit a work unit for a session whose launch
+record does not hold it.
 
 ## Cross-phase audit
 
@@ -468,3 +494,6 @@ and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not
 - Inspector review, round 5: an older task has its id before the launch decision reads it.
   A pipeline host and a transfer target get their record before their first event. The
   OAuth check's guidance is decided for Claude Code and for Codex separately.
+- Inspector review, round 6: the script that starts an agent in a pane unsets the variable
+  before it applies the launch's decision. The launch record has a reader that needs no
+  task, for capture. An OAuth check that cannot run does not block the phase.

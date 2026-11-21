@@ -163,10 +163,12 @@ flowchart LR
   value goes to the shaping run, the agent's environment and the launch record, and no later
   phase calls the function again.
 - **The launch record.** Phase 2 records, per session, the work unit its agent was started
-  with, and adds `sessionWorkUnitId(session, task)`: the recorded id while the task has that
-  same id, and null otherwise. The record is installed before a launched session's first
-  event is published, and it changes only when a launch succeeds, so it always describes the
-  agent that is running. Phases 2, 3 and 4 emit only through these two functions and never
+  with, and adds two readers: `launchWorkUnitFor(session)`, the recorded id, and
+  `sessionWorkUnitId(session, task)`, that id while the task has the same one. Capture uses
+  the first, because a span belongs to its session. A reader with a task in hand uses the
+  second. The record is installed before a launched session's first event is published, and
+  it changes only when a launch succeeds, so it always describes the agent that is running.
+  Phases 2, 3 and 4 emit only through the launch's one decision and these readers, and never
   read the flag themselves. So a switch of the flag, or a reused agent, cannot make spans,
   shaper calls and the agent's own MCP calls disagree.
 - **A launch attempt.** What Mission Control sends for a launch before an agent runs, which
@@ -227,6 +229,8 @@ After all four phases, with the flag on:
 - The session-start span of a dispatched session carries the id its agent was started with.
 - When shaping succeeds and the agent then fails to start, the shaper call keeps the task's
   work unit and no launch record is written.
+- A terminal agent never carries a `WORK_UNIT_ID` from the pane it starts in: it has the
+  launch's value or none.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e` pass.
 
@@ -236,9 +240,9 @@ After all four phases, with the flag on:
   Nothing in it is gated, which Phase 2 relies on.
 - After Phase 2: the gate function lives in `src/server/work-unit.ts`, the file Phase 1
   creates. Phase 1 exports only `mintWorkUnitId` from it, so Phase 2 adds without changing.
-- After Phase 3: it reads the launch record, through `sessionWorkUnitId` and, for the start
-  span, directly. It changes nothing a launch does. Phase 2 touches no telemetry file.
-  Phases 3 and 4 can merge in either order once Phase 2 is in.
+- After Phase 3: it reads the launch record through `launchWorkUnitFor` and changes nothing a
+  launch does. Phase 2 touches no telemetry file. Phases 3 and 4 can merge in either order
+  once Phase 2 is in.
 - After Phase 4: it changes only shaping files and the dispatch seam. Phase 3 does not
   touch either. The complete set covers R1 to R5 and D1 to D4 once each.
 - Plan validation repair, round 1: D6 touches Phase 1 (no id for a resident run), Phase 2
@@ -275,8 +279,13 @@ After all four phases, with the flag on:
   session's first event (Phase 2). The start span carries the id the agent was started with
   (Phase 3). A shaper call belongs to the launch it was made for, also when the agent then
   fails to start (Phase 4). Phase 1 is unchanged.
-- Inspector review, round 5: the start span reads the launch record itself, for every kind
-  of launch that announces a session, with Phase 2 installing the record first (Phases 2 and
+- Inspector review, round 5: the start span reads the launch record itself, for every kind of
+  launch that announces a session, with Phase 2 installing the record first (Phases 2 and
   3). An older row gets its id before the launch decision reads it (Phases 1 and 2). The
   OAuth check's guidance is decided for Claude Code and for Codex separately (Phase 2).
   Phase 4 is unchanged.
+- Inspector review, round 6: the script that starts an agent in a pane unsets the variable
+  before it applies the launch's decision (Phase 2). Every span of a session reads the
+  launch record itself, so it has the id before its task is bound (Phase 3). An OAuth check
+  that cannot isolate its credential store records its answers as not verified and does not
+  block Phase 2. Phases 1 and 4 are unchanged.

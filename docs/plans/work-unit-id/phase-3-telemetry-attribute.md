@@ -11,7 +11,7 @@ lint and stated in the privacy documentation.
 
 ## Entry criteria and dependencies
 
-- Phase 2 is merged (it provides the flag, the launch record and `sessionWorkUnitId`).
+- Phase 2 is merged (it provides the flag, the launch record and its two readers).
 
 ## Scope
 
@@ -74,33 +74,33 @@ the shaping run, any change to what a launch does, any read of the flag.
    `Collector.span`, write `attributes["work_unit_id"]` only when the key is on the list
    and the value passes `isWorkUnitId`. Otherwise drop it. Never write
    `mission.ref.work_unit_id`.
-6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits.
-   Capture never reads the flag.
-   - At the start. A session is announced before its task is bound, and some launches
-     announce a session with no task identity at all, so `sessionWorkUnitId` has nothing
-     to compare with yet. The start span therefore reads the session's launch record
-     itself. Phase 2 installs it before the session's first event is published, for every
-     kind of launch that announces a session: a dispatch, a pipeline host, a restore, a
-     managed resume and a runtime transfer target. The record was written from that
-     launch's decision, so it is the id the agent was started with, and no kind of launch
-     needs a path of its own. Add a read of the record to the host for this.
-   - After the start. The helper reads the session's launch record through
-     `sessionWorkUnitId(session, task)` from Phase 2, which is the id the session's agent
-     was started with while its task has that id. A successful resume or transfer replaces
-     the record, so later spans follow the new process. A failed one changes nothing.
-   - Add the helper's result to the refs at every site with a track: start, restore,
-     segment, turn, end, kill, effort selected, session operation and
-     `workflowAuthorContext`.
+6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits:
+   the session's launch record, read through `launchWorkUnitFor(session)` from Phase 2.
+   Capture never reads the flag, and it needs no task.
+   - Why the record alone. A span belongs to its session, and the record is what that
+     session's agent carries. Phase 2's reuse guard keeps every task a session runs in that
+     one work unit, so comparing with a task would add nothing. It would also lose the id
+     before a task is bound, and for a session that is announced with no task identity.
+   - From the first event. Phase 2 installs the record before a session's first event is
+     published, for every kind of launch that announces a session: a dispatch, a pipeline
+     host, a restore, a managed resume and a runtime transfer target. So the start span
+     has the id, and so does every span captured between that event and the moment the
+     task is bound. No kind of launch needs a path of its own.
+   - Add a read of the record to the host (`SessionTelemetryHost`). Add the helper's result
+     to the refs at every site with a track: start, restore, segment, turn, end, kill,
+     effort selected, session operation and `workflowAuthorContext`.
+   - A successful resume or transfer replaces the record, so later spans follow the new
+     process. A failed one changes nothing.
    - Dispatch finished reports a launch attempt. It carries that launch's decision whether
      the launch succeeded or failed, like the shaper calls of the same attempt (Phase 4).
      When it reports a task that went to an agent that was already running, it carries
      `sessionWorkUnitId` for that agent.
-   - Task outcome and PR observations have no track. They read the record of the session
-     the task points to (`Task.sessionId`), and carry no ref when the task points to no
-     session.
-   - The ref is absent for a session with no task, for a resident's session (its task has
-     no id, decision D6), and for a session whose agent was started without the variable.
-     Nothing is stored or exported for them.
+   - Task outcome and PR observations have no track. They have a task in hand, so they
+     read the record of the session the task points to (`Task.sessionId`) through
+     `sessionWorkUnitId`, and carry no ref when the task points to no session.
+   - The ref is absent for a session with no launch record: a discovered session, a
+     resident's session (its task has no id, decision D6), and a session whose agent was
+     started without the variable. Nothing is stored or exported for them.
 7. **Docs.**
    - `docs/observability.md`: amend "What travels, and what never does" to name the one
      exception, and add a "Work unit id" subsection after "Trace context for embedded
@@ -146,6 +146,9 @@ the shaping run, any change to what a launch does, any read of the flag.
   runtime transfer target, each announced before any task is bound to it, `work_unit_id` on
   the session-start span equals the `WORK_UNIT_ID` the agent was started with.
 - Dispatch finished for a launch that failed carries that launch's decision.
+- Before the task is bound: an effort-selected span and a session-operation span captured
+  after a session's first event and before its task is bound carry the id. So does every
+  span of a session that was announced with no task identity.
 - `test/telemetry-stack.integration.ts`: the exported span has the attribute with the raw
   id.
 - No browser spec: this phase has no dashboard surface.
@@ -159,7 +162,8 @@ the shaping run, any change to what a launch does, any read of the flag.
   variable.
 - A span never carries a work unit that the session's agent does not carry in its
   environment, across a switch of the flag and across a reused agent.
-- The session-start span carries the id the agent was started with.
+- Every span of a session carries the id the agent was started with from the session's
+  first event on, also before its task is bound.
 - A span that reports a launch attempt carries that attempt's decision, whether or not an
   agent started.
 - Only a well-formed `wu_` id can be exported unhashed. The lint fails a second unscoped
@@ -176,7 +180,7 @@ inherits the rule from the lint.
 ## Cross-phase audit
 
 - Phase 1: reads `Task.workUnitId` and `isWorkUnitId`. No change there.
-- Phase 2: reads the launch record through `sessionWorkUnitId`, so capture and the launch
+- Phase 2: reads the launch record through `launchWorkUnitFor`, so capture and the launch
   environment follow one decision and this phase never reads the flag. This phase changes
   nothing a launch does and adds nothing to one: it reads the record.
 - Phase 4: no shared file except `docs/work-units.md`, where the two sections sit apart.
@@ -190,3 +194,5 @@ inherits the rule from the lint.
   attempt carries that attempt's decision.
 - Inspector review, round 5: the start span reads the launch record itself, so it is right
   for every kind of launch that announces a session, a runtime transfer target included.
+- Inspector review, round 6: every span of a session reads the launch record itself, not
+  only the start span, so a span captured before the task is bound has the id too.

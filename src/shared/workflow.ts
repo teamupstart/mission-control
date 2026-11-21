@@ -1895,6 +1895,8 @@ export type SessionActionContinuationExpectation =
       expectedHeadOid: string | null;
       /** Complete content tree accepted by the parent judged submission. */
       acceptedContentTreeOid?: string | null;
+      /** Historical merge satisfaction requires this tree at continuation capture too. */
+      mergedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
       observedAt: number;
     };

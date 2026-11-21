@@ -30,6 +30,7 @@ import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
   AgentDot,
+  WorkflowActionWait,
   CostChip,
   InspectorTileFlag,
   PrTileFlag,
@@ -521,6 +522,8 @@ export function SessionTile({
           choice (`workflowDetails`, off by default); the rung, the stage track and the repair
           budget are not. So the collapsed peek is what a card says about a run unless someone
           asks it for more. */}
+      <WorkflowActionWait runs={workflowRuns ?? (workflowRun ? [workflowRun] : [])} />
+
       {shown("workflow") && workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}

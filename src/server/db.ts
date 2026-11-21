@@ -5737,6 +5737,7 @@ export function createReviewContinuationPendingTurn(input: {
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
+    coalesce: mode?.wait_mode === "message",
   });
 }
 
@@ -5759,6 +5760,14 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  */
 export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
 
+/** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
+export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE id = ? AND state = 'queued' AND claimed_at IS NULL
+    RETURNING note_key`).get(`${SNOOZE_INSTRUCTION_TURN_PREFIX}${reviewId}`) as { note_key: string } | undefined;
+  return row?.note_key ?? null;
+}
+
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
   noteKey: string;
@@ -5779,6 +5788,7 @@ function queueReviewPendingTurn(
   input: { reviewId: string; noteKey: string; text: string; now: number },
   kind: {
     turnId: string;
+    coalesce?: boolean;
     /** SQL over the review row: whether this turn is still owed. */
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
@@ -5794,6 +5804,20 @@ function queueReviewPendingTurn(
     if (!eligible) {
       d.exec("COMMIT");
       return null;
+    }
+    // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
+    // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
+    // the conversation's tail: appending to an earlier answer would pass intervening turns.
+    if (kind.coalesce) {
+      const existing = d.prepare(`SELECT * FROM pending_turns
+        WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+        const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
+          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+        d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
+        d.exec("COMMIT");
+        return rowToPendingTurn(row);
+      }
     }
     const sequence = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
@@ -16111,7 +16135,7 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
 }
 
 /**
- * Every open adoption, plus the ones RETIRED since a given instant.
+ * A page of open adoptions, recent retirements, and historical merges on the action branch.
  *
  * The open set alone cannot answer a `pull_request` session action, and the reason is a
  * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
@@ -16127,18 +16151,26 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
  * which matters - the caller resolves a repository identity per distinct root, and that is a
  * git subprocess.
  *
- * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
- * a contradiction this turn produced, and the branch's next pull request is a new row.
+ * Older merged rows are included only for the requested branch. The caller still verifies
+ * repository identity and published content; an old merge alone never proves current work.
+ * Older closed-unmerged rows stay out. Walk pages using the last row as the cursor; the key
+ * breaks adoption-time ties without skipping candidates or loading the entire ledger at once.
  */
-export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+export function loadAdoptedInspectorPrsSince(
+  observedSince: number,
+  mergedBranch: string | null,
+  after: { adoptedAt: number; key: string } | null,
+): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'open'
+        WHERE (state = 'open'
            OR (observed_at IS NOT NULL AND observed_at >= ?)
-        ORDER BY adopted_at ASC`,
+           OR (observed_state = 'MERGED' AND head_ref_name = ?))
+          AND (? IS NULL OR (adopted_at, key) > (?, ?))
+        ORDER BY adopted_at ASC, key ASC LIMIT 50`,
     )
-    .all(observedSince) as unknown as InspectorPrRow[];
+    .all(observedSince, mergedBranch, after?.key ?? null, after?.adoptedAt ?? null, after?.key ?? null) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 

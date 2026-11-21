@@ -48,6 +48,8 @@ import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
  */
 interface RememberedInjection {
   origin: TurnOrigin;
+  /** Receipt for one unambiguous prompt echo; never retained after consumption. */
+  onEcho?: () => void;
   /** Echoes delivered and not yet claimed by the Goal path. Incremented per delivery. */
   pending: number;
   /**
@@ -325,7 +327,7 @@ function withdrawAutomatedClaim(sessionId: string, key: string): void {
 }
 
 /** Write the label and count one owed echo. `landed` marks the label permanent. */
-function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean): void {
+function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean, onEcho?: () => void): void {
   if (AUTOMATED_ORIGINS.has(origin)) noteAutomatedClaim(sessionId, injectionFingerprint(text), landed);
   let byText = seen.get(sessionId);
   if (!byText) {
@@ -351,6 +353,8 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
     // had before reservations existed.
     origin: prior?.delivered && !landed ? prior.origin : origin,
     pending: (prior?.pending ?? 0) + 1,
+    // Identical outstanding sends cannot identify which delivery an echo belongs to.
+    onEcho: prior?.pending ? undefined : onEcho,
     // Sticky: one confirmed delivery makes the label permanent for every later reservation
     // of the same text, which is what stops a refused retry from erasing it.
     delivered: (prior?.delivered ?? false) || landed,
@@ -394,8 +398,8 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
  * not happened yet, and the durable journal must archive turns that exist rather than turns
  * that were attempted - so the journal waits for `recordInjection` to confirm.
  */
-export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin): void {
-  remember(sessionId, text, origin, false);
+export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: () => void): void {
+  remember(sessionId, text, origin, false, onEcho);
 }
 
 /**
@@ -424,7 +428,7 @@ export function releaseInjection(sessionId: string, text: string): void {
   // label with nothing owed: the earlier turn is still in the conversation, and answering
   // `undefined` for it would re-attribute machine-typed words to the operator.
   if (prior.delivered) {
-    byText.set(key, { ...prior, pending: 0 });
+    byText.set(key, { ...prior, pending: 0, onEcho: undefined });
     return;
   }
   byText.delete(key);
@@ -507,6 +511,9 @@ export function claimInjectionEcho(sessionId: string, text: string): TurnOrigin 
   const prior = byText?.get(injectionFingerprint(text));
   if (!prior || prior.pending <= 0) return undefined;
   prior.pending -= 1;
+  const onEcho = prior.onEcho;
+  prior.onEcho = undefined;
+  onEcho?.();
   return prior.origin;
 }
 

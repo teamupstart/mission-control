@@ -31664,6 +31664,19 @@ span.line-run-prov {
 }
 /* The sentence the held side carries. Said once per section rather than on every tile
    below it, which is the whole reason the sections exist. */
+.workflow-action-wait {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+.workflow-action-wait strong { color: var(--fg); }
+.rail-row > .workflow-action-wait { grid-column: 1 / -1; }
+
 .fleet-section-why {
   font-size: 10px;
   line-height: 1.45;
@@ -41997,6 +42010,16 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
 .shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+/* Inset like the rows below it, so the text never meets the list border. */
+.shaping-list-outcome { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px 2px; overflow-wrap: anywhere; }
+.shaping-list-outcome [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Baseline: the Dismiss label lines up with the first line of the message beside it. */
+.shaping-orphan-outcome { display: flex; align-items: baseline; gap: 12px; }
+.shaping-revisions-missing { font-size: 12px; color: var(--attention); }
+.shaping-orphan-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* The shaper's id, as its row would show it, at its own width rather than the column's. */
+.shaping-orphan-copy > .shaping-row-id { align-self: flex-start; }
+.shaping-outcome-dismiss { flex: none; }
 .shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
 .shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
 .shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
@@ -42014,6 +42037,12 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
 .shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
 .shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
+   gap, yet stays in the accessibility tree, which display: none would not. */
+.shaping-earlier-live:empty { position: absolute; }
+/* Older outcomes, apart from the current one: the same warning colour, quieter, one per line. */
+.shaping-earlier-outcomes { margin: 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.shaping-earlier-outcomes li { font-size: 11.5px; color: var(--attention); opacity: 0.85; overflow-wrap: anywhere; }
 .shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
 .shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
 .shaping-env li.is-set span { color: var(--idle); }

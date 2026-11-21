@@ -29,7 +29,12 @@ current checkout and starts a fresh full review, spending one repair round. It d
 another edit or push, and passes earned before this review cannot be reused. Missing publication
 proof, unpublished deliverables, and missing retained artifact evidence still hold publication.
 The fresh-review requirement survives disabling Inspector or exhausting the repair budget.
-The earlier review never approves the changed tree.
+The earlier review never approves the changed tree. If Inspector has reviewed that published
+head and has unresolved findings, the gate prepares its repair packet and Live delivery sends
+it to the owning session even while full review is still owed. The packet asks the agent to
+address the GitHub threads, including evidence-only replies. This case always returns through
+full workflow review, including under an Inspector-only findings policy. Resolving a thread
+without changing the head does not waive that review, and earlier passes cannot be reused.
 
 If an older binding lacks a repository root, normalization uses the pinned adopted PR's
 repository provenance. Missing provenance still blocks the gate.

@@ -115,6 +115,7 @@ import {
   withInspectorGate,
   workflowInspectorGate,
   workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
@@ -3635,8 +3636,7 @@ export class WorkflowManager {
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     const inspectorOnlyDelivery =
       delivery.kind === "inspector_feedback"
-      && version?.completionPolicy.kind === "inspector"
-      && version.completionPolicy.onFindings === "inspector_only";
+      && workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
     if (
       input.resolution === "discard_and_new_round"
       && inspectorOnlyDelivery
@@ -4997,8 +4997,9 @@ export class WorkflowManager {
       if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
         && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
         && publishedTree !== acceptedTree) {
-        this.transitionInspectorGate(run, state, {
+        const changedState: WorkflowInspectorGateState = {
           ...state,
+          targetHeadSha: submittedHead,
           waitReason: "reviewed_tree_changed",
           reviewedContent: {
             submissionId: parent.id,
@@ -5006,7 +5007,21 @@ export class WorkflowManager {
             treeOid: acceptedTree,
             publishedTreeOid: publishedTree,
           },
-        }, "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        };
+        const changedRun = this.transitionInspectorGate(run, state, changedState,
+          "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        if (!changedRun) return;
+        // Publication and completed Inspector review identify the same current head.
+        // Deliver its findings even though the earlier Persona review cannot approve it.
+        // Retain the review obligation through delivery, recovery and the next submission.
+        if (ledger.headSha === submittedHead) {
+          const findings = loadInspectorComments(state.prKey!).filter((row) => row.status !== "resolved");
+          if (findings.length > 0) {
+            await this.handleInspectorFindings(
+              changedRun, submission, binding, version, changedState, ledger.round, findings, now,
+            );
+          }
+        }
         return;
       }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
@@ -5150,12 +5165,13 @@ export class WorkflowManager {
       waitReason: "findings",
       findingFingerprints: fingerprints,
     };
-    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
+    const inspectorOnly = workflowInspectorOnlyRepair(version.completionPolicy, state);
+    const policy = inspectorOnly ? "inspector_only" : "restart_workflow";
     const findingEvent = {
       prKey: state.prKey,
       targetHeadSha: state.targetHeadSha,
       ...findingFingerprintAudit(fingerprints),
-      policy: version.completionPolicy.onFindings,
+      policy,
     };
     if (!binding.sessionId) {
       this.transitionInspectorGate(
@@ -5183,8 +5199,9 @@ export class WorkflowManager {
       targetHeadSha: state.targetHeadSha,
       inspectorRound,
       reviewPosture: nextState.reviewPosture,
-      policy: version.completionPolicy.onFindings,
+      policy,
       findings,
+      freshPublishedReview: workflowInspectorGateNeedsFreshReview(state),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const deliveryId = randomUUID();
@@ -5210,7 +5227,7 @@ export class WorkflowManager {
           deliveryId,
           payloadSha256: rendered.payloadSha256,
           ...findingFingerprintAudit(fingerprints),
-          policy: version.completionPolicy.onFindings,
+          policy,
         },
         now,
       });
@@ -5618,8 +5635,7 @@ export class WorkflowManager {
       }
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
       if (
         delivery.kind !== "inspector_feedback"
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")

@@ -147,6 +147,7 @@ interface HarnessOptions {
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
+  inspectorFindingsPolicy?: "restart_workflow" | "inspector_only";
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
@@ -420,7 +421,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     description: "",
     draft: { nodes, edges } as never,
     completionPolicy: options.inspector
-      ? { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }
+      ? { kind: "inspector", onFindings: options.inspectorFindingsPolicy ?? "restart_workflow", missingPrAction: "wait" }
       : { kind: "none" },
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     // The resumption observer is the OTHER way a parked round reopens and would race the
@@ -1978,7 +1979,7 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, childProof, changed, number, disableInspector = false } of [
+for (const { parentProof, childProof, changed, number, disableInspector = false, findingsPolicy } of [
   { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
   { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
@@ -1989,16 +1990,19 @@ for (const { parentProof, childProof, changed, number, disableInspector = false 
   { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
   { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
   { parentProof: "publication", childProof: "publication", changed: true, number: 80, disableInspector: true },
+  ...(["restart_workflow", "inspector_only"] as const).map((findingsPolicy, i) => ({
+    parentProof: "publication", childProof: "publication", changed: true, number: 81 + i, findingsPolicy, disableInspector: false,
+  })),
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}`, async (t) => {
-    const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}, disabled=${disableInspector}, findings=${findingsPolicy}`, async (t) => {
+    const { adoptInspectorPr, updateInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
     const options = {
       pullRequest: true, localReport: parentProof === "publication", inspector: true, maxRepairRounds: 3, probeEvidence: true,
-      omitContentTree: parentProof === "missing",
+      omitContentTree: parentProof === "missing", inspectorFindingsPolicy: findingsPolicy,
     };
-    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}-${disableInspector}-${findingsPolicy}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -2067,6 +2071,48 @@ for (const { parentProof, childProof, changed, number, disableInspector = false 
         assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
         assert.equal(WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
           "reviewed_tree_changed");
+        if (findingsPolicy) {
+          upsertInspectorComment({
+            id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
+            path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
+            body: "Verify the Go toolchain behavior and reply to this thread.", severity: "major",
+            round: 7, status: "open", replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now,
+            githubUrl: `${url}#discussion_r1576`, postedAt: now,
+          });
+          updateInspectorPr(key, { headSha: h.full("older-review") }, now);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 3);
+          await waitFor(() => WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState)
+            .lastObservedAt === now + 3, "the stale-review observation did not settle");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 0,
+            "a previous head's review must not deliver findings as current");
+          updateInspectorPr(key, { headSha: head }, now);
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 4);
+          await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback"),
+            "the published-tree hold swallowed the current-head finding");
+          await waitFor(() => h.store.listDeliveries(runId).some((d) => d.kind === "inspector_feedback" && d.state === "delivered"),
+            "the current-head finding never reached the session");
+          const packet = h.store.listDeliveries(runId).find((d) => d.kind === "inspector_feedback")!;
+          assert.match(packet.payload, /Posted finding on the published head/);
+          assert.ok(packet.payload.includes(`${url}#discussion_r1576`));
+          assert.match(packet.payload, /fresh full workflow review/);
+          assert.doesNotMatch(packet.payload, /permits bypassing Personas/);
+          assert.ok(h.injected.includes(packet.payload));
+          const findingGate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+          assert.deepEqual(findingGate.findingFingerprints, [`posted-${number}`]);
+          assert.deepEqual(findingGate.reviewedContent, gate.reviewedContent);
+          assert.equal(h.store.getRun(runId)?.status, "waiting_for_session", "publication mismatch forbids Inspector-only bypass");
+          // Resolving by reply on the same head must not complete the old review or send twice.
+          upsertInspectorComment({
+            id: `posted-${number}`, prKey: key, fingerprint: `posted-${number}`,
+            path: "src/edge.ts", line: 12, title: "Posted finding on the published head",
+            body: "Verified and withdrawn", severity: "major", round: 7, status: "resolved",
+            replies: 1, answeredCommentId: null, createdAt: now, updatedAt: now + 4,
+          });
+          h.registry.inspectionUpdated(key, head, "OPEN", now + 5);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
+          assert.equal(h.store.listDeliveries(runId).filter((d) => d.kind === "inspector_feedback").length, 1);
+        }
         // Make reuse eligibility explicit rather than relying on the machine default.
         const previousPolicy = getWorkflowPolicy();
         t.after(() => setWorkflowPolicy(previousPolicy));

@@ -52,7 +52,8 @@ export function workflowHold(run: WorkflowRunSummary, blocker?: Pick<SessionBloc
       run.actionWait ? actionWaitSentence(run.actionWait) : "Session action in progress.",
       !run.actionWait || !sessionActionWaitsOnOperator(run.actionWait));
   }
-  if (run.gateWaitReason) {
+  if (run.gateWaitReason && (run.status === "waiting_for_pr"
+    || run.status === "waiting_for_inspector" || run.status === "waiting_for_new_head")) {
     const activity = gateWaitActivity(run.gateWaitReason);
     return activity ? describe(activity.actor, gateWaitSentence(run.gateWaitReason), activity.inProgress)
       : describe("Operator", "The workflow is waiting for an unrecognized gate condition. Open the run for details.");

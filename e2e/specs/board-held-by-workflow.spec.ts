@@ -453,7 +453,9 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds.getByRole("link", { name: /Open owning run/ })).toHaveAttribute("href", `#/runs/${runId}`);
   await holds.getByRole("link", { name: /Open owning run/ }).hover();
   await expect(dashboard.locator(".tooltip").filter({ hasText: "Open the workflow run holding this session" })).toBeVisible();
-  await update({ ...summary, id: "healthy-review", repoRoot: "/repos/tools", status: "running", phase: "persona_review", activePersonaNames: ["Test Auditor"] });
+  // Even a retained Inspector reason cannot override an active review's current phase.
+  await update({ ...summary, id: "healthy-review", repoRoot: "/repos/tools", status: "running", phase: "persona_review",
+    gateWaitReason: "findings", activePersonaNames: ["Test Auditor"] });
   await expect(holds).toContainText("Review in progress: Test Auditor");
   await expect(holds).toContainText("In progress · Workflow");
   await shoot(dashboard, "hold-distinct-reasons");

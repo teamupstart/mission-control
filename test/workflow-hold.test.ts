@@ -59,6 +59,16 @@ test("every gate reason has an explicit next actor and progress state", () => {
   }
 });
 
+test("a retained gate reason cannot mask current capture or review progress", () => {
+  for (const status of ["capturing", "running", "waiting_for_evidence_readiness"] as const) {
+    const current = { ...run, status, activePersonaNames: ["Auditor"] };
+    const hold = workflowHold({ ...current, gateWaitReason: "findings" })!;
+    assert.deepEqual(hold, workflowHold(current), status);
+    assert.equal(hold.actor, "Workflow", status);
+    assert.equal(hold.inProgress, true, status);
+  }
+});
+
 test("unknown stored wait reasons remain inspectable without claiming healthy progress", () => {
   for (const unknown of ["future_operator_wait", "toString", "__proto__"]) {
     for (const held of [

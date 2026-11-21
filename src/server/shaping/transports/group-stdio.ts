@@ -8,6 +8,17 @@ import { EXIT_DRAIN_MS, killGroup, releaseStdio } from "./command.ts";
 /** The SDK's own stdio framing: one JSON-RPC message per line, read through a bounded buffer. */
 export type StdioFraming = typeof import("@modelcontextprotocol/sdk/shared/stdio.js");
 
+/**
+ * The server stopped reading its stdin: a write failed because the pipe is closed. No request can
+ * reach it any more, so the connection is lost, though the server may still be running.
+ */
+export class StdinClosedError extends Error {
+  constructor(cause: unknown) {
+    super("The MCP server stopped reading its stdin, so no request can reach it.", { cause });
+    this.name = "StdinClosedError";
+  }
+}
+
 /** How long a server is given to exit after its stdin ends, and again after SIGTERM. */
 const CLOSE_GRACE_MS = 2_000;
 
@@ -92,7 +103,7 @@ export class GroupStdioTransport implements Transport {
         this.exited = true;
         this.finish(child);
       });
-      child.stdin?.on("error", (error) => this.onerror?.(error));
+      child.stdin?.on("error", (error) => this.onerror?.(new StdinClosedError(error)));
       child.stdout?.on("data", (chunk: Buffer) => {
         try {
           this.readBuffer.append(chunk);
@@ -134,13 +145,22 @@ export class GroupStdioTransport implements Transport {
     }
   }
 
+  /**
+   * Settled by the write's own callback, on success or on error. Waiting for `drain` instead would
+   * wait forever for a server that closed its stdin and kept running: the pipe breaks, and no
+   * `drain` follows. A broken pipe rejects the send and reports the lost connection.
+   */
   send(message: JSONRPCMessage): Promise<void> {
     const stdin = this.child?.stdin;
-    if (!stdin || this.exited || this.closing) return Promise.reject(new Error("Not connected"));
+    if (!stdin || this.exited || this.closing || stdin.destroyed) return Promise.reject(new Error("Not connected"));
     const json = this.framing.serializeMessage(message);
-    return new Promise((resolve) => {
-      if (stdin.write(json)) resolve();
-      else stdin.once("drain", () => resolve());
+    return new Promise((resolve, reject) => {
+      stdin.write(json, (error) => {
+        if (!error) { resolve(); return; }
+        const closed = new StdinClosedError(error);
+        this.onerror?.(closed);
+        reject(closed);
+      });
     });
   }
 
@@ -159,6 +179,7 @@ export class GroupStdioTransport implements Transport {
     const settle = () => Promise.race([closed, new Promise<void>((done) => setTimeout(done, CLOSE_GRACE_MS).unref())]);
     try { child.stdin?.end(); } catch { /* Already closed. */ }
     await settle();
+    // SIGTERM only to a server that has not exited: until then its pid is still its group's id.
     if (!this.finished && !this.exited) {
       try {
         if (child.pid) process.kill(-child.pid, "SIGTERM");
@@ -168,10 +189,9 @@ export class GroupStdioTransport implements Transport {
       }
       await settle();
     }
-    // The group last, whatever happened above: a helper that ignored SIGTERM, or one still running
-    // after the server exited, is stopped here. Harmless on an empty group.
-    killGroup(child);
-    releaseStdio(child);
-    this.readBuffer.clear();
+    // The group is killed in one place, `finish`, and only once. A server that already finished
+    // had its group stopped then; signalling the same number again, perhaps long after, could reach
+    // an unrelated group that was given the id since.
+    this.finish(child);
   }
 }

@@ -624,7 +624,10 @@ SIGTERM and then SIGKILL, and a server that exits on its own has what is left of
 killed too, so a helper the server started does not outlive the run. The server's exit is seen
 when it happens, not when its pipes close: a helper that inherited them could hold them open,
 so after the exit its pipes get the same 500 ms drain a `command` shaper's do, and then the
-connection fails with what the server wrote and the group is stopped. A helper that leaves the
+connection fails with what the server wrote and the group is stopped. The group is killed in
+that one place and only once, so a later close never signals a group id the system may since
+have given to an unrelated process. A server that stops reading its stdin while it keeps
+running loses the connection at the first write that fails, and the call answers at once. A helper that leaves the
 group on purpose is out of reach, as it is for a `command` shaper.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling

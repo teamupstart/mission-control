@@ -10,7 +10,7 @@ import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
 import { holdsResolvedValue, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
-import { GroupStdioTransport } from "./group-stdio.ts";
+import { GroupStdioTransport, StdinClosedError } from "./group-stdio.ts";
 import {
   credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, scrubChildOutput, shaperCommandEnv, stderrMargin, withTimeout,
   type ReceivedValues,
@@ -445,6 +445,13 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     if (stdioOverflow(error)) {
       state.fail(capReason());
       // Stopped now, not when the run ends: a server that overflowed stays useless.
+      void client.close().catch(() => {});
+      return;
+    }
+    // A server that stopped reading its stdin can receive no request: the connection is lost, so
+    // a waiting call answers now rather than at its deadline.
+    if (error instanceof StdinClosedError) {
+      state.fail(error.message);
       void client.close().catch(() => {});
       return;
     }

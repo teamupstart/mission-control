@@ -683,6 +683,40 @@ test("a stdio server that exits while a helper holds its pipes fails at once, an
   }
 });
 
+test("a stdio server that closes its stdin and keeps running fails the connection at once", async () => {
+  const started = Date.now();
+  // A server that reads the `initialize` request, closes its stdin, answers, and stays up. The
+  // client's next write, the `initialized` notification, meets a pipe with no reader.
+  const answer = JSON.stringify({ jsonrpc: "2.0", id: 0, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "closed-stdin", version: "1.0.0" } } });
+  const script = `read -r request; exec 0<&-; printf '%s\\n' '${answer}'; exec /bin/sleep 60`;
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: "/bin/sh", args: ["-c", script], env: [] } },
+  }), ctx());
+  assert.deepEqual(reply, { kind: "failed", reason: "The MCP server stopped reading its stdin, so no request can reach it." });
+  assert.ok(Date.now() - started < 5_000, `answered after ${Date.now() - started} ms, not at the 30 s budget`);
+});
+
+test("a stdio server's process group is signalled once, however the connection ends", async () => {
+  const signalled: Array<[number, string | number | undefined]> = [];
+  const kill = process.kill;
+  process.kill = ((pid: number, signal?: string | number) => {
+    if (pid < 0) signalled.push([pid, signal]);
+    return kill.call(process, pid, signal as NodeJS.Signals);
+  }) as typeof process.kill;
+  const scope = runScope();
+  scopes.push(scope);
+  try {
+    // The run ends with the server still up: closing ends its stdin, it exits on its own, and that
+    // exit stops its group. Nothing may signal the same group id again afterwards.
+    const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }), ctx({ scope }));
+    assert.equal(reply.kind, "data", JSON.stringify(reply));
+    scope.close();
+    await new Promise((done) => setTimeout(done, 1_500));
+  } finally { process.kill = kill; }
+  assert.equal(new Set(signalled.map(([pid]) => pid)).size, 1, JSON.stringify(signalled));
+  assert.deepEqual(signalled.filter(([, signal]) => signal === "SIGKILL").length, 1, JSON.stringify(signalled));
+});
+
 test("a helper a stdio server started stops with it when the run ends", async () => {
   const pidFile = join(home, "stdio-helper.pid");
   rmSync(pidFile, { force: true });

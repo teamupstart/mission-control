@@ -43,10 +43,6 @@ function fleet(id: string, closeFails = { times: 0 }, scout?: { ready: boolean }
   const reviews = new ReviewManager(registry);
   // The daemon's wiring (`src/server/index.ts`), with the flag read per merge.
   tasks.useMergeQuestions({
-    close: (sessionId) => {
-      if (closeFails.times > 0) { closeFails.times--; throw new Error("the review store refused the write"); }
-      reviews.closeQuestionsForMerge(sessionId, featureEnabled("async-input"));
-    },
     closure: (sessionId) => {
       const closure = reviews.mergeClosure(sessionId, featureEnabled("async-input"));
       return {
@@ -125,7 +121,8 @@ test("merge-driven completion reads no review hold: closing the questions is par
   const body = source.slice(start, end);
   assert.ok(start > 0 && end > start);
   assert.doesNotMatch(body, /outstandingReviews|pendingReviews|openQuestions|completionHeldByQuestion/);
-  assert.match(body, /this\.mergeQuestions\?\.close\(s\.id\)/);
+  assert.match(body, /this\.mergeQuestions\?\.closure\(s\.id\)/);
+  assert.match(body, /joinCompletion/);
 });
 
 test("a closure that fails leaves the task running with every question open, and the next observation completes it", async () => {
@@ -166,7 +163,7 @@ test("a merge closes every question in one transaction: a write that fails part 
   assert.equal(f.reviews.closeQuestionsForMerge(f.id, true).length, 2, "and a retry closes both");
 });
 
-test("with the flag on, a merge reaches an agent blocked inside a request_input call: the call is closed, then the idle turn completes the task", async () => {
+test("with the flag on, a merge reaches an agent blocked inside a request_input call: the task completes and the call is closed together", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
   const f = fleet("s-merge-blocked");
@@ -186,13 +183,15 @@ test("with the flag on, a merge reaches an agent blocked inside a request_input 
   const returned = await call;
   assert.ok(returned, "the agent's call returned");
   assert.match(reviewToolResult(returned).text, /pull request merged/);
-  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "still mid-turn: not concluded until the agent stops");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done", "completed in the same transaction as the closure");
+  assert.deepEqual(f.registry.outstandingReviews(f.id), []);
 
-  // The call returned and the agent ends its turn: the ordinary idle settle completes the task.
+  // The agent finishes the turn its call returned into; that is not new work, so the merged
+  // task is not reopened by it.
+  f.hook("UserPromptSubmit");
   f.hook("Stop");
   await tick();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
-  assert.deepEqual(f.registry.outstandingReviews(f.id), []);
 });
 
 test("with the flag off, an agent blocked inside a request_input call keeps today's behavior on merge", async () => {
@@ -336,4 +335,35 @@ test("a scout blocked in a call keeps its question open on merge, since its arch
   assert.equal(f.registry.getReview(asked.id)?.status, "pending", "still the operator's to answer");
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
   f.reviews.resolve(asked.id, "dismiss", null, "human");
+});
+
+test("an agent blocked in a call whose task status write fails keeps its question open and its call waiting", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true });
+  const f = fleet("s-merge-blocked-write-fails");
+  f.hook("UserPromptSubmit");
+  const asked = f.reviews.create(f.id, "input", "Blocking?", "Blocking?", decisions("Blocking?"), { snoozable: true });
+  let returned = false;
+  const call = f.reviews.wait(asked.id, 60_000).then((r) => { returned = true; return r; });
+  const db = openDb();
+  for (const event of ["INSERT", "UPDATE"]) {
+    db.exec(`CREATE TRIGGER refuse_blocked_${event.toLowerCase()} BEFORE ${event} ON tasks
+      WHEN NEW.id = '${f.taskId}' AND NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'refused'); END`);
+  }
+  try {
+    f.merge();
+    await tick();
+    assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+    assert.equal(f.registry.getReview(asked.id)?.status, "pending", "no closed question behind a running task");
+    const row = db.prepare("SELECT status, closed_reason FROM reviews WHERE id = ?").get(asked.id) as { status: string; closed_reason: string | null };
+    assert.deepEqual({ ...row }, { status: "pending", closed_reason: null });
+    assert.equal(returned, false, "the call is still waiting, and still answerable");
+  } finally {
+    db.exec("DROP TRIGGER refuse_blocked_insert; DROP TRIGGER refuse_blocked_update;");
+  }
+  // The next observation of the merge completes and closes together, which returns the call.
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.match(reviewToolResult((await call)!).text, /pull request merged/);
 });

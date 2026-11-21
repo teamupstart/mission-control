@@ -972,8 +972,7 @@ function closureRefusal(result: ActionResult): string {
 
 /** See `TaskManager.useMergeQuestions`. */
 export interface MergeQuestions {
-  close(sessionId: string): void;
-  /** The same closure split for a caller's transaction; see `ReviewManager.mergeClosure`. */
+  /** The closure split for the completion's transaction; see `ReviewManager.mergeClosure`. */
   closure(sessionId: string): { persist: () => void; publish: () => void };
   blockedInCall(sessionId: string): boolean;
 }
@@ -1731,8 +1730,8 @@ export class TaskManager {
     // closed with the reason `merged` as part of it, below, rather than left behind it.
     //
     // The one non-idle state handled here: an agent blocked inside a request_input call. It can
-    // never go idle while it waits, so the merge closes its questions, the call returns, and the
-    // idle transition that follows completes the task through the ordinary path.
+    // never go idle while it waits, so the merge completes the task and closes its questions in
+    // one transaction, which returns the call.
     const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
     if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
@@ -1770,21 +1769,9 @@ export class TaskManager {
       try { fn(); }
       finally { if (!held) this.mergeSettling.delete(t.id); }
     };
-    const closeQuestions = () => guarded(() => this.mergeQuestions?.close(s.id));
     const closure = this.mergeQuestions?.closure(s.id);
     this.mergeSettling.add(t.id);
     try {
-      if (blockedInCall) {
-        // No completion here: closing the call's question lets it return, and the idle turn that
-        // follows completes the task through the path below. Not for a scout: its completion
-        // still waits on a verified archive, which may refuse, and closing first would strand a
-        // running scout with questions nobody can answer. A blocked scout waits for its answer as
-        // it does with the flag off; its questions close with its completion (`joinCompletion`).
-        if (this.scoutGateFor(t.id)) return;
-        try { closeQuestions(); }
-        catch (error) { console.error("[merge] closing a blocked call's question failed:", t.id, error); }
-        return;
-      }
       // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
       // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
       // provenance that makes it reversible - still happens synchronously inside this call, so
@@ -1797,13 +1784,19 @@ export class TaskManager {
       // or a failed write rolls back both, leaving the questions open and the task running for
       // the next observation. A completion that refuses first (a scout whose archive is not
       // ready) never reaches them, so the operator can still answer.
+      //
+      // An agent blocked inside a request_input call completes here too, in the same transaction:
+      // closing its question is what releases the call, so the two cannot be separated without
+      // leaving a closed question behind a running task. That completion is not recorded as
+      // inferred (`inferredFrom: null`): the agent is mid-turn by construction, and the turn it
+      // finishes reading the closure would otherwise reopen the task the merge concluded.
       this.completeInBackground(t.id, {
         outcome: outcome.outcome,
         outcomeUrl: outcome.url,
         satisfyDependents: false,
         requireStopped: false,
         confirmIncompleteScout: false,
-        inferredFrom: s.id,
+        inferredFrom: blockedInCall ? null : s.id,
         ...(closure ? { joinCompletion: { persist: closure.persist, publish: () => guarded(closure.publish) } } : {}),
       }, undefined, () => {
         this.closeMergedSessionAfterCompletion({
@@ -1818,10 +1811,10 @@ export class TaskManager {
   }
 
   /**
-   * Install how a merge reaches a session's request_input questions (`async-input`): `close`
-   * settles every outstanding one with the reason `merged` in one transaction, throwing and
-   * closing none on failure; `blockedInCall` says the agent is waiting inside a call-mode ask
-   * the merge must close before it can go idle. A setter rather than a constructor argument,
+   * Install how a merge reaches a session's request_input questions (`async-input`): `closure`
+   * settles every outstanding one with the reason `merged` inside the completion's own
+   * transaction; `blockedInCall` says the agent is waiting inside a call the merge must close,
+   * since it can never go idle on its own. A setter rather than a constructor argument,
    * like `useStackGitHub`, because the review manager is the daemon's and every focused test
    * that never asks a question constructs this class without one.
    */

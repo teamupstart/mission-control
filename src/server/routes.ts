@@ -1,10 +1,14 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
 import { registerPauseRoutes } from "./pause/routes.ts";
+import { HibernationManager } from "./hibernation/manager.ts";
+import { registerHibernationRoutes } from "./hibernation/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -295,7 +299,8 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -1878,6 +1883,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  // Headless mode (FR-05): every `/dispatch/*` route, gated by the `headless-mode` flag.
+  registerHomeDispatchRoutes(app, deps, requireLoopback);
+
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
 
@@ -1907,7 +1915,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 
@@ -2227,6 +2235,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Pausing sessions: one session, Pause all, and the priority session ---
   registerPauseRoutes(app, pauses);
+
+  // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
+  registerHibernationRoutes(
+    app,
+    new HibernationManager(registry, sdkSessions ?? null, {
+      workflows,
+      pause: pauses,
+      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+    }),
+  );
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -8910,6 +8928,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
     }
   });
+
+  // Task shaping, behind its preview flag. See docs/task-shaping.md.
+  registerShapingRoutes(app);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

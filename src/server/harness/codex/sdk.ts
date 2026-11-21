@@ -67,6 +67,8 @@ import type {
 } from "./app-server/protocol.ts";
 import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
 import {
+  codexNativeResidentMcpArgs,
+  checkCodexNativeResidentMcp,
   codexResidentMcpVerdict,
   operatorRolloutPath,
   prepareResidentCodexHome,
@@ -1556,7 +1558,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // registry would then find the db already pointed at the operator's real state dir.
       // `openDb` refuses that loudly (see `db-isolation.test.ts`), which is how this was
       // caught, but the fix is to not put it there.
-      const args = opts.mcp
+      const resident = opts.residentMcp ?? null;
+      const native = resident?.nativeSources === "all" ? resident : null;
+      const pinned = native ? null : resident;
+      const args = opts.mcp && !native
         ? (await import("../../mission-mcp.ts")).codexMissionMcpArgs(opts.mcp)
         : [];
       // The multi-repo write grant rides the SAME `-c` channel, from the same measured
@@ -1575,24 +1580,23 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         : undefined;
       if (compactLimit !== undefined && (!Number.isSafeInteger(compactLimit) || compactLimit <= 0)) throw new Error("Invalid native resident compaction limit.");
       const compactArgs = compactLimit === undefined ? [] : ["-c", `model_auto_compact_token_limit=${compactLimit}`];
-      // A resident run starts exactly its MCP snapshot plus Mission's server: a private
-      // `CODEX_HOME` whose generated `config.toml` holds only the snapshot, verified against
-      // every other configuration layer below before any thread loads a server.
-      const resident = opts.residentMcp ?? null;
       // The resident cwd is its worktree root or private repository-free workspace. Bound
-      // project discovery there: an ancestor's .codex (notably the operator home the overlay
-      // replaced) must not merge back in as a project. Workspace-local config still loads.
+      // project discovery there so an ancestor's .codex cannot merge in as a project.
+      // Workspace-local config still loads.
       // Use process flags so config/read, thread/start and thread/resume share the boundary.
       const residentArgs = resident ? ["-c", "project_root_markers=[]"] : [];
-      const overlay = resident ? `${resident.privateDir}/codex-home` : null;
-      // Verified on credential-free entries first: this start's tickets are minted only once the
-      // layers check out, immediately before the thread loads its servers, so a slow startup or
-      // check cannot outlive them.
-      const previewEntries = resident ? resident.preview() : [];
+      const overlay = pinned ? `${pinned.privateDir}/codex-home` : null;
+      // For the pinned set, check credential-free entries first, then mint immediately
+      // before the thread loads its servers.
+      const previewEntries = pinned?.preview() ?? [];
       let overlayConfig: string | null = null;
       if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
+      // Native mode keeps the operator's home so Codex can use its own configuration and
+      // login store. Flags name the credential paths at spawn. Tickets start aging after preflight.
+      const nativeStart = native?.prepareStart();
+      const nativeArgs = nativeStart ? codexNativeResidentMcpArgs(nativeStart.entries, opts.mcp) : [];
       const transport = await deps.connect(
-        [...args, ...extraDirArgs, ...compactArgs, ...residentArgs],
+        [...args, ...extraDirArgs, ...compactArgs, ...residentArgs, ...nativeArgs],
         opts.cwd,
         opts.stateHome,
         {
@@ -1613,7 +1617,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // Every server Codex reports starting is checked against the run's set: the direct
       // observation of loading, behind the configuration check. One outside it ends the
       // launch, or the session if the launch has already returned.
-      const allowed = resident ? new Set([...resident.names, opts.mcp?.serverName ?? ""]) : null;
+      const allowed = pinned ? new Set([...pinned.names, opts.mcp?.serverName ?? ""]) : null;
       let unexpectedServer: string | null = null;
       let launched = false;
       const client = new AppServerClient(transport, {
@@ -1711,14 +1715,21 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // rule is still installed on this process or has to be repeated in turn one, and a
         // prefix does not govern later turns.
         if (standingFellBackToPrompt) session.markStandingInstructionsPrefixed();
-        if (resident && overlay && overlayConfig) {
+        const verifyNativeMcp = native ? async () => {
+          const layers = await client.request("config/read", { cwd: opts.cwd, includeLayers: true });
+          const verification = checkCodexNativeResidentMcp(layers, native.names, opts.mcp);
+          if (!verification.ok) throw new Error(`this resident's native MCP servers cannot start: ${verification.reason}`);
+          return verification.layerVersions;
+        } : null;
+        const nativeVersions = verifyNativeMcp ? await verifyNativeMcp() : null;
+        if (pinned && overlay && overlayConfig) {
           // At most two reads: the second confirms the servers only another layer defines are
           // now switched off. Anything else is refused before a thread exists to load it.
           let disabled: string[] = [];
           const verify = async (): Promise<ReturnType<typeof codexResidentMcpVerdict>> =>
             codexResidentMcpVerdict(await client.request("config/read", { cwd: opts.cwd, includeLayers: true }), {
               overlayConfig,
-              names: resident.names,
+              names: pinned.names,
               disabled,
               missionServer: opts.mcp?.serverName ?? "",
             });
@@ -1731,12 +1742,13 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
             prepareResidentCodexHome({ overlay, entries: previewEntries, disabled });
           }
           // Now this start's credentials, and one last read of what the thread will load.
-          prepareResidentCodexHome({ overlay, entries: resident.forStart(), disabled });
+          prepareResidentCodexHome({ overlay, entries: pinned.forStart(), disabled });
           const final = await verify();
           if (final.kind !== "exact") {
             throw new Error(`this resident's MCP servers cannot be pinned: ${final.kind === "refuse" ? final.reason : "another layer changed during the start"}`);
           }
         }
+        nativeStart?.issue();
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,
@@ -1747,6 +1759,11 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           session.bind(
             await client.request<ThreadStartResponse>("thread/start", threadStartParams(config)),
           );
+        }
+        // Codex reads configuration again when it opens a thread. Check the registrations
+        // and layer versions once more before sending the resident's first turn.
+        if (verifyNativeMcp && (await verifyNativeMcp()) !== nativeVersions) {
+          throw new Error("Codex configuration changed during thread startup. Launch the resident again.");
         }
         // Turn one, awaited: `SdkSpec.launch` promises a session that is running what it
         // was asked to run, and a dispatch whose intent was never accepted has to FAIL
@@ -1779,6 +1796,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // only thing to unwind is the subprocess.
         await transport.close().catch(() => {});
         await pump.catch(() => {});
+        nativeStart?.revoke();
         throw err;
       }
       void pump.catch((err) => {

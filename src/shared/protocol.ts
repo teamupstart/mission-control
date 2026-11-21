@@ -1,4 +1,6 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
+export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
+export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -2799,11 +2801,9 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 /**
  * The Inspector's consent model, in one object.
  *
- * Every default here is the OFF position, and that is not caution theatre: this is the
- * only subsystem that writes to a public place under the operator's GitHub identity.
- * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
- * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
- * three deliberate acts, and the first two are reversible without anyone else seeing.
+ * Field defaults preserve the posture of older saved configs and backups with missing keys.
+ * New databases record the enabled, Live posture when initialized.
+ * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
   /**
@@ -3017,8 +3017,14 @@ void inspectorInspectionSchemaMatchesType;
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
-  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
-  codeRabbitAutoResolve: z.boolean().default(false),
+  /**
+   * Prompt the eligible owner about CodeRabbit threads, independently of merge consent.
+   *
+   * On by default. An install that stored the old default-off value is switched on exactly
+   * once by the schema 38 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
+   * opt-out is an ordinary stored `false` and is kept.
+   */
+  codeRabbitAutoResolve: z.boolean().default(true),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**

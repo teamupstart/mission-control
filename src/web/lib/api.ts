@@ -1,4 +1,6 @@
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
+import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -1224,12 +1226,14 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
+      signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
     if (!res.ok) {
@@ -1245,8 +1249,8 @@ async function request<T extends ActionResult = ActionResult>(
 
 const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
   request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("PUT", path, body);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
@@ -1981,6 +1985,10 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/pause`, { mode }),
   /** Resume one session, whatever paused it. */
   resumeSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/resume`),
+  /** Hibernate a task's session: stop its agent and keep its conversation for Resume. */
+  hibernateSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/hibernate`),
+  /** Reopen a hibernated task's conversation in its worktree. */
+  resumeHibernatedTask: (taskId: string) => post(`/api/tasks/${encodeURIComponent(taskId)}/resume`),
   /** Pause every live session; optionally hold automatic launches and resume at a set time. */
   pauseFleet: (options: { holdDispatch: boolean; resumeAt: number | null }) => post("/api/pause/fleet", options),
   /** Resume what Pause all paused. Sessions paused one at a time stay paused. */
@@ -2349,8 +2357,41 @@ export const api = {
     put<ActionResult & { message?: string }>(`/api/storage/backups/config`, request),
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
-  setFeatureFlags: (intent: FeatureFlagIntent) =>
-    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent),
+  /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
+    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
+  // --- Task shaping, behind its preview flag (404 while it is off) ---
+  /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
+  getShaping: () =>
+    request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /** Apply one intent. A refusal carries the daemon's `reason`. */
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, options),
+  /**
+   * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
+   * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.
+   */
+  testShaper: async (body: ShapingTestRequest, signal?: AbortSignal): Promise<
+    { ok: true; run: ShapingRun } | { ok: false; aborted: boolean; reason: string }
+  > => {
+    try {
+      const res = await actionFetch("/api/shaping/test", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+      });
+      const data = (await res.json().catch(() => undefined)) as unknown;
+      if (!res.ok) {
+        const failure = (data ?? {}) as { error?: string; reason?: string };
+        return { ok: false, aborted: false, reason: failure.reason ?? failure.error ?? `HTTP ${res.status}` };
+      }
+      // A success reply is read against the run's own shape, never padded out: a reply missing a
+      // field must not draw as a run that would add nothing.
+      const run = readShapingRun(data);
+      if (!run) return { ok: false, aborted: false, reason: "The daemon's dry-run reply was incomplete, so its result cannot be shown." };
+      return { ok: true, run };
+    } catch (error) {
+      return { ok: false, aborted: signal?.aborted === true, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
   setStorageLimits: (patch: StorageLimitsConfigPatch) =>
     put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
   /** Start measuring the state directory. It finishes in the background. */

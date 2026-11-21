@@ -825,7 +825,10 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
-    // A message-mode question owes Foreman's answer too: there is no call to return it through.
+    // One actor policy (`CONTINUATION_ACTOR_POLICY`): the operator, a controlling session, a home
+    // session or mctl always, and Foreman or a standing approval for a message-mode question, which
+    // has no call to return it through. The conversation and timeline still read
+    // `isConversationResolvedReview`.
     if (deliversContinuation(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);

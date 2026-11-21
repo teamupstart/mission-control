@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  checkCodexNativeResidentMcp,
   codexResidentMcpVerdict,
   operatorRolloutPath,
   prepareResidentCodexHome,
@@ -126,9 +127,9 @@ test("the overlay links the operator's home, writes an owner-only configuration,
 
 // ---- verifying the layers before any server loads ----
 
-const user = (servers: Record<string, unknown>) => ({ name: { type: "user", file: "/run/codex-home/config.toml" }, config: { mcp_servers: servers } });
-const project = (servers: Record<string, unknown>) => ({ name: { type: "project", dotCodexFolder: "/repo/.codex" }, config: { mcp_servers: servers } });
-const flags = { name: { type: "sessionFlags" }, config: { mcp_servers: { "mission-control": { command: "m" } } } };
+const user = (servers: Record<string, unknown>) => ({ name: { type: "user", file: "/run/codex-home/config.toml" }, version: "user", config: { mcp_servers: servers } });
+const project = (servers: Record<string, unknown>) => ({ name: { type: "project", dotCodexFolder: "/repo/.codex" }, version: "project", config: { mcp_servers: servers } });
+const flags = { name: { type: "sessionFlags" }, version: "flags", config: { mcp_servers: { "mission-control": { command: "m" } } } };
 const input = { overlayConfig: "/run/codex-home/config.toml", names: ["snap"], disabled: [] as string[], missionServer: "mission-control" };
 
 test("Codex's layers decide whether a start is exact, needs foreign servers switched off, or is refused", () => {
@@ -194,6 +195,7 @@ function residentLaunch(
       onStart();
       return built();
     },
+    prepareStart: () => ({ entries: built(), issue: () => { launch.forStart(); }, revoke: () => {} }),
     preview: () => built().map((entry) => (entry.shape === "launcher" ? { ...entry, args: [...entry.args.slice(0, -1), "unissued"] } : entry)),
   };
   return launch;
@@ -574,6 +576,250 @@ class ScriptedServer implements AppServerTransport {
 }
 
 const THREAD = { thread: { id: "thread-1", path: "/x/rollout.jsonl", status: { type: "idle" }, turns: [] }, model: "gpt-5", modelProvider: "openai", serviceTier: null, cwd: "/wt", instructionSources: [] };
+
+test("Codex native runs keep the normal home, attach the custom snapshot, and read native layers on each start", async () => {
+  const name = "notes.custom";
+  const resident = residentLaunch([name], () => [
+    { name, options: {}, shape: "launcher", command: "/usr/bin/node", args: ["/launcher", "--credential", "/run/credential.json"], env: {} },
+  ], () => {}, "all");
+  const mission = { command: "native-mission", args: ["old"], env: { MISSION_PORT: "2" } };
+  const glean = { url: "https://glean.example.test/mcp" };
+  for (const resume of [null, "thread-1"]) {
+    const startsBeforePreflight = resident.starts;
+    const current = resume ? { added: { command: "new" } } : {};
+    let threadOpened = false;
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => {
+        if (!threadOpened) assert.equal(resident.starts, startsBeforePreflight, "preflight must not issue tickets");
+        return {
+          config: { developer_instructions: null, mcp_servers: { glean, ...current, "mission-control": {}, [name]: {} } },
+          layers: [{
+            ...flags,
+            config: { mcp_servers: { "mission-control": { required: true }, [name]: { required: true } } },
+          }, user({ glean, ...current, "mission-control": mission })],
+        };
+      },
+      [resume ? "thread/resume" : "thread/start"]: () => {
+        assert.equal(resident.starts, startsBeforePreflight + 1, "thread startup must have fresh tickets");
+        threadOpened = true;
+        return THREAD;
+      },
+      "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+    });
+    const handle = await codexSdkSpec({ connect: async (args, _cwd, _home, options) => {
+      assert.equal(resident.starts, startsBeforePreflight, "connecting must not issue launcher tickets");
+      assert.equal(options?.codexHome, undefined);
+      assert.ok(args.includes("project_root_markers=[]"));
+      const override = args.find((arg) => arg.startsWith("mcp_servers=")) ?? "";
+      assert.match(override, /"mission-control" = \{ command = .*\/mcp\.mjs.*required = true/);
+      assert.match(override, /"notes\.custom" = \{ command = .*\/run\/credential\.json.*required = true/);
+      assert.ok(!args.some((arg) => arg.includes("glean")));
+      return server;
+    } }).launch(sdkOptions({ residentMcp: resident, resume }));
+    const methods = server.sent.map((frame) => frame.method);
+    const start = methods.indexOf(resume ? "thread/resume" : "thread/start");
+    const layerRead = server.sent.findIndex((frame) => frame.method === "config/read"
+      && (frame.params as { includeLayers?: boolean }).includeLayers);
+    assert.ok(layerRead >= 0 && layerRead < start);
+    assert.ok(methods.lastIndexOf("config/read") > start && methods.lastIndexOf("config/read") < methods.indexOf("turn/start"));
+    await handle.stop();
+  }
+  assert.equal(resident.starts, 2);
+  assert.equal(existsSync(resident.privateDir), false, "native runs generate no overlay");
+});
+
+const missionRegistrations = {
+  "mission-control": { command: "/usr/bin/node", args: ["/mcp.mjs"], env: { MISSION_PORT: "1" }, required: true },
+};
+
+for (const resume of [null, "thread-1"]) {
+  test(`Codex native ${resume ? "resume" : "launch"} refuses a configuration change during thread startup`, async (t) => {
+    const resident = residentLaunch(["notes"], () => [
+      { name: "notes", options: {}, shape: "stdio", command: "/usr/bin/notes", args: [], env: {} },
+    ], () => {}, "all");
+    const overrides = { ...missionRegistrations, notes: { command: "/usr/bin/notes", required: true } };
+    let threadOpened = false;
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => ({
+        config: { developer_instructions: null, mcp_servers: overrides },
+        layers: [
+          { ...flags, version: "flags", config: { mcp_servers: overrides } },
+          { ...user({ glean: { url: "https://glean.example.test/mcp" } }), version: threadOpened ? "new" : "old" },
+        ],
+      }),
+      [resume ? "thread/resume" : "thread/start"]: () => {
+        threadOpened = true;
+        return THREAD;
+      },
+      "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+    });
+    t.after(() => server.close());
+    await assert.rejects(codexSdkSpec({ connect: async () => server }).launch(sdkOptions({ residentMcp: resident, resume })),
+      /Codex configuration changed during thread startup/);
+    assert.equal(threadOpened, true);
+    assert.equal(server.calls("turn/start").length, 0);
+  });
+}
+
+test("Codex native launch opens a thread with no custom MCP servers selected", async (t) => {
+  const resident = residentLaunch([], () => [], () => {}, "all");
+  const glean = { url: "https://glean.example.test/mcp" };
+  const server = new ScriptedServer({
+    initialize: () => ({}),
+    "config/read": () => ({
+      config: { developer_instructions: null, mcp_servers: { glean, ...missionRegistrations } },
+      layers: [{ ...flags, config: { mcp_servers: missionRegistrations } }, user({ glean })],
+    }),
+    "thread/start": () => THREAD,
+    "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+  });
+  const handle = await codexSdkSpec({ connect: async (args, _cwd, _home, options) => {
+    assert.equal(options?.codexHome, undefined);
+    assert.match(args.find((arg) => arg.startsWith("mcp_servers=")) ?? "", /"mission-control" = \{ .*required = true/);
+    assert.ok(!args.some((arg) => arg.includes("glean")), "Glean loads from native config");
+    return server;
+  } }).launch(sdkOptions({ residentMcp: resident }));
+  t.after(() => handle.stop());
+
+  const layerRead = server.sent.findIndex((frame) => frame.method === "config/read"
+    && (frame.params as { includeLayers?: boolean }).includeLayers);
+  assert.ok(layerRead >= 0 && layerRead < server.sent.findIndex((frame) => frame.method === "thread/start"));
+  assert.equal(server.calls("thread/start").length, 1);
+  assert.equal(server.calls("turn/start").length, 1);
+});
+
+const nativeRegistrations = { ...missionRegistrations, notes: { command: "/usr/bin/notes", required: true } };
+const optionalNotes = { ...nativeRegistrations, notes: { ...nativeRegistrations.notes, required: false } };
+for (const [failure, name, overrides, effective] of [
+  ["the custom registration is missing from the effective config", "notes", nativeRegistrations, missionRegistrations],
+  ["the custom registration is disabled", "notes", nativeRegistrations,
+    { ...nativeRegistrations, notes: { ...nativeRegistrations.notes, enabled: false } }],
+  ["the custom launch override is missing", "notes", missionRegistrations, nativeRegistrations],
+  ["the custom launch override is optional", "notes", optionalNotes, optionalNotes],
+  ["the Mission Control registration is disabled", "mission-control", nativeRegistrations,
+    { ...nativeRegistrations, "mission-control": { ...nativeRegistrations["mission-control"], enabled: false } }],
+] as const) {
+  test(`Codex native launch refuses before opening a thread when ${failure}`, async (t) => {
+    const resident = residentLaunch(["notes"], () => [
+      { name: "notes", options: {}, shape: "stdio", command: nativeRegistrations.notes.command, args: [], env: {} },
+    ], () => {}, "all");
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => ({
+        config: { developer_instructions: null, mcp_servers: effective },
+        layers: [{ ...flags, config: { mcp_servers: overrides } }],
+      }),
+      "thread/start": () => THREAD,
+    });
+    t.after(() => server.close());
+    await assert.rejects(codexSdkSpec({ connect: async () => server }).launch(sdkOptions({ residentMcp: resident })), {
+      message: `this resident's native MCP servers cannot start: Codex did not load the launch registration for MCP server ${name}`,
+    });
+    assert.equal(server.calls("thread/start").length, 0);
+    assert.equal(server.calls("thread/resume").length, 0);
+    assert.equal(resident.starts, 0, "refused preflight must leave tickets unissued");
+  });
+}
+
+test("Codex native launches refuse custom name collisions and Mission Control config contamination before opening a thread", async () => {
+  const resident = residentLaunch(["notes.custom"], () => [], () => {}, "all");
+  for (const [layer, reason] of [
+    [project({ "Notes.Custom": { command: "x" } }), /already defines the custom MCP server Notes.Custom/],
+    [user({ "mission-control": { command: "m", env: { UNEXPECTED: "demo" } } }), /sets mcp_servers\.mission-control\.env\.UNEXPECTED, which a resident launch cannot override/],
+  ] as const) {
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => ({ config: { developer_instructions: null }, layers: [flags, layer] }),
+      "thread/start": () => THREAD,
+    });
+    await assert.rejects(codexSdkSpec({ connect: async () => server }).launch(sdkOptions({ residentMcp: resident })), reason);
+    assert.equal(server.calls("thread/start").length, 0);
+  }
+});
+
+// The operator's ~/.codex/config.toml after Install Claude integrations (packaged app) and
+// the Setup trust action: the shape that refused every native-MCP Codex resident.
+const setupRegistration = {
+  command: "/Applications/Mission Control.app/Contents/MacOS/Mission Control",
+  args: ["/Applications/Mission Control.app/Contents/Resources/app/dist/mcp/server.mjs"],
+  env: { ELECTRON_RUN_AS_NODE: "1" },
+  default_tools_approval_mode: "approve",
+};
+
+test("Codex native launch opens a thread over the registration Mission Control's own setup writes", async (t) => {
+  const resident = residentLaunch([], () => [], () => {}, "all");
+  const server = new ScriptedServer({
+    initialize: () => ({}),
+    "config/read": () => ({
+      config: { developer_instructions: null, mcp_servers: missionRegistrations },
+      layers: [{ ...flags, config: { mcp_servers: missionRegistrations } }, user({ "mission-control": setupRegistration })],
+    }),
+    "thread/start": () => THREAD,
+    "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+  });
+  // A daemon under plain node: its descriptor carries no ELECTRON_RUN_AS_NODE.
+  const handle = await codexSdkSpec({ connect: async () => server }).launch(sdkOptions({ residentMcp: resident }));
+  t.after(() => handle.stop());
+  assert.equal(server.calls("thread/start").length, 1);
+});
+
+test("Mission Control's own server tolerates only the user-layer fields its setup writes, naming any other key", () => {
+  const mission = { serverName: "mission-control", command: "/usr/bin/node", args: ["/mcp.mjs"], env: { MISSION_PORT: "1" } };
+  const read = (registration: Record<string, unknown>, layer: unknown = user({ "mission-control": registration })) => checkCodexNativeResidentMcp({
+    config: { mcp_servers: missionRegistrations },
+    layers: [{ ...flags, config: { mcp_servers: missionRegistrations } }, layer],
+  }, [], mission);
+  assert.equal(read(setupRegistration).ok, true, "packaged-app registration on a plain-node daemon");
+  assert.equal(read({ ...setupRegistration, env: {} }).ok, true);
+  assert.equal(read({ command: "m" }).ok, true);
+  assert.equal(read({ ...setupRegistration, env: { MISSION_PORT: "9" } }).ok, true, "the flags supply this key");
+  const electronMission = { ...mission, env: { ...mission.env, ELECTRON_RUN_AS_NODE: "1" } };
+  assert.equal(checkCodexNativeResidentMcp({
+    config: { mcp_servers: missionRegistrations },
+    layers: [{ ...flags, config: { mcp_servers: missionRegistrations } }, user({ "mission-control": setupRegistration })],
+  }, [], electronMission).ok, true, "packaged-app registration on the packaged daemon");
+  const refused = (registration: Record<string, unknown>, layer?: unknown) => {
+    const result = read(registration, layer);
+    assert.equal(result.ok, false);
+    return (result as { reason: string }).reason;
+  };
+  const file = "/run/codex-home/config.toml";
+  for (const [registration, key] of [
+    [{ ...setupRegistration, default_tools_approval_mode: "prompt" }, "default_tools_approval_mode"],
+    [{ ...setupRegistration, url: "https://elsewhere.test/mcp" }, "url"],
+    [{ ...setupRegistration, enabled: false }, "enabled"],
+    [{ ...setupRegistration, cwd: "/tmp" }, "cwd"],
+    [{ ...setupRegistration, tools: { request_input: { approval_mode: "prompt" } } }, "tools"],
+    [{ ...setupRegistration, env: { NODE_OPTIONS: "--require /evil.js" } }, "env.NODE_OPTIONS"],
+    [{ ...setupRegistration, env: { ELECTRON_RUN_AS_NODE: "0" } }, "env.ELECTRON_RUN_AS_NODE"],
+    [{ ...setupRegistration, env: "ELECTRON_RUN_AS_NODE=1" }, "env"],
+  ] as const) {
+    const reason = refused(registration);
+    assert.ok(reason.includes(`the user configuration ${file}`), reason);
+    assert.ok(reason.includes(`mcp_servers.mission-control.${key}`), `${key}: ${reason}`);
+    assert.match(reason, /remove it there to launch this resident/);
+  }
+  const reason = refused(setupRegistration, project({ "mission-control": setupRegistration }));
+  assert.match(reason, /the project configuration \/repo\/\.codex also defines Mission Control's own MCP server mission-control; remove it there/);
+});
+
+test("the pinned overlay leaves out the setup registration, so it cannot reach the layer verdict", () => {
+  const toml = [
+    'model = "gpt-5"',
+    "[mcp_servers.mission-control]",
+    `command = ${JSON.stringify(setupRegistration.command)}`,
+    `args = ${JSON.stringify(setupRegistration.args)}`,
+    'default_tools_approval_mode = "approve"',
+    "[mcp_servers.mission-control.env]",
+    'ELECTRON_RUN_AS_NODE = "1"',
+    "",
+  ].join("\n");
+  const generated = residentCodexConfig(toml, [], [], "/home/.codex");
+  assert.doesNotMatch(generated, /mission-control|approval_mode|ELECTRON_RUN_AS_NODE/);
+  assert.match(generated, /model = "gpt-5"/);
+});
 
 test("Codex bounds resident discovery to its workspace on launch and resume, excluding an active operator-home layer", async (t) => {
   const operator = join(root, "active-home", ".codex");

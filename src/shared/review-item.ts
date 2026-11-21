@@ -67,13 +67,46 @@ export function isConversationResolvedReview(review: ReviewItem): boolean {
 }
 
 /**
+ * Answers given from a home session or `mctl` (spec 7.8): `home:{sessionId}`,
+ * `home-approval:{sessionId}` and `mctl`. They are never the human's own conversation, so
+ * `isConversationResolvedReview` leaves them out, but plan publication must see them: a later
+ * "needs revision" from any of them beats an earlier approval (7.9).
+ */
+export function isHomeDispatchResolvedReview(review: ReviewItem): boolean {
+  return isHomeDispatchActor(review.resolvedBy) && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
+/**
+ * The one list of who counts as a home-session or command-line actor: an exact name (`mctl`) or a
+ * prefix (`home:{sessionId}`, `home-approval:{sessionId}`). The predicate below and the SQL in
+ * `db.ts` both read it, so a new actor is added here and nowhere else.
+ */
+export const HOME_DISPATCH_ACTOR_NAMES = ["mctl"] as const;
+export const HOME_DISPATCH_ACTOR_PREFIXES = ["home:", "home-approval:"] as const;
+
+export function isHomeDispatchActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  if (!by) return false;
+  return (HOME_DISPATCH_ACTOR_NAMES as readonly string[]).includes(by)
+    || HOME_DISPATCH_ACTOR_PREFIXES.some((prefix) => by.startsWith(prefix));
+}
+
+/**
+ * Whether the actor's answer can count as a human approval of a plan's final bundle: the
+ * operator, their standing approval, or an accepted `home-approval:` (7.9). A plain `home:`,
+ * `session:` or `mctl` answer never approves.
+ */
+export function isApprovingActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  return by === "human" || by === "standing-approval" || by?.startsWith("home-approval:") === true;
+}
+
+/**
  * Whose resolution of a review is owed to its agent as a message once no MCP call is waiting
  * for it. The one statement of that rule: `deliversContinuation` reads it in memory, and the
  * outbox's SQL eligibility (`continuationActorSql` in `server/db.ts`) is built from it, so a new
  * actor is added here and nowhere else.
  *
- * - `anyWait`: the operator, and a session driving this one through session control, whatever
- *   the review's wait mode.
+ * - `anyWait`: the operator, a session driving this one through session control, and a home
+ *   session or `mctl` (`HOME_DISPATCH_ACTOR_NAMES`/`_PREFIXES`), whatever the review's wait mode.
  * - `messageWait`: Foreman and a standing approval, only for a message-mode question
  *   (`async-input`). A call-mode call returns those resolutions directly; a message-mode
  *   question has no call to return them through, so without this the agent never hears them.
@@ -81,7 +114,7 @@ export function isConversationResolvedReview(review: ReviewItem): boolean {
  * Every value is a fixed identifier, never input: the SQL builder quotes them as literals.
  */
 export const CONTINUATION_ACTOR_POLICY = {
-  anyWait: { actors: ["human"], prefixes: ["session:"] },
+  anyWait: { actors: ["human", ...HOME_DISPATCH_ACTOR_NAMES], prefixes: ["session:", ...HOME_DISPATCH_ACTOR_PREFIXES] },
   messageWait: { actors: ["foreman", "standing-approval"] },
 } as const satisfies {
   anyWait: { actors: readonly ReviewActor[]; prefixes: readonly string[] };

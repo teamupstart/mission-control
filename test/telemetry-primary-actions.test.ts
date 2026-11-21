@@ -174,7 +174,9 @@ test("every mutating HTTP/MCP operation has exactly one phase owner or explicit 
   const canonical = (method: string, path: string) => `${method.toUpperCase()} ${path.replace(/:[A-Za-z]+/g, ":id")}`;
   const accounted = [...PRIMARY_ACTION_ROUTES, ...WORKFLOW_ACTION_ROUTES, ...ACTION_EXCLUSIONS].map(([method, path]) => canonical(method, path));
   assert.equal(new Set(accounted).size, accounted.length, "no route may count in two phases");
-  const source = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
+  // Route groups registered from their own module are part of the same surface.
+  const source = ["routes.ts", "shaping/routes.ts"]
+    .map((file) => readFileSync(new URL(`../src/server/${file}`, import.meta.url), "utf8")).join("\n");
   const routes = [...source.matchAll(/app\.(post|put|patch|delete)\(\s*"([^"]+)"/g)].map((m) => canonical(m[1]!, m[2]!));
   assert.deepEqual(routes.filter((r) => !accounted.includes(r)), [], "new operations must declare ownership or an exclusion");
   assert.deepEqual(accounted.filter((r) => !routes.includes(r)), [], "the manifest may not claim hooks that do not exist");

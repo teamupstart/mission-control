@@ -128,6 +128,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
   ],
+  "src/server/shaping/transports/command.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "an operator-configured command shaper, resolved through the locator and spawned without a shell in its own process group, killed at its timeout" },
+  ],
   "src/server/standards.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git standards reader" },
   ],

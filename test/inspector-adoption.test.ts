@@ -297,18 +297,9 @@ test("workflow PR hints can look up provenance but have no adoption path", () =>
 
 // ---- config ----
 
-// Every default is the off position, and that is not caution theatre: this is the only
-// subsystem that publishes under the operator's GitHub identity. If a future refactor
-// flips any of these three, it flips them for everyone on upgrade, silently.
-test("the Inspector ships off, in dry run, trusting no repo", () => {
-  const cfg = getInspectorConfig();
-  assert.equal(cfg.enabled, false);
-  assert.equal(cfg.mode, "dry-run");
-  assert.deepEqual(cfg.repoAllowlist, []);
-});
-
 test("a patch merges over what is stored rather than replacing it", () => {
-  setInspectorConfig({ repoAllowlist: ["/repo/a"] });
+  setInspectorConfig({ enabled: false, mode: "dry-run", repoAllowlist: ["/repo/a"] });
+  assert.equal(getInspectorConfig().enabled, false);
   setInspectorConfig({ enabled: true });
   const cfg = getInspectorConfig();
   assert.equal(cfg.enabled, true);
@@ -322,10 +313,11 @@ test("a patch merges over what is stored rather than replacing it", () => {
 test("a stored blob from another version still reads", () => {
   openDb()
     .prepare(`INSERT INTO app_config (key, value) VALUES ('inspector', ?)`)
-    .run(JSON.stringify({ enabled: true, somethingFromTheFuture: 7 }));
+    .run(JSON.stringify({ repoAllowlist: ["/repo/a"], somethingFromTheFuture: 7 }));
   const cfg = getInspectorConfig();
-  assert.equal(cfg.enabled, true);
-  assert.equal(cfg.mode, "dry-run", "a key the old blob lacked gets its default");
+  assert.equal(cfg.enabled, false, "a key the old blob lacked keeps its original default");
+  assert.equal(cfg.mode, "dry-run");
+  assert.deepEqual(cfg.repoAllowlist, ["/repo/a"]);
   assert.equal(cfg.maxCommentsPerRound, 8);
 });
 

@@ -24,6 +24,7 @@ const catalog = await import("../src/server/residents/mcp-catalog.ts");
 const launch = await import("../src/server/residents/mcp-launch.ts");
 const sharedMcp = await import("../src/shared/resident-mcp.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
@@ -571,9 +572,28 @@ test("importing all native sources snapshots only the custom servers: global ser
   assert.ok(!refused.ok && /same name as Claude Code's global server/.test(refused.error), JSON.stringify(refused));
 });
 
-test("a harness that offers no all-sources launch refuses the choice at launch", async () => {
+test("Codex native MCP is opt-in; native launches snapshot custom servers without reading Codex's global catalog", async () => {
   const result = await resolve(profile({ agent: "codex", nativeSources: "all" }), globalsOf("codex", {}));
-  assert.ok(!result.ok && /Codex cannot start a resident on all of its native MCP sources/.test(result.error), JSON.stringify(result));
+  assert.ok(!result.ok && /Enable Codex resident native MCP/.test(result.error), JSON.stringify(result));
+
+  const id = "codex-resident-native-mcp";
+  const flag = (enabled: boolean) => assert.ok(applyFeatureFlagIntent({ kind: "flag", id, enabled }).ok);
+  flag(true);
+  try {
+    const custom = create({ name: "notes.custom", harnesses: ["codex"], transport: { type: "stdio", command: "notes" } });
+    const resolved = await launch.resolveResidentMcpSet(profile({
+      agent: "codex", nativeSources: "all", selected: [{ source: "custom", id: custom.id }],
+    }), {
+      globals: async () => assert.fail("Codex native mode checks for name collisions in the actual launch workspace"),
+      custom: mcpStore.listResidentMcpServers,
+      customSecrets: mcpStore.customSecretValues,
+    });
+    assert.ok(resolved.ok && resolved.servers);
+    assert.deepEqual(resolved.servers.map((server) => [server.source, server.name]), [["custom", "notes.custom"]]);
+    assert.equal(resolved.servers[0]?.launcher, true, "even secretless custom definitions stay out of native Codex's argv");
+  } finally {
+    flag(false);
+  }
 });
 
 test("secrets under one field name stay bound to their own (source, name)", async () => {
@@ -769,6 +789,38 @@ test("entries carry no secret: global and secret-bearing servers are launcher en
   // Each start mints its own tickets.
   const again = resident.forStart();
   assert.notEqual(again[0]!.shape === "launcher" && again[0]!.args.at(-1), credential);
+});
+
+test("prepared launcher paths stay empty through slow preflight and receive fresh, single-use tickets", (t) => {
+  const runId = crypto.randomUUID();
+  seedRun(runId, [HTTP_SERVER]);
+  t.mock.timers.enable({ apis: ["Date"] });
+  const resident = launch.residentMcpLaunchForRun(runId, "all")!;
+  const start = resident.prepareStart();
+  const entry = start.entries[0]!;
+  assert.equal(entry.shape, "launcher");
+  const path = entry.args.at(-1)!;
+  assert.equal(existsSync(path), false);
+  t.mock.timers.tick(launch.RESIDENT_MCP_TICKET_TTL_MS + 1);
+  start.issue();
+  const { ticket, expiresAt } = JSON.parse(readFileSync(path, "utf8")) as { ticket: string; expiresAt: number };
+  assert.equal(expiresAt, Date.now() + launch.RESIDENT_MCP_TICKET_TTL_MS);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.throws(() => start.issue(), /already issued/);
+  const request = { ticket, runId, server: "web" };
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, true);
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, false);
+
+  const retry = resident.prepareStart();
+  const retryEntry = retry.entries[0]!;
+  assert.equal(retryEntry.shape, "launcher");
+  const retryPath = retryEntry.args.at(-1)!;
+  assert.notEqual(retryPath, path);
+  retry.issue();
+  const retryTicket = (JSON.parse(readFileSync(retryPath, "utf8")) as { ticket: string }).ticket;
+  retry.revoke();
+  assert.equal(existsSync(retryPath), false);
+  assert.equal(launch.redeemResidentMcpTicket({ ...request, ticket: retryTicket }).ok, false);
 });
 
 test("a ticket is redeemed once, by its own server, before it expires, for that server's definition alone", () => {
@@ -974,7 +1026,7 @@ test("a profile cannot save a selection another harness owns or a custom server 
   assert.ok(!notApplicable.ok && /does not apply to Claude Code/.test(notApplicable.error));
 });
 
-test("a profile on all native sources launches with its pinned revision's choice, and Codex cannot save it", async () => {
+test("a Claude profile on all native sources launches, and a Codex profile needs the preview to save it", async () => {
   const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" }, helper: { type: "http", url: "https://x", headersHelper: "h" } }));
   const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
     identity: { name: "All Sources" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
@@ -992,7 +1044,7 @@ test("a profile on all native sources launches with its pinned revision's choice
     // No spend cap, so the MCP check is the one that answers.
     loop: { spendCapUsd: null },
   }));
-  assert.ok(!codex.ok && /Codex cannot start a resident on all of its native MCP sources, so a profile on it must keep a pinned set/.test(codex.error), JSON.stringify(codex));
+  assert.ok(!codex.ok && /Enable Codex resident native MCP/.test(codex.error), JSON.stringify(codex));
 });
 
 test("a running resident keeps its launch revision's source mode after the profile is edited back to pinned", async () => {

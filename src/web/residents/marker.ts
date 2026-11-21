@@ -30,7 +30,7 @@ export interface ResidentChipMark extends ResidentMarker {
  * same answer.
  */
 export interface ResidentSessionMark extends ResidentChipMark {
-  loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction">;
+  loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction"> & Partial<Pick<ResidentRunSummary, "settings">>;
   runId: string;
   /** The task the run launched, so a control can name it - Restart's completion prompt does. */
   taskId: string;

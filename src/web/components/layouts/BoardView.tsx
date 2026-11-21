@@ -250,7 +250,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   const starters = pending.length + failed.length;
 
   const modes = boardColumnModes(columns, starters);
-  const backlogMode = backlogColumnMode(props.backlog.length);
+  // Hibernated tasks live in the Backlog column too, so one alone keeps the column on the board.
+  const backlogMode = backlogColumnMode(props.backlog.length + (props.hibernated?.length ?? 0));
   // The open session's own column has no card in it - a drawer resident, or a session a
   // fleet filter hides - so no rail is drawn. The detail takes the board, and its head
   // carries the way back the rail head would have.
@@ -533,6 +534,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onWidthChange={(width) => setColumnWidth("backlog", width)}
         inert={focusedColumn != null}
         tasks={props.backlog}
+        hibernated={props.hibernated}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),
         // and a column that could only see the backlog would report those as

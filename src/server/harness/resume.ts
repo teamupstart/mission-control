@@ -25,6 +25,14 @@ export interface ResumeContext {
    */
   advisorModel?: AdvisorChoice | null;
 }
+/**
+ * What a managed terminal resume reads of the conversation it reopens - and nothing else, so
+ * a caller with no live session (a hibernated task's saved conversation) is checked by the
+ * compiler rather than cast. A live `Session` is one.
+ */
+export type ResumeSource = Pick<Session, "id" | "agent" | "agentSessionId" | "cwd" | "permissionMode" | "runtime">
+  & { meta?: { modelId?: string | null } | null };
+
 export interface PreparedResume {
   cwd: string;
   argv: string[];
@@ -72,7 +80,7 @@ export function resumeGuardArgv(runtimeCommand: string, guard: string, lease: Pi
 }
 
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
-export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
+export async function prepareTerminalResume(session: ResumeSource, context: ResumeContext): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
   const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);

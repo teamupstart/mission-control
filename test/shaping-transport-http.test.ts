@@ -370,6 +370,13 @@ test("a reference whose value holds a line break sends no request", async () => 
   assert.equal(seen.length, count);
 });
 
+test("a reference whose value a header cannot encode names it and sends no request", async () => {
+  const count = seen.length;
+  const reply = await withKey("tok-€-9f", () => callHttp(request(), shaper("/echo", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+  assert.deepEqual(reply, { kind: "unavailable", reason: `The reference {env:${KEY_ENV}} did not resolve to a value, so the shaper was not called.` });
+  assert.equal(seen.length, count);
+});
+
 test("a header named twice in different letter case is refused before any request", async () => {
   const count = seen.length;
   const reply = await withKey(KEY, () => callHttp(request(), shaper("/ok", { Authorization: `Bearer {env:${KEY_ENV}}`, authorization: "Bearer {env:OTHER_KEY}" }), ctx()));

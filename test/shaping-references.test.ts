@@ -237,6 +237,19 @@ test("a reply full of distinct spellings of a value is scrubbed in linear time",
   assert.ok(elapsed < 3_000, `scrubbed in ${Math.round(elapsed)} ms`);
 });
 
+test("a value with a character a header cannot encode is unresolved, and its status is unset", () => {
+  assert.deepEqual(resolveReferences("{env:WIDE}", { ...ctx, env: { WIDE: "tok-€-9f" } }), { ok: false, missing: ["{env:WIDE}"] });
+  assert.deepEqual(resolveReferences("{caller.user}", { ...ctx, caller: { ...caller, user: "李雷" } }), { ok: false, missing: ["{caller.user}"] });
+  assert.deepEqual(resolveReferences("{caller.user}", { ...ctx, caller: { ...caller, user: "Jördan" } }), {
+    ok: true, value: "Jördan", resolved: [{ name: "caller.user", value: "Jördan" }],
+  }, "Latin-1 is sendable");
+  const wide = ShaperSchema.parse({
+    id: "wide", label: "Wide", stage: "select",
+    transport: { type: "http", url: "https://guidance.example.test/v1", headers: { "x-key": "{env:WIDE}" } },
+  });
+  assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [wide] }, [], { WIDE: "tok-€-9f" }, ""), { WIDE: "unset" });
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

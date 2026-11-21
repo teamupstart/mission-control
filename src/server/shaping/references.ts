@@ -70,11 +70,23 @@ function spelled(reference: string): string {
 }
 
 /** The value one reference resolves to, or null. An empty value is unresolved. */
+/**
+ * Whether `value` can travel in a header as written: tabs, spaces, visible ASCII and the Latin-1
+ * range only, the characters `Headers` accepts. A CR, LF or NUL is refused when a header is built
+ * or stripped from its ends before it is sent, and a character above U+00FF cannot be encoded at
+ * all, so a value holding one would either fail every call or reach the server in a form no
+ * scrub knows. Such a value is unresolved, and nothing is sent.
+ */
+function sendable(value: string): boolean {
+  return !/[^\t\x20-\x7e\x80-\xff]/.test(value);
+}
+
 function resolveOne(reference: string, ctx: ReferenceContext, token: string): string | null {
+  const caller = (value: string | null) => (value && sendable(value) ? value : null);
   switch (reference) {
-    case "caller.user": return ctx.caller.user || null;
-    case "caller.agent": return ctx.caller.agent || null;
-    case "caller.conversation": return ctx.caller.conversation || null;
+    case "caller.user": return caller(ctx.caller.user);
+    case "caller.agent": return caller(ctx.caller.agent);
+    case "caller.conversation": return caller(ctx.caller.conversation);
   }
   if (!reference.startsWith("env:")) return null;
   const name = reference.slice(4);
@@ -85,10 +97,7 @@ function resolveOne(reference: string, ctx: ReferenceContext, token: string): st
   const env = ctx.env ?? process.env;
   const value = Object.hasOwn(env, name) ? env[name] : undefined;
   if (typeof value !== "string" || value.trim() === "") return null;
-  // A header cannot carry a line break or a NUL: one inside the value is refused when the header
-  // is built, and one at an end is stripped before it is sent, leaving the server a form no
-  // scrub would know. Such a value is unresolved, so nothing is sent.
-  if (/[\r\n\u0000]/.test(value)) return null;
+  if (!sendable(value)) return null;
   if (token.length > 0 && value.includes(token)) return null;
   return value;
 }

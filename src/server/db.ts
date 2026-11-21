@@ -5689,6 +5689,7 @@ export function createReviewContinuationPendingTurn(input: {
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
+    coalesce: mode?.wait_mode === "message",
   });
 }
 
@@ -5711,6 +5712,14 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  */
 export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
 
+/** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
+export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE id = ? AND state = 'queued' AND claimed_at IS NULL
+    RETURNING note_key`).get(`${SNOOZE_INSTRUCTION_TURN_PREFIX}${reviewId}`) as { note_key: string } | undefined;
+  return row?.note_key ?? null;
+}
+
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
   noteKey: string;
@@ -5731,6 +5740,7 @@ function queueReviewPendingTurn(
   input: { reviewId: string; noteKey: string; text: string; now: number },
   kind: {
     turnId: string;
+    coalesce?: boolean;
     /** SQL over the review row: whether this turn is still owed. */
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
@@ -5746,6 +5756,20 @@ function queueReviewPendingTurn(
     if (!eligible) {
       d.exec("COMMIT");
       return null;
+    }
+    // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
+    // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
+    // the conversation's tail: appending to an earlier answer would pass intervening turns.
+    if (kind.coalesce) {
+      const existing = d.prepare(`SELECT * FROM pending_turns
+        WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+        const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
+          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+        d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
+        d.exec("COMMIT");
+        return rowToPendingTurn(row);
+      }
     }
     const sequence = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)

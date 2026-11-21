@@ -416,6 +416,10 @@ app is safe: the second process acquires no **lease** and idles as a standby, ta
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
 
+Foreman can answer a question filed without stopping the agent. See
+[Asking without stopping](sessions.md#asking-without-stopping) for answer delivery and the
+question lifecycle.
+
 ### Its standing instructions (`FOREMAN.md`)
 
 Foreman ships with a built-in judgment policy, which is deliberately generic. Beside it sits a

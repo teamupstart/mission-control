@@ -41,7 +41,7 @@ const shapingStore = await import("../src/server/shaping/index.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { setAppConfig } = await import("../src/server/db.ts");
 const { SHAPING_CONFIG_DEFAULTS, SHAPING_SECTION_PREAMBLE, ShapingIntentSchema, currentShaping } = await import("../src/shared/shaping.ts");
-const { launchArgumentTurnOne } = await import("../src/server/turn-one-budget.ts");
+const { launchArgumentTurnOne, TERMINAL_ENV_RESERVE } = await import("../src/server/turn-one-budget.ts");
 const { isolatedAgentEnvironment } = await import("../src/server/agent-subprocess-env.ts");
 const { sessionTraceContext } = await import("../src/server/telemetry/index.ts");
 const { shapeTask } = await import("../src/server/shaping/engine.ts");
@@ -169,11 +169,13 @@ async function terminalDispatch(options: DispatchOptions): Promise<Run> {
     ...(options.shapeTask ? { shapeTask: options.shapeTask } : {}),
     ...(options.argMax ? { argMax: options.argMax } : {}),
     ...(options.workflowName ? { workflowName: options.workflowName } : {}),
-    spawn: async (_label, _short, cwd, _bin, args, home, _backend, env) => {
+    spawn: async (_label, _short, cwd, _bin, args, home, _backend, env, fallback) => {
       if (options.failSpawn) throw new Error("the terminal could not start");
       argv = [...(args ?? [])];
       stateHome = home ?? "";
       extraEnv = { ...env };
+      // As the real wrapper does for a launch with a fallback: it ran these arguments, and says so.
+      if (fallback && home) writeFileSync(`${home}.turn-one`, "shaped");
       const discovered = mkDiscovered({ agent: options.agent, cwd, syntheticId: `sid-${options.taskId}-${seq}` });
       registry.applyDiscovery([discovered]);
       sessionId = discovered.syntheticId;
@@ -596,7 +598,7 @@ test("Pi's launch argument: a turn one within 1 KiB of the per-argument ceiling 
   }
 });
 
-test("Pi's launch argument: an environment that leaves little room under ARG_MAX never produces E2BIG", async () => {
+test("Pi's launch argument: an environment that leaves little room under ARG_MAX delivers what fits and never produces E2BIG", async () => {
   registerLargeShaper();
   const repo = seedRepo("pi-argmax");
   // Pi's CLI is a `#!` script, often installed deep in a version manager's tree: exec charges its
@@ -609,7 +611,8 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
   const previousPi = process.env.MISSION_PI_BIN;
   process.env.MISSION_PI_BIN = piScript;
   const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
-  // A turn one well under the per-argument limit, and an environment that leaves it about 8 KiB.
+  // A turn one well under the per-argument limit, and an environment that leaves it the terminal
+  // reserve plus about 24 KiB: room for part of a 64 KiB section, not all of it.
   setFlag(false);
   const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-env-probe", intent: "short request" });
   assertRunning(baseline.task);
@@ -618,7 +621,7 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
   const used = execBytes([piScript, ...baseline.argv], env());
   // Many ordinary-sized variables rather than one huge one, the way a real environment fills up.
   const padNames: string[] = [];
-  let room = argMax - used - 8 * 1024;
+  let room = argMax - used - (TERMINAL_ENV_RESERVE + 24 * 1024);
   for (let n = 0; room > 64; n++) {
     const name = `MISSION_SHAPING_TEST_PAD_${n}`;
     const value = "p".repeat(Math.min(4000, room - name.length - 1 - 1 - 8));
@@ -628,8 +631,8 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
     room -= name.length + 1 + value.length + 1 + 8;
   }
   try {
-    // Node itself cannot start under an environment this close to ARG_MAX, so this one shaper
-    // answers in-process: the real engine, allocator and budget, with 64 KiB to cut.
+    // This one shaper answers in-process - the real engine, allocator and budget, with 64 KiB to
+    // cut - so nothing but the launch itself runs under the padded environment.
     const large: ShapeTask = (input) => shapeTask(input, {
       config: shapingStore.getShapingConfig(), discovered: [], enabled: true,
       transports: Object.fromEntries(["command", "mcp", "http", "builtin"].map((id) => [id, async () => ({
@@ -640,17 +643,21 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
     const shaped = await terminalDispatch({ agent: "pi", repo, taskId: "pi-env", intent: "short request", argMax: async () => argMax, shapeTask: large });
     assertRunning(shaped.task);
     const record = currentShaping(shaped.task);
-    assert.equal(record?.truncated, true, JSON.stringify(record));
-    assert.match(record?.limit?.reason ?? "", /arguments and environment/);
+    assert.match(record?.limit?.reason ?? "", /arguments and environment/, JSON.stringify(record));
+    // Part of the section was delivered: what the measured room allowed, not all four entries and
+    // not none of them.
+    assert.ok(shaped.prompt.includes("## Task context"), "the launch argument carries shaped context");
+    assert.ok((record?.entries ?? 0) >= 1 && (record?.entries ?? 0) < 4, `some of the four entries (${record?.entries})`);
+    assert.ok((record?.limit?.bytes ?? 0) > 0 && (record?.bytes ?? 0) <= record!.limit!.bytes, "within the room the budget measured");
+    assert.equal(getTaskShapingText("pi-env")?.text, shaped.prompt.slice(shaped.prompt.indexOf("## Task context")), "and that is what was recorded as delivered");
     const launchEnv = { ...process.env, ...isolatedAgentEnvironment({ cwd: shaped.task.worktreePath!, stateHome: shaped.stateHome, extraEnv: shaped.extraEnv }) };
     assert.ok(execBytes([piScript, ...shaped.argv], launchEnv) <= argMax, "within the combined limit as the budget counts it");
     // And the kernel agrees: the exact argv and environment execute.
     const ran = spawnSync(piScript, shaped.argv, { env: launchEnv, stdio: "ignore" });
     assert.equal(ran.error, undefined, `the launch executes (${ran.error?.message})`);
     assert.equal(ran.status, 0);
-    // Without the budget the same section would not have fit.
-    const unbudgeted = [...shaped.argv.slice(0, -1), `${shaped.argv.at(-1)}${"z".repeat(64 * 1024)}`];
-    assert.ok(execBytes([piScript, ...unbudgeted], launchEnv) > argMax, "a 64 KiB section would have exceeded it");
+    // And the cut kept the terminal's reserve free: a pane environment up to that size still fits.
+    assert.ok(execBytes([piScript, ...shaped.argv], launchEnv) <= argMax - TERMINAL_ENV_RESERVE, "the reserve was left for the terminal");
   } finally {
     for (const name of padNames) delete process.env[name];
     process.env.MISSION_PI_BIN = previousPi;

@@ -1518,6 +1518,32 @@ matches normalize into the separate mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
+Publication-only criteria, such as "Pull request opened documenting the implementation,
+verification, and deviations", can be classified as fulfilled by the Pull Request action during
+intent compaction. The criterion stays material and visible. Readiness defers its proof only
+when the pinned graph has a reachable action with the `pull_request` completion contract ahead
+of the current submission. The Evidence pane labels it **deferred to Pull Request**, and Personas
+receive the same deferral. This is a scheduling distinction, not proof of completion or an override.
+
+Implementation, tests, and verification still need pre-review evidence. Mixed requirements must
+be split during compaction; an explicit requirement to open the PR before review is not deferred.
+A workflow without that action, or a review after it, still requires publication proof. The
+classification is frozen with the run's criteria and reused across repair rounds.
+
+Existing runs whose criteria predate the classification receive a bounded timing-only
+classification on their next capture when their pinned graph still has a pending Pull Request
+action. This preserves criterion IDs, text, ordering, materiality, and proof-class suggestions.
+The daemon saves the first successful classification, including explicit negative results, for
+reuse in later rounds and after restart. It records a `criterion_fulfillment` model call and a
+`criterion_fulfillment_classified` event. Invalid, incomplete, or failed classification leaves
+the evidence gate unchanged and can be retried; it never grants an override.
+
+For an existing run already paused at readiness, the Evidence pane offers **Classify publication
+criteria**. This creates a same-round recovery segment using the frozen evidence. Historical
+submissions, verdicts, and override records remain unchanged, and no broad override is carried
+forward. New captures distinguish an unclassified legacy criterion (absent timing field) from
+an explicitly non-publication criterion (`fulfilledByAction: null`).
+
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
 result before the engine creates any Persona or Check attempt, until the round exhausts its
 evidence attempt budget. A structural gap parks the run at

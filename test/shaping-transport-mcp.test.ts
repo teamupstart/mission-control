@@ -701,6 +701,28 @@ test("a resumable stream whose priming event's CRLF is split across chunks is st
   }
 });
 
+test("a passed value whose multibyte character stderr splits across chunks is still redacted", async () => {
+  const value = "sécret-ünïcode-4f2a";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "split-utf8-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "split-utf8-exit", KEY_ENV], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  const reason = (reply as { reason: string }).reason;
+  for (const piece of ["cret-", "nïcode", "4f2a", "\ufffd"]) assert.equal(reason.includes(piece), false, reason);
+  assert.equal(reply.redacted, true);
+});
+
+test("a run that ended while the MCP client was loading sends no handshake", async () => {
+  const http = await startGuidanceHttp({ mode: "ok" });
+  try {
+    const run = ctx();
+    (run.scope as ReturnType<typeof runScope>).close();
+    const reply = await callMcp(request(false), shaper({ type: "http", url: http.url }), run);
+    assert.deepEqual(reply, { kind: "unavailable", reason: "The shaping run ended before the MCP server could be reached." });
+    assert.equal(http.requests.length, 0, "no request reached the server");
+  } finally { await http.close(); }
+});
+
 test("a stdio server that writes a line that is not an MCP message fails the call at once", async () => {
   const started = Date.now();
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "garbage-reply" }, "folded", {

@@ -128,6 +128,12 @@ test("a trace value is never redacted: it is neither a credential nor a referenc
   }
 });
 
+test("an unset named variable that matches an inherited property cannot break reply scrubbing", async () => {
+  const reply = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["constructor", "toString"], stage: "select" }), ctx());
+  assert.equal(reply.kind, "data", JSON.stringify(reply));
+  assert.equal(decoded(reply).guidance[0].body, "first entry for billing-api");
+});
+
 test("argv reaches the program verbatim, with no shell in between", async () => {
   const args = [FIXTURE, "echo", "$(echo injected)", "; rm -rf /", "*", "a b"];
   const seen = echoed(await callCommand(request(), shaper(args), ctx()));

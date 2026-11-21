@@ -155,7 +155,8 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
   // The trace context and the work unit id are neither credentials nor references, so neither is ever redacted.
   const values = Object.entries(env).filter(([name]) => !carriedEnvName(name)).map(([, value]) => value)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
-  const named = namedVariables.filter((name) => !carriedEnvName(name)).map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
+  const named = namedVariables.filter((name) => !carriedEnvName(name) && Object.hasOwn(env, name)).map((name) => env[name])
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
@@ -302,7 +303,12 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   const namedValues: ResolvedValue[] = [
     ...transport.env
       .filter((name) => !carriedEnvName(name))
-      .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; }),
+      // The child environment's own string only: an unset `constructor` must not read the
+      // inherited function, which the reply's redactor would then treat as a string.
+      .flatMap((name) => {
+        const value = Object.hasOwn(executable.env, name) ? executable.env[name] : undefined;
+        return typeof value === "string" && value !== "" ? [{ name, value }] : [];
+      }),
     ...credentials,
   ];
   const longestValue = received.values[0]?.length ?? 0;

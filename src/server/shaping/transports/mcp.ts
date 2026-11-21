@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -346,8 +347,11 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   // Six times the longest value: a JSON `\u` escape spells one character in six, and a value cut
   // at the front in that spelling must fall wholly inside the margin that is dropped.
   const longest = (received.values[0]?.length ?? 0) * 6;
+  // Decoded as a stream, as the `command` transport decodes it: a character split across two
+  // chunks is kept whole, so a non-ASCII value the child received still matches when redacted.
+  const stderrDecoder = new StringDecoder("utf8");
   transport.stderr?.on("data", (chunk: Buffer) => {
-    const joined = stderr + chunk.toString("utf8");
+    const joined = stderr + stderrDecoder.write(chunk);
     const keep = STDERR_KEEP_CHARS + longest;
     if (joined.length > keep) stderrCut = true;
     stderr = joined.slice(-keep);
@@ -412,6 +416,9 @@ async function openHttp(
     import("@modelcontextprotocol/sdk/client/index.js"),
     import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
   ]);
+  // The imports can wait, and the run can end meanwhile. Its cleanup has already run, so a
+  // handshake started now would send the configured headers for a run nobody is waiting on.
+  if (ctx.scope.closed) throw new UnavailableError("The shaping run ended before the MCP server could be reached.");
   const state = latch();
   const url = new URL(server.url);
   // The configured headers ride every request, only to the server's origin; the launch's trace

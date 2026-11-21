@@ -10,6 +10,8 @@
 //                                    and exits before answering anything.
 //   json-stderr-exit <NAME>          Writes a JSON diagnostic that holds `NAME`'s value, every
 //                                    character a \u escape, to stderr, and exits.
+//   split-utf8-exit <NAME>           Writes `NAME`'s value to stderr in two chunks split inside its first
+//                                    multibyte character, and exits before answering anything.
 //   garbage-reply                    Answers `initialize`, then answers the next request with a line
 //                                    that is not JSON, and stays running.
 import { renameSync, writeFileSync } from "node:fs";
@@ -28,6 +30,15 @@ if (mode === "overflow-init" && args[1]) {
 if (mode === "json-stderr-exit") {
   const escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
   process.stderr.write(`{"level":"error","msg":"auth failed for ${escaped}"}\n`, () => process.exit(1));
+}
+
+if (mode === "split-utf8-exit") {
+  const bytes = Buffer.from(`auth failed for ${process.env[args[0] ?? ""] ?? ""}\n`, "utf8");
+  // Inside the first multibyte character: after its lead byte, before its continuation.
+  const at = bytes.findIndex((byte) => byte >= 0xc0) + 1;
+  process.stderr.write(bytes.subarray(0, at), () => {
+    setTimeout(() => process.stderr.write(bytes.subarray(at), () => process.exit(1)), 100);
+  });
 }
 
 if (mode === "stderr-exit") {

@@ -5404,6 +5404,10 @@ export class WorkflowStore {
   ): WorkflowRunSummary | null {
     try {
       const run = parseWorkflowRunRow(row);
+      const bindingState = z.enum(WORKFLOW_BINDING_STATES).safeParse(row.binding_state);
+      // A future or damaged binding state must not hide its run from Fleet. Without a
+      // recognized state, neither queue ownership nor recovery actions can be inferred.
+      if (!bindingState.success) diagnose(bindingState.error);
       const claim = externalSourceFromRow(row);
       const latestAttempts = new Map<string, WorkflowNodeAttempt>();
       for (const attempt of submissionAttempts) {
@@ -5464,10 +5468,10 @@ export class WorkflowStore {
         ...(typeof row.run_repo_root === "string" && row.run_repo_root
           ? { repoRoot: row.run_repo_root }
           : {}),
-        deliveryHold: this.runDeliveryHold(run, {
-          state: z.enum(WORKFLOW_BINDING_STATES).parse(row.binding_state),
+        deliveryHold: bindingState.success ? this.runDeliveryHold(run, {
+          state: bindingState.data,
           deliveryMode: readDeliveryMode(row.binding_delivery_mode),
-        }),
+        }) : null,
         gateWaitReason: gateState?.waitReason ?? null,
         resumption: run.status === "waiting_for_session" ? this.runResumptionState(run, {
           deliveryMode: readDeliveryMode(row.binding_delivery_mode),
@@ -5475,11 +5479,11 @@ export class WorkflowStore {
           ?? readResumptionPolicy(typeof row.version_resumption_policy === "string" ? row.version_resumption_policy : null) }) : null,
         status: run.status,
         phase: run.currentPhase,
-        recovery: projectWorkflowRecovery({
+        recovery: bindingState.success ? projectWorkflowRecovery({
           status: run.status,
           phase: run.currentPhase,
           bindingId: run.bindingId,
-          bindingState: z.enum(WORKFLOW_BINDING_STATES).parse(row.binding_state),
+          bindingState: bindingState.data,
           sessionId: typeof row.session_id === "string" ? row.session_id : null,
           external: (WORKFLOW_EXTERNAL_SOURCE_KINDS as readonly string[]).includes(run.triggerSource),
           round: Number(row.current_round),
@@ -5495,7 +5499,7 @@ export class WorkflowStore {
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
           recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
-        }),
+        }) : undefined,
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
         // budget is compared against.

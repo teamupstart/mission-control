@@ -446,9 +446,11 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   const holds = dashboard.getByLabel("Workflow holds");
   await expect(holds).toContainText("has not adopted");
   await expect(holds).toContainText("Action needed · Operator");
-  await update({ ...summary, id: "sibling-wait", repoRoot: "/repos/backend", deliveryHold: {
+  const sibling = { ...summary, id: "sibling-wait", repoRoot: "/repos/backend",
+    deliveryMode: "live" as const, resumptionPolicy: "auto" as const, resumption: null, deliveryHold: {
     runId, deliveryId: "owner-packet", repoRoot: "/repos/frontend", kind: "persona_feedback", state: "delivered",
-  } });
+  } } satisfies typeof summary;
+  await update(sibling);
   await expect(holds).toContainText("Queued behind frontend");
   await expect(holds.getByRole("link", { name: /Open owning run/ })).toHaveAttribute("href", `#/runs/${runId}`);
   await holds.getByRole("link", { name: /Open owning run/ }).hover();
@@ -459,6 +461,21 @@ test("Fleet renders distinct Inspector, sibling and automated waits from live su
   await expect(holds).toContainText("Review in progress: Test Auditor");
   await expect(holds).toContainText("In progress · Workflow");
   await shoot(dashboard, "hold-distinct-reasons");
+  const siblingHold = holds.getByRole("link", { name: new RegExp(`${summary.workflowName} · backend`) });
+  for (const state of [
+    { status: "blocked", phase: "delivery_refused" },
+    { status: "waiting_for_action", phase: "session_action", actionWait: "needs_operator" },
+    { status: "waiting_for_action", phase: "session_action", actionWait: "awaiting_send", deliveryMode: "preview" },
+  ] as const) {
+    await update({ ...sibling, ...state });
+    await expect(siblingHold).toContainText("Action needed · Operator");
+    await expect(siblingHold).not.toContainText("Queued behind");
+    await expect(siblingHold).not.toContainText("Open owning run");
+    await expect(siblingHold).toHaveAttribute("href", "#/runs/sibling-wait");
+    await siblingHold.hover();
+    await expect(dashboard.locator(".tooltip").filter({ hasText: "Open this workflow run" })).toBeVisible();
+    if (state.status === "blocked") await shoot(dashboard, "hold-queued-operator-action");
+  }
   await update({ ...summary, id: "sibling-wait", repoRoot: "/repos/backend", status: "completed" });
   await expect(holds).not.toContainText("Queued behind");
   await update({ ...summary, status: "waiting_for_inspector", phase: "inspector_review", gateWaitReason: "review_pending" });

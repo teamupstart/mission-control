@@ -95,6 +95,29 @@ test("the queue links its actual owning run, and ending a run removes the projec
   assert.equal(workflowHold({ ...queued, deliveryHold: null })?.runId, "run");
 });
 
+test("actionable waits retain their actor and own run link while a sibling holds delivery", () => {
+  const deliveryHold = { runId: "owner", deliveryId: "packet", repoRoot: "/repos/backend",
+    kind: "evidence_readiness" as const, state: "delivered" as const };
+  const cases: WorkflowRunSummary[] = [
+    { ...run, status: "blocked", phase: "delivery_refused" },
+    { ...run, status: "waiting_for_action", actionWait: "needs_operator", deliveryMode: "live" },
+    { ...run, status: "waiting_for_action", actionWait: "awaiting_send", deliveryMode: "preview" },
+    { ...run, resumption: { reason: "session_needs_you", round: 1, resumesItself: true } },
+    { ...run, deliveryMode: "preview" },
+    { ...run, status: "waiting_for_pr", gateWaitReason: "unadopted_pr" },
+  ];
+  for (const current of cases) {
+    const held = workflowHold({ ...current, deliveryHold })!;
+    assert.deepEqual(held, workflowHold(current), `${current.status}/${current.actionWait ?? current.phase}`);
+    assert.equal(held.actor, "Operator");
+    assert.equal(held.inProgress, false);
+    assert.equal(held.runId, run.id);
+  }
+  const blocked = { ...run, resumption: { reason: "session_blocked", round: 1, resumesItself: true } };
+  assert.deepEqual(workflowHold({ ...blocked, deliveryHold }, { waitingOn: "Platform team" }),
+    workflowHold(blocked, { waitingOn: "Platform team" }), "independent blocker ownership also stays visible");
+});
+
 test("unknown blocked phases stay inspectable without claiming automatic progress", () => {
   const hold = workflowHold({ ...run, status: "blocked", phase: "future_wait" })!;
   assert.equal(hold.reason, "future wait");

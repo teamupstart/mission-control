@@ -14,13 +14,21 @@ export interface WorkflowHold {
 
 /** Display projection only. Never writes a blocker or participates in resumption. */
 export function workflowHold(run: WorkflowRunSummary, blocker?: Pick<SessionBlocker, "waitingOn"> | null): WorkflowHold | null {
+  const ownWait = workflowRunHold(run, blocker);
+  // A sibling's delivery ownership cannot answer this run's operator question or clear
+  // an independent blocker. Keep that actionable reason and its own run link visible.
+  if (!ownWait || !run.deliveryHold || ownWait.actor === "Operator" || ownWait.actor === "Blocker owner") return ownWait;
+  const owner = run.deliveryHold.repoRoot?.split(/[\\/]/).filter(Boolean).at(-1);
+  return {
+    actor: "Owning workflow", inProgress: true, runId: run.deliveryHold.runId,
+    reason: `Queued behind ${owner ?? "another workflow"}; waiting for it to release the conversation.`,
+  };
+}
+
+function workflowRunHold(run: WorkflowRunSummary, blocker?: Pick<SessionBlocker, "waitingOn"> | null): WorkflowHold | null {
   if (!workflowRunIsOpen(run.status)) return null;
   const describe = (actor: WorkflowHold["actor"], reason: string, inProgress = false,
     runId = run.id): WorkflowHold => ({ actor, reason, inProgress, runId });
-  if (run.deliveryHold) {
-    const owner = run.deliveryHold.repoRoot?.split(/[\\/]/).filter(Boolean).at(-1);
-    return describe("Owning workflow", `Queued behind ${owner ?? "another workflow"}; waiting for it to release the conversation.`, true, run.deliveryHold.runId);
-  }
   if (run.status === "blocked") return describe("Operator", blockedPhaseClause(run.phase));
   if (run.status === "waiting_for_session") {
     const activity = run.resumption ? workflowResumptionWithheldActivity(run.resumption.reason) : null;

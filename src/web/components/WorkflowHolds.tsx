@@ -17,7 +17,7 @@ export function WorkflowHolds({ runs, blocker }: { runs: readonly WorkflowRunSum
   return <div className="workflow-holds" aria-label="Workflow holds">
     {holds.map(({ run, hold }) => <Tooltip
       key={run.id}
-      label={run.deliveryHold ? "Open the workflow run holding this session" : "Open this workflow run"}
+      label={hold.actor === "Owning workflow" ? "Open the workflow run holding this session" : "Open this workflow run"}
     ><a
       className={`workflow-hold ${hold.inProgress ? "is-progress" : "is-waiting"}`}
       href={`#/runs/${encodeURIComponent(hold.runId)}`}
@@ -27,7 +27,7 @@ export function WorkflowHolds({ runs, blocker }: { runs: readonly WorkflowRunSum
         ? ` · ${run.repoRoot.split(/[\\/]/).filter(Boolean).at(-1)}` : ""}</span>
       <span>{hold.reason}</span>
       <strong>{hold.inProgress ? "In progress" : hold.actor === "Operator" ? "Action needed" : "Waiting"} · {hold.actorLabel ?? hold.actor}</strong>
-      <span>{run.deliveryHold ? "Open owning run" : "Open run"} ↗</span>
+      <span>{hold.actor === "Owning workflow" ? "Open owning run" : "Open run"} ↗</span>
     </a></Tooltip>)}
   </div>;
 }

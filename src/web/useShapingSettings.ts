@@ -1,7 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { ShapingIntentSchema, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
+import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { previewShapingIntent, shapingIntentReflected } from "./lib/shaping-settings.ts";
+import { nextShapingWriteSequence, raiseShapingWriteSequence, shapingWriteIdentity } from "./lib/shaping-write-identity.ts";
+import {
+  previewShapingIntent,
+  shapingIntentReflected,
+  shapingFrameIsReceipt,
+  shapingIntentSuperseded,
+  shapingLaterCommit,
+  shapingLockKeys,
+  shapingReceiptBaseline,
+  shapingRefusalText,
+  shapingRowsAhead,
+  shapingUnconfirmedText,
+  shapingViewCommit,
+  shapingViewReached,
+  type ShapingCommit,
+  type ShapingReceiptBaseline,
+  type ShapingWriteOutcome,
+} from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
 
 /** How long one write may wait for the daemon's answer before the panel stops waiting. */
@@ -26,18 +43,75 @@ export function useShapingSettings(
     key: string;
     accepted: boolean;
     observed: boolean;
+    /** A frame showed the definition it was sent for replaced: nothing waits on it any more. */
+    superseded: boolean;
   } | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // Every refusal still worth showing, per control, each with the number of the request it
+  // answers. The newest is the control's error; any older ones are shown apart from it, so a
+  // refusal that arrives late never replaces the reason the latest action failed.
+  const [refusals, setRefusals] = useState<Record<string, Refusal[]>>({});
+  // Shapers an accepted write left at a revision the view does not show yet, each with the daemon
+  // commit that write made. Its answer can arrive before the frame that carries it, and another
+  // writer's frame can land in between: until the stream reaches that commit, a switch, removal,
+  // move or dry run of the row would name a revision the daemon has moved past and be refused, so
+  // the row offers none.
+  const [awaiting, setAwaiting] = useState<Record<string, ShapingCommit>>({});
+  const confirmedNow = useRef(confirmed);
+  confirmedNow.current = confirmed;
+  useEffect(() => {
+    setAwaiting((current) => {
+      const ids = Object.keys(current).filter((id) => confirmed !== null && !shapingViewReached(confirmed, current[id]!));
+      return ids.length === Object.keys(current).length ? current : Object.fromEntries(ids.map((id) => [id, current[id]!]));
+    });
+  }, [confirmed]);
+  // Take this tab's write identity as it mounts, before any write needs it.
+  useEffect(() => { shapingWriteIdentity(); }, []);
+  // The controls with a request still awaiting its HTTP answer. A frame can free the panel before
+  // that answer, but the same control stays locked until it arrives: a second write on it could
+  // otherwise be answered first and then undone by the first, as a switch on that the daemon
+  // applies after a newer switch off, since a switch keeps the revision it was checked against.
+  const [locked, setLocked] = useState<ReadonlySet<string>>(new Set());
+  const lockedNow = useRef(new Set<string>());
+  const lock = (keys: readonly string[], held: boolean): void => {
+    for (const key of keys) {
+      if (held) lockedNow.current.add(key);
+      else lockedNow.current.delete(key);
+    }
+    setLocked(new Set(lockedNow.current));
+  };
   const writing = useRef<ShapingIntent | null>(null);
-  // The last request a frame confirmed, so a reply that never arrives cannot report it unsaved.
-  const confirmedByStream = useRef<ShapingIntent | null>(null);
+  /** The last request sent, so a refusal can tell whether a newer write followed it. */
+  const latest = useRef<ShapingIntent | null>(null);
+  /** Numbers each request in the order it was sent. */
+  const sent = useRef(0);
+  /**
+   * Each import's receipt baseline, as the view stood when it was sent. An identical import matches
+   * the stored manifest before it is applied, so any frame, an unrelated write's included, would
+   * show it "stored": only a frame where its shaper's revision has moved on is the import's.
+   */
+  const receiptBaselines = useRef(new WeakMap<ShapingIntent, ShapingReceiptBaseline>());
+  const frameIsReceipt = (config: ShapingConfigView, request: ShapingIntent): boolean => {
+    const baseline = receiptBaselines.current.get(request);
+    return baseline === undefined || request.kind !== "upsert" || shapingFrameIsReceipt(baseline, config, (request.shaper as { id: string }).id);
+  };
+  /** Numbers each outcome in the order it arrived, whichever request it answers. */
+  const arrivals = useRef(0);
+  /**
+   * Every request a stream frame showed stored, kept per request until its HTTP result settles:
+   * a newer write must not erase an earlier one's receipt before that one's reply is lost.
+   */
+  const observed = useRef(new WeakSet<ShapingIntent>());
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
-    if (shapingIntentReflected(config, request)) {
-      confirmedByStream.current = request;
+    if (shapingIntentReflected(config, request) && frameIsReceipt(config, request)) {
+      observed.current.add(request);
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
+    } else if (shapingIntentSuperseded(config, request)) {
+      // No receipt: the daemon will refuse it. But it can no longer affect what is stored, so the
+      // panel is released for the next edit rather than held until the answer or the timeout.
+      setPending((current) => current?.intent === request ? { ...current, superseded: true } : current);
     }
   }), [subscribe]);
   const optimistic = pending && confirmed ? previewShapingIntent(confirmed, pending.intent) : null;
@@ -48,38 +122,69 @@ export function useShapingSettings(
     // A frame showing the write is the confirmation: the panel takes the next edit at once rather
     // than waiting on an HTTP answer that may be slow. Either order is valid, and once observed,
     // later peer writes remain authoritative.
-    if (!live || pending.observed || (pending.accepted && reflected)) {
+    if (!live || pending.observed || pending.superseded || (pending.accepted && reflected)) {
       writing.current = null;
       setPending(null);
-    } else if (reflected) {
-      confirmedByStream.current = pending.intent;
-      setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
+    // Never a receipt from the config already confirmed when the write went out: an import that
+    // matches what is stored is "reflected" before any frame. Only a frame that arrives after the
+    // request, through the subscription above, counts as the stream showing it stored.
   }, [pending, reflected, live]);
 
-  /** Send one intent. Resolves true when the daemon accepted it. */
-  const set = async (intent: ShapingIntent, key: string): Promise<boolean> => {
-    if (!live || writing.current) return false;
+  /**
+   * Send one intent. Resolves "saved" only when the daemon's answer accepted it. A stream frame that
+   * shows the change frees the controls early, but it is no acknowledgment of this request: the
+   * same state can come from another write, or have been stored before this one went out.
+   */
+  const set = async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
+    const keys = shapingLockKeys(intent, key, confirmed);
+    if (!live || writing.current || keys.some((held) => lockedNow.current.has(held))) return "not_sent";
     // The daemon's own schema, so what is drawn is what is sent: a caller identity is trimmed
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
-      setErrors({ [key]: parsed.error.issues[0]?.message ?? "This change is not valid." });
-      return false;
+      const message = parsed.error.issues[0]?.message ?? "This change is not valid.";
+      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, arrived: ++arrivals.current, message, subject: intentSubject(intent) }]));
+      return "refused";
     }
     const request = parsed.data;
+    if (request.kind === "upsert") receiptBaselines.current.set(request, shapingReceiptBaseline(confirmed, request));
+    lock(keys, true);
+    const number = ++sent.current;
     writing.current = request;
-    setErrors({});
-    setPending({ intent: request, key, accepted: false, observed: false });
+    latest.current = request;
+    // Acting on a control again dismisses what it showed. Every other control keeps its own
+    // refusals, and one that arrives late for an earlier write here is still shown, labelled.
+    setRefusals((current) => withRefusals(current, key, []));
+    setPending({ intent: request, key, accepted: false, observed: false, superseded: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout });
+      const order = shapingWriteOrder(shapingWriteIdentity(), nextShapingWriteSequence(), keys, viewInstance(confirmed));
+      const result = await api.setShaping(request, { signal: timeout, order });
+      if (!result.ok && result.status === undefined) {
+        // No answer at all: the request timed out or the connection failed. That is not the daemon
+        // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
+        // ties an outcome to this request. When a frame showed the change stored, the message says
+        // so, in the past tense, and leaves deciding to the operator.
+        const shown = observed.current.has(request);
+        const cause = timeout.aborted
+          ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
+          : "The daemon's answer did not arrive.";
+        const message = shapingUnconfirmedText(request, shown, latest.current !== request, cause);
+        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message, subject: intentSubject(request) }]));
+        if (writing.current === request) {
+          writing.current = null;
+          setPending(null);
+        }
+        return "unconfirmed";
+      }
       if (!result.ok) {
-        throw new Error(timeout.aborted
-          ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds. This shows its current settings; make the change again if it is missing.`
-          : result.reason ?? result.error ?? "Could not save task shaping.");
+        // Refused as waiting too long: the next change from this tab is numbered above the daemon's
+        // floor, so making it again goes through even after the clock was set back.
+        if (result.error === "expired" && typeof result.floor === "number") raiseShapingWriteSequence(result.floor);
+        throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");
       }
       if (writing.current === request) {
         if (result.config && !shapingIntentReflected(result.config, request)) {
@@ -91,16 +196,35 @@ export function useShapingSettings(
           setPending((current) => current && { ...current, accepted: true });
         }
       }
-      return true;
+      // Answered ahead of the frame that carries it: each row it left at a revision the view does
+      // not show yet waits for the stream to reach the commit it made.
+      const made = result.config ? shapingViewCommit(result.config) : null;
+      const ahead = made && result.config && confirmedNow.current ? shapingRowsAhead(confirmedNow.current, result.config) : [];
+      if (made && ahead.length > 0) {
+        setAwaiting((current) => ({ ...current, ...Object.fromEntries(ahead.map((id) => [id, shapingLaterCommit(current[id], made)])) }));
+      }
+      // A later write on this control succeeded, so an earlier one's refusal no longer describes
+      // it. A refusal of a request sent after this one is still news and stays.
+      setRefusals((current) => withRefusals(current, key, (current[key] ?? []).filter((refusal) => refusal.number > number)));
+      return "saved";
     } catch (error) {
-      // A frame already confirmed it: saved, whatever became of the reply.
-      if (confirmedByStream.current === request) return true;
-      // A disconnect cancels local optimism; a late response must not revive that request.
-      if (writing.current !== request) return false;
-      setErrors({ [key]: error instanceof Error ? error.message : String(error) });
-      writing.current = null;
-      setPending(null);
-      return false;
+      // The HTTP result decides whether this write succeeded. A frame can free the controls
+      // early, but it only shows a config that looks like the outcome: a peer may have written it,
+      // say by replacing and enabling the shaper this request named, while the daemon refused this
+      // request with `shaper_changed`. So a refusal is always shown, even after a frame freed the
+      // panel, and never reported as saved. A frame that freed the panel early also lets a newer
+      // write go out first; this refusal is then the earlier action's, and says so, rather than
+      // reading as the outcome of the change just made under the same control.
+      const reason = error instanceof Error ? error.message : String(error);
+      const message = shapingRefusalText(request, reason, latest.current !== request);
+      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message, subject: intentSubject(request) }]));
+      if (writing.current === request) {
+        writing.current = null;
+        setPending(null);
+      }
+      return "refused";
+    } finally {
+      lock(keys, false);
     }
   };
 
@@ -110,9 +234,56 @@ export function useShapingSettings(
     confirmed,
     pending: pending?.intent ?? null,
     pendingKey: pending?.key ?? null,
-    errors,
+    /** Each control's newest refusal: the reason its latest refused action failed. */
+    errors: Object.fromEntries(Object.entries(refusals).map(([key, list]) => [key, list[0]!.message])),
+    /** Older outcomes under each control, newest first: refusals, and writes whose answer was lost. */
+    earlier: Object.fromEntries(Object.entries(refusals).filter(([, list]) => list.length > 1)
+      .map(([key, list]) => [key, list.slice(1).map((refusal) => refusal.message)])),
+    /**
+     * When each control's latest outcome arrived, by arrival order: a view that records it can tell
+     * an outcome that arrived after that moment from one it already showed, whatever its text and
+     * whichever request it answers, an earlier one arriving late included.
+     */
+    outcomeArrivals: Object.fromEntries(Object.entries(refusals)
+      .map(([key, list]) => [key, Math.max(...list.map((refusal) => refusal.arrived))])),
+    /** The shaper each control's newest outcome was for, when its write named one. */
+    outcomeSubjects: Object.fromEntries(Object.entries(refusals).flatMap(([key, list]) => list[0]!.subject === null ? [] : [[key, list[0]!.subject]])),
+    /** Controls whose request still awaits its HTTP answer: each takes no new write until it arrives. */
+    locked,
+    /** Rows an accepted write left at a revision the view does not show yet. */
+    awaitingRevision: new Set(Object.keys(awaiting).map((id) => `row:${id}`)) as ReadonlySet<string>,
     ready: live,
     set,
+    /** Clear every outcome shown under one control, as the operator's own dismissal. */
+    dismiss: (key: string) => setRefusals((current) => withRefusals(current, key, [])),
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;
+
+/** The daemon instance a view names, when it names a readable one: older daemons send none. */
+function viewInstance(view: ShapingConfigView | null): string | undefined {
+  const instance: unknown = view?.instance;
+  return typeof instance === "string" && /^[A-Za-z0-9-]{1,64}$/.test(instance) ? instance : undefined;
+}
+
+interface Refusal {
+  /** The request it answers, in the order requests were sent. */
+  number: number;
+  /** When it arrived, in the order outcomes arrived. */
+  arrived: number;
+  message: string;
+  /** The shaper the write was for, when it names one. */
+  subject: string | null;
+}
+
+/** The shaper an intent writes, when it names one: what an outcome shown elsewhere is about. */
+function intentSubject(intent: ShapingIntent): string | null {
+  if (intent.kind === "upsert") return typeof (intent.shaper as { id?: unknown }).id === "string" ? (intent.shaper as { id: string }).id : null;
+  return "id" in intent ? intent.id : null;
+}
+
+/** `refusals` with one control's list replaced, newest first, and the control dropped when empty. */
+function withRefusals(refusals: Record<string, Refusal[]>, key: string, list: Refusal[]): Record<string, Refusal[]> {
+  const { [key]: _replaced, ...rest } = refusals;
+  return list.length === 0 ? rest : { ...rest, [key]: [...list].sort((a, b) => b.number - a.number) };
+}

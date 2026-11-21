@@ -1,6 +1,7 @@
-import { shapingConfigView, type ShapingConfigView } from "@shared/shaping.ts";
+import type { ShapingConfigView } from "@shared/shaping.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import { getShapingConfig, onShapingConfigChanged } from "./index.ts";
+import { daemonShapingView } from "./revisions.ts";
 
 /**
  * The one bridge from task shaping's store to open windows, wired once at daemon start.
@@ -19,8 +20,8 @@ export function wireShapingConfigEvents(emit: (config: ShapingConfigView | null)
   let stopConfig: (() => void) | null = null;
   const reconcile = (): void => {
     if (featureEnabled("task-shaping")) {
-      stopConfig ??= onShapingConfigChanged((config) => emit(shapingConfigView(config)));
-      emit(shapingConfigView(getShapingConfig()));
+      stopConfig ??= onShapingConfigChanged((config) => emit(daemonShapingView(config)));
+      emit(daemonShapingView(getShapingConfig()));
       return;
     }
     stopConfig?.();

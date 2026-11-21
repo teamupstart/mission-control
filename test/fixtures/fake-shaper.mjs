@@ -3,6 +3,8 @@
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+// Each helper runs until its test writes the stop file next to its pid file (fake-shaper-helper.mjs).
+import { helperArgv } from "./fake-shaper-helper.mjs";
 
 const [mode = "ok", ...rest] = process.argv.slice(2);
 const chunks = [];
@@ -18,6 +20,9 @@ const writePid = (path, pid) => {
   renameSync(`${path}.partial`, path);
 };
 
+// A failing mode sets `process.exitCode` and lets the process end on its own, never
+// `process.exit()`: on macOS a pipe write is asynchronous, and exiting at once could cut off the
+// diagnostic a redaction test reads.
 switch (mode) {
   case "echo": {
     // Everything the call saw: argv, working directory, the named variables, and the request.
@@ -49,7 +54,7 @@ switch (mode) {
     break;
   case "fail":
     process.stderr.write("the shaper broke");
-    process.exit(3);
+    process.exitCode = 3;
     break;
   case "slow":
     await sleep(Number(rest[0] ?? 5000));
@@ -62,12 +67,12 @@ switch (mode) {
   case "leak":
     // Repeats the value it was handed on stderr, then fails: its reason must not carry it.
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   case "leak-glued":
     // The value printed with letters on both sides, as part of a larger word.
     process.stderr.write(`login failed for user${process.env[rest[0]] ?? "<unset>"}x`);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   case "leak-split": {
     // Repeats a non-ASCII value on stderr in two writes, split inside one of its multi-byte
@@ -79,7 +84,7 @@ switch (mode) {
     await sleep(100);
     process.stderr.write(bytes.subarray(cut));
     await sleep(50);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   }
   case "leak-long": {
@@ -87,7 +92,7 @@ switch (mode) {
     // through one copy of it. The front of the 2,000-character tail lands mid-value.
     const value = process.env[rest[0]] ?? "<unset>";
     process.stderr.write(`${value}\n`.repeat(12));
-    process.exit(5);
+    process.exitCode = 5;
     break;
   }
   case "reply-error-leak":
@@ -134,7 +139,7 @@ switch (mode) {
   case "escape": {
     // A helper in a process group of its own that inherits this shaper's stdout and stderr, so
     // killing the shaper's group leaves both pipes held open.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -145,7 +150,7 @@ switch (mode) {
   case "escape-answer": {
     // A helper outside this shaper's group holds both pipes, so reaping the group cannot close
     // them; the shaper answers shortly before the call's deadline and exits.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -157,7 +162,7 @@ switch (mode) {
   case "escape-overflow": {
     // A helper outside this shaper's group holds both pipes, then the shaper crosses the stdout
     // cap and keeps running. It notes when it starts writing, so a test can time the answer.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -170,7 +175,7 @@ switch (mode) {
   case "pipe-helper": {
     // A helper in this shaper's process group that inherits its stdout and stderr and keeps
     // them open, while the shaper itself answers and exits successfully.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+    const helper = spawn(process.execPath, helperArgv(rest[0]), { stdio: ["ignore", "inherit", "inherit"] });
     writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered while a helper held the pipes" }] });
@@ -179,7 +184,7 @@ switch (mode) {
   case "orphan-helper": {
     // A helper in this shaper's own process group, with stdio of its own, left running after a
     // perfectly good reply. Nothing holds the pipes, so the call closes normally.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const helper = spawn(process.execPath, helperArgv(rest[0]), { stdio: "ignore" });
     writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered, and left a helper behind" }] });
@@ -198,12 +203,12 @@ switch (mode) {
   }
   case "grandchild": {
     // A descendant in the same process group, which a timeout must take down too.
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const child = spawn(process.execPath, helperArgv(rest[0]), { stdio: "ignore" });
     writePid(rest[0], child.pid);
     await sleep(60_000);
     break;
   }
   default:
     process.stderr.write(`unknown mode ${mode}`);
-    process.exit(2);
+    process.exitCode = 2;
 }

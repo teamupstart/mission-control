@@ -24,7 +24,8 @@ import {
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
-import { SHAPING_CONFIG_DEFAULTS, shapingConfigView } from "../src/shared/shaping.ts";
+import { SHAPING_CONFIG_DEFAULTS } from "../src/shared/shaping.ts";
+import { daemonShapingView } from "../src/server/shaping/revisions.ts";
 import type { ShapingSettings } from "../src/web/useShapingSettings.ts";
 
 /**
@@ -37,13 +38,14 @@ const FLAGS_OFF = { enableAll: false, overrides: {} };
 const SETTINGS_CONTROLS = settingsControls(FLAGS_ON);
 const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
 const SHAPING: ShapingSettings = {
-  config: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
-  confirmed: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
+  config: daemonShapingView(SHAPING_CONFIG_DEFAULTS),
+  confirmed: daemonShapingView(SHAPING_CONFIG_DEFAULTS),
   pending: null,
   pendingKey: null,
-  errors: {},
+  errors: {}, earlier: {}, outcomeArrivals: {}, outcomeSubjects: {}, locked: new Set<string>(), awaitingRevision: new Set<string>(),
   ready: true,
-  set: async () => true,
+  set: async () => "saved" as const,
+  dismiss: () => {},
 };
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";

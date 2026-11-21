@@ -150,8 +150,7 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
   // An intent bound to a revision applies only to that definition. Once another window has
   // replaced it, drawing the click by id would show the replacement switched or removed, which the
   // daemon will refuse: the view is drawn as stored while the request's answer is awaited.
-  if ((intent.kind === "enable" || intent.kind === "remove") && intent.expect !== undefined
-    && shapingViewRevision(view, intent.id) !== intent.expect) return view;
+  if (shapingIntentSuperseded(view, intent)) return view;
   const overrides = { ...view.overrides };
   switch (intent.kind) {
     case "upsert": {
@@ -202,6 +201,17 @@ function withoutRevision(view: ShapingConfigView, id: string): Partial<Pick<Shap
   if (!shapingViewHasRevisions(view)) return {};
   const { [id]: _dropped, ...revisions } = view.revisions;
   return { revisions: revisions as Record<string, string> };
+}
+
+/**
+ * Whether `view` shows that `intent` can no longer apply: it is bound to a revision, and the
+ * definition it was sent for has since been replaced or removed. The daemon will refuse it, and
+ * nothing it does can reach what is stored now, so the panel need not wait on it to take the next
+ * edit; its answer is still awaited, and shown when it comes.
+ */
+export function shapingIntentSuperseded(view: ShapingConfigView, intent: ShapingIntent): boolean {
+  return (intent.kind === "enable" || intent.kind === "remove") && intent.expect !== undefined
+    && shapingViewRevision(view, intent.id) !== intent.expect;
 }
 
 export function sameShapingView(a: ShapingConfigView, b: ShapingConfigView): boolean {

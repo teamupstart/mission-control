@@ -29,6 +29,7 @@ import {
   shaperReach,
   shaperReceives,
   shapingIntentReflected,
+  shapingIntentSuperseded,
   shapingList,
   shapingRefusalText,
 } from "../src/web/lib/shaping-settings.ts";
@@ -596,4 +597,19 @@ test("a switch or removal bound to a replaced definition is not drawn on its rep
     assert.notEqual(previewShapingIntent(sent, intent), sent, `${intent.kind}: the definition it was sent for is drawn changed`);
   }
   assert.equal(previewShapingIntent(sent, { kind: "enable", id: "a", enabled: true, expect }).overrides.a, true);
+});
+
+test("a revision-bound switch or removal is superseded once its definition is replaced or gone", () => {
+  const sent = view({ shapers: [gatherer("a")] });
+  const expect = sent.revisions.a!;
+  const replaced = view({ shapers: [gatherer("a", { label: "Replacement" })] });
+  const gone = view({ shapers: [] });
+  for (const intent of [{ kind: "enable" as const, id: "a", enabled: true, expect }, { kind: "remove" as const, id: "a", expect }]) {
+    assert.equal(shapingIntentSuperseded(sent, intent), false, `${intent.kind}: still the definition it was sent for`);
+    assert.equal(shapingIntentSuperseded(replaced, intent), true, `${intent.kind}: replaced`);
+    assert.equal(shapingIntentSuperseded(gone, intent), true, `${intent.kind}: removed`);
+  }
+  // An intent bound to no revision is never superseded; the other kinds carry none.
+  assert.equal(shapingIntentSuperseded(replaced, { kind: "enable", id: "a", enabled: true }), false);
+  assert.equal(shapingIntentSuperseded(replaced, { kind: "move", id: "a", after: null }), false);
 });

@@ -4,6 +4,7 @@ import { api } from "./lib/api.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
+  shapingIntentSuperseded,
   shapingRefusalText,
   shapingUnconfirmedText,
   type ShapingWriteOutcome,
@@ -32,6 +33,8 @@ export function useShapingSettings(
     key: string;
     accepted: boolean;
     observed: boolean;
+    /** A frame showed the definition it was sent for replaced: nothing waits on it any more. */
+    superseded: boolean;
   } | null>(null);
   // Every refusal still worth showing, per control, each with the number of the request it
   // answers. The newest is the control's error; any older ones are shown apart from it, so a
@@ -56,6 +59,10 @@ export function useShapingSettings(
     if (shapingIntentReflected(config, request)) {
       observed.current.add(request);
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
+    } else if (shapingIntentSuperseded(config, request)) {
+      // No receipt: the daemon will refuse it. But it can no longer affect what is stored, so the
+      // panel is released for the next edit rather than held until the answer or the timeout.
+      setPending((current) => current?.intent === request ? { ...current, superseded: true } : current);
     }
   }), [subscribe]);
   const optimistic = pending && confirmed ? previewShapingIntent(confirmed, pending.intent) : null;
@@ -66,7 +73,7 @@ export function useShapingSettings(
     // A frame showing the write is the confirmation: the panel takes the next edit at once rather
     // than waiting on an HTTP answer that may be slow. Either order is valid, and once observed,
     // later peer writes remain authoritative.
-    if (!live || pending.observed || (pending.accepted && reflected)) {
+    if (!live || pending.observed || pending.superseded || (pending.accepted && reflected)) {
       writing.current = null;
       setPending(null);
     }
@@ -97,7 +104,7 @@ export function useShapingSettings(
     // Acting on a control again dismisses what it showed. Every other control keeps its own
     // refusals, and one that arrives late for an earlier write here is still shown, labelled.
     setRefusals((current) => withRefusals(current, key, []));
-    setPending({ intent: request, key, accepted: false, observed: false });
+    setPending({ intent: request, key, accepted: false, observed: false, superseded: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);

@@ -366,7 +366,9 @@ unconfirmed write that a stream update showed stored says so in the past tense, 
 current state to the list. A stream update counts as a switch's outcome only for the definition
 the switch was sent for, so a peer replacing the shaper and switching the replacement the same way
 is never taken for it, nor drawn on it: while a switch or removal waits for its answer, a
-replacement written meanwhile is shown as stored. An outcome shown above the list, for a shaper no longer listed or for the
+replacement written meanwhile is shown as stored. Such a frame also releases the panel at once for the next
+edit, since the old request can no longer reach what is stored; its answer is still shown when it
+arrives. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears

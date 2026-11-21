@@ -1742,3 +1742,39 @@ test("a pending switch is not drawn on a replacement another window left off", a
   expect((await shapingConfig(daemon)).overrides["drawn-notes"]).toBe(false);
   await page.unroute("**/api/shaping");
 });
+
+test("a switch superseded by another window's replacement releases the panel, and its answer still shows", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("held-switch", "Held switch") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("other-switch", "Other switch") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Held switch")).toHaveAccessibleName("Held switch: off");
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await pill(page, "Held switch").click();
+  await reached.opened;
+  // While it waits, the panel takes no other write.
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeDisabled();
+  await expect(pill(page, "Other switch")).toBeDisabled();
+  // Another window replaces that shaper: the held click can no longer reach what is stored.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("held-switch", "Held switch", { timeoutMs: 20_000 }) });
+  // The panel is released at once, well inside the write's 15 s timeout.
+  await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled({ timeout: 3_000 });
+  await expect(pill(page, "Other switch")).toBeEnabled({ timeout: 3_000 });
+  await pill(page, "Other switch").click();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["other-switch"]).toBe(true);
+  // The held request's answer is still awaited and shown under its row.
+  goes.open();
+  expect((await held!.response())?.status()).toBe(409);
+  await expect(row(page, "Held switch").getByRole("alert")).toContainText("changed in another window");
+  await expect(pill(page, "Held switch")).toHaveAccessibleName("Held switch: off");
+  await page.unroute("**/api/shaping");
+});

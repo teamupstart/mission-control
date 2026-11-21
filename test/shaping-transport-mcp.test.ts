@@ -422,6 +422,36 @@ test("a failed response labelled as an event stream is capped as a whole body, a
   } finally { await raw.close(); }
 });
 
+test("a malformed reply to one call fails that call only, never another call on the connection", async () => {
+  for (const spelling of ["json", "stream"] as const) {
+    // Whichever call arrives second is answered at once with a reply that is not JSON; the first
+    // is answered correctly a little later, while the malformed one has already been read.
+    const raw = await startRawMcpServer((res, id, index) => {
+      if (index === 0) {
+        setTimeout(() => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT })), 400);
+        return;
+      }
+      if (spelling === "json") res.writeHead(200, { "content-type": "application/json" }).end("{not json");
+      else res.writeHead(200, { "content-type": "text/event-stream" }).end("event: message\ndata: {not json\n\n");
+    });
+    try {
+      const run = ctx();
+      const replies = await Promise.all([
+        callMcp(request(false), shaper({ type: "http", url: raw.url }), run),
+        new Promise((done) => setTimeout(done, 100)).then(() => callMcp(request(false), shaper({ type: "http", url: raw.url }), run)),
+      ]);
+      const failed = replies.filter((reply) => reply.kind === "failed");
+      assert.equal(failed.length, 1, `${spelling}: ${JSON.stringify(replies)}`);
+      assert.equal((failed[0] as { reason: string }).reason, "The MCP server sent a reply that is not JSON.");
+      assert.deepEqual(data(replies.find((reply) => reply.kind !== "failed")!), { guidance: [{ id: "raw", body: "raw reply" }] });
+      // The connection survived it: a third call uses it.
+      const third = await callMcp(request(false), shaper({ type: "http", url: raw.url }), run);
+      assert.equal(third.kind === "failed" && third.reason === "The MCP server closed the connection.", false, JSON.stringify(third));
+      assert.equal(raw.initializes(), 1, `${spelling}: one connection for every call`);
+    } finally { await raw.close(); }
+  }
+});
+
 test("a response stream that ends before its reply fails that call at once, and the next call uses the same connection", async () => {
   const raw = await startRawMcpServer((res, id, index) => {
     if (index === 0) {
@@ -740,6 +770,17 @@ test("a stderr cut inside a JSON-escaped spelling of a passed value keeps no fra
   const reason = (reply as { reason: string }).reason;
   assert.equal(reason.includes("\\u00"), false, reason.slice(0, 300));
   assert.match(reason, /^The MCP server exited/);
+});
+
+test("a passed value inside a spelling of another passed value does not break that spelling up", async () => {
+  const inner = `${KEY_ENV}_INNER`;
+  const reply = await withEnv({ [KEY_ENV]: "tokenAAAA9 zq7xBBBBBB", [inner]: "9   zq" }, () => callMcp(request(), shaper({ type: "stdio", mode: "spaced-stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "spaced-stderr-exit", KEY_ENV, "3"], env: [KEY_ENV, inner] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  const reason = (reply as { reason: string }).reason;
+  for (const piece of ["AAAA", "BBBB", "7x"]) assert.equal(reason.includes(piece), false, reason);
+  assert.equal(reply.redacted, true);
 });
 
 test("a passed value whose multibyte character stderr splits across chunks is still redacted", async () => {

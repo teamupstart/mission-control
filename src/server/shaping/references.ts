@@ -380,6 +380,11 @@ function markerFor(values: readonly ResolvedValue[]): Marker {
     : { render: (labels) => `[${labels.join(", ")} redacted]`, name: (value) => value.name };
 }
 
+/** How a span covering these values' labels is written: `[NAME redacted]`, or neutral when a name holds a value. */
+export function resolvedMarker(values: readonly ResolvedValue[]): (labels: readonly string[]) => string {
+  return markerFor(values).render;
+}
+
 /**
  * Every occurrence of every resolved value, found on the original text and merged where values
  * overlap, so replacing one can never hide part of another from a later pass. The result is

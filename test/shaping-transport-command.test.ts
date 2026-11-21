@@ -186,6 +186,31 @@ test("a command's stderr cut inside a JSON-escaped spelling of a named value kee
   }
 });
 
+test("an inherited value inside a spelling of a named value does not break that spelling up", async () => {
+  const saved = { spaced: process.env.SHAPER_FIXTURE_SPACED, inner: process.env.SHAPER_FIXTURE_INNER };
+  // The named value printed with its space widened to three, and an inherited value that is
+  // exactly the middle of that spelling: removed first, it would leave both ends behind.
+  process.env.SHAPER_FIXTURE_SPACED = "tokenAAAA9 zq7xBBBBBB";
+  process.env.SHAPER_FIXTURE_INNER = "9   zq";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-spaced", "SHAPER_FIXTURE_SPACED", "3"], { env: ["SHAPER_FIXTURE_SPACED"] }), ctx());
+    assert.equal(reply.kind, "failed");
+    const reason = (reply as { reason: string }).reason;
+    for (const piece of ["AAAA", "BBBB", "7x"]) assert.equal(reason.includes(piece), false, reason);
+    assert.equal(reason, "The command exited with code 4: [redacted]");
+    assert.equal(reply.redacted, true);
+    // The reply's redactor finds them on the original text the same way.
+    const data = await callCommand(request("select"), shaper([FIXTURE, "ok"], { env: ["SHAPER_FIXTURE_SPACED"], stage: "select" }), ctx());
+    const redact = (data as { redact?: (text: string) => string }).redact;
+    assert.equal(redact?.("see tokenAAAA9   zq7xBBBBBB here"), "see [redacted] here");
+  } finally {
+    for (const [name, value] of [["SHAPER_FIXTURE_SPACED", saved.spaced], ["SHAPER_FIXTURE_INNER", saved.inner]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("a command's stderr cut inside a widened spelling of a named value is not quoted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SPACED;
   process.env.SHAPER_FIXTURE_SPACED = "Jane Doe";

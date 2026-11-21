@@ -439,7 +439,10 @@ six times the longest value the child received, that value's length spelled enti
 `\u` escapes. Once the front is cut, the margin is dropped in the original text's positions,
 with every spelling of each named value already found there: a value cut at the front, as
 written or escaped, falls inside it, and a spelling that runs across it is removed whole, so
-neither leaves a fragment in a reason.
+neither leaves a fragment in a reason. Every kind of match, an inherited value, a named value as
+written and any spelling of one, is found on the original text in one pass, and overlapping
+matches merge before anything is replaced: removing an inherited value never breaks up a
+spelling of a named value that runs across it.
 
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
 started outside its process group cannot keep them open after the group is killed. It also

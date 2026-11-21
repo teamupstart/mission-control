@@ -8,8 +8,8 @@ import { trimUrlText } from "@shared/shaping.ts";
 import { dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
-import { redactSpans, type RedactionSpan } from "../redaction.ts";
-import { holdsResolvedValue, NEVER_PASSED_ENV_NAMES, redactResolved, scrubResolved, variantSpans, type ResolvedValue } from "../references.ts";
+import { redactSpans } from "../redaction.ts";
+import { holdsResolvedValue, NEVER_PASSED_ENV_NAMES, resolvedMarker, scrubResolved, variantSpans, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, withCarriedEnv } from "./carriers.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
@@ -182,28 +182,51 @@ export function escapedMargin(received: ReceivedValues): number {
  * combined extent and no part of either survives. Each value is found in linear time, however
  * many matches it has: up to 256 KiB of shaper output never stalls the event loop.
  */
-export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0, spans: readonly RedactionSpan[] = []): string {
-  return redactSpans(text, received.values.map((value) => ({
+export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
+  return redactSpans(text, receivedTargets(received), () => "[redacted]", dropBefore);
+}
+
+/** Every value a child received as a redaction target, unlabelled: each is written `[redacted]`. */
+function receivedTargets(received: ReceivedValues) {
+  return received.values.map((value) => ({
     value, wholeToken: value.length < SHORT_VALUE_CHARS && !received.named.has(value), label: "",
-  })), () => "[redacted]", dropBefore, Number.POSITIVE_INFINITY, spans);
+  }));
 }
 
 /**
- * A child's diagnostic output scrubbed for a record: every value it received, then each named
- * value in any spelling (JSON escapes and spacing variants included), then collapsed and scrubbed
- * again, because collapsing whitespace can turn a spacing variant into the value itself.
+ * `text` with every value the child received, and each named value in any spelling (as written,
+ * JSON-escaped, or with its whitespace changed), removed in one pass. Every match of every kind is
+ * found on the original text and overlapping ones merge before anything is replaced: replacing an
+ * inherited value first could break up a spelling of a named one that runs across it, and leave
+ * the rest of that spelling to no later search. A span covering a received value is written
+ * `[redacted]`, as `redactReceived` writes it; one covering only a spelling of a named value
+ * names it, as `redactResolved` does.
  *
- * `dropBefore` is the margin of a buffer whose front was cut. It is dropped in the original text's
- * positions, with every spelling of every named value already found there: a spelling that runs
- * across the dropped margin is removed whole, never left behind as a tail no later search
- * recognises. That needs `escapedMargin`, wide enough to hold any spelling cut at the very front.
+ * `dropBefore` is the margin of a buffer whose front was cut, dropped in the original text's
+ * positions: a spelling that runs across it is removed whole. That needs `escapedMargin`, wide
+ * enough to hold any spelling cut at the very front.
+ */
+export function redactChildText(text: string, received: ReceivedValues, named: readonly ResolvedValue[], dropBefore = 0): string {
+  const values = named.filter(({ value }) => value !== "");
+  if (values.length === 0) return redactReceived(text, received, dropBefore);
+  const marker = resolvedMarker(values);
+  return redactSpans(
+    text,
+    [...receivedTargets(received), ...values.map(({ name, value }) => ({ value, wholeToken: false, label: name }))],
+    (labels) => (labels.includes("") ? "[redacted]" : marker(labels)),
+    dropBefore,
+    Number.POSITIVE_INFINITY,
+    variantSpans(text, values),
+  );
+}
+
+/**
+ * A child's diagnostic output scrubbed for a record (`redactChildText`), then collapsed and
+ * scrubbed again, because collapsing whitespace can turn a spacing variant into the value itself.
  */
 export function scrubChildOutput(text: string, received: ReceivedValues, named: readonly ResolvedValue[], dropBefore = 0): string {
-  const cut = dropBefore > 0
-    ? redactReceived(text, received, dropBefore, variantSpans(text, named.filter(({ value }) => value !== "")))
-    : redactReceived(text, received);
-  const scrubbed = redactResolved(cut, named);
-  return redactResolved(redactReceived(scrubbed.replace(/\s+/g, " "), received), named).trim();
+  const scrubbed = redactChildText(text, received, named, dropBefore);
+  return redactChildText(scrubbed.replace(/\s+/g, " "), received, named).trim();
 }
 
 /**
@@ -460,7 +483,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           // A named value in any spelling, as its content was scrubbed, so the engine's reasons agree.
-          redact: (text, options) => redactResolved(redactReceived(text, options?.identifier ? identifierValues : received), namedValues),
+          redact: (text, options) => redactChildText(text, options?.identifier ? identifierValues : received, namedValues),
           holdsNamed: (text) => holdsResolvedValue(text, namedValues),
         });
       }

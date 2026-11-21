@@ -460,6 +460,10 @@ the same rules for its command and environment as a [`command` shaper](#writing-
 - **A reply is owed to every request.** Over streamable HTTP, `202 Accepted` with no body is
   accepted only for a notification. An `initialize` or `tools/call` answered that way is `failed`
   at once with fixed text, rather than waiting out its budget for a reply that cannot come.
+- **A malformed reply fails its own call.** A reply that is not JSON, or not a JSON-RPC message,
+  on one call's response (its body, or an event of its stream) fails that call with fixed text,
+  and other calls on the connection go on. One on the handshake, or on the server's shared
+  stream, fails the connection, and a later call of the run connects again.
 
 ### An `http` shaper
 

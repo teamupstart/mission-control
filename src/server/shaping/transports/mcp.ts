@@ -171,7 +171,7 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
  * client sends the request from within it, so the `fetch` that carries it knows which call to
  * tell when its response stream ends early, with nothing added to what the server receives.
  */
-const pendingCall = new AsyncLocalStorage<{ interrupted(): void }>();
+const pendingCall = new AsyncLocalStorage<{ fail(reason: string): void }>();
 
 /**
  * A request, `initialize` or `tools/call`, answered `202 Accepted`. That status carries no body and
@@ -265,7 +265,7 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
     const ended = () => setTimeout(() => {
       if (replies.settle(id) || resumable) return;
       if (method === "initialize") handshakeInterrupted();
-      else call?.interrupted();
+      else call?.fail(INTERRUPTED_REASON);
     }, REPLY_SETTLE_MS);
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -505,13 +505,18 @@ async function openHttp(
   });
   transport.onclose = () => state.fail(CLOSED_REASON);
   // A malformed event on a response stream reaches only `onerror`: the call it carried would wait
-  // out its budget. The connection fails with the fixed reason, and the next call reconnects.
+  // out its budget. A message on one call's own response, its JSON body or an event of its stream
+  // (resumed or not), is read in that call's context, so that call alone fails with the fixed
+  // reason and the others on the connection go on. One on the handshake or on the shared stream
+  // belongs to no call: the connection fails, and the next call reconnects.
   transport.onerror = (error) => {
     // A request answered 202 rejects that request itself, which says so in its own place: the
     // handshake or the call. The connection is not failed over it here.
     if (error instanceof AcceptedRequestError) return;
     const malformed = malformedReason(error);
     if (!malformed) return;
+    const call = pendingCall.getStore();
+    if (call) { call.fail(malformed); return; }
     state.fail(malformed);
     void client.close().catch(() => {});
   };
@@ -622,15 +627,21 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   const resolved = mergeResolved(http?.resolved ?? [], connection.resolved);
   const meta = carriedMeta(ctx.trace, ctx.workUnitId);
   let result: Awaited<ReturnType<Client["callTool"]>>;
-  // Settled when this call's own response stream ends before its reply; cancels the request too.
+  // Settled when this call's own response stream ends before its reply, or carries a malformed
+  // message; cancels the request too. The first reason stands.
   const stop = new AbortController();
   let interrupt!: (error: Error) => void;
   const interrupted = new Promise<never>((_resolve, reject) => { interrupt = reject; });
   interrupted.catch(() => {});
-  const marker = new Error(INTERRUPTED_REASON);
+  const fail = (reason: string) => {
+    if (stop.signal.aborted) return;
+    const error = new Error(reason);
+    interrupt(error);
+    stop.abort(error);
+  };
   try {
     result = await Promise.race([
-      pendingCall.run({ interrupted: () => { interrupt(marker); stop.abort(marker); } }, () => connection.client.callTool(
+      pendingCall.run({ fail }, () => connection.client.callTool(
         { name: tool, arguments: mcpToolArguments(request, contextDelivery), ...(meta ? { _meta: meta } : {}) },
         undefined,
         { signal: AbortSignal.any([signal, stop.signal]), timeout: Math.max(1, ctx.timeoutMs) },
@@ -640,7 +651,7 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     ]);
   } catch (error) {
     if (connection.failure) return failure("failed", connection.failure, resolved, connection.failureRedacted);
-    if (stop.signal.aborted && !signal.aborted) return failure("failed", INTERRUPTED_REASON, resolved);
+    if (stop.signal.aborted && !signal.aborted) return failure("failed", (stop.signal.reason as Error).message, resolved);
     if (signal.aborted || (error as { code?: unknown } | null)?.code === -32001) return timedOut();
     const malformed = malformedReason(error);
     if (malformed) return { kind: "failed", reason: malformed };

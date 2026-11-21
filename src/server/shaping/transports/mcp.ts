@@ -35,11 +35,23 @@ import type { ShaperOf, ShapingTransport, TransportContext } from "./types.ts";
 // ---------------------------------------------------------------------------------------------
 // What the tool is called with
 
-/** One value on one line of the folded block: a line break in it would read as another line. */
+/** The words the block writes for a value that is absent, which a present value must not read as. */
+const ABSENT_WORDS = new Set(["none", "undeclared"]);
+
+/**
+ * One present value on one line of the folded block, so that it reads back as exactly itself. A
+ * plain value is written as it is. One that could be mistaken for something else is written as a
+ * JSON string: one that is an absent-value word (a branch named `none`), one holding a backslash,
+ * a quote or a line break (so `Two` and a newline and `lines` never reads the same as a literal
+ * backslash and `n`), and one holding the `,` `(` `)` that separate fields on its line. Line and
+ * paragraph separators are escaped too, so no value can start a line of its own.
+ */
 function inline(value: string): string {
-  return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+  const plain = !ABSENT_WORDS.has(value) && !/[\\"\r\n\u2028\u2029,()]/.test(value) && !/^\s|\s$/.test(value);
+  return plain ? value : JSON.stringify(value).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
+/** A value that may be absent: `none` when it is, always unquoted, and the value otherwise. */
 function orNone(value: string | null | undefined): string {
   return value ? inline(value) : "none";
 }
@@ -172,7 +184,7 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
  * client sends the request from within it, so the `fetch` that carries it knows which call to
  * tell when its response stream ends early, with nothing added to what the server receives.
  */
-const pendingCall = new AsyncLocalStorage<{ fail(reason: string): void }>();
+const pendingCall = new AsyncLocalStorage<{ fail(reason: string): void; requestId?: string | number }>();
 
 /**
  * A request, `initialize` or `tools/call`, answered `202 Accepted`. That status carries no body and
@@ -245,9 +257,21 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
       await response.body?.cancel().catch(() => {});
       throw new AcceptedRequestError();
     }
+    // The call's own request, so that a stream the SDK resumes for it later is watched for it too.
+    if (call && request?.method === "tools/call") call.requestId = request.id;
+    // A resumed stream: the GET the SDK sends with the last event id it saw, to resume a call's
+    // POST stream. It has no body naming its request, so the request is the call's, from its context.
+    let watched = request;
+    if (request === null && call?.requestId !== undefined && (init?.method ?? "GET").toUpperCase() === "GET"
+      && new Headers(init?.headers).has("last-event-id")) {
+      // A server that offers no stream to resume answers 405, which the SDK takes as nothing to
+      // wait for: the call's reply can no longer arrive, so the call fails now, not at its deadline.
+      if (response.status === 405) { call.fail(INTERRUPTED_REASON); return response; }
+      watched = { id: call.requestId, method: "tools/call" };
+    }
     const stream = response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("text/event-stream");
-    if (request === null || !stream || !response.body) return response;
-    const { id, method } = request;
+    if (watched === null || !stream || !response.body) return response;
+    const { id, method } = watched;
     const source = response.body.getReader();
     // A stream that carried an event id is resumable: the server may close it before replying
     // and the client resumes it from that id (MCP 2025-11-25), so its end is left to the client
@@ -510,9 +534,14 @@ async function openHttp(
     // A request answered 202 rejects that request itself, which says so in its own place: the
     // handshake or the call. The connection is not failed over it here.
     if (error instanceof AcceptedRequestError) return;
+    const call = pendingCall.getStore();
+    // The SDK gave up resuming a call's stream: its reply can no longer arrive.
+    if (call && error instanceof Error && error.message.startsWith("Maximum reconnection attempts")) {
+      call.fail(INTERRUPTED_REASON);
+      return;
+    }
     const malformed = malformedReason(error);
     if (!malformed) return;
-    const call = pendingCall.getStore();
     if (call) { call.fail(malformed); return; }
     state.fail(malformed);
     void client.close().catch(() => {});

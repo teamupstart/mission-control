@@ -552,7 +552,10 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   before its reply fails that call at once and leaves the shared connection, and its other
   calls, alone, unless the stream carried a non-empty event id: the server may close such a
   stream before replying, as MCP allows, and the client resumes it from that id, at most twice
-  and within the call's own budget. A shared connection's handshake is bounded by the longest
+  and within the call's own budget. A resumed stream is watched for that call too: one that ends
+  with neither the reply nor a new event id to resume from, a resume the server answers 405, and
+  the client giving up its attempts each fail the call at once rather than at its deadline. A
+  shared connection's handshake is bounded by the longest
   step, not by whichever call opened it, and each call waits on it only for its own budget.
 - **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
   `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is

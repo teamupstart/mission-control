@@ -134,7 +134,7 @@ test("the folded block states every field of the context except local paths, in 
     caller: { user: null, agent: null, conversation: null }, title: "Two\nlines",
   });
   assert.match(dry, /^- Task: none$/m);
-  assert.match(dry, /^- Title: Two\\nlines$/m, "a line break in a value cannot start a line of its own");
+  assert.match(dry, /^- Title: "Two\\nlines"$/m, "a line break in a value cannot start a line of its own");
   assert.match(dry, /^- Caller: undeclared \(agent none, conversation none\)$/m);
 });
 
@@ -472,6 +472,69 @@ test("a response stream that ends before its reply fails that call at once, and 
     assert.deepEqual(data(second), { guidance: [{ id: "raw", body: "raw reply" }] });
     assert.equal(raw.initializes(), 1, "one stream ending early does not break the shared session");
   } finally { await raw.close(); }
+});
+
+test("a present value never reads as an absent one, or as another value, in the folded block", () => {
+  const base = context(false);
+  const block = (patch: Partial<ShapingContext>, repo: Partial<ShapingContext["repositories"][number]> = {}) =>
+    foldedContextBlock({ ...base, ...patch, repositories: [{ ...base.repositories[0]!, ...repo }] });
+  // A branch named `none` is not a repository with no branch.
+  assert.notEqual(block({}, { branch: "none" }), block({}, { branch: null }));
+  assert.match(block({}, { branch: "none" }), /branch "none", base abc123/);
+  assert.match(block({}, { branch: null }), /branch none, base abc123/);
+  // A newline is not a backslash followed by `n`.
+  assert.notEqual(block({ title: "Two\nlines" }), block({ title: "Two\\nlines" }));
+  assert.match(block({ title: "Two\\nlines" }), /^- Title: "Two\\\\nlines"$/m);
+  // A value with a field separator cannot forge the next field.
+  assert.match(block({}, { branch: "x, base forged" }), /branch "x, base forged", base abc123/);
+  // An undeclared caller is not a caller named `undeclared`.
+  assert.notEqual(block({ caller: { ...base.caller, user: "undeclared" } }), block({ caller: { ...base.caller, user: null } }));
+  // Plain values are written exactly as before.
+  assert.match(block({}), /^- Title: Retry failed charges$/m);
+});
+
+/** A loopback MCP server whose tool replies on a resumable stream it closes, and whose resumed GET answers as `resume` says. */
+async function startResumable(resume: "empty" | "405") {
+  let pendingId: number | undefined;
+  const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      if (!req.headers["last-event-id"] || pendingId === undefined) { res.writeHead(405).end(); return; }
+      if (resume === "405") { res.writeHead(405).end(); return; }
+      // A stream that ends with neither the reply nor a new event id to resume from.
+      res.writeHead(200, { "content-type": "text/event-stream" }).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "resumable", version: "1.0.0" } },
+      }));
+      return;
+    }
+    pendingId = message.id;
+    res.writeHead(200, { "content-type": "text/event-stream" }).end("id: e1\ndata: \n\n");
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+test("a resumed stream that can no longer deliver the reply fails its call at once", async () => {
+  for (const resume of ["empty", "405"] as const) {
+    const server = await startResumable(resume);
+    try {
+      const started = Date.now();
+      const reply = await callMcp(request(false), shaper({ type: "http", url: server.url }), ctx({}, 20_000));
+      assert.deepEqual(reply, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." }, resume);
+      assert.ok(Date.now() - started < 8_000, `${resume}: answered after ${Date.now() - started} ms, not at the 20 s budget`);
+    } finally { await server.close(); }
+  }
 });
 
 test("a resumable response stream that closes before its reply is resumed, not failed", async () => {

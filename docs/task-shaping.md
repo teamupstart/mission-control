@@ -440,8 +440,12 @@ the same rules for its command and environment as a [`command` shaper](#writing-
     - Repositories: repo-01 billing-api (primary, branch task/retry, base abc123), repo-02 ledger (additional, branch task/retry, base def456)
     ```
 
-    An absent value reads `none`, and an undeclared caller `undeclared`. A line break inside a
-    value is written as `\n`, so a value can never start a line of its own.
+    An absent value reads `none`, and an undeclared caller `undeclared`. A present value is
+    written as it is, unless it could be read as something else: one that is `none` or
+    `undeclared` itself, holds a backslash, a quote, a line break, or a `,` `(` or `)`, or starts or ends with
+    whitespace, is
+    written as a JSON string, such as `branch "none"` or `Title: "Two\nlines"`. So every value
+    reads back as exactly itself, and none can start a line of its own.
   - `argument` calls it with four, `{ task, repo, version?, context }`: the prompt alone, and
     the request's whole `context` object. Use it for a tool that declares a `context` argument.
 - **Repositories by slot.** Each attached repository has a slot, `repo-01` for the primary and

@@ -741,18 +741,29 @@ test("pinned free residents above an Awaiting section sit under a Free rule of t
   );
 });
 
-test("a paused idle session is not counted as free beside a wait, and is not labelled held", () => {
+test("a paused idle session is counted as free by the head and the Free rule alike, as before waits existed", () => {
+  // The head's free count and the Free rule over the cards count the same sessions, so a paused
+  // agent sitting under the Free rule is in both, and the held split counts exactly as it did
+  // before this feature, with or without a wait in the column.
   const pause = { reason: "operator", phase: "frozen", since: AT - 60_000, interrupted: null, stopped: false } as unknown as Session["pause"];
   const fleet = [awaiting("bravo", 60_000), plain("charlie", { ...IDLE, pause }), plain("delta", IDLE)];
+  const freeRuleTotal = (g: FleetToneGroup) =>
+    fleetRows(g).reduce((n, r) => n + (r.kind === "section" && r.section === "free" ? r.count : 0), 0);
   const idle = orderSessions(
     fleet, new Set(), false, undefined, undefined, undefined, undefined, awaitingSessionIds(fleet, true, AT),
   ).groups.find((g) => g.tone === "idle")!;
-  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 1, held: null });
-  // With something held, the same: the paused one is neither free nor held.
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 1, free: 2, held: null });
+  assert.equal(freeRuleTotal(idle), 2, "the Free rule and the head disagree about a paused agent");
   const held = orderSessions(
     fleet, new Set(["plain-delta"]), false, undefined, undefined, undefined, undefined, awaitingSessionIds(fleet, true, AT),
   ).groups.find((g) => g.tone === "idle")!;
-  assert.deepEqual(idleHeadCounts(held), { awaiting: 1, free: 0, held: 1 });
+  assert.deepEqual(idleHeadCounts(held), { awaiting: 1, free: 1, held: 1 });
+  assert.equal(freeRuleTotal(held), 1);
+  // No wait at all (the preview off): a held column with a paused agent counts it free as it always did.
+  const plainHeld = orderSessions([plain("charlie", { ...IDLE, pause }), plain("delta", IDLE)], new Set(["plain-delta"]), false)
+    .groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(idleHeadCounts(plainHeld), { awaiting: 0, free: 1, held: 1 });
+  assert.equal(freeRuleTotal(plainHeld), 1);
 });
 
 test("an overdue wait leaves the section, and the preview off draws no section at all", () => {

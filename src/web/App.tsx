@@ -3942,8 +3942,14 @@ export function App(): React.JSX.Element {
           const band = target?.closest(".awaiting-band") ?? null;
           const onBody = Boolean(target?.matches(".detail-body"));
           const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          // A collapsed Details keeps its Markdown in the DOM, hidden: a link or button in it cannot
+          // take focus, and stepping onto one would leave the keyboard stuck on the summary. Only
+          // controls a person can see are on the path, so a closed Details offers its summary alone.
           const controls = scope
-            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")]
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")].filter((el) => {
+                const closed = el.closest("details:not([open])");
+                return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+              })
             : [];
           if (controls.length > 0) {
             const at = band ? controls.indexOf(target as HTMLElement) : -1;

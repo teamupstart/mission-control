@@ -110,12 +110,6 @@ export interface FleetToneGroup extends ToneGroup {
    * pin decides where a card sits, not whether it is free to take work. Zero outside Idle.
    */
   awaitingCount: number;
-  /**
-   * How many sessions above the held split are paused and not awaiting: idle, but held back
-   * from automatic assignment, so the head does not count them as free. Never labelled held,
-   * which is a workflow run's claim. Zero outside Idle.
-   */
-  pausedCount: number;
 }
 
 /**
@@ -131,15 +125,15 @@ export function idleHeadCounts(group: FleetToneGroup): {
 } {
   if (group.heldFrom === null) {
     // Nothing held, but some awaiting: the total beside "N awaiting" would not say how many
-    // can take work, so the rest are counted as free, less any paused.
+    // can take work, so the rest are counted as free, exactly as the Free rules below count them.
     return group.awaitingCount > 0
-      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount - group.pausedCount, held: null }
+      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount, held: null }
       : { awaiting: 0, free: null, held: null };
   }
   // Pinned and awaiting sessions all sit before `heldFrom`, never in the held partition.
   return {
     awaiting: group.awaitingCount,
-    free: group.heldFrom - group.awaitingCount - group.pausedCount,
+    free: group.heldFrom - group.awaitingCount,
     held: group.sessions.length - group.heldFrom,
   };
 }
@@ -533,13 +527,9 @@ function clusterGroup(
       sessions.push(...run.sessions);
     }
   }
-  // Paused sessions above the held split that are not awaiting: idle, but not free to take work.
-  const pausedCount = group.tone === "idle"
-    ? (heldFrom === null ? sessions : sessions.slice(0, heldFrom)).filter((s) => s.pause && !awaiting.has(s.id)).length
-    : 0;
   return {
     ...group, sessions, clusters, repos, heldFrom, awaiting: awaitingSpan,
-    awaitingCount: awaitingPart.length + pinnedAwaiting, pausedCount,
+    awaitingCount: awaitingPart.length + pinnedAwaiting,
   };
 }
 

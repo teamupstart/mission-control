@@ -13,7 +13,7 @@ const WAIT = {
   what: "CI checks on PR #1612",
   wakeSource: "command",
   referenceUrl: "https://github.com/teamupstart/mission-control/pull/1612/checks",
-  details: "Started `gh pr checks 1612 --watch` in the background.",
+  details: "Started `gh pr checks 1612 --watch` in the background. [Run log](https://github.com/teamupstart/mission-control/actions)",
 };
 
 async function setFlag(daemon: DaemonHandle, enabled: boolean): Promise<void> {
@@ -116,6 +116,23 @@ test("a declared wait draws a deadline track under Idle's Awaiting rule, survive
   await expect(band.getByRole("link", { name: "Open ↗" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(page.locator(".cdetail .detail-body")).toBeFocused();
+  // With Details closed, the link inside it is hidden and off the path: Tab goes Open, Clear,
+  // Details, then on to the tab strip, never stuck on the summary.
+  const summary = band.getByText("Details", { exact: true });
+  await summary.click();
+  await expect(band.getByRole("link", { name: "Run log" })).toBeHidden();
+  await page.locator(".cdetail .detail-body").focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(summary).toBeFocused();
+  // The next Tab steps the reader on to the tab strip's next tab, leaving the Conversation and its
+  // band behind. Stuck on the hidden link, focus would stay on the summary and the band would stay.
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("region", { name: "Session awaiting" })).toHaveCount(0);
+  await page.getByRole("tab", { name: /^Conversation/ }).click();
+  await expect(page.getByRole("region", { name: "Session awaiting" })).toBeVisible();
+  await page.locator(".cdetail .detail-body").focus();
   await page.keyboard.press("Escape");
 
   // A daemon restart reloads the wait for the rediscovered session.

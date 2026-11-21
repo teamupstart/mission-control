@@ -1220,11 +1220,11 @@ available:
   due first, after pinned residents and before free and held agents. The section keeps that
   order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
   (**1 awaiting**) and counts the rest as free (**2 free**) rather than drawing the column total,
-  whether or not a workflow holds any, in the **Console** rail's head as well. A paused agent is
-  not counted as free, and not as held either. A pinned resident that is waiting keeps its pinned
-  place, ahead of the other pinned residents and above the Free rule, and is counted as awaiting,
-  never as free. In the Conversation tab, Tab from the conversation reaches the band's **Open**
-  and **Clear** before the tab strip. Its card draws a deadline track: what it waits
+  whether or not a workflow holds any, in the **Console** rail's head as well. A pinned resident
+  that is waiting keeps its pinned place, ahead of the other pinned residents and above the Free
+  rule, and is counted as awaiting, never as free. In the Conversation tab, Tab from the
+  conversation reaches the band's **Open**, **Clear** and **Details** before the tab strip; a link
+  inside a closed Details is not on that path. Its card draws a deadline track: what it waits
   for, the due time, and a bar from when it declared the wait to when it is due. Once the
   deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
   never moves to **needs you**. The **Console** rail draws the same rule and a short track beside

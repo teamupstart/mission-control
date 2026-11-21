@@ -1795,3 +1795,42 @@ test("a delayed move keeps its stage's moves locked, so another row's move never
   await expect(gatherRows(page)).toHaveText(["First row", "Second row"]);
   await page.unroute("**/api/shaping");
 });
+
+test("a held move never places the shaper again once it is reimported into another stage", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("gather-x", "Gather X") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("moved-y", "Moved Y") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("select-s", "Select S", { stage: "select" }) });
+  await putShaping(daemon, { kind: "reorder", order: ["gather-x", "moved-y", "select-s"] });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(gatherRows(page)).toHaveText(["Gather X", "Moved Y"]);
+  const selectRows = panel(page).getByRole("group", { name: "Select" }).locator(".shaping-row strong");
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  // Moving it to the top of Gather is held before the daemon.
+  await page.getByRole("button", { name: "Move Moved Y up" }).click();
+  await reached.opened;
+  // Another window imports it again into Select, where it already sorts first: the panel is freed.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("moved-y", "Moved Y", { stage: "select" }) });
+  await expect(selectRows).toHaveText(["Moved Y", "Select S"]);
+  await expect(page.getByRole("button", { name: "Move Select S up" })).toBeEnabled({ timeout: 3_000 });
+  // The operator moves another Select row to the top.
+  await page.getByRole("button", { name: "Move Select S up" }).click();
+  await expect(selectRows).toHaveText(["Select S", "Moved Y"]);
+  // The held move names a definition that is gone, so it is refused and places nothing.
+  goes.open();
+  expect((await held!.response())?.status()).toBe(409);
+  await expect(selectRows).toHaveText(["Select S", "Moved Y"]);
+  const stored = (await shapingConfig(daemon)).order.filter((id) => id === "select-s" || id === "moved-y");
+  expect(stored).toEqual(["select-s", "moved-y"]);
+  await expect(row(page, "Moved Y").getByRole("alert")).toContainText("changed in another window");
+  await page.unroute("**/api/shaping");
+});

@@ -138,7 +138,9 @@ export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1):
   const to = at + offset;
   if (to < 0 || to >= rows.length) return null;
   const others = rows.filter((row) => row !== id);
-  return { kind: "move", id, after: to === 0 ? null : others[to - 1]! };
+  // Bound to the definition shown, like a switch: a replacement written meanwhile is not moved.
+  const expect = shapingViewRevision(view, id);
+  return { kind: "move", id, after: to === 0 ? null : others[to - 1]!, ...(expect === null ? {} : { expect }) };
 }
 
 /**
@@ -210,7 +212,7 @@ function withoutRevision(view: ShapingConfigView, id: string): Partial<Pick<Shap
  * edit; its answer is still awaited, and shown when it comes.
  */
 export function shapingIntentSuperseded(view: ShapingConfigView, intent: ShapingIntent): boolean {
-  return (intent.kind === "enable" || intent.kind === "remove") && intent.expect !== undefined
+  return (intent.kind === "enable" || intent.kind === "remove" || intent.kind === "move") && intent.expect !== undefined
     && shapingViewRevision(view, intent.id) !== intent.expect;
 }
 
@@ -260,7 +262,9 @@ export function shapingIntentReflected(view: ShapingConfigView, intent: ShapingI
       return view.overrides[intent.id] === intent.enabled
         && (intent.expect === undefined || shapingViewRevision(view, intent.id) === intent.expect);
     case "move": {
-      // The shaper sits right after the named neighbour, or first, among its stage's rows.
+      // The shaper sits right after the named neighbour, or first, among its stage's rows, and it
+      // is still the definition the move was sent for: a replacement placed there is not its outcome.
+      if (intent.expect !== undefined && shapingViewRevision(view, intent.id) !== intent.expect) return false;
       const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
       if (!group) return false;
       const rows = group.rows.map((row) => row.id);

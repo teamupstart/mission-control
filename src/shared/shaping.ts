@@ -1204,8 +1204,14 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
    * the order as it is stored when the intent arrives, so moves from two windows compose.
+   * `expect`, as for a removal or a switch, binds it to the definition the sender showed: once
+   * that is replaced, even into another stage, the move is refused rather than placing the
+   * replacement.
    */
-  z.object({ kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable() }),
+  z.object({
+    kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
+    expect: ShapingRevisionSchema.optional(),
+  }),
   z.object({
     kind: z.literal("settings"),
     caller: partialPatch(ShapingCallerObjectSchema).optional(),
@@ -1315,6 +1321,7 @@ export function applyShapingIntent(
         return refuse(index(intent.id) === -1 ? "unknown_shaper" : "unsupported_shaper",
           `No registered shaper this build can run has the id "${intent.id}".`);
       }
+      if (stale(intent.id, intent.expect)) return changed(intent.id);
       const rows = known.filter((entry) => entry.stage === moved.stage).sort(compareShapingOrder(config.order, definitions.stages))
         .map((entry) => entry.id);
       if (intent.after !== null && (intent.after === intent.id || !rows.includes(intent.after))) {

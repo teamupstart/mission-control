@@ -144,9 +144,11 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
 
 test("a move is an intent naming where the shaper goes, and the panel draws it as the daemon applies it", () => {
   const config = view({ shapers: [gatherer("a"), gatherer("b"), gatherer("c"), remote], order: ["found-on-disk", "acme-guidance"] });
-  assert.deepEqual(moveIntent(config, "b", -1), { kind: "move", id: "b", after: null }, "up to first");
-  assert.deepEqual(moveIntent(config, "a", 1), { kind: "move", id: "a", after: "b" }, "down past its neighbour");
-  assert.deepEqual(moveIntent(config, "c", -1), { kind: "move", id: "c", after: "a" });
+  // Each is bound to the revision of the definition shown, as a switch is.
+  const { revisions } = config;
+  assert.deepEqual(moveIntent(config, "b", -1), { kind: "move", id: "b", after: null, expect: revisions.b }, "up to first");
+  assert.deepEqual(moveIntent(config, "a", 1), { kind: "move", id: "a", after: "b", expect: revisions.a }, "down past its neighbour");
+  assert.deepEqual(moveIntent(config, "c", -1), { kind: "move", id: "c", after: "a", expect: revisions.c });
   assert.equal(moveIntent(config, "a", -1), null, "already first in its stage");
   assert.equal(moveIntent(config, "c", 1), null, "already last");
   assert.equal(moveIntent(config, "acme-guidance", 1), null, "alone in its stage");
@@ -630,4 +632,21 @@ test("a move holds its stage, and a whole reorder holds every stage", () => {
   assert.deepEqual(shapingLockKeys({ kind: "move", id: "nobody", after: null }, "row:nobody", shown), ["row:nobody"]);
   assert.deepEqual(shapingLockKeys({ kind: "reorder", order: ["a", "b"] }, "order", shown),
     ["order", ...SHAPING_STAGES.map((stage) => `stage:${stage}`)]);
+});
+
+test("a move bound to a replaced definition is superseded, drawn as stored, refused, and never its receipt", () => {
+  const stored = ShapingConfigSchema.parse({ shapers: [gatherer("a"), gatherer("b")] });
+  const shown = daemonShapingView(stored);
+  const move = moveIntent(shown, "b", -1)!;
+  assert.equal(move.expect, shown.revisions.b);
+  // Another window imports b again, into the other stage.
+  const replacedStored = ShapingConfigSchema.parse({ shapers: [gatherer("a"), { ...remote, id: "b", label: "B elsewhere" }] });
+  const replaced = daemonShapingView(replacedStored);
+  assert.equal(shapingIntentSuperseded(replaced, move), true);
+  assert.equal(previewShapingIntent(replaced, move), replaced);
+  assert.equal(shapingIntentReflected({ ...replaced, order: ["b"] }, move), false);
+  const refused = applyShapingIntent(replacedStored, move, [], { revise: shapingReviser });
+  assert.equal(refused.ok ? "" : refused.error, "shaper_changed");
+  // Against the definition it was sent for, it applies.
+  assert.equal(applyShapingIntent(stored, move, [], { revise: shapingReviser }).ok, true);
 });

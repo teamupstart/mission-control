@@ -278,12 +278,14 @@ before the body limit, so such a request is refused as forbidden whatever its si
     same id, the registration was shadowing it, and removing the registration stores that id off
     in its place in the order, so the folder shaper runs only once it is switched on.
   - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "..." }` stores the operator's choice.
-  - `{ "kind": "move", "id": "...", "after": "..." | null }` places a registered shaper right
+  - `{ "kind": "move", "id": "...", "after": "..." | null, "expect"?: "..." }` places a registered shaper right
     after another registered shaper of its stage, or first for `null`. It is applied to the order
     as stored when it arrives, so moves from two windows both stick, and repeating one changes
     nothing. Stored ids that belong to no row keep their slots. When the move would pass the
     order's bound of 128 ids, stored ids that name no registered or discovered shaper are left
-    out, the oldest kept, and otherwise it is refused with `order_full`.
+    out, the oldest kept, and otherwise it is refused with `order_full`. With `expect`, as the
+    dashboard sends it, a move whose definition has since been replaced, into another stage
+    included, is refused with `shaper_changed` instead of placing the replacement.
   - `{ "kind": "reorder", "order": ["...", "..."] }` sets the run order within each stage.
   - `{ "kind": "settings", "caller": { "user": "..." }, "limits": {...} }` changes the declared
     caller identity and the budgets.

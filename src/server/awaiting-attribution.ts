@@ -145,8 +145,10 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
       // prompt hook, though marked instrumented) no turn does, and the oldest delivery still
       // outstanding is the best reading of whose turn it was. A contested oldest delivery is not a
       // nudge either (see `useUpNudge`).
+      // With no delivery left (the one pending when the turn started was withdrawn since), the
+      // turn can only have been the session's own.
       const oldest = record.pendingNudges[0];
-      const ownTurn = obs.reportsPrompts || (oldest !== undefined && nudgeContested(oldest));
+      const ownTurn = obs.reportsPrompts || oldest === undefined || nudgeContested(oldest);
       // Unless the session declared its wait again during this very turn: then the wake, if this
       // turn was one, came and went inside it, and the wait it declared stands.
       if (ownTurn && !record.redeclaredInTurn) return { next: record, wake: true };

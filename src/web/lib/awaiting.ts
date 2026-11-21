@@ -50,6 +50,18 @@ export function awaitingSessionIds(
   return ids ?? NO_AWAITING_SESSIONS;
 }
 
+/**
+ * `next` when its members differ from `previous`, else `previous` itself. The awaiting set is
+ * recomputed on every clock tick while a wait stands (an overdue one included), and a new Set of
+ * the same ids would rerun every memo keyed on it and redraw every card for nothing.
+ */
+export function keepAwaitingIds(previous: ReadonlySet<string>, next: ReadonlySet<string>): ReadonlySet<string> {
+  if (previous === next) return previous;
+  if (previous.size !== next.size) return next;
+  for (const id of next) if (!previous.has(id)) return next;
+  return previous;
+}
+
 /** Whether any session declared a wait, so a view knows to keep a clock running. */
 export function anyAwaiting(sessions: readonly Session[], enabled: boolean): boolean {
   return enabled && sessions.some((s) => s.awaiting != null);

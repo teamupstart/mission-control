@@ -9180,21 +9180,26 @@ export class Registry extends EventEmitter {
     // never stand together and the card never shows both a red and a grey hold. The wait's
     // row goes in the same transaction the blocker's lands in, so a failed blocker write keeps
     // the wait rather than leaving the session with neither; the caches follow the commit.
-    const replacesWait = this.awaitings.has(key);
+    // The audit rows commit with the writes they describe: a failed insert rolls the whole
+    // replacement back rather than leaving a blocker in SQLite the Registry never installed.
+    const replaced = this.awaitings.get(key) ?? null;
     inTransaction(() => {
-      if (replacesWait) deleteSessionAwaiting(key);
+      if (replaced) {
+        deleteSessionAwaiting(key);
+        this.logAwaitingCleared(s.id, replaced, "blocker", undefined, now);
+      }
       upsertSessionBlocker(record);
+      logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
+        actor: "session",
+        kind: blocker.kind,
+        reason: blocker.reason,
+        ...(prev ? { sinceMs: now - blocker.startedAt, checked: Boolean(prev.reply) } : {}),
+      });
     });
-    // Cleared without its own publish: `syncSessionsForBlocker` below publishes the wait's end
-    // and the blocker together.
-    if (replacesWait) this.clearAwaitingKey(key, s.id, "blocker", undefined, now, false);
+    // Both caches follow the commit, and `syncSessionsForBlocker` publishes the wait's end and
+    // the blocker together, once.
+    if (replaced) this.forgetAwaiting(key);
     this.blockers.set(key, record);
-    logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
-      actor: "session",
-      kind: blocker.kind,
-      reason: blocker.reason,
-      ...(prev ? { sinceMs: now - blocker.startedAt, checked: Boolean(prev.reply) } : {}),
-    });
     this.syncSessionsForBlocker(key);
     return { ok: true, blocker, created: !prev };
   }
@@ -9482,19 +9487,35 @@ export class Registry extends EventEmitter {
     const record = this.awaitings.get(key);
     if (!record) return false;
     deleteSessionAwaiting(key);
+    this.forgetAwaiting(key);
+    this.logAwaitingCleared(sessionId, record, actor, resolution, now);
+    if (sync) this.syncSessionsForAwaiting(key);
+    return true;
+  }
+
+  /** Drop a wait's in-memory state: its record and every map kept under its note key. */
+  private forgetAwaiting(key: string): void {
     this.awaitings.delete(key);
     this.awaitingSeenAt.delete(key);
     this.awaitingLastState.delete(key);
     this.awaitingDeclaredReport.delete(key);
     this.awaitingPersonSends.delete(key);
+  }
+
+  /** The `session_awaiting_cleared` audit row for a wait that ended. */
+  private logAwaitingCleared(
+    sessionId: string,
+    record: SessionAwaitingRecord,
+    actor: string,
+    resolution: string | undefined,
+    now: number,
+  ): void {
     logEvent(sessionId, now, "session_awaiting_cleared", {
       actor,
       durationMs: now - record.awaiting.startedAt,
       overdue: now >= record.awaiting.expectedBy,
       ...(resolution ? { resolution } : {}),
     });
-    if (sync) this.syncSessionsForAwaiting(key);
-    return true;
   }
 
   /**

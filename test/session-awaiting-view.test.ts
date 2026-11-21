@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import type { SessionAwaiting } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
-import { readAwaiting, awaitingDuration } from "../src/web/lib/awaiting.ts";
+import { readAwaiting, awaitingDuration, keepAwaitingIds } from "../src/web/lib/awaiting.ts";
 import { AwaitingRailMark, AwaitingTileTrack, SessionAwaitingBand } from "../src/web/components/SessionAwaiting.tsx";
 import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
@@ -184,4 +184,15 @@ test("a pinned free resident above the Awaiting section is drawn under a Free ru
   assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("fleet-section-awaiting"));
   assert.ok(idleColumn.indexOf("fleet-section-free", freeRule + 1) > idleColumn.indexOf("Awaiting CI"), "no Free rule below the Awaiting section");
   assert.match(idleColumn, /class="board-col-n n-free"[^>]*>2 free</);
+});
+
+test("the awaiting set keeps its identity while its members are unchanged", () => {
+  // Recomputed on every clock tick while a wait stands: a new Set of the same ids would rerun
+  // the fleet ordering and redraw every card for nothing.
+  const previous: ReadonlySet<string> = new Set(["a", "b"]);
+  assert.equal(keepAwaitingIds(previous, new Set(["b", "a"])), previous);
+  const grown = new Set(["a", "b", "c"]);
+  assert.equal(keepAwaitingIds(previous, grown), grown);
+  const swapped = new Set(["a", "c"]);
+  assert.equal(keepAwaitingIds(previous, swapped), swapped);
 });

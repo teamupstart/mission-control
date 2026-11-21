@@ -1253,15 +1253,39 @@ test("a blocker replacing a wait is published as one update carrying both", () =
     }
   };
   registry.on("event", listen);
+  let reported: ReturnType<RegistryT["reportBlocker"]>;
   try {
-    assert.equal(registry.reportBlocker(d.syntheticId, BLOCKER).ok, true);
+    reported = registry.reportBlocker(d.syntheticId, BLOCKER);
   } finally {
     registry.off("event", listen);
   }
-  assert.ok(published.length > 0);
-  assert.ok(published.every((p) => p.awaiting !== null || p.blocker !== null), "a listener saw the session with neither hold");
-  assert.equal(published.at(-1)?.awaiting, null);
-  assert.ok(published.at(-1)?.blocker);
+  assert.ok(reported.ok);
+  // Exactly one publish, carrying both changes: the wait gone and the blocker it returned.
+  assert.deepEqual(published, [{ awaiting: null, blocker: reported.blocker }]);
+});
+
+test("a blocker replacing a wait whose audit row cannot be written leaves the wait, and no blocker, anywhere", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  // The wait's audit insert fails inside the replacement's transaction.
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_audit_down BEFORE INSERT ON session_events
+    WHEN NEW.kind = 'session_awaiting_cleared' BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+  try {
+    assert.throws(() => registry.reportBlocker(d.syntheticId, BLOCKER), /audit down/);
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_audit_down");
+  }
+  // Rolled back whole: the wait still stands in SQLite and in the Registry, and no blocker was
+  // written to either, so the two never disagree.
+  assert.ok(registry.getAwaiting(d.syntheticId), "the Registry lost the wait");
+  assert.ok(loadSessionAwaitings().some((row) => row.noteKey === key), "the wait's row was deleted");
+  assert.equal(registry.getSession(d.syntheticId)?.blocker, null);
+  const blockerRows = openDb().prepare("SELECT COUNT(*) AS n FROM session_blockers WHERE note_key = ?").get(key) as { n: number };
+  assert.equal(blockerRows.n, 0, "SQLite holds a blocker the Registry never installed");
+  // Every Registry reloads stored waits: leave none behind for the tests after this one.
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });
 
 test("a wait is refused while a request_input is pending, and a new question ends a standing wait", () => {

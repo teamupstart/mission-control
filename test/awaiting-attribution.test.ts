@@ -97,6 +97,21 @@ test("an undecided turn that ends without a prompt: the session's own where prom
   assert.equal(judgeTurn(contestedOldest, reading({ ...turnEnd, reportsPrompts: false })).wake, true);
 });
 
+test("an undecided turn whose only delivery was withdrawn before it ended is the session's own wake", () => {
+  // Start: a delivery is pending, so the promptless turn is stored undecided. The delivery is then
+  // withdrawn (it provably never landed). At the turn's end nothing is left that could be its
+  // nudge, so on a session without prompts the turn is the wake rather than holding the wait on.
+  const undecided = judgeTurn(wait({ pendingNudges: [nudge("wrap-up")] }), reading({ ...turnStart, reportsPrompts: false })).next;
+  assert.equal(undecided.undecidedTurn, true);
+  const withdrawn = recordAutomatedDelivery(undecided, { at: 3_000, key: "wrap-up", released: true });
+  assert.deepEqual(withdrawn.pendingNudges, []);
+  assert.equal(judgeTurn(withdrawn, reading({ ...turnEnd, reportsPrompts: false })).wake, true);
+  // A turn that declared the wait again still keeps it.
+  const kept = judgeTurn({ ...withdrawn, redeclaredInTurn: true }, reading({ ...turnEnd, reportsPrompts: false }));
+  assert.equal(kept.wake, false);
+  assert.equal(kept.next.settledAt, 5_000);
+});
+
 test("a turn the session declared its wait again in is still decided, but never ends the wait", () => {
   const redeclared = wait({ settledAt: null, undecidedTurn: true, redeclaredInTurn: true, pendingNudges: [nudge("first")] });
   const ownEnd = judgeTurn(redeclared, reading({ ...turnEnd, reportsPrompts: true }));

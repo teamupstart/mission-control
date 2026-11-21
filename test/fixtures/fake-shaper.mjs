@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HELPER_MARKER } from "./fake-shaper-helper.mjs";
 
 const [mode = "ok", ...rest] = process.argv.slice(2);
 const chunks = [];
@@ -13,6 +14,9 @@ const reply = (value) => process.stdout.write(JSON.stringify(value));
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 // A PID file appears whole or not at all: a test that waits for it to exist must never read it
 // between its creation and its write, which an ordinary write allows.
+// A helper's argv names it and the pid file it is recorded in, so a test's cleanup can tell the
+// process it is about to signal is this helper, never an unrelated one that was given its pid.
+const helperArgv = (pidFile) => ["-e", "setInterval(() => {}, 1000)", HELPER_MARKER, pidFile];
 const writePid = (path, pid) => {
   writeFileSync(`${path}.partial`, String(pid));
   renameSync(`${path}.partial`, path);
@@ -137,7 +141,7 @@ switch (mode) {
   case "escape": {
     // A helper in a process group of its own that inherits this shaper's stdout and stderr, so
     // killing the shaper's group leaves both pipes held open.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -148,7 +152,7 @@ switch (mode) {
   case "escape-answer": {
     // A helper outside this shaper's group holds both pipes, so reaping the group cannot close
     // them; the shaper answers shortly before the call's deadline and exits.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -160,7 +164,7 @@ switch (mode) {
   case "escape-overflow": {
     // A helper outside this shaper's group holds both pipes, then the shaper crosses the stdout
     // cap and keeps running. It notes when it starts writing, so a test can time the answer.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const helper = spawn(process.execPath, helperArgv(rest[0]), {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
     writePid(rest[0], helper.pid);
@@ -173,7 +177,7 @@ switch (mode) {
   case "pipe-helper": {
     // A helper in this shaper's process group that inherits its stdout and stderr and keeps
     // them open, while the shaper itself answers and exits successfully.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+    const helper = spawn(process.execPath, helperArgv(rest[0]), { stdio: ["ignore", "inherit", "inherit"] });
     writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered while a helper held the pipes" }] });
@@ -182,7 +186,7 @@ switch (mode) {
   case "orphan-helper": {
     // A helper in this shaper's own process group, with stdio of its own, left running after a
     // perfectly good reply. Nothing holds the pipes, so the call closes normally.
-    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const helper = spawn(process.execPath, helperArgv(rest[0]), { stdio: "ignore" });
     writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered, and left a helper behind" }] });
@@ -201,7 +205,7 @@ switch (mode) {
   }
   case "grandchild": {
     // A descendant in the same process group, which a timeout must take down too.
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const child = spawn(process.execPath, helperArgv(rest[0]), { stdio: "ignore" });
     writePid(rest[0], child.pid);
     await sleep(60_000);
     break;

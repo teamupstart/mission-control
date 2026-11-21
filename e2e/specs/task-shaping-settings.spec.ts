@@ -724,11 +724,8 @@ test("a repeated id is listed without controls, and an id like constructor still
   await expect(copy).toContainText("It never runs. Removing the shaper that owns the id twin-notes removes this entry too.");
   await expect(copy.getByRole("button")).toHaveCount(0);
 
-  // The constructor row's Remove carries the daemon's own revision for it.
-  const removals: Array<{ id?: string; expect?: unknown }> = [];
-  page.on("request", (request) => {
-    if (request.method() === "PUT" && request.url().endsWith("/api/shaping")) removals.push(request.postDataJSON() as { id?: string });
-  });
+  // The constructor row's Remove carries the daemon's own revision for it. The request is awaited
+  // before anything is checked: the row goes with the drawn removal, before the request is seen.
   const revisions = async () => {
     const response = await fetch(`${daemon.baseURL}/api/shaping`);
     return ((await response.json()) as { config: { revisions: Record<string, string> } }).config.revisions;
@@ -736,9 +733,10 @@ test("a repeated id is listed without controls, and an id like constructor still
   const constructorRevision = (await revisions()).constructor;
   expect(constructorRevision).toMatch(/^[0-9a-f]{16}$/);
   await page.getByRole("button", { name: "Remove Constructor notes" }).click();
+  const removal = page.waitForRequest((request) => request.method() === "PUT" && request.url().endsWith("/api/shaping"));
   await page.getByRole("button", { name: "Confirm removing Constructor notes" }).click();
+  expect((await removal).postDataJSON()).toEqual({ kind: "remove", id: "constructor", expect: constructorRevision });
   await expect(row(page, "Constructor notes")).toHaveCount(0);
-  expect(removals.find((intent) => intent.id === "constructor")).toEqual({ kind: "remove", id: "constructor", expect: constructorRevision });
 
   // Removing the owner removes its repeat with it.
   await page.getByRole("button", { name: "Remove Twin notes" }).click();

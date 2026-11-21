@@ -5,7 +5,9 @@ import { after, test } from "node:test";
 import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { HELPER_MARKER } from "./fixtures/fake-shaper-helper.mjs";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
 import { SHAPING_LIMITS, ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
@@ -150,13 +152,26 @@ const bypassesDirectoryPermissions = ((): boolean => {
 })();
 
 /**
- * Kill whatever helper a fixture recorded, whether or not the test reached its own cleanup. Only
- * for a helper not yet confirmed gone: once it has exited, the system may give its pid to an
- * unrelated process, which this must never signal.
+ * Kill whatever helper a fixture recorded, whether or not the test reached its own cleanup. Once a
+ * helper has exited the system may give its pid to an unrelated process, so the pid is signalled
+ * only while its command line still names this helper and this pid file, and a test that saw the
+ * helper go skips this altogether.
  */
 const killRecorded = (pidFile: string, pid = 0): void => {
   const recorded = pid || (existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0);
-  if (recorded > 0) { try { process.kill(recorded, "SIGKILL"); } catch { /* Already gone. */ } }
+  if (recorded > 0 && isRecordedHelper(recorded, pidFile)) {
+    try { process.kill(recorded, "SIGKILL"); } catch { /* Gone since the check. */ }
+  }
+};
+
+/** Whether `pid` is still the fixture helper recorded in `pidFile`, by its command line. */
+const isRecordedHelper = (pid: number, pidFile: string): boolean => {
+  try {
+    const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    return command.includes(HELPER_MARKER) && command.includes(pidFile);
+  } catch {
+    return false; // No such process.
+  }
 };
 
 test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", {
@@ -662,9 +677,7 @@ test("a helper outside the process group that holds the pipes cannot keep them o
     for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
     assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    killRecorded(pidFile);
   }
 });
 
@@ -729,9 +742,7 @@ test("a reply that arrives just before the deadline is kept, though a helper out
     assert.match((reply as { data: string }).data, /answered just before the deadline/);
     assert.ok(Date.now() - started < timeoutMs, `returned within the call's budget (${Date.now() - started} ms)`);
   } finally {
-    if (existsSync(pidFile)) {
-      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
-    }
+    killRecorded(pidFile);
   }
 });
 
@@ -828,7 +839,7 @@ test("an overflow settles as soon as the cap is crossed, though a helper outside
     const sinceOutput = answered - Number(readFileSync(startedFile, "utf8"));
     assert.ok(sinceOutput < 900, `answered ${sinceOutput} ms after the shaper started writing`);
   } finally {
-    if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    killRecorded(pidFile, pid);
   }
 });
 
@@ -872,4 +883,30 @@ test("the command transport reports when its outcome is known, before its reply 
   let failed = 0;
   await callCommand(request(), shaper([FIXTURE, "fail"]), ctx(10_000, { settled: () => failed++ }));
   assert.equal(failed, 1);
+});
+
+test("fallback cleanup signals a recorded pid only while it is still that helper", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const pidFile = join(scratch, "identity-check.pid");
+  // An unrelated process that happens to hold the pid the file names, as a recycled pid would.
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  // The helper this pid file really records, named the way the fixture names its helpers.
+  const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", HELPER_MARKER, pidFile], { stdio: "ignore" });
+  try {
+    writeFileSync(pidFile, String(unrelated.pid));
+    killRecorded(pidFile);
+    await sleep(200);
+    assert.equal(aliveNow(unrelated.pid!), true, "a process that is not the recorded helper is never signalled");
+    writeFileSync(pidFile, String(helper.pid));
+    killRecorded(pidFile);
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "the recorded helper is");
+  } finally {
+    unrelated.kill("SIGKILL");
+    helper.kill("SIGKILL");
+    rmSync(pidFile, { force: true });
+  }
 });

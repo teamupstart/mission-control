@@ -1813,3 +1813,29 @@ test("a held switch never applies to the same definition imported again after a 
   expect((await shapingConfig(daemon)).overrides["revived-notes"]).toBe(false);
   await page.unroute("**/api/shaping");
 });
+
+test("after an identical reimport an open window's next switch still goes through", async ({ dashboard: page, context, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("same-import", "Same import");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(peer, "Same import")).toHaveAccessibleName("Same import: off");
+  // This window imports the same definition again: nothing stored changes but its revision.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  // Both windows' next action uses the new revision, so neither is refused as out of date.
+  const switched = peer.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(peer, "Same import").click();
+  expect((await switched).status()).toBe(200);
+  await expect(pill(page, "Same import")).toHaveAccessibleName("Same import: on");
+  const switchedBack = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Same import").click();
+  expect((await switchedBack).status()).toBe(200);
+  await expect(pill(peer, "Same import")).toHaveAccessibleName("Same import: off");
+  await expect(row(peer, "Same import").getByRole("alert")).toHaveCount(0);
+});

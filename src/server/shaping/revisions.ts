@@ -12,20 +12,29 @@ import { canonicalJson, shapingConfigView, type ShapingConfig, type ShapingConfi
 const KEY = randomBytes(32);
 
 /**
- * Each id's generation in this daemon process. Content alone cannot tell a definition from the
- * same definition stored again after a replacement, so a write held since the first could pass
+ * Each stored id's generation in this daemon process. Content alone cannot tell a definition from
+ * the same definition stored again after a replacement, so a write held since the first could pass
  * once the original is imported again. The generation advances whenever what is stored under an
  * id changes, by any writer, and on every import or removal of it, identical content included,
  * and it is part of every revision: no later state of an id ever has an earlier one's revision.
+ *
+ * Generations come from one counter for the whole process, which only grows, so the map need hold
+ * only the ids stored now: an id removed and stored again later takes the counter's next value,
+ * which no earlier state of it ever had. An id never advanced since the daemon started is at 0,
+ * a value the counter never hands out.
  */
 const generations = new Map<string, number>();
+let lastGeneration = 0;
 
 /** Advance `id`'s generation: an import or removal of it, which a revision issued before must not survive. */
 export function advanceShapingGeneration(id: string): void {
-  generations.set(id, (generations.get(id) ?? 0) + 1);
+  generations.set(id, ++lastGeneration);
 }
 
-/** Advance the generation of every id whose stored entries differ between `before` and `after`. */
+/**
+ * Advance the generation of every id whose stored entries differ between `before` and `after`,
+ * and forget the ids `after` no longer stores, so the map stays the size of the stored list.
+ */
 export function noteShapingEntriesChanged(before: ShapingConfig, after: ShapingConfig): void {
   const byId = (config: ShapingConfig): Map<string, string> => {
     const groups = new Map<string, unknown[]>();
@@ -35,8 +44,15 @@ export function noteShapingEntriesChanged(before: ShapingConfig, after: ShapingC
   const was = byId(before);
   const now = byId(after);
   for (const id of new Set([...was.keys(), ...now.keys()])) {
-    if (was.get(id) !== now.get(id)) advanceShapingGeneration(id);
+    if (!now.has(id)) generations.delete(id);
+    else if (was.get(id) !== now.get(id)) advanceShapingGeneration(id);
   }
+  for (const id of generations.keys()) if (!now.has(id)) generations.delete(id);
+}
+
+/** How many ids this process holds a generation for: never more than the ids stored now. For tests. */
+export function trackedShapingGenerations(): number {
+  return generations.size;
 }
 
 /**

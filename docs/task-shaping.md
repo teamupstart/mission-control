@@ -259,7 +259,9 @@ before the body limit, so such a request is refused as forbidden whatever its si
   (`src/server/shaping/revisions.ts`), cut to 16 hex digits, over the id's stored entries and its
   generation. The generation advances whenever what is stored under the id changes, by any writer,
   and on every import or removal of it, so the same definition stored again after a replacement
-  never gets its earlier revision back and a write held since then cannot pass. It can be compared but not
+  never gets its earlier revision back and a write held since then cannot pass. An import that stores
+  the same config again still sends every window the new revision. Generations come from one counter
+  that only grows, and the daemon keeps them only for the ids stored now. It can be compared but not
   recomputed, so it cannot confirm a guess at a field the view hides, and a daemon restart
   changes every revision: an intent sent across a restart carries one the restarted daemon never
   issued, and is refused with `stale_dashboard`, whose reason asks the operator to reload the page.

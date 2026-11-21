@@ -86,8 +86,13 @@ function store(): Store {
   return state;
 }
 
-function publish(state: Store, config: ShapingConfig): ShapingConfig {
-  const changed = !sameShapingConfig(state.config, config);
+/**
+ * Commit `config` and notify listeners when it changed, or when `revised`: an import or removal
+ * that stored the same config again still advanced its id's generation, so every view, and every
+ * open window, must receive the revision that now names it.
+ */
+function publish(state: Store, config: ShapingConfig, revised = false): ShapingConfig {
+  const changed = revised || !sameShapingConfig(state.config, config);
   // Before any listener derives a view: every revision it carries is of the new generation.
   noteShapingEntriesChanged(state.config, config);
   state.config = freeze(config);
@@ -153,5 +158,5 @@ export function applyShapingIntent(intent: ShapingIntent, discovered: readonly D
   // same as before, so a write held from before it can never pass afterwards.
   if (intent.kind === "upsert") advanceShapingGeneration(intent.shaper.id);
   if (intent.kind === "remove") advanceShapingGeneration(intent.id);
-  return { ok: true, config: publish(state, config) };
+  return { ok: true, config: publish(state, config, intent.kind === "upsert" || intent.kind === "remove") };
 }

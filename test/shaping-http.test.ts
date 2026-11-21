@@ -1034,3 +1034,47 @@ test("a definition stored again after a replacement never gets its earlier revis
   assert.equal((await put({ kind: "enable", id: "aba", enabled: true, expect: before })).status, 200);
   assert.equal((await read()).aba, before);
 });
+
+test("an identical reimport publishes the revision that now names the shaper, and the next action uses it", async () => {
+  const read = async () => ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions;
+  const shaper = fixture("same-again", "gather", "ok");
+  assert.equal((await put({ kind: "upsert", shaper })).status, 200);
+  const before = (await read())["same-again"]!;
+  const { daemonShapingView } = await import("../src/server/shaping/revisions.ts");
+  const published: string[] = [];
+  const stop = shaping.onShapingConfigChanged((config) => { published.push(daemonShapingView(config).revisions["same-again"]!); });
+  try {
+    // The same definition, already stored off: nothing stored changes, but its generation does.
+    const reply = await put({ kind: "upsert", shaper });
+    assert.equal(reply.status, 200);
+    const replied = ((await reply.json()) as { config: { revisions: Record<string, string> } }).config.revisions["same-again"]!;
+    assert.notEqual(replied, before);
+    assert.deepEqual(published, [replied], "every open window is sent the new revision");
+  } finally {
+    stop();
+  }
+  // An open tab's next action, with the revision the stream gave it, goes through.
+  const current = (await read())["same-again"]!;
+  assert.equal((await put({ kind: "enable", id: "same-again", enabled: true, expect: current })).status, 200);
+});
+
+test("revision state is kept only for stored ids, and a removed id stored again gets a fresh revision", async () => {
+  const { trackedShapingGenerations } = await import("../src/server/shaping/revisions.ts");
+  const read = async () => ((await (await get()).json()) as { config: { revisions: Record<string, string> } }).config.revisions;
+  assert.equal((await put({ kind: "upsert", shaper: fixture("comes-back", "gather", "ok") })).status, 200);
+  const first = (await read())["comes-back"]!;
+  // Many distinct ids added and removed: the daemon's state stays the size of what is stored.
+  for (let n = 0; n < 40; n++) {
+    assert.equal((await put({ kind: "upsert", shaper: fixture(`churn-${n}`, "gather", "ok") })).status, 200);
+    assert.equal((await put({ kind: "remove", id: `churn-${n}` })).status, 200);
+  }
+  const stored = (getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).shapers.length;
+  assert.ok(trackedShapingGenerations() <= stored, `${trackedShapingGenerations()} tracked for ${stored} stored`);
+  // Removed and stored again, with the same content: never its earlier revision.
+  assert.equal((await put({ kind: "remove", id: "comes-back" })).status, 200);
+  assert.equal((await put({ kind: "upsert", shaper: fixture("comes-back", "gather", "ok") })).status, 200);
+  const again = (await read())["comes-back"]!;
+  assert.notEqual(again, first);
+  const held = await put({ kind: "enable", id: "comes-back", enabled: true, expect: first });
+  assert.equal(((await held.json()) as { error: string }).error, "shaper_changed");
+});

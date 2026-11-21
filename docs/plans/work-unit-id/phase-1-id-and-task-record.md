@@ -78,8 +78,10 @@ Nothing in this phase is gated.
    their source task. For a best-of-N run, the first member task mints, and every later
    member, retry and replacement inherits from a member task of the same run. If a run's
    `source_*` fields can name a task, inherit from that task instead.
-9. **Older rows.** `TaskManager.dispatch` and `TaskManager.assign` give a task with no id one
-   before it is handed to an agent, unless its kind has no work unit.
+9. **Older rows.** `TaskManager.dispatch` and `TaskManager.assign` give a task with no id one,
+   and save it, as the first thing they do with the task, unless its kind has no work unit.
+   Phase 2's launch decision and Phase 4's shaping read the id in that same dispatch, so it
+   has to be saved before either.
 10. **Reads.** Add `workUnitId` to `taskConfiguration` in `src/mcp/server.ts`. Add a
     `workUnitId` filter to the `list_tasks` tool, `/mcp/tasks/list` and `readTaskPage`: an
     exact match, refused when the value is not a well-formed id. `GET /api/tasks` already
@@ -110,7 +112,7 @@ Nothing in this phase is gated.
   with no task is refused; `"inherit"` from a session whose older task has no id gives that
   task an id and copies it; `"new"` from a plan session mints; a plan created by a plan and
   its own child all share one; retro follow-up; chat retry; ensemble members are equal; a
-  parent with no id gets one when a child inherits; dispatch and assign each give an older row an id;
+  parent with no id gets one when a child inherits; dispatch and assign each give an older row an id, saved before anything else in the dispatch reads it;
   requeue keeps it; a recovered creation keeps it; a resident run's task has none, at
   creation and after dispatch; a task created from a resident's session gets a new one, and
   `"inherit"` from it is refused.
@@ -155,6 +157,8 @@ add a way for a request body to choose an id.
 - Inspector review of the plan's pull request: an older row gets its id at assign as well as
   at dispatch, because Phase 2's reuse guard compares it with the work unit an agent was
   started with.
-- Inspector review, round 2: explicit `"inherit"` gives an eligible older parent its id
-  first, as automatic inheritance does. It is refused only for a caller with no task and for
-  a resident run.
+- Inspector review, round 2: explicit `"inherit"` gives an eligible older parent its id first,
+  as automatic inheritance does. It is refused only for a caller with no task and for a
+  resident run.
+- Inspector review, round 5: an older row gets its id at the start of a dispatch or an
+  assign, before Phase 2's launch decision reads it.

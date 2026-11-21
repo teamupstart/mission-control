@@ -46,7 +46,8 @@ the shaping run, any change to what a launch does, any read of the flag.
   dispatcher gets control back and before the task points to the session. So `startTrack`
   takes the task from the launch intent (`noteDispatchLaunch`, recorded before the spawn)
   or, for a restore, from the supervisor's association (`restoringSessions`): "Only the
-  durable supervisor association or the launch intent supplies task identity".
+  durable supervisor association or the launch intent supplies task identity". A session
+  announced with neither has no task at that moment.
 - The module's host (`SessionTelemetryHost`) offers `subscribe` and `getTask`.
 - `telemetryCatalogProblems()` is the lint, run by `test/telemetry-contract.test.ts`.
   `FORBIDDEN_METRIC_DIMENSIONS` lists ids that may not be metric dimensions.
@@ -75,16 +76,18 @@ the shaping run, any change to what a launch does, any read of the flag.
    `mission.ref.work_unit_id`.
 6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits.
    Capture never reads the flag.
-   - At the start. Add the launch's decision (Phase 2) to the launch intent and to the
-     supervisor's restore association, at the two calls that announce a launch.
-     `startTrack` takes the track's work unit from there, as it takes `taskId`. So the
-     start span carries the id the agent was started with, although the session's task is
-     not bound yet.
+   - At the start. A session is announced before its task is bound, and some launches
+     announce a session with no task identity at all, so `sessionWorkUnitId` has nothing
+     to compare with yet. The start span therefore reads the session's launch record
+     itself. Phase 2 installs it before the session's first event is published, for every
+     kind of launch that announces a session: a dispatch, a pipeline host, a restore, a
+     managed resume and a runtime transfer target. The record was written from that
+     launch's decision, so it is the id the agent was started with, and no kind of launch
+     needs a path of its own. Add a read of the record to the host for this.
    - After the start. The helper reads the session's launch record through
      `sessionWorkUnitId(session, task)` from Phase 2, which is the id the session's agent
-     was started with while its task has that id. Add a read of the record to the host for
-     this. A successful resume or transfer replaces the record, so later spans follow the
-     new process. A failed one changes nothing.
+     was started with while its task has that id. A successful resume or transfer replaces
+     the record, so later spans follow the new process. A failed one changes nothing.
    - Add the helper's result to the refs at every site with a track: start, restore,
      segment, turn, end, kill, effort selected, session operation and
      `workflowAuthorContext`.
@@ -139,9 +142,9 @@ the shaping run, any change to what a launch does, any read of the flag.
   after the flag is switched off and loses it at its next start; one started with the flag
   off has none after the flag is switched on and gains it at its next start.
 - A reused agent: a task typed into an agent that has no launch record carries no ref.
-- The start span: for a dispatched session, with the task not yet bound when the session
-  is announced, `work_unit_id` on the session-start span equals the `WORK_UNIT_ID` the
-  agent was started with. The same holds for a restored session.
+- The start span: for a dispatched session, a restored session and a newly registered
+  runtime transfer target, each announced before any task is bound to it, `work_unit_id` on
+  the session-start span equals the `WORK_UNIT_ID` the agent was started with.
 - Dispatch finished for a launch that failed carries that launch's decision.
 - `test/telemetry-stack.integration.ts`: the exported span has the attribute with the raw
   id.
@@ -175,14 +178,15 @@ inherits the rule from the lint.
 - Phase 1: reads `Task.workUnitId` and `isWorkUnitId`. No change there.
 - Phase 2: reads the launch record through `sessionWorkUnitId`, so capture and the launch
   environment follow one decision and this phase never reads the flag. This phase changes
-  nothing a launch does: it passes the launch's decision to the two telemetry hooks that
-  announce a launch.
+  nothing a launch does and adds nothing to one: it reads the record.
 - Phase 4: no shared file except `docs/work-units.md`, where the two sections sit apart.
 - Source plan: owns R3 and D4.
 - Plan validation repair, round 1: a resident's session carries no ref (D6).
 - Inspector review of the plan's pull request: capture follows what the agent was started
   with instead of the flag and the task record, so a switch of the flag or a reused agent
   cannot put an id on a span that the agent's MCP calls do not carry.
-- Inspector review, round 4: the start span takes the launch's decision from the launch
-  intent or the restore association, because a session is announced before its task is
-  bound. A span that reports a launch attempt carries that attempt's decision.
+- Inspector review, round 4: the start span carries the id the agent was started with,
+  although a session is announced before its task is bound. A span that reports a launch
+  attempt carries that attempt's decision.
+- Inspector review, round 5: the start span reads the launch record itself, so it is right
+  for every kind of launch that announces a session, a runtime transfer target included.

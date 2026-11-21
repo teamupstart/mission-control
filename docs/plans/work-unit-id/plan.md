@@ -181,8 +181,7 @@ choose a work unit.
 - **A resident run** has no work unit either (D6). A resident is a standing agent, not a
   piece of work. A task a resident's session creates gets a new unit, and asking to inherit
   from it is refused.
-- **A task that predates the column** has no id until its next dispatch, which mints one
-  (D3). Nothing is inferred from its plan inputs or dependencies. When a new task inherits
+- **A task that predates the column** has no id until its next dispatch or assign, which mints one and saves it before anything else reads it (D3). Nothing is inferred from its plan inputs or dependencies. When a new task inherits
   from such a task, the parent is given its id first and the child copies it.
 - The value is copied, not derived through a parent pointer. A copy survives the parent
   being deleted and needs no tree walk at launch or capture.
@@ -274,8 +273,7 @@ with OAuth is not known to keep its sign-in once the header is added: the sign-i
 under a key that includes the server's headers after `${...}` is filled in, so a value that
 differs per work unit is expected to give every work unit its own key. That is read in
 Claude Code's program text and not run. Phase 2 checks it against a local OAuth fixture
-before it writes the guide (D8). Until then the guide tells an owner not to add the
-reference to such a server, and a worker's calls to it carry no work unit.
+before it writes the guide (D8). Until then the guide tells an owner not to add the reference to such a server, and a worker's calls to it carry no work unit. The check asks the same of Codex, and the guide answers for each agent on its own.
 
 Residents (D6). A resident run has no work unit, so Mission Control has no value to send
 for it. The resident
@@ -330,9 +328,7 @@ unset, like any session outside a work unit.
   span-bearing event that declares `session_id` or `task_id` also declares `work_unit_id`,
   so a new event cannot forget it. And `work_unit_id` is a forbidden metric dimension.
 - The value is the work unit the session emits (section 4), read at capture through one
-  helper: the id the session's agent was started with, while its task has that id. The start
-  span takes it from the launch intent, as it takes the task, because a session is announced
-  before its task is bound. A span that reports a launch attempt, dispatch finished, carries
+  helper: the id the session's agent was started with, while its task has that id. The start span reads the launch record itself, because a session is announced before its task is bound, and the record is installed before that first event for every kind of launch. A span that reports a launch attempt, dispatch finished, carries
   that launch's decision whether or not an agent started. A session with no task gets none,
   and neither does a resident's, nor a session whose agent was started without the variable.
   A task event with no session in scope, such as a task outcome, reads the record of the

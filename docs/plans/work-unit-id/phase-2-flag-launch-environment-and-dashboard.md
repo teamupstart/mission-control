@@ -151,11 +151,17 @@ that it can take another work unit's task (decision D7).
      Claude Code and Codex configuration is unchanged.
    - What the result decides. No answer blocks this phase: each one decides what the guide
      and `docs/residents.md` say.
-     - The first answer. If a second work unit finds the sign-in, the guide recommends the
-       reference for every remote server. If it does not, the guide tells an owner not to
-       add the reference to a server that signs in with OAuth, names the alternative if the
-       third question found one, and says that a worker's calls to such a server carry no
-       work unit.
+     - The first answer, for Claude Code. If a second work unit finds the sign-in, the
+       guide recommends the Claude Code reference for every remote server. If it does not,
+       the guide tells an owner not to add it to a server that Claude Code signs in to with
+       OAuth, names the alternative if the third question found one, and says that a
+       worker's calls to such a server carry no work unit.
+     - The first answer, for Codex. It is decided on its own: one agent's answer says
+       nothing about the other's config line. If a second work unit finds Codex's sign-in,
+       the guide recommends `env_http_headers` for every remote Codex server. If it does
+       not, the guide tells an owner not to add that entry to a server that Codex signs in
+       to with OAuth, and says that a Codex worker's calls to such a server carry no work
+       unit.
      - The second answer. If a headerless entry finds the earlier sign-in, the guide says a
        pinned resident keeps it. If it does not, the resident catalog step ships as written
        all the same: the launcher presents no sign-in at all, so handing the server to the
@@ -168,7 +174,9 @@ that it can take another work unit's task (decision D7).
 3. **The decision.** In `src/server/work-unit.ts` add `launchWorkUnitId(task)`: the task's
    id when the flag is on and the id is well formed, otherwise null. Call it once per
    launch, where the launch begins: the start of a dispatch, a resume, a restore or a
-   transfer. Carry that one value through the launch and hand it to everything the launch
+   transfer. An older task has been given its id, and the id has been saved, before that
+   point (Phase 1), so its first dispatch decides with the id it has just received. Carry
+   that one value through the launch and hand it to everything the launch
    does: the shaping run a dispatch starts (Phase 4), the agent's environment, both hosts
    of a pipeline dispatch, and the launch record when the launch succeeds. Nothing calls it
    a second time for the same launch, so a switch of the flag while a launch is in flight
@@ -200,8 +208,10 @@ that it can take another work unit's task (decision D7).
      agent, and the registry installs the record in the step that registers the launched
      session, before that step publishes the session's first event. The value is the one
      the launch's environment was built from.
-   - A resume, a restore and a transfer are launches too. Their record is replaced in the
-     step that adopts the new process, before the next event for that session is published.
+   - A pipeline host and a runtime transfer's target are launched sessions like any other:
+     their record is installed before their first event. A resume and a restore keep their
+     session, so their record is replaced in the step that adopts the new process, before
+     the next event for that session is published.
    - Load the rows at daemon start. Carry a row across every note-key rotation, at the
      sites that call `moveStandingInstructionsKey`. A `/clear` or an assign starts a new
      conversation and not a new process, so the row has to survive both.
@@ -211,8 +221,8 @@ that it can take another work unit's task (decision D7).
      changes nothing: the agent that is still running keeps the record it was started with,
      whatever the failed launch decided. A decision that was handed over for a launch that
      then fails is discarded, and one whose session never appears is swept by age, as a
-     launch intent is. A runtime transfer writes the target's record when the target is
-     adopted, and leaves the source's alone. Prune rows as the standing instructions
+     launch intent is. A runtime transfer leaves the source's record alone, and a target
+     that is discarded takes its record with it. Prune rows as the standing instructions
      snapshot is pruned.
    - Add `sessionWorkUnitId(session, task)` to `src/server/work-unit.ts`: the recorded id
      when the task's `workUnitId` is that same id, otherwise null. Every later reader uses
@@ -282,8 +292,8 @@ that it can take another work unit's task (decision D7).
       of the preview takes effect, and when assign refuses an agent.
     - `docs/work-units.md`, "MCP servers the worker calls": the config lines the OAuth
       check supports, the rule that Claude Code needs `${WORK_UNIT_ID:-}` and that a server
-      treats an empty value as absent, what the check found for a server that signs in with
-      OAuth, and the limits: cloud connectors, Pi, and residents, which have no work unit
+      treats an empty value as absent, what the check found, for each agent, for a server
+      that signs in with OAuth, and the limits: cloud connectors, Pi, and residents, which have no work unit
       (D6).
     - `docs/residents.md`: the same limits, and the sign-in rule from the resident catalog
       step.
@@ -331,8 +341,11 @@ that it can take another work unit's task (decision D7).
   rotation the standing instructions snapshot survives; rows load at daemon start;
   `sessionWorkUnitId` is the id only while the task has that id.
 - The first event: when a launched session's first event is published, its record is
-  already installed and equals the `WORK_UNIT_ID` the agent was started with. A decision
-  handed over for a launch that fails leaves no record.
+  already installed and equals the `WORK_UNIT_ID` the agent was started with. This holds
+  for a dispatch, a pipeline host and a runtime transfer target. A decision handed over for
+  a launch that fails leaves no record.
+- An older row: the first dispatch of a task that had no id, with the flag on, gives the
+  task its id and carries it. The agent's environment and the record hold that id.
 - A launch that fails: a resume, a restore and a transfer that fail after the flag is
   switched off leave the row of the agent that is still running as it was, and `assign`
   still refuses another work unit's task for that agent. A transfer that succeeds writes
@@ -389,6 +402,7 @@ that it can take another work unit's task (decision D7).
 - One launch has one decision. Its agent's environment and its record never differ, also
   when the flag is switched while the launch is in flight.
 - The launch record is installed before a launched session's first event is published.
+- An older task's first dispatch carries the id it has just been given.
 - No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
 - Flag off when an agent is started: the launch has no variable and no record. While the
   flag is off the session detail is unchanged. The resident catalog rule in the last
@@ -420,9 +434,9 @@ and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not
 - Phase 1: this phase adds to `src/server/work-unit.ts` and to `TaskSummary`, and changes
   nothing Phase 1 wrote. The reuse guard compares against `Task.workUnitId`, which Phase 1
   sets when a task is assigned as well as when it is dispatched.
-- Phase 3: changes nothing a launch does. It passes the launch's decision to the two
-  telemetry hooks that announce a launch, reads the launch record and never writes it. It
-  shares no file listed here except `docs/work-units.md`, where it adds its own section.
+- Phase 3: changes nothing a launch does. It reads the launch record and never writes
+  it, and it shares no file listed here except `docs/work-units.md`, where it adds its own
+  section.
 - Phase 4: takes the launch's one decision at the dispatch seam for a new agent, and
   `sessionWorkUnitId` for an agent that is already running. The shaper transports set their
   own environment for shaper processes; this phase does not touch them.
@@ -451,3 +465,6 @@ and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not
   the phase, and the resident exit criterion names the routing this phase controls.
 - Inspector review, round 4: the registry installs the launch record before it publishes a
   launched session's first event, so no reader of that event finds the session without it.
+- Inspector review, round 5: an older task has its id before the launch decision reads it.
+  A pipeline host and a transfer target get their record before their first event. The
+  OAuth check's guidance is decided for Claude Code and for Codex separately.

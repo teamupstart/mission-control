@@ -236,10 +236,9 @@ After all four phases, with the flag on:
   Nothing in it is gated, which Phase 2 relies on.
 - After Phase 2: the gate function lives in `src/server/work-unit.ts`, the file Phase 1
   creates. Phase 1 exports only `mintWorkUnitId` from it, so Phase 2 adds without changing.
-- After Phase 3: it reads the id through `sessionWorkUnitId` and changes nothing a launch
-  does. It only passes the launch's decision to the two telemetry hooks that announce a
-  launch. Phase 2 touches no telemetry file. Phases 3 and 4 can merge in either order once
-  Phase 2 is in.
+- After Phase 3: it reads the launch record, through `sessionWorkUnitId` and, for the start
+  span, directly. It changes nothing a launch does. Phase 2 touches no telemetry file.
+  Phases 3 and 4 can merge in either order once Phase 2 is in.
 - After Phase 4: it changes only shaping files and the dispatch seam. Phase 3 does not
   touch either. The complete set covers R1 to R5 and D1 to D4 once each.
 - Plan validation repair, round 1: D6 touches Phase 1 (no id for a resident run), Phase 2
@@ -273,6 +272,11 @@ After all four phases, with the flag on:
   the daemon's own variable (Phase 4). No answer of the OAuth check blocks Phase 2, and its
   resident criterion names the routing it controls. Phases 1 and 3 are unchanged.
 - Inspector review, round 4: the registry installs the launch record before a launched
-  session's first event (Phase 2). The start span takes the launch's decision from the
-  launch intent (Phase 3). A shaper call belongs to the launch it was made for, also when
-  the agent then fails to start (Phase 4). Phase 1 is unchanged.
+  session's first event (Phase 2). The start span carries the id the agent was started with
+  (Phase 3). A shaper call belongs to the launch it was made for, also when the agent then
+  fails to start (Phase 4). Phase 1 is unchanged.
+- Inspector review, round 5: the start span reads the launch record itself, for every kind
+  of launch that announces a session, with Phase 2 installing the record first (Phases 2 and
+  3). An older row gets its id before the launch decision reads it (Phases 1 and 2). The
+  OAuth check's guidance is decided for Claude Code and for Codex separately (Phase 2).
+  Phase 4 is unchanged.

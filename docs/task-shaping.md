@@ -484,6 +484,8 @@ call stopped at the step's deadline starts no further lookup, open or read.
 
 The gatherer runs in the daemon, on Node's shared pool of file-I/O threads, and a call already
 running on a hung network mount cannot be cancelled. So every `repository-files` call in the
-daemon shares one gate, with one filesystem call in flight at a time: a stalled worktree can hold
-at most one of the pool's threads, and other daemon file work keeps the rest. A call waiting for
-the gate holds no thread and gives up at its deadline.
+daemon shares two gates, each with one filesystem call in flight at a time: one for lookups,
+opens and reads, and one for closing files, so a stalled lookup never keeps another run's file
+open. A stalled worktree can hold at most two of the pool's threads, and other daemon file work
+keeps the rest. A call waiting for a gate holds no thread, and a lookup or read waiting for one
+gives up at its deadline. A close is never given up, so an opened file is always closed.

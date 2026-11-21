@@ -131,14 +131,28 @@ export class FsGate {
   get queued(): number { return this.waiting.size; }
 }
 
-/** The daemon's one gate for this gatherer. */
+/** The daemon's gate for this gatherer's lookups, opens, stats and reads. */
 export const REPOSITORY_FILES_GATE = new FsGate();
 
 /**
- * `fs` with every call through `gate`. Calls for a stopped `signal` throw `CallStopped` instead of
- * starting. A handle's close is gated too, but never stopped: an opened file is always closed.
+ * A second gate, for closes alone. A close queued behind a lookup stalled on a hung mount would
+ * keep an unrelated run's file open until that mount answered, so closes never wait for lookups.
+ * One close in flight at a time still bounds them: with both gates, a stalled worktree holds at
+ * most two of the worker pool's threads, one lookup or read and one close.
  */
-export function gatedFs(fs: RepositoryFilesFs, signal: AbortSignal | undefined, gate: FsGate = REPOSITORY_FILES_GATE): RepositoryFilesFs {
+export const REPOSITORY_FILES_CLOSE_GATE = new FsGate();
+
+/**
+ * `fs` with every call through `gate`. Calls for a stopped `signal` throw `CallStopped` instead of
+ * starting. A handle's close goes through `closeGate` instead, and is never stopped: an opened
+ * file is always closed, whatever another run's lookup is waiting on.
+ */
+export function gatedFs(
+  fs: RepositoryFilesFs,
+  signal: AbortSignal | undefined,
+  gate: FsGate = REPOSITORY_FILES_GATE,
+  closeGate: FsGate = REPOSITORY_FILES_CLOSE_GATE,
+): RepositoryFilesFs {
   return {
     realpath: (target) => gate.run(() => fs.realpath(target), signal),
     lstat: (target) => gate.run(() => fs.lstat(target), signal),
@@ -147,7 +161,7 @@ export function gatedFs(fs: RepositoryFilesFs, signal: AbortSignal | undefined, 
       return {
         read: ((...args: Parameters<FileHandle["read"]>) => gate.run(() => handle.read(...args), signal)) as FileHandle["read"],
         stat: () => gate.run(() => handle.stat(), signal),
-        close: () => gate.run(() => handle.close()),
+        close: () => closeGate.run(() => handle.close()),
       };
     },
   };

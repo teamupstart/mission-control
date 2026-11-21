@@ -575,6 +575,8 @@ test("concurrent reads keep one filesystem call in flight daemon-wide, and a rea
   const { root } = fixture(Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f${i}.md`, `file ${i}\n`])));
   let inFlight = 0;
   let most = 0;
+  let closing = 0;
+  let mostClosing = 0;
   const tracked = <T,>(op: () => Promise<T>) => async () => {
     inFlight++;
     most = Math.max(most, inFlight);
@@ -588,13 +590,18 @@ test("concurrent reads keep one filesystem call in flight daemon-wide, and a rea
       return {
         read: ((...args: Parameters<typeof handle.read>) => tracked(() => handle.read(...args))()) as typeof handle.read,
         stat: () => tracked(() => handle.stat())(),
-        close: () => tracked(() => handle.close())(),
+        close: async () => {
+          closing++;
+          mostClosing = Math.max(mostClosing, closing);
+          try { return await handle.close(); } finally { closing--; }
+        },
       };
     },
   };
   const reads = await Promise.all(Array.from({ length: 6 }, (_, i) => readWorktreeFile(root, `f${i}.md`, 1024, counting)));
   assert.deepEqual(reads.map((read) => read.ok && read.text), Array.from({ length: 6 }, (_, i) => `file ${i}\n`));
-  assert.equal(most, 1, "never more than one call on the worker pool at once");
+  assert.equal(most, 1, "never more than one lookup, open, stat or read on the worker pool at once");
+  assert.equal(mostClosing, 1, "and never more than one close: two threads at most, whatever the mount does");
 
   // A lookup on a hung mount holds the gate. A read behind it waits without starting anything, and
   // its deadline releases it as stopped.
@@ -624,6 +631,50 @@ test("concurrent reads keep one filesystem call in flight daemon-wide, and a rea
   }
   assert.equal((await stuck).ok, true, "the hung call finishes once its mount answers");
   assert.equal(REPOSITORY_FILES_GATE.queued, 0);
+});
+
+test("a stopped run closes its file at once, though another run's lookup is stalled on a hung mount", async () => {
+  const { root } = fixture({ "open.md": "open\n", "hung.md": "hung\n" });
+  let unhang: (() => void) | undefined;
+  let hungRun: Promise<unknown> | undefined;
+  const deadline = new AbortController();
+  let closes = 0;
+  // Run B: its first lookup hangs until released.
+  let lookups = 0;
+  const hangingFs: RepositoryFilesFs = {
+    ...NODE_REPOSITORY_FILES_FS,
+    realpath: (target) => (++lookups === 1
+      ? new Promise((done) => { unhang = () => done(NODE_REPOSITORY_FILES_FS.realpath(target)); })
+      : NODE_REPOSITORY_FILES_FS.realpath(target)),
+  };
+  // Run A: while it checks its open handle, run B starts and queues for the gate, and A's deadline
+  // passes. A then stops with its file open, while B's lookup holds the gate.
+  const openFs: RepositoryFilesFs = {
+    ...NODE_REPOSITORY_FILES_FS,
+    async open(target, flags) {
+      const handle = await NODE_REPOSITORY_FILES_FS.open(target, flags);
+      return {
+        read: handle.read,
+        close: () => { closes++; return handle.close(); },
+        async stat() {
+          const info = await handle.stat();
+          hungRun = readWorktreeFile(root, "hung.md", 1024, hangingFs);
+          deadline.abort();
+          return info;
+        },
+      };
+    },
+  };
+  try {
+    const first = readWorktreeFile(root, "open.md", 1024, openFs, deadline.signal);
+    const outcome = await Promise.race([first, new Promise((done) => setTimeout(() => done("still waiting to close"), 2_000))]);
+    assert.deepEqual(outcome, { ok: false, stopped: true }, "the stopped run finished: its close did not wait for the stalled lookup");
+    assert.equal(closes, 1, "and its file was closed");
+    assert.ok(unhang, "the other run's lookup really was stalled on the gate while that happened");
+  } finally {
+    unhang?.();
+  }
+  assert.equal(((await hungRun) as { ok: boolean }).ok, true);
 });
 
 test("a signal that fires during a file's lookup or its identity checks starts no new I/O for it", async () => {

@@ -121,7 +121,7 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { HeldSessionsContext, heldSessionIds, ownBindingBySession, fleetRunsBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession, fleetRunsBySession, fleetHoldRunsBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -2533,8 +2533,9 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  // Keep every open review visible; completed history falls back to the newest per repo.
+  // Existing chips keep the newest run per repo. Only preview explanations retain every open run.
   const workflowRunsBySession = useMemo(() => fleetRunsBySession(workflowRuns), [workflowRuns]);
+  const workflowHoldRunsBySession = useMemo(() => fleetHoldRunsBySession(workflowRuns), [workflowRuns]);
 
   /**
    * The workflow each live conversation is armed with, keyed by session.
@@ -2565,8 +2566,8 @@ export function App(): React.JSX.Element {
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   //
-  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps open runs and the newest
-  // completed history per repository for display: an older run of the same repository that is still open holds
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // run per repository for display: an older run of the same repository that is still open holds
   // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
   const heldIds = useMemo(() => {
     const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
@@ -3452,6 +3453,7 @@ export function App(): React.JSX.Element {
     reviews,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
+    workflowHoldRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
     workflowBindingBySession,
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),

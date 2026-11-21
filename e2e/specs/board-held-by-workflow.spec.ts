@@ -421,6 +421,58 @@ test("workflow hold details identify the next actor without creating a session b
   expect((await api<Array<{ id: string; blocker: unknown }>>(daemon, "/api/sessions")).find(s => s.id === id)?.blocker).toBeTruthy();
 });
 
+test("hold details leave existing Board and Console action chips on the newest run per repository", async ({ dashboard, daemon }) => {
+  const id = await dispatchIdleAgent(dashboard, daemon, "Preview isolation");
+  const runId = await openRunOn(daemon, id, "isolation");
+  const { summary } = await api<{ summary: import("../../src/shared/workflow.ts").WorkflowRunSummary }>(daemon, `/api/workflow-runs/${runId}`);
+  await dashboard.addInitScript(() => {
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) === "/events") (window as Window & { holdStream?: EventSource }).holdStream = this;
+      }
+    };
+  });
+  const update = async (run: typeof summary) => dashboard.evaluate(message => {
+    const stream = (window as Window & { holdStream: EventSource }).holdStream;
+    stream.close();
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "workflow_run_upsert", run: message }) }));
+  }, run);
+  const older = { ...summary, id: "older-action", workflowName: "Older review", status: "waiting_for_action" as const,
+    phase: "session_action", actionWait: "needs_operator" as const, updatedAt: summary.updatedAt + 1 };
+  const newest = { ...older, id: runId, workflowName: "Newest review", actionWait: "working" as const,
+    updatedAt: summary.updatedAt + 2 };
+  for (const layout of ["board", "console"] as const) {
+    await api(daemon, "/api/ui/config", { layout }, "PUT");
+    for (const enabled of [false, true, false]) {
+      await api(daemon, "/api/feature-flags", { kind: "flag", id: "workflow-hold-details", enabled }, "PUT");
+      await dashboard.reload();
+      await expect(dashboard.locator(layout === "board" ? "main.board .tile" : ".rail-row")).toHaveCount(1);
+      await update(older);
+      await update(newest);
+      const chips = dashboard.locator(layout === "board" ? ".tile .workflow-action-wait" : ".rail-row .workflow-action-wait");
+      await expect(chips).toHaveCount(1);
+      await expect(chips).toContainText("Newest review");
+      await expect(chips).not.toContainText("Older review");
+      const holds = dashboard.getByLabel("Workflow holds");
+      if (enabled) {
+        await expect(holds.getByRole("link")).toHaveCount(2);
+        await expect(holds).toContainText("Older review");
+        await expect(holds).toContainText("Newest review");
+        await shoot(dashboard, `hold-preview-isolation-${layout}-on`);
+        await update({ ...newest, status: "completed" });
+        await expect(chips).toHaveCount(0);
+        await expect(holds.getByRole("link")).toHaveCount(1);
+        await expect(holds.getByRole("link")).toHaveAttribute("href", "#/runs/older-action");
+      } else {
+        await expect(holds).toHaveCount(0);
+        await shoot(dashboard, `hold-preview-isolation-${layout}-off`);
+      }
+    }
+  }
+});
+
 test("Fleet renders distinct Inspector, sibling and automated waits from live summary updates", async ({ dashboard, daemon }) => {
   const id = await dispatchIdleAgent(dashboard, daemon, "Different workflow waits");
   const runId = await openRunOn(daemon, id, "states");

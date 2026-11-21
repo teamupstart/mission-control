@@ -1,4 +1,4 @@
-import { fleetRunsBySession } from "../src/web/lib/held.ts";
+import { fleetRunsBySession, fleetHoldRunsBySession } from "../src/web/lib/held.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { workflowHold } from "../src/web/lib/workflow-hold.ts";
@@ -127,10 +127,20 @@ test("unknown blocked phases stay inspectable without claiming automatic progres
 
 
 test("a newer completed run cannot hide an open wait from the same repository", () => {
-  const runs = fleetRunsBySession([run, { ...run, id: "finished", status: "completed", updatedAt: 2 }]);
+  const runs = fleetHoldRunsBySession([run, { ...run, id: "finished", status: "completed", updatedAt: 2 }]);
   assert.deepEqual(runs.get("session")?.map(r => r.id), ["run"]);
-  assert.deepEqual(fleetRunsBySession([{ ...run, status: "completed" },
+  assert.deepEqual(fleetHoldRunsBySession([{ ...run, status: "completed" },
     { ...run, id: "finished", status: "completed", updatedAt: 2 }]).get("session")?.map(r => r.id), ["finished"]);
+});
+
+test("existing Fleet chips retain only the newest run per repository", () => {
+  const older = { ...run, id: "a-older", updatedAt: 1 };
+  const newer = { ...run, id: "z-newer", updatedAt: 2 };
+  const sibling = { ...run, id: "sibling", repoRoot: "/repos/backend" };
+  for (const status of ["waiting_for_action", "completed"] as const) {
+    const latest = { ...newer, status };
+    assert.deepEqual(fleetRunsBySession([older, latest, sibling]).get("session"), [latest, sibling]);
+  }
 });
 
 

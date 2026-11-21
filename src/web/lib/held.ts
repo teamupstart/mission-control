@@ -246,8 +246,7 @@ export function useHeldSessions(): ReadonlySet<string> {
 }
 
 
-/** Every open run must remain inspectable, even beside a newer completed run of the same repo. */
-export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
+function groupRunsBySessionAndRepo(runs: readonly WorkflowRunSummary[]): Map<string, Map<string, WorkflowRunSummary[]>> {
   const grouped = new Map<string, Map<string, WorkflowRunSummary[]>>();
   for (const run of runs) {
     if (!run.sessionId) continue;
@@ -256,7 +255,19 @@ export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<str
     repos.set(key, [...(repos.get(key) ?? []), run]);
     grouped.set(run.sessionId, repos);
   }
-  return new Map([...grouped].map(([sessionId, repos]) => [sessionId,
+  return grouped;
+}
+
+/** Existing chips and actions show only the newest run per repository, independently of previews. */
+export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
+  return new Map([...groupRunsBySessionAndRepo(runs)].map(([sessionId, repos]) => [sessionId,
+    [...repos].sort(([a], [b]) => a.localeCompare(b)).map(([, entries]) => newestSessionRun(entries)!),
+  ]));
+}
+
+/** Preview explanations retain every open run, even beside a newer completed run of the same repo. */
+export function fleetHoldRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
+  return new Map([...groupRunsBySessionAndRepo(runs)].map(([sessionId, repos]) => [sessionId,
     [...repos].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, entries]) => {
       const open = entries.filter(run => workflowRunIsOpen(run.status));
       return open.length ? open.sort((a, b) => a.id.localeCompare(b.id)) : [newestSessionRun(entries)!];

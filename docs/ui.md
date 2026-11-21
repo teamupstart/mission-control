@@ -1197,7 +1197,9 @@ available:
   ensemble membership and a pipeline correlation frames as the ensemble's.
 - **Workflow hold details (preview).** Enable **Settings > Feature flags > Workflow hold details**
   to see each open run's reason, next actor, and an **Open run** link on Board cards and Console
-  rows. A queued sibling links to **Open owning run**, unless its own run needs the operator
+  rows. Existing workflow chips still show only the newest run per repository with the preview
+  on or off; the explanations include older open runs too.
+  A queued sibling links to **Open owning run**, unless its own run needs the operator
   or an independent blocker owner; that actionable wait keeps its **Open run** link.
   Manual and preview reviews name the operator unless an independent blocker is withholding
   the next round, in which case its owner remains the next actor. An unsent Preview action

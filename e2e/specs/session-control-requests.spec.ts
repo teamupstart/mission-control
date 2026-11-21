@@ -79,8 +79,32 @@ test("a session's ask shows as a card; the browser cannot accept it, Decline ans
     expect(toolText(answer)).toContain("Declined: the operator chose not to let this session control other sessions.");
     expect((await session(daemon, asker.id)).sessionControlEnabled).toBe(false);
 
-    // With the preview off, nothing is shown and the agent is told why.
+    // One ask's error never shows on the next. A failed Decline leaves its error on this card;
+    // the ask is then declined from another window, and the session asks again.
+    const second = client.callTool({ name: "request_session_control", arguments: { reason: REASON } }, undefined, { timeout: 120_000 });
+    await expect(card).toContainText(REASON);
+    await dashboard.route("**/session-control/requests/*/decline", (route) => route.fulfill({
+      status: 500, contentType: "application/json", body: JSON.stringify({ error: "Decline temporarily unavailable" }),
+    }), { times: 1 });
+    await decline.click();
+    await expect(card.getByRole("alert")).toHaveText("Decline temporarily unavailable");
+    const secondAsk = (await session(daemon, asker.id)).sessionControlRequest!;
+    const elsewhere = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(asker.id)}/session-control/requests/${secondAsk.id}/decline`, { method: "POST" });
+    expect(elsewhere.status).toBe(200);
+    await expect(card).toHaveCount(0);
+    expect(toolText(await second)).toContain("Declined");
+    const third = client.callTool({ name: "request_session_control", arguments: { reason: REASON } }, undefined, { timeout: 120_000 });
+    await expect(card).toContainText(REASON);
+    expect((await session(daemon, asker.id)).sessionControlRequest!.id).not.toBe(secondAsk.id);
+    await expect(card.getByRole("alert")).toHaveCount(0);
+    await expect(decline).toBeEnabled();
+
+    // With the preview off, nothing is shown and the agent is told why: switching it off also
+    // withdraws the pending ask and tells its waiting agent.
     await setFlag(daemon, false);
+    const withdrawn = await third;
+    expect(withdrawn.isError).toBe(true);
+    expect(toolText(withdrawn)).toContain("session control requests were turned off");
     const refused = await client.callTool({ name: "request_session_control", arguments: { reason: REASON } }, undefined, { timeout: 60_000 });
     expect(refused.isError).toBe(true);
     expect(toolText(refused)).toContain("session control requests are turned off");

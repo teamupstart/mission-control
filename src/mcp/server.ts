@@ -365,13 +365,35 @@ server.registerTool(
   },
 );
 
-/** What the agent reads once its ask settles. Only `granted` means it holds the grant. */
+/**
+ * The caller's cancellation bounded by a deadline: aborts on whichever comes first. Hand-rolled
+ * rather than `AbortSignal.any`, which Node 18 before 18.17 lacks, and this server has run there.
+ */
+function untilCancelledOr(signal: AbortSignal, ms: number): AbortSignal {
+  const bounded = new AbortController();
+  const cancel = (): void => bounded.abort(signal.reason);
+  const timer = setTimeout(() => bounded.abort(new Error(`Mission Control did not answer within ${ms} ms`)), ms);
+  timer.unref?.();
+  bounded.signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }, { once: true });
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  return bounded.signal;
+}
+
+/**
+ * What the agent reads once its ask settles. `granted` records the operator's decision when it
+ * was made, not current authority: a later revoke or reset ends the grant without changing it.
+ */
 function sessionControlRequestText(result: SessionControlRequestResult): { text: string; isError: boolean } {
   switch (result.status) {
     case "granted":
       return { isError: false, text: "Granted: the operator allowed this session to control other sessions. Use read_sessions " +
-        "to inspect other live sessions and control_session to act on them. The grant ends when the operator revokes it, " +
-        "when this conversation is reset or replaced, or when Mission Control restarts." };
+        "to inspect other live sessions and control_session to act on them. This records the operator's decision, not " +
+        "current authority: the grant ends when the operator revokes it, when this conversation is reset or replaced, or " +
+        "when Mission Control restarts, and read_sessions and control_session then refuse." };
     case "declined":
       return { isError: false, text: "Declined: the operator chose not to let this session control other sessions. Do not " +
         "ask again unless the operator tells you to. Carry on without it, and say what you could not do." };
@@ -401,7 +423,7 @@ server.registerTool(
   async ({ reason }, extra) => {
     const beat = heartbeat(extra);
     try {
-      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true);
+      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true, untilCancelledOr(extra.signal, 15_000));
       if (raised.status === 404) {
         return textResult("Not asked: session control requests are turned off in Mission Control (Settings > Feature " +
           "flags). Nothing was shown to the operator. If you need this, ask them with request_input to turn on " +
@@ -411,8 +433,8 @@ server.registerTool(
       let result = (await raised.json()) as SessionControlRequestResult;
       // Best-effort: the session's status line says what it is waiting on.
       if (result.status === "pending") {
-        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" })
-          .catch(() => {});
+        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" },
+          false, untilCancelledOr(extra.signal, 5_000)).catch(() => {});
       }
       while (result.status === "pending") {
         if (extra.signal.aborted) throw new Error("the client cancelled this request");

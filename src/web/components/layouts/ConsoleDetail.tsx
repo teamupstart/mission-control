@@ -930,7 +930,10 @@ export function ConsoleDetail({
             {/* The session's own ask for Control other sessions: answered before reading on,
                 like the menu above. Capped and scrolled like the blocker band below its
                 reason (`.detail-conv > .session-control-request`). */}
-            {controlRequests && <SessionControlRequestCard session={session} />}
+            {controlRequests && (
+              // Keyed by the ask, so one ask's error or busy state never shows on the next.
+              <SessionControlRequestCard key={`${session.id}:${session.sessionControlRequest?.id ?? ""}`} session={session} />
+            )}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}

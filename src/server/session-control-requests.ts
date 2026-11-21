@@ -93,7 +93,11 @@ export class SessionControlRequests {
     return this.current(sessionId)?.view.id === requestId;
   }
 
-  /** Where one ask stands, answered only to the session that raised it. */
+  /**
+   * Where one ask stands, answered only to the session that raised it. A settled `granted` is the
+   * decision as it was observed, not current authority: a later revoke or reset ends the grant
+   * without rewriting this answer, and every control route checks the live grant itself.
+   */
   status(sessionId: string, requestId: string): SessionControlRequestResult | null {
     if (this.isPending(sessionId, requestId)) return { id: requestId, status: "pending" };
     const outcome = this.settled.get(requestId);

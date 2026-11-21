@@ -2492,7 +2492,9 @@ showing the session's name and its reason verbatim, with **Decline** and **Accep
 - Turning control on from the menu also answers a pending ask.
 
 The tool blocks until you decide and then returns `granted`, `declined`, or why the ask ended
-without a decision. An ask lasts as long as the conversation that raised it: a reset,
+without a decision. `granted` records your decision when you made it, not current authority:
+turning control off later, or a reset, ends the grant without changing that answer, and the
+session's `read_sessions` and `control_session` calls then refuse. An ask lasts as long as the conversation that raised it: a reset,
 replacement conversation, different task, the session ending or a daemon restart withdraws the
 card, and so does turning the preview off. A session that already holds the grant is answered
 at once, and a repeated call rejoins its one pending ask without changing the reason you are

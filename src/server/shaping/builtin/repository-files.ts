@@ -290,6 +290,10 @@ export async function readWorktreeFile(
   signal?: AbortSignal,
 ): Promise<FileRead> {
   if (!pathIsConfinable(configured)) return { ok: false, skip: "outside-worktree" };
+  // A path whose last segment is empty or `.` (`docs/`, `AGENTS.md/.`, `.`) names a directory, as
+  // written. `path.join` would drop that segment and resolve `AGENTS.md/.` to the file, so the
+  // requirement is decided on the path as configured, before anything normalizes it.
+  if (/(?:^|\/)\.?$/.test(configured)) return { ok: false, skip: "not-a-regular-file" };
   // Every call goes through the daemon's one gate (`REPOSITORY_FILES_GATE`).
   const fs = gatedFs(files, signal);
   // A failed call is a skip, unless it was stopped before it started.

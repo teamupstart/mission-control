@@ -465,7 +465,7 @@ degraded, and the launch is never affected.
 | --- | --- |
 | `missing` | No file at that path |
 | `outside-worktree` | The path is absolute, has a `..` segment or resolves outside the worktree, or the opened file is not the one inside it |
-| `not-a-regular-file` | A directory, a named pipe, a device or a socket, or a link swapped in after the lookup |
+| `not-a-regular-file` | A directory, or a path written as one (ending in `/` or `/.`, even when a file has that name), a named pipe, a device or a socket, or a link swapped in after the lookup |
 | `too-large` | Larger than 4 MiB |
 | `unreadable` | The operator cannot read it |
 | `empty` | The whole file is nothing but white space once decoded |

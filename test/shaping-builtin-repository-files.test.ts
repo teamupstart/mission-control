@@ -72,6 +72,11 @@ test("every skip reason, each recorded as one note, and none of them a failure",
     ["dir/../AGENTS.md", "outside-worktree"],
     ["leaves.md", "outside-worktree"],
     ["dir", "not-a-regular-file"],
+    // Written as a directory: a trailing `/` or `/.` keeps that meaning, though `AGENTS.md` is a file.
+    ["AGENTS.md/.", "not-a-regular-file"],
+    ["AGENTS.md/", "not-a-regular-file"],
+    ["dir/", "not-a-regular-file"],
+    [".", "not-a-regular-file"],
     ["pipe", "not-a-regular-file"],
     ["huge.md", "too-large"],
     ["empty.md", "empty"],
@@ -86,13 +91,28 @@ test("every skip reason, each recorded as one note, and none of them a failure",
   const result = await gatherRepositoryFiles(root, options({ include: [{ path: "AGENTS.md" }, ...cases.map(([path]) => ({ path }))] }), never);
   assert.ok(result);
   assert.deepEqual(result.guidance.map((entry) => entry.id), ["AGENTS.md"]);
-  assert.equal(result.notes?.length, cases.length);
-  cases.forEach(([configured, skip], at) => {
-    assert.equal(result.notes![at], `Skipped include ${at + 2} ${JSON.stringify(configured)} (${skip}).`);
-  });
+  // One sentence per skip, in order. Past 16 skips they share notes, so read them joined.
+  assert.equal(result.notes!.join(" "), cases.map(([configured, skip], at) =>
+    `Skipped include ${at + 2} ${JSON.stringify(configured)} (${skip}).`).join(" "));
   assert.equal(result.degraded, undefined, "a skip never marks the reply degraded");
   assert.ok(ShapingResultSchema.safeParse(result).success);
   assert.doesNotMatch(JSON.stringify(result), /outside text/);
+});
+
+test("a path written as a directory is never resolved to a file of the same name", async () => {
+  const { root } = fixture({ "AGENTS.md": "# Agents\n", "docs/guide.md": "guide\n" });
+  const calls: string[] = [];
+  const fs: RepositoryFilesFs = {
+    realpath: (target) => { calls.push(`realpath ${target}`); return NODE_REPOSITORY_FILES_FS.realpath(target); },
+    lstat: (target) => { calls.push(`lstat ${target}`); return NODE_REPOSITORY_FILES_FS.lstat(target); },
+    open: (target, flags) => { calls.push(`open ${target}`); return NODE_REPOSITORY_FILES_FS.open(target, flags); },
+  };
+  for (const configured of ["AGENTS.md/.", "AGENTS.md/", "docs/guide.md/.", "AGENTS.md/./"]) {
+    assert.deepEqual(await readWorktreeFile(root, configured, 1024, fs), { ok: false, skip: "not-a-regular-file" }, configured);
+  }
+  assert.deepEqual(calls, [], "decided on the path as written: nothing is looked up, opened or read");
+  // A `.` segment anywhere else is only a step through the tree.
+  assert.deepEqual(await readWorktreeFile(root, "./docs/./guide.md", 1024), { ok: true, text: "guide\n", truncated: false });
 });
 
 test("a link that stays inside the worktree is read as its target, and a file hard-linked in is a worktree file", async () => {

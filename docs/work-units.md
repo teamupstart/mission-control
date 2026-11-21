@@ -151,9 +151,12 @@ See [One agent, one task at a time](dispatch-and-backlog.md#one-agent-one-task-a
 
 ### The session detail
 
-With the preview on, the session detail shows a **work unit** row with the id the session
-emits and a **Copy** control. It is absent while the preview is off, and for a session that
-emits none - including one whose task has an id its agent was not started with.
+The session detail shows a **work unit** row with the id the session emits and a **Copy**
+control. It follows the agent, not the live preview: an agent started while the preview was on
+keeps the variable until its next start, so its row stays after the preview is switched off and
+goes when the agent restarts without it. With the preview never switched on no agent carries a
+work unit, so no session shows the row. It is absent for a session that emits none - including
+one whose task has an id its agent was not started with.
 
 ## MCP servers the worker calls
 

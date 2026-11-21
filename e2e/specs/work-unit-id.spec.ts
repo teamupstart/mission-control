@@ -145,6 +145,15 @@ test("with the preview on, each launch carries its own task's work unit, and the
   await expect(copy).toHaveText("Copied");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claude.workUnitId);
   await shoot(detail.locator("dl.detail-sub"), "02-work-unit-copied", page);
+
+  // Switched off while this agent runs: it still carries the variable until its next start, so
+  // the row still shows the id it is sending.
+  await preview(daemon, false);
+  await page.reload();
+  const after = await openSession(page, claude.title);
+  await expect(after.getByRole("definition").filter({ hasText: claude.workUnitId! })).toBeVisible();
+  await expect(after.getByRole("button", { name: "Copy work unit id" })).toBeVisible();
+  await shoot(after.locator("dl.detail-sub"), "05-preview-switched-off-row-stays", page);
 });
 
 test("with the preview off, a launch carries no variable and the detail shows no row", async ({ dashboard: page, daemon }) => {

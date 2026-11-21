@@ -6,7 +6,8 @@ import { Tooltip } from "./Tooltip.tsx";
  *
  * `workUnitId` is `TaskSummary.workUnitId` - the id the session's agent was started with, while
  * its task has that same id - so the row never shows an id the agent's MCP calls do not carry.
- * The caller gates it on the `work-unit-id` preview. Mission Control links to no
+ * Not gated on the live preview: the id follows the agent's launch record, so it stays while an
+ * agent started under the preview still carries it. Mission Control links to no
  * observability vendor; the id is what an operator pastes into their own query.
  */
 export function WorkUnitRow({ workUnitId }: { workUnitId: string }) {

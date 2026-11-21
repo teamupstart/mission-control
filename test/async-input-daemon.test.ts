@@ -472,3 +472,201 @@ test("an answer given between an older child's duplicate ask and its first poll 
   assert.deepEqual(loadReviewContinuationCandidates(filed.id), [], "nothing owed after a restart either");
   assert.equal(openDb().prepare("SELECT 1 AS n FROM pending_turns WHERE id LIKE ?").get(`%${filed.id}`), undefined);
 });
+
+test("ten questions include snoozed rows, an exact duplicate reattaches, and the eleventh is refused with titles", async () => {
+  setFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const ids: string[] = [];
+  for (let n = 0; n < 10; n++) {
+    const result = await created(await post(app, d.cwd, { title: `Question ${n}?`, snoozable: true, asyncCapable: true }));
+    ids.push(result.id);
+  }
+  reviews.snooze(ids[0]!, 60_000);
+  const duplicate = await created(await post(app, d.cwd, { title: "Question 0?", snoozable: true, asyncCapable: true }));
+  assert.equal(duplicate.id, ids[0]);
+  const refused = await post(app, d.cwd, { title: "Eleventh?", snoozable: true, asyncCapable: true });
+  assert.equal(refused.status, 409);
+  const error = await refused.text();
+  for (let n = 0; n < 10; n++) assert.ok(error.includes(`Question ${n}?`));
+  assert.match(error, /Work on what you can or end your turn/);
+  assert.equal(reviews.openQuestions(d.syntheticId).length, 10);
+  reviews.withdrawQuestion(d.syntheticId, ids[0]!, "No longer needed");
+  assert.equal((await post(app, d.cwd, { title: "Replacement?", snoozable: true, asyncCapable: true })).status, 200);
+});
+
+test("question tools gate on the flag, list both wait modes, and withdraw only the caller's open message questions", async () => {
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); const e = mkDiscovered(); registry.applyDiscovery([d, e]);
+  const filed = reviews.create(d.syntheticId, "input", "Filed?", "Filed?", null, { snoozable: true, waitMode: "message", meanwhile: "Prepare tests" });
+  const call = reviews.create(d.syntheticId, "input", "Call?", "Call?", null, { snoozable: true });
+  const other = reviews.create(e.syntheticId, "input", "Other?", "Other?", null, { snoozable: true, waitMode: "message" });
+  reviews.create(d.syntheticId, "plan-decisions", "Gate", "Gate");
+  reviews.snooze(filed.id, 60_000);
+  const request = (path: string, extra = {}) => app.request(path, {
+    method: "POST", headers: authed, body: JSON.stringify({ env: {}, cwd: d.cwd, ...extra }),
+  });
+  assert.equal((await request("/mcp/questions/list")).status, 403);
+  assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: "Obsolete" })).status, 403);
+  setFlag(true);
+  const listing = await request("/mcp/questions/list");
+  assert.equal(listing.status, 200);
+  const { questions } = await listing.json() as { questions: Array<Record<string, unknown>> };
+  assert.deepEqual(questions.map((q) => q.id).sort(), [filed.id, call.id].sort());
+  assert.deepEqual(questions.find((q) => q.id === filed.id), { id: filed.id, title: "Filed?", createdAt: filed.createdAt, meanwhile: "Prepare tests", status: "snoozed" });
+  for (const id of [call.id, other.id, "missing"]) assert.equal((await request(`/mcp/questions/${id}/withdraw`, { reason: "Obsolete" })).status, 409);
+  assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: " " })).status, 400);
+  assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: "No longer needed" })).status, 200);
+  assert.equal(registry.getReview(filed.id)!.status, "withdrawn");
+  assert.equal(registry.getReview(filed.id)!.response, "No longer needed");
+  assert.equal(registry.getReview(filed.id)!.resolvedBy, null);
+  assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: "Again" })).status, 409);
+  assert.deepEqual(loadReviewContinuationCandidates(filed.id), []);
+});
+
+test("withdrawal releases completion without an answer and persists a non-human terminal status", () => {
+  setFlag(true);
+  const { registry, reviews } = fleet();
+  const s = eligible(registry);
+  const q = reviews.create(s.id, "input", "Necessary?", "Necessary?", null, { snoozable: true, waitMode: "message" });
+  assert.equal(registry.consumePromptedGeneration(s.id, s.request), false);
+  reviews.withdrawQuestion(s.id, q.id, "The task no longer needs this choice");
+  assert.equal(registry.completionHeldByQuestion(registry.getSession(s.id)!), false);
+  assert.equal(registry.consumePromptedGeneration(s.id, s.request), true);
+  assert.deepEqual(loadReviewContinuationCandidates(q.id), []);
+  const stored = openDb().prepare("SELECT status, response, resolved_by FROM reviews WHERE id = ?").get(q.id);
+  assert.equal(stored?.status, "withdrawn");
+  assert.equal(stored?.resolved_by, null);
+});
+
+test("withdrawal accepts a 2000-character reason and rejects 2001 without settling the question", async () => {
+  setFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const filed = reviews.create(d.syntheticId, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  const request = (reason: string) => app.request(`/mcp/questions/${filed.id}/withdraw`, {
+    method: "POST", headers: authed, body: JSON.stringify({ env: {}, cwd: d.cwd, reason }),
+  });
+  const reason = "x".repeat(2000);
+
+  assert.equal((await request(`${reason}x`)).status, 400);
+  assert.deepEqual(registry.getReview(filed.id), filed, "the rejected reason leaves the live question open");
+  assert.deepEqual(reviews.openQuestions(d.syntheticId).map((q) => q.id), [filed.id]);
+  const pending = openDb().prepare("SELECT status, response, resolved_at FROM reviews WHERE id = ?").get(filed.id);
+  assert.equal(pending?.status, "pending");
+  assert.equal(pending?.response, null);
+  assert.equal(pending?.resolved_at, null);
+
+  assert.equal((await request(reason)).status, 200);
+  assert.equal(registry.getReview(filed.id)?.status, "withdrawn");
+  assert.equal(registry.getReview(filed.id)?.response, reason);
+  const withdrawn = openDb().prepare("SELECT status, response FROM reviews WHERE id = ?").get(filed.id);
+  assert.equal(withdrawn?.status, "withdrawn");
+  assert.equal(withdrawn?.response, reason, "the maximum-length reason is persisted intact");
+});
+
+test("the review manager sends the full filed question and meanwhile plan through the durable answer row", () => {
+  const { registry, reviews } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const full = "Which of the proposed storage options should we choose? The current choice is reversible.";
+  const meanwhile = "Prepare the migration without applying it";
+  let text = "";
+  reviews.startContinuationRecovery((review, answer) => {
+    const turn = createReviewContinuationPendingTurn({ reviewId: review.id, noteKey: `full-${d.syntheticId}`, text: answer, now: Date.now() });
+    if (review.sessionId === d.syntheticId) text = turn?.text ?? "";
+    return true;
+  });
+  const q = reviews.create(d.syntheticId, "input", "Short title", full, null, { snoozable: true, waitMode: "message", meanwhile });
+  reviews.resolve(q.id, "answer", "Use SQLite", "foreman");
+  assert.ok(text.includes(full));
+  assert.ok(text.includes(meanwhile));
+  assert.match(text, /Use SQLite/);
+  assert.match(text, /Reconcile/);
+});
+
+
+test("withdrawal during an active runtime transfer returns 409 and leaves the question open without an answer queued", async (t) => {
+  const { reserveSessionTransfer, updateSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+  setFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const noteKey = `withdraw-transfer-${d.syntheticId}`;
+  reviews.startContinuationRecovery((review, text) => {
+    if (review.sessionId !== d.syntheticId) return false;
+    return createReviewContinuationPendingTurn({ reviewId: review.id, noteKey, text, now: Date.now() }) !== null;
+  });
+  const filed = reviews.create(d.syntheticId, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  const transfer = reserveSessionTransfer({ sourceSessionId: d.syntheticId, noteKey, taskId: null,
+    facts: { agent: "claude", nativeId: d.syntheticId, sourceName: "Transfer", sourceRuntime: "sdk", sourceEpisodeId: null,
+      cwd: d.cwd!, repoRoot: null, taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: "/unused",
+      leaseId: "unused", backend: null, home: null, sourceStopped: false, stopStarted: false, sourceProcess: null,
+      launchAt: null, launchOutcome: "not_started", canEnd: false } });
+  t.after(() => updateSessionTransfer(transfer, { state: "aborted" }));
+  // Ordinary lookup already hides transferring sessions. Isolate the resolved-caller
+  // boundary so this test reaches withdrawal's own transfer guard, not that earlier 404.
+  t.mock.method(registry, "findSessionByEnv", () => registry.getSession(d.syntheticId));
+
+  const response = await app.request(`/mcp/questions/${filed.id}/withdraw`, {
+    method: "POST", headers: authed,
+    body: JSON.stringify({ env: {}, cwd: d.cwd, reason: "No longer needed" }),
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "This session is mid runtime transfer." });
+  assert.deepEqual(registry.getReview(filed.id), filed, "the refusal does not change the live question");
+  assert.deepEqual(reviews.openQuestions(d.syntheticId).map((q) => q.id), [filed.id]);
+  const stored = openDb().prepare("SELECT status, response, resolved_at, continuation_queued_at FROM reviews WHERE id = ?").get(filed.id);
+  assert.equal(stored?.status, "pending");
+  assert.equal(stored?.response, null);
+  assert.equal(stored?.resolved_at, null);
+  assert.equal(stored?.continuation_queued_at, null);
+  assert.deepEqual(loadReviewContinuationCandidates(filed.id), [], "no answer is owed after the refusal");
+  assert.equal(openDb().prepare("SELECT 1 FROM pending_turns WHERE note_key = ?").get(noteKey), undefined,
+    "no answer was queued for the session");
+});
+
+for (const mix of ["snoozed-call", "pending-call", "mixed"] as const) {
+  test(`the session limit includes ${mix} questions for new asks in either wait mode`, async () => {
+    setFlag(true);
+    const { registry, reviews, app } = fleet();
+    const d = mkDiscovered();
+    registry.applyDiscovery([d]);
+    reviews.create(d.syntheticId, "plan-decisions", "Gate", "Gate");
+    const ids: string[] = [];
+    for (let n = 0; n < 10; n++) {
+      const result = await created(await post(app, d.cwd, {
+        title: `Limit ${mix} ${n}?`, snoozable: true, asyncCapable: mix === "mixed" && n % 2 === 0,
+      }));
+      ids.push(result.id);
+      if (mix === "snoozed-call" || (mix === "mixed" && n % 2 === 1)) reviews.snooze(result.id, 60_000);
+    }
+    for (const asyncCapable of [false, true]) {
+      const duplicate = await created(await post(app, d.cwd, { title: `Limit ${mix} 1?`, snoozable: true, asyncCapable }));
+      assert.equal(duplicate.id, ids[1], "the same call-mode question reattaches even at the limit");
+      const refused = await post(app, d.cwd, { title: `Another ${mix}?`, snoozable: true, asyncCapable });
+      assert.equal(refused.status, 409);
+      const error = await refused.text();
+      for (let n = 0; n < 10; n++) assert.ok(error.includes(`Limit ${mix} ${n}?`));
+    }
+    assert.equal(reviews.openQuestions(d.syntheticId).length, 10);
+  });
+}
+
+test("enabling async-input bounds existing call-mode questions without changing flag-off behavior", async () => {
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  for (let n = 0; n < 11; n++) {
+    const result = await created(await post(app, d.cwd, { title: `Legacy ${n}?`, snoozable: true }));
+    reviews.snooze(result.id, 60_000);
+  }
+  setFlag(true);
+  for (const asyncCapable of [false, true]) {
+    assert.equal((await post(app, d.cwd, { title: "New after enabling?", snoozable: true, asyncCapable })).status, 409);
+  }
+  assert.equal(reviews.openQuestions(d.syntheticId).length, 11, "existing questions are retained, but cannot grow");
+});

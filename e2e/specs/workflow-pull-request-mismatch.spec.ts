@@ -254,6 +254,12 @@ for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "
     await expect(wait).toContainText(expectedOwner);
     await expect(wait).toContainText(expectedReason);
     await expect(wait).toBeVisible();
+    if (layout === "console") {
+      const row = dashboard.locator(".rail-row").filter({ has: dashboard.locator(".workflow-action-wait") });
+      await expect(row).toHaveAccessibleName(await row.locator(".rail-name").innerText());
+      await expect(row).toHaveAccessibleDescription(new RegExp(expectedOwner));
+      await expect(row).toHaveAccessibleDescription(new RegExp(expectedReason));
+    }
     await shoot(dashboard, `15-${layout}-wait-${scenario}`);
   }
   if (scenario === "operator") return;

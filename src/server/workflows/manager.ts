@@ -658,8 +658,8 @@ export class WorkflowManager {
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
-  /** Only successful immutable commit-tree proofs are cached; unknown objects retry. */
-  private readonly publicationTrees = new Map<string, string>();
+  /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
+  private readonly publicationTrees = new Map<string, { treeOid: string | null; retryAt: number }>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
    *
@@ -6220,7 +6220,7 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
       capturedHeadOid,
       acceptedContentTreeOid,
     });
@@ -6283,6 +6283,7 @@ export class WorkflowManager {
     observedSince: number,
     repository: SessionActionRepositoryFacts | null,
     resolvePublishedTrees: boolean,
+    now: number,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
@@ -6309,13 +6310,15 @@ export class WorkflowManager {
         if (resolvePublishedTrees && pr.observedState === "MERGED" && pr.observedHeadSha && repository
           && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch) {
           const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
-          mergedContentTreeOid = this.publicationTrees.get(key)
-            ?? await (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null);
-          if (mergedContentTreeOid) {
-            this.publicationTrees.delete(key);
-            this.publicationTrees.set(key, mergedContentTreeOid);
-            if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          let cached = this.publicationTrees.get(key);
+          if (!cached || (!cached.treeOid && cached.retryAt <= now)) {
+            const treeOid = await (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(() => null);
+            cached = { treeOid, retryAt: now + 60_000 };
           }
+          mergedContentTreeOid = cached.treeOid;
+          this.publicationTrees.delete(key);
+          this.publicationTrees.set(key, cached);
+          if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
         }
         adopted.push({
           mergedContentTreeOid,

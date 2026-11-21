@@ -1019,10 +1019,10 @@ export interface CloseMergedSessionDeps {
 }
 
 function defaultCloseMergedSessionDeps(): CloseMergedSessionDeps {
-  const workflows = new WorkflowStore();
+  let workflows: WorkflowStore | undefined;
   return {
     mergedPublicationCoversCheckout,
-    workflowDeliveredCurrentPrompt: (...args) => workflows.deliveredActionOwnsPrompt(...args),
+    workflowDeliveredCurrentPrompt: (...args) => (workflows ??= new WorkflowStore()).deliveredActionOwnsPrompt(...args),
     resetWouldDestroyWork,
     kill,
   };

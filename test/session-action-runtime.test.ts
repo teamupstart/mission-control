@@ -2396,9 +2396,11 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
       await h.manager.sweepSessionActions(SETTLED());
-      assert.equal(reads, proof === "missing-review" ? 0 : proof === "known" ? 1 : 2);
+      assert.equal(reads, proof === "missing-review" ? 0 : 1);
       if (proof === "unknown") {
+        await h.manager.sweepSessionActions(SETTLED() + 60_001);
         await waitFor(() => h.store.getRun(runId)?.status === "completed", "unknown tree must retry after it becomes available");
+        assert.equal(reads, 2, "missing objects retry after their cooldown, not every sweep");
       } else if (proof === "known") {
         h.repository.root = "/different-checkout";
         assert.equal(retargetInspectorPrCheckout(key, h.repository.root, h.repository.root, Date.now()), true);

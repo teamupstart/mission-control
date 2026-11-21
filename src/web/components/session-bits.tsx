@@ -1131,9 +1131,9 @@ export function EnsembleRailGroup({
 }
 
 /** Same live action explanation as Runs, including when a question moves the card out of Idle. */
-export function WorkflowActionWait({ runs }: { runs: readonly WorkflowRunSummary[] }): React.JSX.Element {
+export function WorkflowActionWait({ runs, idPrefix }: { runs: readonly WorkflowRunSummary[]; idPrefix?: string }): React.JSX.Element {
   return <>{runs.filter(run => run.status === "waiting_for_action" && run.actionWait).map(run => (
-    <span className="workflow-action-wait" key={run.id}>
+    <span className="workflow-action-wait" key={run.id} id={idPrefix ? `${idPrefix}-${run.id}` : undefined}>
       <strong>{run.workflowName}</strong>
       <span>{actionWaitSentence(run.actionWait!)}</span>
     </span>

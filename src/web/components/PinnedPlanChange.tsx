@@ -16,10 +16,12 @@ function changedDependencyLabel(edge: TaskDependency): string {
   return `${edge.title} (${episode}${edge.satisfiedAt !== null ? "merged/published" : "waiting"})`;
 }
 
+export type PinnedPlanSelection = { change: TaskPlanInputChange; dependencies: TaskDependency[] };
+
 export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, onPending }: {
   task: Task; input: TaskPlanInput; disabled: boolean;
   onEditing: (open: boolean) => void;
-  onChange: (change: TaskPlanInputChange | null) => void;
+  onChange: (selection: PinnedPlanSelection | null) => void;
   onPending: (pending: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -48,7 +50,10 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
       const replacement = result.task?.planInputs?.[inputIndex];
       if (!result.ok && result.status === undefined) setError("Could not reach Mission Control");
       else if (!result.ok || !result.task || !result.before || !replacement) setError(result.error ?? "Could not preview revision");
-      else { setPreview({ before: result.before, after: result.task, replacement }); onChange(change); }
+      else {
+        setPreview({ before: result.before, after: result.task, replacement });
+        onChange({ change, dependencies: result.task.dependencies });
+      }
     } catch { setError("Could not reach Mission Control"); }
     finally { setPending(false); onPending(false); }
   }

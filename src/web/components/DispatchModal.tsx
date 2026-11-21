@@ -1,7 +1,6 @@
-import { PinnedPlanChange } from "./PinnedPlanChange.tsx";
+import { PinnedPlanChange, type PinnedPlanSelection } from "./PinnedPlanChange.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
-import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
@@ -1545,7 +1544,8 @@ function DispatchModal({
   });
   const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
   const [editingPin, setEditingPin] = useState<number | null>(null);
-  const [pinChange, setPinChange] = useState<TaskPlanInputChange | null>(null);
+  const [pinSelection, setPinSelection] = useState<PinnedPlanSelection | null>(null);
+  const pinChange = pinSelection?.change ?? null;
   const pinPreviewRequired = editingPin !== null && pinChange === null;
   const pinPreviewHint = "Preview or cancel the revision change before saving or dispatching";
   const dependencyEditsBlocked = busy || editingPin !== null || pinChange !== null;
@@ -1641,7 +1641,9 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
-  const unmetDependencyCount = draft.dependencies.filter((dependency) => {
+  const unmetDependencyCount = pinSelection
+    ? pinSelection.dependencies.filter(dependency => dependency.satisfiedAt === null).length
+    : draft.dependencies.filter((dependency) => {
     const stored = editing?.dependencies.find(
       (candidate) =>
         dependencyKey(
@@ -2616,7 +2618,7 @@ function DispatchModal({
   function clearDraft(): void {
     revokeAttachments(draft.attachments);
     onRevert();
-    setPinChange(null);
+    setPinSelection(null);
     setEditingPin(null);
     setPinReset(value => value + 1);
     setError(null);
@@ -2795,7 +2797,7 @@ function DispatchModal({
     // the modal open over a task whose text is already stored - nothing to lose, and
     // the same button to press again.
     if (r.ok && pinChange) {
-      setPinChange(null);
+      setPinSelection(null);
       setEditingPin(null);
       setPinReset(value => value + 1);
     }
@@ -3659,7 +3661,7 @@ function DispatchModal({
                         disabled={!pinChangesEnabled || busy || (editingPin !== null && editingPin !== inputIndex) || JSON.stringify(draft.dependencies) !== JSON.stringify(editing.dependencies.map(dependencyInputOf))}
                         onPending={setPinPreviewPending}
                         onEditing={open => setEditingPin(open ? inputIndex : null)}
-                        onChange={change => { setPinChange(change); if (change) update({}); }} />}
+                        onChange={selection => { setPinSelection(selection); if (selection) update({}); }} />}
                     </div>)}
                   </div>}
                   <div className="dep-chips">

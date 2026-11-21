@@ -2229,6 +2229,8 @@ the input and originating prerequisite together; Cancel revision change leaves t
 Save any separate dependency edits before using this action.
 Dependency editing stays disabled while the revision editor is open; cancel the revision change
 to edit prerequisites separately.
+Dispatch availability follows the validated preview's prerequisites. **Dispatch now** saves the
+selected pin and prerequisites before requesting launch.
 
 Only the superseded pin's prerequisites are removed. An origin still required by another pin
 stays, as do unrelated implementation dependencies and recorded merge evidence. A completed

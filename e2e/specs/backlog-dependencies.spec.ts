@@ -36,7 +36,7 @@ async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   const dir = artifactsDir("backlog-dependencies");
   mkdirSync(dir, { recursive: true });
-  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
+  await page.setViewportSize({ width: 1440, height: ["revision-change-awaiting-preview", "revision-change-launch-retry", "revision-change-unreachable", "revision-change-editing-guard", "revision-change-ready-dispatch"].includes(name) || name.startsWith("revision-change-http-") ? 2200 : 1200 });
   await page.mouse.move(0, 0);
   const target = name.startsWith("revision-change-preview") ? page.locator(".pinned-plan-change")
     : name === "revision-change-live-snapshot" ? page.locator(".field").filter({ has: page.locator(".pinned-plan-change") })
@@ -351,6 +351,59 @@ for (const retained of [true, false]) test("change pinned revision previews and 
   await shoot(dashboard, "revision-change-saved-" + retained);
 });
 
+test("a validated replacement enables dispatch using its merged dependencies without sending raw edits", async ({ dashboard, daemon }) => {
+  const old = await savedPlan(daemon);
+  const replacement = await savedPlan(daemon, false, "replacement-plan");
+  const task = await create(daemon, "Dispatch the replacement plan", {
+    planInputs: [old.input], dependencies: [{ type: "task", taskId: old.source.id }, { type: "task", taskId: replacement.source.id }],
+  });
+  await daemon.crash();
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE tasks SET dependencies = ? WHERE id = ?").run(JSON.stringify(task.dependencies.map(edge =>
+      edge.type === "task" && edge.taskId === replacement.source.id ? { ...edge, satisfiedAt: 10 } : edge)), task.id);
+  });
+  await daemon.restart();
+  const flag = await fetch(daemon.baseURL + "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "flag", id: "pinned-plan-change", enabled: true }) });
+  expect(flag.ok).toBe(true);
+  const dialog = await editor(dashboard, daemon, task.title);
+  const read = async () => (await (await fetch(daemon.baseURL + "/api/tasks")).json() as Task[]).find(t => t.id === task.id)!;
+  const before = await read();
+  await expect(dialog.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByLabel("Plan ID", { exact: true }).fill(replacement.input.planId);
+  await dialog.getByLabel("Revision", { exact: true }).fill(String(replacement.input.revision));
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("region", { name: "Pinned revision preview" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  expect(await read()).toEqual(before);
+  await dialog.getByRole("button", { name: "Cancel revision change" }).click();
+  await expect(dialog.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Change pinned revision" }).click();
+  await dialog.getByRole("button", { name: "Preview revision change" }).click();
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await dialog.getByRole("textbox", { name: /^Title/ }).focus();
+  await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+  await shoot(dashboard, "revision-change-ready-dispatch");
+  let patch: Record<string, unknown> | undefined;
+  let dispatched: Task | undefined;
+  await dashboard.route(`**/api/tasks/${task.id}/update`, route => {
+    patch = route.request().postDataJSON();
+    return route.continue();
+  });
+  await dashboard.route(`**/api/tasks/${task.id}/dispatch`, async route => {
+    dispatched = await read();
+    await route.fulfill({ json: { ok: true } });
+  });
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  expect(patch).toHaveProperty("planInputChange");
+  expect(patch).not.toHaveProperty("dependencies");
+  expect(patch).not.toHaveProperty("planInputs");
+  expect(dispatched!.planInputs).toEqual([replacement.input]);
+  expect(dispatched!.dependencies).toEqual([before.dependencies[1]]);
+});
+
 async function revisionEditor(page: Page, daemon: DaemonHandle, episode: "same" | "later" | "merged" = "same", prerequisites: Task[] = []) {
   const origin = await savedPlan(daemon);
   const task = await create(daemon, "Review staged revision", {
@@ -395,6 +448,7 @@ test("revision preview shows replacement episodes and merge status for the same 
   await expect(preview.locator("p").filter({ hasText: /^Add:/ }))
     .toHaveText(`Add: Planning origin (episode ${task.dependencies[0]!.episodeId}, waiting)`);
   await expect(preview.locator("p").filter({ hasText: /^Retain:/ })).toHaveText("Retain: None");
+  await expect(dialog.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
   await shoot(dashboard, "revision-change-preview-new-episode");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();

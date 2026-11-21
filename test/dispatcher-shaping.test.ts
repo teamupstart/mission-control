@@ -793,6 +793,46 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
   }
 });
 
+test("a Pi outcome file that cannot be removed never fails a launched dispatch", async () => {
+  const repo = seedRepo("pi-outcome-cleanup");
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "pi-outcome-cleanup", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "short request", agent: "pi" }));
+  let outcome = "";
+  const warn = console.warn;
+  const warnings: unknown[] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      resolveRuntime: () => "terminal",
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async () => ({ ok: true }),
+      piExtensionInstalled: () => true,
+      argMax: async () => 2_000_000,
+      shapeTask: standIn(SECTION).shapeTask,
+      spawn: async (_label, _short, cwd, _bin, _args, stateHome, _backend, _env, fallback) => {
+        assert.ok(fallback, "a shaped Pi launch carries its fallback");
+        // The wrapper's answer, in a form the cleanup cannot remove: a non-empty directory.
+        outcome = `${stateHome}.turn-one`;
+        mkdirSync(join(outcome, "held"), { recursive: true });
+        const discovered = mkDiscovered({ agent: "pi", cwd, syntheticId: `sid-pi-outcome-${++seq}` });
+        registry.applyDiscovery([discovered]);
+        registry.applyHook({ agent: "pi", event: "SessionStart", sessionId: `native-pi-outcome-${seq}`, cwd, transcriptPath: null,
+          env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
+        return { homeName: `home-pi-outcome-${seq}`, homeBackend: "tmux", terminalResourceId: null };
+      },
+      inject: async () => { throw new Error("Pi's turn one travels in its launch argument"); },
+    }).dispatch("pi-outcome-cleanup");
+  } finally {
+    console.warn = warn;
+  }
+  assertRunning(registry.getTask("pi-outcome-cleanup")!);
+  assert.ok(existsSync(outcome), "the file could not be removed");
+  assert.ok(warnings.some((w) => /could not remove task pi-outcome-cleanup's launch outcome file/.test(String(w))), "and that was logged");
+  // An unreadable answer is never taken as delivered.
+  assert.equal(currentShaping(registry.getTask("pi-outcome-cleanup")!)?.state, "degraded");
+  rmSync(outcome, { recursive: true, force: true });
+});
+
 test("a dispatch that ended while its launch was being measured starts no shaper", async () => {
   const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
   const task = mkTask({ id: "measure-cancel", status: "dispatching", repoRoot: seedRepo("measure-cancel"), title: "Shaping", intent: "do it", agent: "pi" });

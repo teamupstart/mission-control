@@ -1361,7 +1361,14 @@ export class Dispatcher {
       // Settled: nothing of this attempt writes after here. A successor's entry is its own.
       if (currentAttempt()) this.dispatchAttempts.delete(taskId);
       // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
-      if (outcomeStateHome) rmSync(turnOneOutcomePath(outcomeStateHome), { force: true });
+      // Best-effort: the worker is already launched, and restart recovery reclaims a leftover file.
+      if (outcomeStateHome) {
+        try {
+          rmSync(turnOneOutcomePath(outcomeStateHome), { force: true });
+        } catch (error) {
+          console.warn(`[shaping] could not remove task ${taskId}'s launch outcome file:`, error);
+        }
+      }
     }
   }
 

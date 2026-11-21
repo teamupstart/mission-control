@@ -80,9 +80,13 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
    runtime-transfer lineage, then set `origin: "harness"` and
    `presentation: { kind: "review-message", envelope, reviewIds }`. A turn with a marker but no
    bound row is left exactly as it would be today. Do not consult the flag.
-5. **Goal reader.** In `Registry.captureHookGoalPrompt`, skip a prompt only when its fingerprint
-   matches a delivery row for this conversation whose echo is unclaimed, and mark that echo
-   claimed on the row in the same step. A second arrival of the same text is captured as usual.
+5. **Goal reader.** In `Registry.captureHookGoalPrompt`, account for delivery echoes by count, in
+   the existing order: owed daemon echoes are checked before an operator follow-up's echo ticket
+   is claimed. Each delivery row owes one echo, persisted on the row. An arrival matching a row
+   with an echo still owed spends it in the same step and is not captured; any other arrival takes
+   the existing human-ticket or plain capture path. Do not try to pair an arrival with its sender:
+   identical words cannot be told apart, and counting makes the pairing irrelevant, so N
+   deliveries and M operator sends of the same text always yield exactly M Goal revisions.
 6. **Presentation type.** Make `TranscriptPresentation` a discriminated union: the existing
    `{ kind: "launch" | "resident"; displayText }` and the new `review-message` shape. Update
    every switch over it so the type checker enforces exhaustiveness.
@@ -125,8 +129,10 @@ The full findings are in `phased-plan.md`, section "Findings that shaped the pha
   delivery and neither turn becomes a card; a pasted copy of a delivered message,
   a marker with a different body, and a marker with valid ids but no delivery all stay plain
   operator turns; a transfer predecessor's delivery still binds; the binding and
-  `origin: harness` survive a restart with an empty injection record; the Goal reader skips only
-  the one unclaimed echo and captures a retyped copy; delegated-turn binding tests still pass
+  `origin: harness` survive a restart with an empty injection record; the Goal reader captures
+  nothing from a delivery, and an operator send of the same words before, between or after the
+  delivery's echo yields exactly one Goal revision, as do two deliveries with one operator send,
+  in every arrival order; the count survives a restart; delegated-turn binding tests still pass
   against the shared helper;
   `mergeConversation` places one card per review at the delivery turn, at `resolvedAt` with "On
   its way" while queued, and leaves a call-returned answer unchanged; authorship and escalation
@@ -166,5 +172,8 @@ about a review. Retiring the flag makes the writer unconditional; it must not ch
   before the send, a racing send of the same words contests the delivery, and the pasted-copy
   guarantee is narrowed to sends Mission Control can observe. The findings cross-reference was
   rephrased as a reference.
+- Plan pull request review (#1612, revision 5): Goal-reader echo accounting is stated as a
+  count in the existing daemon-before-human order, with arrival-order tests, so an operator copy
+  arriving before the delivery's echo cannot leave that echo to be captured.
 - Final audit: owns every requirement of the source plan, sections 1 to 5, and all three adopted
   decisions.

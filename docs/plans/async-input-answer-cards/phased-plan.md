@@ -103,6 +103,10 @@ first matching turn win. The guarantee for pasted copies is narrowed to what Mis
 observe: a byte-identical copy typed straight into a terminal pane inside the delivery window is
 the one stated residual.
 
+Revision 5 applies one more finding: echo accounting in the Goal reader is stated as a count, as
+`captureHookGoalPrompt` already does for other daemon-typed text, so an operator copy that
+arrives before the delivery's echo cannot leave the delivery's echo to be captured in its place.
+
 ## Final verification
 
 With async-input Phases 1 to 3 and this phase merged and the flag on: `npm run typecheck`,

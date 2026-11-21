@@ -1,7 +1,7 @@
 # Asynchronous input: answers render as answer cards
 
 Status: approved by the operator on 2026-11-20 (revisions 1 and 2), decisions recorded below;
-phased in `phased-plan.md`. Revisions 3 and 4 bind recognition to a recorded daemon delivery after
+phased in `phased-plan.md`. Revisions 3 to 5 bind recognition to a recorded daemon delivery after
 the plan pull request's review (#1612). Addendum to `docs/plans/async-input-inbox/plan.md` (managed plan
 `bc34ca62-7ee5-40d0-9428-25bd57e85755`, revision 8). No product code changes in this task.
 
@@ -111,11 +111,21 @@ it survives restarts and works on history back to the table's retention window. 
 cannot bind (no readable transcript size at send time) leaves its turn as raw text rather than
 guessing.
 
-The Goal reader uses the same record: `Registry.captureHookGoalPrompt` skips a prompt only when it
-matches a delivery row for this conversation whose single echo has not yet been claimed. The
-claim is recorded on the row, so a restart between delivery and the prompt-hook echo cannot let
-the answer through as a Goal revision. A later arrival of the same text is the operator typing
-it, and is captured as usual.
+The Goal reader uses the same record, and accounts for echoes by count rather than by pairing.
+A prompt-hook echo carries no sign of who sent it, so an identical operator copy and the daemon's
+echo cannot be told apart on arrival. `Registry.captureHookGoalPrompt` already settles this for
+other daemon-typed text: it checks owed daemon echoes before it claims an operator follow-up's
+echo ticket, and each arrival spends exactly one owed echo. Review messages join that rule:
+
+- Each delivery row owes exactly one echo, recorded durably on the row, so a restart cannot
+  reset it. An arrival whose fingerprint matches a delivery with an echo still owed spends it and
+  is not captured.
+- Each operator send of the same words keeps its own capture, through its existing human-echo
+  ticket or, for a copy Mission Control did not relay, as an ordinary prompt.
+- Because the words are identical, which arrival spends which owed echo cannot change what is
+  captured. N deliveries and M operator sends of the same text produce exactly M Goal revisions
+  of that text, in any arrival order, and never one from a delivery. A contested delivery owes
+  its echo the same way; contest affects only how the transcript turn is drawn.
 
 ### 3. Drawing it
 
@@ -233,8 +243,9 @@ two renderings.
   but no delivery all render as plain operator text; a turn that lands before delivery is
   confirmed still binds; a composer send of the same words inside the race window contests the
   delivery so neither turn becomes a card; the binding and `origin: harness` survive a
-  restart with an empty injection record; the Goal reader skips only the one unclaimed echo of a
-  recorded delivery and captures a retyped copy; projection and `mergeConversation` draw one card per review, at the delivery turn
+  restart with an empty injection record; an operator send of the same words before, between or
+  after the delivery's echo yields exactly one Goal revision and the delivery none, and two
+  deliveries with one operator send yield one, in every arrival order; projection and `mergeConversation` draw one card per review, at the delivery turn
   when present and at `resolvedAt` with "On its way" when queued; a call-mode answer returned
   through its call is unchanged; flag off writes no line.
 - Playwright (`e2e/`, fake agents, no model tokens): with the flag on, an answer given from the

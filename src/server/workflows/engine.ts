@@ -982,10 +982,11 @@ export class WorkflowEngine {
       const next = this.store.listAttemptsDueAfter(schedulingNow);
       if (next !== null && !this.stopped) {
         if (this.wakeTimer) clearTimeout(this.wakeTimer);
+        // Long vendor waits must not overflow Node timers into a one-millisecond loop.
         this.wakeTimer = setTimeout(() => {
           this.wakeTimer = null;
           this.wake();
-        }, Math.max(1, next - this.now()));
+        }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
       }
     } finally {
       this.pumping = false;
@@ -1537,6 +1538,11 @@ export class WorkflowEngine {
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
+          incompleteReview: this.store.listAttempts(submission.id).some((attempt) => {
+            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return false;
+            const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
+            return parsed.success && parsed.data.status === "incomplete";
+          }),
           retryAt: this.store.listAttempts(submission.id)
             .map((attempt) => {
               const output = attempt.output;
@@ -1590,6 +1596,10 @@ export class WorkflowEngine {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (result.kind === "retryable_connection") {
+      this.store.transact(() => this.handleCodeRabbitConnectionFailure(claimed, run.id, result));
       return;
     }
     if (result.kind === "action_required") {
@@ -1794,6 +1804,46 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     this.onRunChanged(runId);
+  }
+
+  /** A provider-confirmed disconnect is not a review verdict or permission to spend more. */
+  private handleCodeRabbitConnectionFailure(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    result: Extract<Awaited<ReturnType<typeof runCheck>>, { kind: "retryable_connection" }>,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: result.reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
+    const allowanceSpent = result.review.remainingRuns === 0;
+    if (exhausted || allowanceSpent) {
+      this.handleCheckActionRequired(attempt, runId,
+        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. Inspect retained output and retry after connectivity recovers${allowanceSpent ? "; explicitly raise the run allowance first" : ""}. No additional credits were authorized.`, result);
+      return;
+    }
+    const now = this.now();
+    // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
+    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
+    this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
+      output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
+    if (this.blockedByUnresolvedLease(attempt, runId, result.reason)) return;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, inputFingerprint: attempt.inputFingerprint,
+      retryAt, error: `Automatic retry scheduled: ${result.reason}`, now,
+    });
+    this.store.appendEvent(runId, "command_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt, error: result.reason,
+    }, now);
+    this.onRunChanged(runId);
+    this.wake();
   }
 
   /** Configuration or consent needs a human correction, never an automatic retry or code fix. */

@@ -349,7 +349,8 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 Local CodeRabbit reviews are available as a reusable Library Command and in the optional
 No-Mistakes review stage. Root YAML enables review without a Library override; the default
-allowance is ten executions, with warning skips on exhaustion. See
+allowance is ten executions. Recoverable connection failures retry automatically within that
+allowance; an incomplete review stays blocked when retries or allowance run out. See
 [CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
 
 Read more in [Workflows and Personas](docs/workflows.md) and

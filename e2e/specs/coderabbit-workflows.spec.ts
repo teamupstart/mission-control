@@ -262,3 +262,57 @@ test("an arbitrary workflow's graph palette authors CodeRabbit and explains its 
  await expect.poll(async()=>{const d=await api<{workflow:{draft:{nodes:Array<{kind:string;slot?:string}>}}}>(daemon,`/api/workflows/${w.workflow.id}`);return d.workflow.draft.nodes.filter(n=>n.kind==="check").map(n=>n.slot);}).toEqual(["coderabbit"]);
  await shot(dashboard,"custom-graph-authoring");
 });
+
+for (const [name, failures, maxRuns] of [["recovers", 1, 10], ["retry limit", 3, 10], ["allowance", 1, 1]] as const) {
+ test(`recoverable connection ${name} preserves the review gate`, async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+  writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ connectionFailures: failures }));
+  const r = await start(dashboard, daemon, { maxRuns });
+  await expect.poll(async () => (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")?.state,
+   { timeout: 60_000 }).toBe("error");
+  const first = (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")!;
+  expect(first.verdict).toBeNull();
+  expect(first.output).toMatchObject({ review: { status: "incomplete" } });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+  if (name === "recovers") {
+   // Pin the regression to the observable blocked gate, before inspecting retry metadata.
+   await shot(dashboard, "connection-recovers-initial");
+   expect((await detail(daemon, r.id)).run.status, "a recoverable disconnect must keep the workflow running for automatic retry").toBe("running");
+  }
+  expect(first.output).toMatchObject({ review: { retryableConnection: true } });
+  await expect.poll(async () => (await detail(daemon, r.id)).run.status,
+   { timeout: 180_000 }).toBe(name === "recovers" ? "completed" : "blocked");
+  const d = await detail(daemon, r.id);
+  const attempts = d.attempts.filter(a => a.nodeId === "cr");
+  expect(attempts).toHaveLength(name === "recovers" ? 2 : name === "retry limit" ? 3 : 1);
+  for (const attempt of attempts) {
+   expect((attempt.output as {review:{comparison:unknown}}).review.comparison)
+    .toEqual((first.output as {review:{comparison:unknown}}).review.comparison);
+  }
+  if (name === "recovers") {
+   await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review");
+  } else {
+   await expect(dashboard.getByRole("main")).toContainText("WebSocket closed");
+   await expect(dashboard.getByRole("main")).toContainText(name === "retry limit" ? "Automatic connection retry limit reached" : "execution allowance exhausted");
+   await expect(dashboard.getByRole("button", {name: /Retry the failed call/})).toBeVisible();
+   expect(attempts.every(a => a.verdict === null)).toBe(true);
+  }
+  await expect(dashboard.getByRole("link", {name: "Settings > Setup"})).toHaveCount(0);
+  const calls = readFileSync(join(daemon.recordDir, "coderabbit.jsonl"), "utf8").trim().split("\n").map(s => JSON.parse(s));
+  const reviews = calls.filter(c => c.args[0] === "review");
+  expect(reviews).toHaveLength(attempts.length);
+  expect(reviews.every(c => JSON.stringify(c.args) === JSON.stringify(reviews[0].args))).toBe(true);
+  expect(reviews.every(c => !c.args.includes("--use-credits"))).toBe(true);
+  if (name === "retry limit") {
+   const message = dashboard.locator(".wf-run-error").filter({ hasText: "Automatic connection retry limit reached" }).first();
+   await expect(message).toContainText("WebSocket closed");
+   await expect(message).toContainText("Inspect retained output and retry after connectivity recovers");
+   await message.scrollIntoViewIfNeeded();
+   await expect(message).toBeInViewport({ ratio: 1 });
+   await shot(dashboard, "connection-retry-limit-detail-r2");
+  } else {
+   await shot(dashboard, `connection-${name.replaceAll(" ", "-")}`);
+  }
+ });
+}

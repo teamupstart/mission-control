@@ -444,6 +444,7 @@ export class CheckRuntime {
     return { comparison: request.coderabbit,
       status: lost || !complete ? "incomplete" : semantic.status === "skipped" ? "skipped" : "complete",
       counts: semantic.counts, titles: semantic.titles,
+      ...(!lost && cleanupComplete && semantic.retryableConnection ? { retryableConnection: true as const } : {}),
       ...(semantic.retryAt ? { retryAt: semantic.retryAt } : {}),
       ...(semantic.expectedDuration ? { expectedDuration: semantic.expectedDuration } : {}),
       diagnostic: lost ? "CodeRabbit findings could not be durably retained" : semantic.diagnostic };

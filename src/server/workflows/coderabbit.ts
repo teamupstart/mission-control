@@ -211,6 +211,9 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
   reservation = input.reserveRun?.();
+  if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
+    "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
+    "Inspect retained output and explicitly raise the run allowance before retrying; no additional credits were authorized");
   if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
   try {
     if (input.coderabbit?.retryAt && input.coderabbit.retryAt > Date.now()) return block(`CodeRabbit vendor wait is active until ${new Date(input.coderabbit.retryAt).toISOString()}. Retry after that time`);
@@ -241,6 +244,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
     failureStage = "result";
     const review = execution.review;
+    if (review?.status === "incomplete" && review.retryableConnection) return {
+      kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
+      review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) },
+    };
     if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts,
       !review || review.diagnostic === CODERABBIT_OPERATOR_ACTION);
     const skipped = review.status === "skipped";

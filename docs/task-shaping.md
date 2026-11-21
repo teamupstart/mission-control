@@ -300,7 +300,7 @@ before the body limit, so such a request is refused as forbidden whatever its si
   reason asks the operator to reload the page, since retrying from that tab cannot succeed.
   The other way round, a dashboard that receives a view with no
   `revisions`, from a daemon rolled back to an older build, draws its rows with switching,
-  removal and dry runs off and asks the operator to reload. Any other refused intent
+  removal, moves and dry runs off and asks the operator to reload. Any other refused intent
   answers 400 with `{ error, reason }`.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
@@ -372,7 +372,8 @@ since the same state can come from another write or predate this one. When a str
 showed the change stored, the message says so, and an import's dialog stays open for the
 operator to close. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
-arrives while the dialog is open again.
+arrives while the dialog is open again. Both name the shaper whose save it answers, and the
+dialog says so when that is not the manifest it shows.
 An outcome for a shaper the list no longer shows, such as a removal refused because another
 window removed it first, is shown above the list under **Shapers no longer listed**, each with
 the id of the shaper it was for. An

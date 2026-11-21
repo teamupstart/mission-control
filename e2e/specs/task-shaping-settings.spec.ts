@@ -1127,6 +1127,7 @@ test("an import refused after its dialog was closed is shown beside the import b
   await expect(outcome).toHaveCount(0);
   answer.open();
   await expect(outcome.getByRole("alert")).toHaveText("Refused late for this test.");
+  await expect(outcome.locator("code")).toHaveText("late-import");
   await capture(page, "late-import-refusal");
   // While the dialog is open again the outcome is not repeated beside the button; closing the
   // dialog brings it back until the next import is sent.
@@ -1236,8 +1237,10 @@ test("a reopened import dialog shows a refusal that arrives while it is open, an
   await manifest.fill(draft);
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   answer.open();
-  // The open dialog covers the list, so the refusal is shown in it, beside the draft it keeps.
+  // The open dialog covers the list, so the refusal is shown in it, beside the draft it keeps, and
+  // names the shaper whose save it answers, which is not the draft's.
   await expect(dialog.getByRole("alert")).toHaveText("Refused while reopened.");
+  await expect(dialog.getByText("The save of reopen-notes answered:")).toBeVisible();
   await expect(manifest).toHaveValue(draft);
   await page.unroute("**/api/shaping");
 });
@@ -1377,6 +1380,7 @@ test("an import matching what is stored is not taken as saved when its answer is
 test("a view without revisions, as a rolled-back daemon sends, turns revision-bound actions off and asks for a reload", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("older-notes", "Older notes") });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("older-next", "Older next") });
   await simulateOlderDaemon(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(row(page, "Older notes")).toBeVisible();
@@ -1386,6 +1390,9 @@ test("a view without revisions, as a rolled-back daemon sends, turns revision-bo
   await expect(pill(page, "Older notes")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Remove Older notes" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Dry-run Older notes" })).toBeDisabled();
+  // A move from an outdated row could place a replacement, so the arrows are off too.
+  await expect(page.getByRole("button", { name: "Move Older notes down" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Move Older next up" })).toBeDisabled();
   // The rest of the panel still works.
   await expect(panel(page).getByRole("button", { name: "Import manifest…" })).toBeEnabled();
 });
@@ -1822,15 +1829,17 @@ test("a held move never places the shaper again once it is reimported into anoth
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("moved-y", "Moved Y", { stage: "select" }) });
   await expect(selectRows).toHaveText(["Moved Y", "Select S"]);
   await expect(page.getByRole("button", { name: "Move Select S up" })).toBeEnabled({ timeout: 3_000 });
-  // The operator moves another Select row to the top.
+  // The operator moves another Select row to the top, and that move is answered.
+  const second = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
   await page.getByRole("button", { name: "Move Select S up" }).click();
+  expect((await second).status()).toBe(200);
   await expect(selectRows).toHaveText(["Select S", "Moved Y"]);
   // The held move names a definition that is gone, so it is refused and places nothing.
   goes.open();
   expect((await held!.response())?.status()).toBe(409);
   await expect(selectRows).toHaveText(["Select S", "Moved Y"]);
-  const stored = (await shapingConfig(daemon)).order.filter((id) => id === "select-s" || id === "moved-y");
-  expect(stored).toEqual(["select-s", "moved-y"]);
+  await expect.poll(async () => (await shapingConfig(daemon)).order.filter((id) => id === "select-s" || id === "moved-y"))
+    .toEqual(["select-s", "moved-y"]);
   await expect(row(page, "Moved Y").getByRole("alert")).toContainText("changed in another window");
   await page.unroute("**/api/shaping");
 });

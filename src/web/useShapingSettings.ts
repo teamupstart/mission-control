@@ -109,7 +109,7 @@ export function useShapingSettings(
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
       const message = parsed.error.issues[0]?.message ?? "This change is not valid.";
-      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, arrived: ++arrivals.current, message }]));
+      setRefusals((current) => withRefusals(current, key, [{ number: ++sent.current, arrived: ++arrivals.current, message, subject: intentSubject(intent) }]));
       return "refused";
     }
     const request = parsed.data;
@@ -136,7 +136,7 @@ export function useShapingSettings(
           ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
           : "The daemon's answer did not arrive.";
         const message = shapingUnconfirmedText(request, shown, latest.current !== request, cause);
-        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message }]));
+        setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message, subject: intentSubject(request) }]));
         if (writing.current === request) {
           writing.current = null;
           setPending(null);
@@ -170,7 +170,7 @@ export function useShapingSettings(
       // reading as the outcome of the change just made under the same control.
       const reason = error instanceof Error ? error.message : String(error);
       const message = shapingRefusalText(request, reason, latest.current !== request);
-      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message }]));
+      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, arrived: ++arrivals.current, message, subject: intentSubject(request) }]));
       if (writing.current === request) {
         writing.current = null;
         setPending(null);
@@ -199,6 +199,8 @@ export function useShapingSettings(
      */
     outcomeArrivals: Object.fromEntries(Object.entries(refusals)
       .map(([key, list]) => [key, Math.max(...list.map((refusal) => refusal.arrived))])),
+    /** The shaper each control's newest outcome was for, when its write named one. */
+    outcomeSubjects: Object.fromEntries(Object.entries(refusals).flatMap(([key, list]) => list[0]!.subject === null ? [] : [[key, list[0]!.subject]])),
     /** Controls whose request still awaits its HTTP answer: each takes no new write until it arrives. */
     locked,
     ready: live,
@@ -215,6 +217,14 @@ interface Refusal {
   /** When it arrived, in the order outcomes arrived. */
   arrived: number;
   message: string;
+  /** The shaper the write was for, when it names one. */
+  subject: string | null;
+}
+
+/** The shaper an intent writes, when it names one: what an outcome shown elsewhere is about. */
+function intentSubject(intent: ShapingIntent): string | null {
+  if (intent.kind === "upsert") return typeof (intent.shaper as { id?: unknown }).id === "string" ? (intent.shaper as { id: string }).id : null;
+  return "id" in intent ? intent.id : null;
 }
 
 /** `refusals` with one control's list replaced, newest first, and the control dropped when empty. */

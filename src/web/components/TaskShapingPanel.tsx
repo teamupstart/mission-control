@@ -44,6 +44,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       errors={state?.errors ?? {}}
       earlier={state?.earlier ?? {}}
       outcomeArrivals={state?.outcomeArrivals ?? {}}
+      outcomeSubjects={state?.outcomeSubjects ?? {}}
       locked={state?.locked}
       onDismiss={state?.dismiss}
       ready={ready}

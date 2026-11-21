@@ -37,6 +37,7 @@ export function TaskShapingView({
   errors = {},
   earlier = {},
   outcomeArrivals = {},
+  outcomeSubjects = {},
   locked = NO_LOCKS,
   onDismiss,
   ready = true,
@@ -54,6 +55,8 @@ export function TaskShapingView({
   earlier?: Record<string, string[]>;
   /** When each control's latest outcome arrived, in arrival order. */
   outcomeArrivals?: Record<string, number>;
+  /** The shaper each control's newest outcome was for. */
+  outcomeSubjects?: Record<string, string>;
   /** Controls whose request still awaits its answer: each takes no new write until it arrives. */
   locked?: ReadonlySet<string>;
   /** Clears the outcomes shown under one control, for those drawn above the list. */
@@ -180,12 +183,12 @@ export function TaskShapingView({
             <>
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
-                  disabled={stageBusy || at === 0}
+                  disabled={stageBusy || unbound || at === 0}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
-                  disabled={stageBusy || at === group.rows.length - 1}
+                  disabled={stageBusy || unbound || at === group.rows.length - 1}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
@@ -287,6 +290,7 @@ export function TaskShapingView({
           <div className="shaping-list-outcome" role="group" aria-label="Last import">
             <div className="shaping-orphan-outcome">
               <div className="shaping-orphan-copy">
+                {outcomeSubjects.import && <code className="shaping-row-id">{outcomeSubjects.import}</code>}
                 {errors.import && <p role="alert">{errors.import}</p>}
                 <EarlierOutcomes messages={earlier.import} />
               </div>
@@ -314,7 +318,7 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy || locked.has("import")} locked={locked} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
+        <ShapingImportDialog config={config} busy={busy || locked.has("import")} locked={locked} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import} subject={outcomeSubjects.import ?? null}
           fresh={(outcomeArrivals.import ?? 0) > importOpenedAt.current}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {

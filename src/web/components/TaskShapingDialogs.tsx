@@ -84,7 +84,7 @@ export function EarlierOutcomes({ messages }: { messages: readonly string[] | un
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, locked, saving, error, earlier, fresh = false, onClose, onSave }: {
+export function ShapingImportDialog({ config, busy, locked, saving, error, earlier, subject = null, fresh = false, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
@@ -96,6 +96,8 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
   error: string | null;
   /** Refusals of earlier saves that arrived after a newer one went out. */
   earlier?: readonly string[];
+  /** The shaper the newest outcome's save was for. */
+  subject?: string | null;
   /**
    * Whether the outcome arrived after this dialog opened, as a save from a dialog closed
    * meanwhile can: shown here although this dialog has saved nothing yet.
@@ -124,6 +126,7 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
   // A write on this shaper's row still awaits its answer: importing it now could land first and be
   // undone by that write, or the other way round, so it waits.
   const rowLocked = reading?.ok === true && (locked?.has(`row:${reading.shaper.id}`) ?? false);
+  const draftId = reading?.ok ? reading.shaper.id : null;
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
   const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
   const edit = (value: string): void => {
@@ -207,6 +210,12 @@ export function ShapingImportDialog({ config, busy, locked, saving, error, earli
               <p className="shaping-note">The manifest&apos;s &quot;enabled&quot; does not apply here: an imported shaper is saved switched off.</p>
             )}
           </>
+        )}
+        {(saved || fresh) && error && subject !== null && subject !== draftId && (
+          // Not this draft's outcome: the draft was changed, or the dialog reopened, after that save.
+          <p className="shaping-note">
+            The save of <code>{subject}</code> answered:
+          </p>
         )}
         {(saved || fresh) && error && <p role="alert" className="shaping-refusal">{error}</p>}
         <EarlierOutcomes messages={saved || fresh ? earlier : undefined} />

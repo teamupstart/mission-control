@@ -650,3 +650,16 @@ test("a move bound to a replaced definition is superseded, drawn as stored, refu
   // Against the definition it was sent for, it applies.
   assert.equal(applyShapingIntent(stored, move, [], { revise: shapingReviser }).ok, true);
 });
+
+test("a row with no revision offers no move, as a daemon older than the dashboard sends none", () => {
+  const { revisions: _none, ...older } = view({ shapers: [gatherer("a"), gatherer("b")] });
+  const shown = older as unknown as ShapingConfigView;
+  assert.equal(moveIntent(shown, "b", -1), null);
+  assert.equal(moveIntent(shown, "a", 1), null);
+  const html = render(shown);
+  for (const name of ["Move Gatherer a down", "Move Gatherer b up"]) {
+    assert.match(html, new RegExp(`<button[^>]*aria-label="${name}"[^>]*disabled=""|<button[^>]*disabled=""[^>]*aria-label="${name}"`), name);
+  }
+  // With revisions, the same moves are offered.
+  assert.notEqual(moveIntent(view({ shapers: [gatherer("a"), gatherer("b")] }), "b", -1), null);
+});

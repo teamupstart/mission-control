@@ -139,8 +139,10 @@ export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1):
   if (to < 0 || to >= rows.length) return null;
   const others = rows.filter((row) => row !== id);
   // Bound to the definition shown, like a switch: a replacement written meanwhile is not moved.
+  // A row with no revision, as from a daemon older than this dashboard, offers no move at all.
   const expect = shapingViewRevision(view, id);
-  return { kind: "move", id, after: to === 0 ? null : others[to - 1]!, ...(expect === null ? {} : { expect }) };
+  if (expect === null) return null;
+  return { kind: "move", id, after: to === 0 ? null : others[to - 1]!, expect };
 }
 
 /**

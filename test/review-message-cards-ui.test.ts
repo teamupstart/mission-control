@@ -264,23 +264,26 @@ test("a review-history read that keeps failing backs off and stops, so it neithe
   assert.deepEqual(waits, [5_000, 10_000, 20_000, 40_000, 60_000, 60_000], "doubling from 5 s, capped at 60 s, six retries");
 });
 
-test("a disabled review-history hook counts as settled, so a delivered card never stays on loading", async () => {
+test("a disabled review-history hook settles at once but as unread, so a delivered card neither loads for good nor reads as gone", async () => {
   const { useTimelineReviews } = await import("../src/web/lib/timelineReviews.ts");
   // The hook as a host drives it, feeding the merge exactly as the conversation panel does.
   function Probe({ enabled }: { enabled: boolean }) {
     const history = useTimelineReviews("s", [], enabled);
     const out = mergeConversation(transcriptRows([delivered("d", 3_000, [A])]), [], history.reviews, [],
-      { loaded: history.loaded, lineage: history.lineage });
+      { loaded: history.loaded, failed: history.failed, lineage: history.lineage });
     const row = out.find((r) => r.kind === "delivered") as Extract<ConversationRow, { kind: "delivered" }>;
     return createElement(UnavailableReviewCard, {
-      envelope: "answer", loading: row.loading, delivery: { state: "delivered", turnId: "d", at: 3_000 },
+      envelope: "answer", loading: row.loading, unreadable: row.unreadable, delivery: { state: "delivered", turnId: "d", at: 3_000 },
     });
   }
-  // Disabled: nothing is fetched, so nothing is waited for.
+  // Disabled: nothing is fetched, so nothing is waited for, and nothing was read either: the
+  // question may well exist, so the card says it could not be loaded rather than that it is gone.
   const disabled = renderToStaticMarkup(createElement(Probe, { enabled: false }));
   assert.doesNotMatch(disabled, /Loading the question/);
-  assert.match(disabled, /This question is no longer available/);
+  assert.match(disabled, /Couldn(&#x27;|')t load the question/);
+  assert.doesNotMatch(disabled, /no longer available/);
   // Enabled, before its read has settled: still loading, which is the case the flag separates.
   const enabled = renderToStaticMarkup(createElement(Probe, { enabled: true }));
   assert.match(enabled, /Loading the question/);
+  assert.doesNotMatch(enabled, /Couldn(&#x27;|')t load the question/);
 });

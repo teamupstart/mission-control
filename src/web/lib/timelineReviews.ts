@@ -96,9 +96,11 @@ export function useTimelineReviews(
   // of reviews, and the merge downstream already walks the rows once per render.
   return {
     reviews: timelineReviewsFor(sessionId, stored, live, asyncInput),
-    // A disabled hook reads nothing, so there is nothing to wait for: settled at once.
+    // A disabled hook reads nothing, so there is nothing to wait for: settled at once. But it read
+    // nothing either, so it settles as failed: a delivered answer whose review is not in hand reads
+    // "Couldn't load the question", never "no longer available", which only a read may establish.
     loaded: !enabled || settledFor === sessionId,
-    failed: enabled && failedFor === sessionId,
+    failed: !enabled || failedFor === sessionId,
     lineage,
   };
 }
@@ -191,7 +193,10 @@ export function historyRetryDelay(attempt: number): number | null {
 export interface TimelineReviews {
   reviews: ReviewItem[];
   loaded: boolean;
-  /** Settled without a full read (a source refused, or its retries ran out): a missing question may exist. */
+  /**
+   * Settled without a full read (a source refused, its retries ran out, or the hook is disabled):
+   * a missing question may exist.
+   */
   failed: boolean;
   lineage: ReviewItem[];
 }

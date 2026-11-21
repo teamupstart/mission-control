@@ -8915,49 +8915,66 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return;
     const key = noteKeyFor(s);
-    // A launch that included or skipped a repository task skill is recorded even with no
-    // standing text, as a row of empty text on the "none" channel, which every reader of the
-    // mechanism already treats as "nothing to replay". A launch with neither has no row.
-    //
     // `undefined` means the caller does not speak for skills, so a record already stored under
-    // this key is kept; only an explicit record, or an explicit `null` ("this launch had none"),
-    // replaces it. Defaulting to erase would let a later write that only knows the standing
-    // text wipe the launch's recorded skills.
-    const skills =
-      repoTaskSkills === undefined
-        ? (this.standingInstructions.get(key)?.repoTaskSkills ?? null)
-        : repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
-          ? repoTaskSkills
-          : null;
-    // No text and no statement about skills: nothing this call can say, and it must not
-    // replace a stored row with an empty one.
-    if (!delivery.text && repoTaskSkills === undefined) return;
-    if (!delivery.text && !skills) {
-      // Nothing to record. An explicit "this launch had none" still has to retire a record an
-      // earlier launch left under this key: a row that held only skills goes away, and a row
-      // that also holds standing text keeps its text and loses only the stale skills.
-      const prior = this.standingInstructions.get(key);
-      if (!prior?.repoTaskSkills) return;
-      if (prior.text) {
-        const cleared: StandingInstructionsSnapshot = { ...prior, repoTaskSkills: null };
-        insertStandingInstructions(cleared);
-        this.standingInstructions.set(key, cleared);
-      } else {
-        deleteStandingInstructions(key);
-        this.standingInstructions.delete(key);
-      }
+    // this key is kept. Defaulting to erase would let a later write that only knows the
+    // standing text wipe the launch's recorded skills. With no text either, there is nothing
+    // this call can say and the stored row is left alone.
+    if (repoTaskSkills === undefined) {
+      if (!delivery.text) return;
+      this.writeStandingInstructions(key, delivery, this.standingInstructions.get(key)?.repoTaskSkills ?? null);
       return;
     }
+    // An explicit record, or an explicit null ("this launch had none"), speaks for the launch.
+    const skills =
+      repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
+        ? repoTaskSkills
+        : null;
+    if (!delivery.text && !skills) {
+      this.retireStaleRepoTaskSkills(key);
+      return;
+    }
+    this.writeStandingInstructions(key, delivery, skills);
+  }
+
+  /**
+   * Store one launch's row. A launch that included or skipped a repository task skill is
+   * recorded even with no standing text, as a row of empty text on the "none" channel, which
+   * every reader of the mechanism already treats as "nothing to replay".
+   */
+  private writeStandingInstructions(
+    key: string,
+    delivery: StandingInstructionsDelivery,
+    repoTaskSkills: RepoTaskSkillRecord | null,
+  ): void {
     const snapshot: StandingInstructionsSnapshot = {
       noteKey: key,
       text: delivery.text,
       mechanism: delivery.text ? delivery.mechanism : "none",
       sources: delivery.sources,
       createdAt: Date.now(),
-      repoTaskSkills: skills,
+      repoTaskSkills,
     };
     insertStandingInstructions(snapshot);
     this.standingInstructions.set(snapshot.noteKey, snapshot);
+  }
+
+  /**
+   * A launch that explicitly had no skills (and no standing text) retires a skill record an
+   * earlier launch left under this key: a row that held only skills goes away, and a row that
+   * also holds standing text keeps its text and loses only the stale skills. Nothing stored
+   * means nothing to do.
+   */
+  private retireStaleRepoTaskSkills(key: string): void {
+    const prior = this.standingInstructions.get(key);
+    if (!prior?.repoTaskSkills) return;
+    if (prior.text) {
+      const cleared: StandingInstructionsSnapshot = { ...prior, repoTaskSkills: null };
+      insertStandingInstructions(cleared);
+      this.standingInstructions.set(key, cleared);
+      return;
+    }
+    deleteStandingInstructions(key);
+    this.standingInstructions.delete(key);
   }
 
   /**

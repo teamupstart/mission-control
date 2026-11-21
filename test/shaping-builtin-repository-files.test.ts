@@ -16,7 +16,7 @@ import {
   type Shaper, type ShapingRequest,
 } from "../src/shared/shaping.ts";
 import {
-  callRepositoryFiles, contentWithinCap, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
+  boundedReadBytes, callRepositoryFiles, contentWithinCap, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, quotedPath, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
   type RepositoryFilesFs,
 } from "../src/server/shaping/builtin/repository-files.ts";
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
@@ -160,6 +160,21 @@ test("a newline at offset zero is a line boundary, so a cut never publishes part
   assert.deepEqual(result?.guidance, [], "a cut to nothing is no entry");
   assert.equal(result?.truncated, true, "but the reply still says content was cut");
   assert.doesNotMatch(JSON.stringify(result), /x{5}|y{5}/);
+});
+
+test("a CRLF separator just past the cap keeps the line it ends, and a cut leaves no carriage return", async () => {
+  const crlf = "one\r\ntwo\r\nthree";
+  const { root } = fixture({ "crlf.md": crlf, "lf.md": "one\ntwo\nthree" });
+  // A cap of 8 lands just before the second CRLF, as one of 7 lands just before the second LF.
+  assert.deepEqual(await readWorktreeFile(root, "crlf.md", 8), { ok: true, text: "one\r\ntwo", truncated: true });
+  assert.deepEqual(await readWorktreeFile(root, "lf.md", 7), { ok: true, text: "one\ntwo", truncated: true });
+  // Between the carriage return and the line feed: the first line, without its carriage return.
+  assert.deepEqual(await readWorktreeFile(root, "crlf.md", 4), { ok: true, text: "one", truncated: true });
+  // Inside the second line: back to the first, again without its carriage return.
+  assert.deepEqual(await readWorktreeFile(root, "crlf.md", 7), { ok: true, text: "one", truncated: true });
+  // A complete read cut by the cap follows the same rule.
+  assert.deepEqual(fileText(Buffer.from(`${crlf}�`), 8, false), { text: "one\r\ntwo", truncated: true });
+  assert.equal(boundedReadBytes(8), 8 + 3 + 1, "the read asks for the cap, a byte order mark and the lookahead past its own extra byte");
 });
 
 test("a whole file whose replacement characters outgrow the cap is cut, never reported empty", async () => {

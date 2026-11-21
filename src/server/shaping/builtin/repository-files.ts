@@ -126,28 +126,47 @@ export function fileText(bytes: Buffer, cap: number, exceeded: boolean): { text:
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
 /**
- * A bounded read's content: a leading byte order mark dropped, then at most `cap + 1` bytes, and
- * whether the content is longer than `cap`. The mark is removed before the cap applies, so it
- * never counts against a file's limit: the read that feeds this allows `cap` plus the mark's
- * three bytes, and a facts file of exactly 64 KiB behind a mark is whole. The extra byte past
- * `cap` is kept so the line cut can see whether the cap fell exactly on a line's end.
+ * Bytes kept past the cap, so the line cut can tell whether the cap fell exactly on a line's end:
+ * two, the length of a CRLF separator.
+ */
+const LINE_END_LOOKAHEAD = 2;
+
+/** How many bytes a read of a file capped at `cap` asks for: a byte order mark and the lookahead on top. */
+export function boundedReadBytes(cap: number): number {
+  // `readFileWithinCap` reads one byte past what it is asked for, which is the first lookahead byte.
+  return cap + UTF8_BOM.length + LINE_END_LOOKAHEAD - 1;
+}
+
+/**
+ * A bounded read's content: a leading byte order mark dropped, then at most `cap` bytes and the
+ * lookahead past them, and whether the content is longer than `cap`. The mark is removed before
+ * the cap applies, so it never counts against a file's limit, and a facts file of exactly 64 KiB
+ * behind a mark is whole.
  */
 export function contentWithinCap(bytes: Buffer, cap: number): { bytes: Buffer; exceeded: boolean } {
   const content = bytes.subarray(0, UTF8_BOM.length).equals(UTF8_BOM) ? bytes.subarray(UTF8_BOM.length) : bytes;
-  return { bytes: content.subarray(0, cap + 1), exceeded: content.length > cap };
+  return { bytes: content.subarray(0, cap + LINE_END_LOOKAHEAD), exceeded: content.length > cap };
 }
 
 /**
  * `text` is longer than `cap`, or is a prefix of a longer file: the longest prefix within `cap`
- * that ends at a line boundary. A newline at offset zero is a boundary like any other, so a file
- * that opens with a blank line never publishes part of the line after it. Only text with no
- * boundary in range is cut at a character boundary, so one long line still contributes.
+ * that ends at a line boundary, LF or CRLF. A cap that lands just before either separator keeps
+ * the line it ends, and a cut never leaves the carriage return of a CRLF behind. A newline at
+ * offset zero is a boundary like any other, so a file that opens with a blank line never
+ * publishes part of the line after it. Only text with no boundary in range is cut at a character
+ * boundary, so one long line still contributes.
  */
 function cutAtLastLine(text: string, cap: number): string {
   const clipped = clipUtf8(text, cap);
-  if (text[clipped.length] === "\n") return clipped;
+  const next = text.slice(clipped.length, clipped.length + 2);
+  if (next.startsWith("\n") || next === "\r\n") return withoutCarriageReturn(clipped);
   const newline = clipped.lastIndexOf("\n");
-  return newline >= 0 ? clipped.slice(0, newline) : clipped;
+  return newline >= 0 ? withoutCarriageReturn(clipped.slice(0, newline)) : clipped;
+}
+
+/** A line cut at its LF keeps no carriage return of a CRLF. */
+function withoutCarriageReturn(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
 }
 
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
@@ -212,9 +231,9 @@ export async function readWorktreeFile(
     }
 
     // Read, from the handle, with a hard limit: a file that grows meanwhile is still cut off.
-    // The read allows a byte order mark on top of the cap, which `contentWithinCap` removes first.
+    // The read allows a byte order mark and the line-end lookahead on top of the cap.
     let bounded: { bytes: Buffer; exceeded: boolean };
-    try { bounded = contentWithinCap((await readFileWithinCap(handle, cap + UTF8_BOM.length)).bytes, cap); }
+    try { bounded = contentWithinCap((await readFileWithinCap(handle, boundedReadBytes(cap))).bytes, cap); }
     catch { return { ok: false, skip: "unreadable" }; }
     const { text, truncated } = fileText(bounded.bytes, cap, bounded.exceeded);
     // `empty` is a claim about the whole decoded file, so only text that was neither a prefix of

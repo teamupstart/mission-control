@@ -17,7 +17,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -35,10 +35,11 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { Registry } = await import("../src/server/registry.ts");
+const { sessionMessages } = await import("../src/server/harness/index.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { boundedWorkflowTranscript, fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
 const { WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
@@ -237,6 +238,10 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     }) as never,
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
+      const session = _registry.getSession(binding.sessionId!);
+      const located = session ? sessionMessages(session) : null;
+      const transcript = boundedWorkflowTranscript(located?.read.window(located.path, 12, 68).messages ?? []);
+      const transcriptSize = located?.read.size(located.path) ?? null;
       const raw = {
         primaryGoal: { rawPrompt: "Ship it", refined: null, sourceNoteKey: binding.noteKey },
         humanDecisions: [],
@@ -265,9 +270,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
           workingTreeDirty: !!options.localReport,
           workingTreeStatus: [],
           workingTreeStatusTruncated: false,
-          transcript: [],
-          transcriptAnchor: 1,
-          transcriptTruncated: false,
+          transcript: transcript.transcript,
+          transcriptAnchor: transcriptSize ?? 1,
+          transcriptTruncated: transcript.truncated,
           standards: [],
           standardsTruncated: false,
         },
@@ -279,8 +284,8 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
           noteKey: binding.noteKey,
           sessionId: binding.sessionId!,
           headSha: captureHead.sha ?? head.sha,
-          transcriptPath: null,
-          transcriptSize: 0,
+          transcriptPath: located?.path ?? null,
+          transcriptSize: transcriptSize ?? 0,
           repositoryFingerprint: `repo-${captureHead.sha ?? head.sha}`,
         },
       };
@@ -440,13 +445,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   });
   manager.start();
 
-  const reportIdle = (): void => {
+  const reportIdle = (transcriptPath: string | null = null): void => {
     registry.applyHook({
       agent: "claude",
       event: "Stop",
       sessionId: `agent-${sessionId}`,
       cwd: "/repo",
-      transcriptPath: null,
+      transcriptPath,
       env: { tmuxPane: `%${sessionId.length}` },
       prCreated: false,
     });
@@ -591,7 +596,7 @@ async function runToAction(h: Harness, prompted = false): Promise<string> {
     h.runActionTurn();
     const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
     const claim = await h.manager.claimCompletion(h.sessionId, {
-      completionKind: "prompted", marker: "a".repeat(64), summary: "Nothing remains to publish",
+      completionKind: "prompted", marker: "a".repeat(64), summary: "The plan review and handoff are complete",
       evidenceFingerprint: "published-plan",
       expectedIntent: { objective, objectiveVersion: 1, promptRevision: 1, episodeKey: "intent:1:1" },
       expectedWorkCycle: { logicalKey: cycle.logicalKey, generation: cycle.generation },
@@ -2083,9 +2088,25 @@ for (const changed of [false, true]) {
       const runId = await runToAction(h, true);
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action packet");
       const attemptId = waitingActionAttemptId(h, runId);
-      // The fake session consumes the packet and reports nothing to publish. No PR is adopted.
+      const delivery = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+      assert.ok(h.injected.includes(delivery.payload), "the session received the action packet");
       if (changed) h.contentTree.oid = h.full("unpublished-plan");
-      h.runActionTurn();
+      h.reportWorking();
+      const report = `The plan is already published through merged pull request ${url}. Nothing remains to publish; no new pull request is needed.`;
+      const transcriptPath = join(home, `${h.sessionId}-response.jsonl`);
+      writeFileSync(transcriptPath, [
+        { type: "user", uuid: "pull-request-packet", timestamp: new Date(delivery.deliveredAt!).toISOString(),
+          message: { role: "user", content: delivery.payload } },
+        { type: "assistant", uuid: "publication-report", timestamp: new Date().toISOString(),
+          message: { role: "assistant", content: [{ type: "text", text: report }] } },
+      ].map(record => `${JSON.stringify(record)}\n`).join(""));
+      h.reportIdle(transcriptPath);
+      const located = sessionMessages(h.registry.getSession(h.sessionId)!);
+      assert.ok(located, "the Stop hook attached the session's response transcript");
+      const response = located.read.window(located.path, 12, 68).messages.at(-1)!;
+      assert.equal(response.role, "assistant");
+      assert.equal(response.text, report);
+      assert.ok(response.ts > delivery.deliveredAt!, "the report follows action delivery");
       await h.manager.sweepSessionActions(SETTLED());
       if (changed) {
         await waitFor(() => h.store.runSummary(runId)?.actionWait === "awaiting_pull_request",
@@ -2097,6 +2118,14 @@ for (const changed of [false, true]) {
         assert.match(JSON.stringify(attempt), /Already published through merged pull request/);
         assert.match(JSON.stringify(attempt), /1570/);
         assert.equal(h.store.listDeliveries(runId).length, 1);
+        assert.equal(h.store.runSummary(runId)?.actionWait, null);
+        const [parent, continuation] = h.store.listSubmissions(runId);
+        assert.ok(parent && continuation);
+        assert.equal(WorkflowContextSnapshotSchema.parse(parent.context).evidence.transcript.length, 0,
+          "the prompted completion preceded the action response");
+        assert.ok(WorkflowContextSnapshotSchema.parse(continuation.context).evidence.transcript
+          .some(message => message.role === "assistant" && message.content === report),
+        "the continuation captures the session's post-delivery no-publication report");
       }
     } finally { await h.stop(); }
   });

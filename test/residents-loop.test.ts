@@ -433,6 +433,22 @@ for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const },
   await t.waitFor(() => assert.equal(f.calls.length, 1));
 });
 
+test("open message-mode questions never hold a resident's wakes, while a call-mode review still does (async-input)", async t => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  assert.equal(f.session.task?.kind, "resident");
+  // Questions the resident filed and kept working past: its cadence carries on regardless.
+  f.patch({ openQuestions: 3, state: "idle" }); await flush();
+  assert.equal(f.run().loopState, "waiting");
+  assert.doesNotThrow(() => loop.resume("run"), "Resume is not refused for open questions alone");
+  await loop.stop(); f.advance(400_000); f.loop();
+  await t.waitFor(() => assert.equal(f.calls.length, 1));
+
+  // A call-mode review beside them still holds the next wake.
+  f.complete(); f.patch({ openQuestions: 3, pendingReviews: 1, state: "idle" }); await flush();
+  f.advance(4_000_000); await flush();
+  assert.equal(f.calls.length, 1, "a call-mode review no longer holds the wake");
+});
+
 test("pacing before and during a review survives resolution and completes with the requested delay", async () => {
   const f = fixture(); const loop = f.loop(); await flush(); await loop.runNow("run");
   loop.schedule(f.session, { callId: "before", delaySeconds: 900, reason: "before review" });

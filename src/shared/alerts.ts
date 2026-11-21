@@ -13,6 +13,7 @@
 // happened, and DELIVERY decides what is worth interrupting for (see
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
+import { confirmedWorking, openQuestionCount } from "./async-input.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
 import { goalLine } from "./goal.ts";
 import {
@@ -182,11 +183,15 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
 export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
+  // Newest pending review per session, split the way the two counts are: a question its agent
+  // waits on inside the call, and a message-mode question (`async-input`) its agent kept working past.
   const latestReviews = new Map<string, ReviewItem>();
+  const latestQuestions = new Map<string, ReviewItem>();
   for (const review of next.reviews ?? []) {
     if (review.status !== "pending") continue;
-    const latest = latestReviews.get(review.sessionId);
-    if (!latest || review.createdAt >= latest.createdAt) latestReviews.set(review.sessionId, review);
+    const into = review.waitMode === "message" ? latestQuestions : latestReviews;
+    const latest = into.get(review.sessionId);
+    if (!latest || review.createdAt >= latest.createdAt) into.set(review.sessionId, review);
   }
   const attentionByCommission = (scope: AlertScope) => {
     return new Map(pipelineCommissionAttentionEntries({
@@ -261,6 +266,20 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         title: `${label} ${review?.kind === "input" ? "needs your answer" : "needs review"}`,
         body: goalLine(description ?? "", 240)
           || (s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review"),
+        sessionId: s.id,
+        severity: "attention",
+      });
+    } else if (openQuestionCount(s) > (before ? openQuestionCount(before) : 0)) {
+      // The same alert for a message-mode question, raised by `openQuestions` growing. Its title
+      // says whether the agent is still working past it or has stopped on it; no second alert
+      // fires when a working session later stops. `else if` with the same id: one session, one
+      // toast for one frame.
+      const question = latestQuestions.get(s.id);
+      alerts.push({
+        id: `review:${s.id}`,
+        kind: "review",
+        title: `${label} ${confirmedWorking(s) ? "has a question, still working" : "needs your answer"}`,
+        body: goalLine(question?.body ?? "", 240) || "a question is open",
         sessionId: s.id,
         severity: "attention",
       });

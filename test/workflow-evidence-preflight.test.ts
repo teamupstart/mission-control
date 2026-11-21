@@ -28,6 +28,8 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 const { workflowCaptureFailure } = await import("../src/shared/workflow-lifecycle.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 
 const repositoryRoot = process.cwd();
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] });
@@ -1990,6 +1992,29 @@ test("capture repair holds a blocked session and resumes once its blocker is cle
   await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "clearing the blocker did not release recovery");
   const child = h.store.latestSubmission(h.run.id)!;
   assert.equal(child.refinementReason, "evidence_capture_repair");
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+});
+
+test("capture repair holds a session with an outstanding request_input question until it is answered (async-input)", async (t) => {
+  const id = "capture-repair-asked";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "repair was not delivered");
+  h.registry.getSession(id)!.state = "idle";
+  await h.register("replacement-handoff");
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false }); });
+  const reviews = new ReviewManager(h.registry);
+  // Message mode, snoozed: in neither count and not amber, so only the completion hold sees it.
+  const question = reviews.create(id, "input", "Which linter?", "Which linter?", [
+    { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+  ], { snoozable: true, waitMode: "message" });
+  reviews.snooze(question.id, 60 * 60_000);
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "corrected proof was prepared around an outstanding question");
+
+  reviews.resolve(question.id, "answer", "eslint", "human");
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "answering the question did not release recovery");
   assert.equal(h.store.listSubmissions(h.run.id).length, 2);
 });
 

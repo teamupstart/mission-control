@@ -13,6 +13,7 @@
 import type {
   PlanDecision,
   PlanDecisionAnswer,
+  ReviewActor,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
@@ -98,6 +99,43 @@ export function isApprovingActor(by: ReviewItem["resolvedBy"] | undefined): bool
   return by === "human" || by === "standing-approval" || by?.startsWith("home-approval:") === true;
 }
 
+/**
+ * Whose resolution of a review is owed to its agent as a message once no MCP call is waiting
+ * for it. The one statement of that rule: `deliversContinuation` reads it in memory, and the
+ * outbox's SQL eligibility (`continuationActorSql` in `server/db.ts`) is built from it, so a new
+ * actor is added here and nowhere else.
+ *
+ * - `anyWait`: the operator, a session driving this one through session control, and a home
+ *   session or `mctl` (`HOME_DISPATCH_ACTOR_NAMES`/`_PREFIXES`), whatever the review's wait mode.
+ * - `messageWait`: Foreman and a standing approval, only for a message-mode question
+ *   (`async-input`). A call-mode call returns those resolutions directly; a message-mode
+ *   question has no call to return them through, so without this the agent never hears them.
+ *
+ * Every value is a fixed identifier, never input: the SQL builder quotes them as literals.
+ */
+export const CONTINUATION_ACTOR_POLICY = {
+  anyWait: { actors: ["human", ...HOME_DISPATCH_ACTOR_NAMES], prefixes: ["session:", ...HOME_DISPATCH_ACTOR_PREFIXES] },
+  messageWait: { actors: ["foreman", "standing-approval"] },
+} as const satisfies {
+  anyWait: { actors: readonly ReviewActor[]; prefixes: readonly string[] };
+  messageWait: { actors: readonly ReviewActor[] };
+};
+
+/**
+ * Whether a settled review's answer is owed to its agent through the continuation outbox: a
+ * human status from an actor `CONTINUATION_ACTOR_POLICY` admits for the review's wait mode.
+ *
+ * Kept apart from `isConversationResolvedReview` on purpose: Foreman's answers are already in
+ * the conversation as its own episode, so widening that predicate would show them twice.
+ */
+export function deliversContinuation(review: ReviewItem): boolean {
+  const by = review.resolvedBy;
+  if (!by || !HUMAN_REVIEW_STATUSES.has(review.status)) return false;
+  const { anyWait, messageWait } = CONTINUATION_ACTOR_POLICY;
+  if ((anyWait.actors as readonly string[]).includes(by) || anyWait.prefixes.some((prefix) => by.startsWith(prefix))) return true;
+  return review.waitMode === "message" && (messageWait.actors as readonly string[]).includes(by);
+}
+
 /** The line a standing approval prefixes onto the agent's tool result and the logged record. */
 export const STANDING_APPROVAL_NOTE = "Approved automatically: the operator chose to approve all future plan bundles for this task.";
 
@@ -122,8 +160,14 @@ function reviewResolutionResult(review: ReviewItem): { text: string; isError: bo
   if (review.status === "snoozed") {
     return { text: snoozedToolResultText(review), isError: false };
   }
+  if (review.status === "orphaned" && review.closedReason === "merged") {
+    return { text: "Closed unanswered: the task's pull request merged before a human answered.", isError: true };
+  }
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
+  }
+  if (review.status === "withdrawn") {
+    return { text: "Withdrawn without an answer: you took this question back, so the human no longer answers it.", isError: true };
   }
   if (review.status === "superseded") {
     return {

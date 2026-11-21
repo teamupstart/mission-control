@@ -26,7 +26,7 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
   const [planId, setPlanId] = useState(input.planId);
   const [revision, setRevision] = useState("");
   const [files, setFiles] = useState(input.files.join(", "));
-  const [preview, setPreview] = useState<{ before: Task; after: Task } | null>(null);
+  const [preview, setPreview] = useState<{ before: Task; after: Task; replacement: TaskPlanInput } | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const reset = () => { setPreview(null); setError(""); onChange(null); };
@@ -42,8 +42,12 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
     };
     try {
       const result = await api.previewPlanChange(task.id, change);
-      if (!result.ok || !result.task || !result.before) setError(result.error ?? "Could not preview revision");
-      else { setPreview({ before: result.before, after: result.task }); onChange(change); }
+      const inputIndex = result.before?.planInputs?.findIndex(pin => pin.repoKey === change.from.repoKey
+        && pin.planId === change.from.planId && pin.revision === change.from.revision
+        && JSON.stringify(pin.files) === JSON.stringify(change.from.files)) ?? -1;
+      const replacement = result.task?.planInputs?.[inputIndex];
+      if (!result.ok || !result.task || !result.before || !replacement) setError(result.error ?? "Could not preview revision");
+      else { setPreview({ before: result.before, after: result.task, replacement }); onChange(change); }
     } catch { setError("Could not reach Mission Control"); }
     finally { setPending(false); onPending(false); }
   }
@@ -62,7 +66,7 @@ export function PinnedPlanChange({ task, input, disabled, onChange, onEditing, o
     {error && <p role="alert">{error}</p>}
     {preview && <section aria-label="Pinned revision preview">
       <p><strong>Old:</strong> <Tooltip label="Open the currently pinned plan revision in a new tab"><a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">{input.planId} revision {input.revision}</a></Tooltip> · {input.files.join(", ")}</p>
-      <p><strong>New:</strong> <Tooltip label="Open the selected replacement revision in a new tab"><a href={managedPlanPreview(planId.trim(), Number(revision))} target="_blank" rel="noreferrer">{planId.trim()} revision {revision}</a></Tooltip> · {files}</p>
+      <p><strong>New:</strong> <Tooltip label="Open the selected replacement revision in a new tab"><a href={managedPlanPreview(preview.replacement.planId, preview.replacement.revision)} target="_blank" rel="noreferrer">{preview.replacement.planId} revision {preview.replacement.revision}</a></Tooltip> · {preview.replacement.files.join(", ")}</p>
       <p><strong>Remove:</strong> {removed.map(changedDependencyLabel).join(", ") || "None"}</p>
       <p><strong>Add:</strong> {added.map(changedDependencyLabel).join(", ") || "None"}</p>
       <p><strong>Retain:</strong> {preview.after.dependencies.filter(edge => !added.includes(edge)).map(edge => edge.title + (edge.satisfiedAt !== null ? " (merged/published)" : " (waiting)")).join(", ") || "None"}</p>

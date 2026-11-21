@@ -311,7 +311,7 @@ for (const retained of [true, false]) test("change pinned revision previews and 
   await dialog.getByRole("button", { name: "Preview revision change" }).click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await dialog.getByLabel("Revision", { exact: true }).fill(String(replacement.input.revision));
-  await dialog.getByLabel(/^Markdown files/).fill(replacement.input.files.join(", "));
+  await dialog.getByLabel(/^Markdown files/).fill(" ,  " + replacement.input.files.join(" , , ") + " , ");
   await dialog.getByRole("button", { name: "Preview revision change" }).click();
   const preview = dialog.getByRole("region", { name: "Pinned revision preview" });
   const expectPreviewPins = async () => {

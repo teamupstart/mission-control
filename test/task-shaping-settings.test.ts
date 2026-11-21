@@ -35,6 +35,9 @@ import {
   shapingList,
   shapingLockKeys,
   shapingRefusalText,
+  shapingFrameIsReceipt,
+  shapingLaterCommit,
+  shapingReceiptBaseline,
   shapingRowsAhead,
   shapingViewCommit,
   shapingViewReached,
@@ -717,4 +720,38 @@ test("a write's answer holds the rows it changed until the stream reaches its co
   // Another daemon process's snapshot, or an answer that names no commit, holds nothing.
   assert.equal(shapingViewReached(at(1, { a: "x" }, "daemon-b"), { instance: "daemon-a", commit: 7 }), true);
   assert.deepEqual(shapingRowsAhead(peer, at(undefined, { a: "rev-import" })), []);
+});
+
+test("a late answer for an earlier commit never lowers the commit a row waits for", () => {
+  const at = (commit: number, instance = "daemon-a") => ({ instance, commit });
+  assert.deepEqual(shapingLaterCommit(undefined, at(5)), at(5), "nothing held yet");
+  assert.deepEqual(shapingLaterCommit(at(7), at(5)), at(7), "an import's 7 stands over a late answer's 5");
+  assert.deepEqual(shapingLaterCommit(at(5), at(7)), at(7), "a later answer raises it");
+  // An answer from another process was compared against that process's view: it is what will arrive.
+  assert.deepEqual(shapingLaterCommit(at(9), at(2, "daemon-b")), at(2, "daemon-b"));
+});
+
+test("a frame counts as an identical reimport's receipt only once its revision has moved on from a known one", () => {
+  const shaper = ShaperSchema.parse(gatherer("same"));
+  // Stored as an import stores it: switched off.
+  const stored = view({ shapers: [shaper], overrides: { same: false } });
+  const request = { kind: "upsert", shaper } as ShapingIntent;
+  const withRevision = (revision: string | undefined): ShapingConfigView => {
+    const { revisions: _revisions, ...rest } = stored;
+    return (revision === undefined ? rest : { ...rest, revisions: { same: revision } }) as ShapingConfigView;
+  };
+  // Already stored as it was sent, so only a moved revision is evidence.
+  const known = shapingReceiptBaseline(withRevision("r1"), request);
+  assert.deepEqual(known, { shown: true, revision: "r1" });
+  assert.equal(shapingFrameIsReceipt(known, withRevision("r1"), "same"), false, "an unrelated write's frame");
+  assert.equal(shapingFrameIsReceipt(known, withRevision("r2"), "same"), true);
+  assert.equal(shapingFrameIsReceipt(known, withRevision(undefined), "same"), false, "a rolled-back daemon's frame");
+  // A daemon that sends no revisions: nothing to compare, so no frame counts, an unrelated one included.
+  const unknown = shapingReceiptBaseline(withRevision(undefined), request);
+  assert.deepEqual(unknown, { shown: true, revision: null });
+  assert.equal(shapingFrameIsReceipt(unknown, withRevision(undefined), "same"), false);
+  // Not stored when it was sent: a frame that shows it stored is evidence, as before.
+  const fresh = shapingReceiptBaseline(view({}), request);
+  assert.equal(fresh.shown, false);
+  assert.equal(shapingFrameIsReceipt(fresh, withRevision(undefined), "same"), true);
 });

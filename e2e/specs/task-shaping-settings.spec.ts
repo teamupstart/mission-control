@@ -1991,13 +1991,14 @@ test("a save delayed past a reload of its tab never overwrites a newer save made
 async function holdShapingFrames(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const Native = window.EventSource;
-    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: () => void; shapingFramesDelivered: number };
+    const hooks = window as unknown as { holdShapingFrames: boolean; releaseShapingFrames: (count?: number) => void; shapingFramesDelivered: number };
     const queued: Array<() => void> = [];
     hooks.holdShapingFrames = false;
     hooks.shapingFramesDelivered = 0;
-    hooks.releaseShapingFrames = () => {
-      hooks.holdShapingFrames = false;
-      for (const deliver of queued.splice(0)) deliver();
+    // With a count, delivers that many of the held frames, oldest first, and keeps holding the rest.
+    hooks.releaseShapingFrames = (count) => {
+      if (count === undefined) hooks.holdShapingFrames = false;
+      for (const deliver of queued.splice(0, count ?? queued.length)) deliver();
     };
     class HeldEvents extends Native {
       set onmessage(handler: ((event: MessageEvent) => void) | null) {
@@ -2160,4 +2161,105 @@ test("a duplicated tab's first save waits for the identity check, and goes out u
   expect(sentUnder).not.toBe(original);
   expect(sentUnder).toBe(await identity(duplicate));
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["first-save"]).toBe(true);
+});
+
+test("a late answer for another row's write never lowers the commit an imported row waits for", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const a = commandShaper("waits-a", "Waits A");
+  await putShaping(daemon, { kind: "upsert", shaper: a });
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("waits-b", "Waits B") });
+  await holdShapingFrames(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Waits B")).toHaveAccessibleName("Waits B: off");
+  const delivered = () => page.evaluate(() => (window as unknown as { shapingFramesDelivered: number }).shapingFramesDelivered);
+  const hold = () => page.evaluate(() => { (window as unknown as { holdShapingFrames: boolean }).holdShapingFrames = true; });
+  const release = (count?: number) => page.evaluate((n) => { (window as unknown as { releaseShapingFrames: (count?: number) => void }).releaseShapingFrames(n); }, count);
+  // B's switch is held before the daemon, and later its answer on the way back.
+  const reached = gate();
+  const goes = gate();
+  const answers = gate();
+  let routed = false;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || routed) return route.fallback();
+    routed = true;
+    reached.open();
+    await goes.opened;
+    const response = await route.fetch();
+    await answers.opened;
+    await route.fulfill({ response });
+  });
+  await pill(page, "Waits B").click();
+  await reached.opened;
+  // Another window switches B on first. Its frame shows B's switch stored, which frees the panel.
+  const first = await delivered();
+  await putShaping(daemon, { kind: "enable", id: "waits-b", enabled: true });
+  await expect.poll(delivered).toBeGreaterThan(first);
+  // From here frames are held. That window switches B off again and imports A again, moving A's
+  // revision on; then B's switch applies, and its answer, which shows A at that revision, is held.
+  const held = await delivered();
+  await hold();
+  await putShaping(daemon, { kind: "enable", id: "waits-b", enabled: false });
+  await putShaping(daemon, { kind: "upsert", shaper: a });
+  goes.open();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["waits-b"]).toBe(true);
+  // This window's own identical import of A is answered first: A waits for the commit it made.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(a));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(pill(page, "Waits A")).toBeDisabled();
+  // B's answer arrives late, naming an earlier commit at which A had the other window's revision.
+  const bAnswered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  answers.open();
+  expect((await bAnswered).status()).toBe(200);
+  await page.unroute("**/api/shaping");
+  // The stream reaches B's commit but not the import's: A still shows a revision the daemon moved past.
+  await release(3);
+  await expect.poll(delivered).toBe(held + 3);
+  await expect(pill(page, "Waits B")).toHaveAccessibleName("Waits B: on");
+  await page.waitForTimeout(300);
+  await expect(pill(page, "Waits A")).toBeDisabled();
+  // The import's frame arrives, and A's switch then goes through.
+  await release();
+  await expect(pill(page, "Waits A")).toBeEnabled();
+  const switched = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  await pill(page, "Waits A").click();
+  expect((await switched).status()).toBe(200);
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["waits-a"]).toBe(true);
+});
+
+test("with a daemon that sends no revisions, an unrelated frame never stands in for a lost identical import", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  const shaper = commandShaper("rolled-notes", "Rolled notes");
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await simulateOlderDaemon(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(row(page, "Rolled notes")).toBeVisible();
+  // The same manifest saved again is held before the daemon, then never arrives.
+  const reached = gate();
+  const goes = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await goes.opened;
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Another window changes an unrelated setting. Its frame shows the manifest stored, with no
+  // revision to tell it from the one shown before the import went out.
+  await putShaping(daemon, { kind: "settings", caller: { user: "rolled-unrelated" } });
+  await expect(page.getByRole("textbox", { name: "Caller identity" })).toHaveValue("rolled-unrelated");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  goes.open();
+  // Only the daemon's answer could settle it, and it never came: the outcome is unknown.
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The daemon's answer did not arrive. Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.",
+  );
+  await expect(dialog).toBeVisible();
+  await page.unroute("**/api/shaping");
 });

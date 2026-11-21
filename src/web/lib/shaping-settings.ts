@@ -246,6 +246,48 @@ export function shapingViewReached(view: ShapingConfigView, awaited: ShapingComm
 }
 
 /**
+ * The commit a row waits for, given the one it already waits for and the one a newly arrived answer
+ * made. Answers can arrive in any order, so a late answer for an earlier commit never lowers what
+ * the row waits for: within one daemon process the later commit stands. An answer from another
+ * process was compared against a view from that process (`shapingRowsAhead`), so it is the one
+ * the stream will deliver, and stands.
+ */
+export function shapingLaterCommit(held: ShapingCommit | undefined, made: ShapingCommit): ShapingCommit {
+  return held !== undefined && held.instance === made.instance && held.commit >= made.commit ? held : made;
+}
+
+/**
+ * What a frame is measured against before it counts as an import's receipt: whether the view
+ * already showed the import stored when it was sent, and the shaper's revision then.
+ */
+export interface ShapingReceiptBaseline {
+  shown: boolean;
+  revision: string | null;
+}
+
+/** The baseline for `request`, an import, as `view` stood when it was sent. */
+export function shapingReceiptBaseline(view: ShapingConfigView | null, request: ShapingIntent): ShapingReceiptBaseline {
+  const id = request.kind === "upsert" ? (request.shaper as { id: string }).id : null;
+  return {
+    shown: view !== null && shapingIntentReflected(view, request),
+    revision: view !== null && id !== null ? shapingViewRevision(view, id) : null,
+  };
+}
+
+/**
+ * Whether `config`, a frame that shows the import stored, is evidence of the import itself. When
+ * the view already showed it stored as it was sent, as an identical reimport is, any frame would
+ * show it: only one where the shaper's revision has moved on from the one it had then counts. With
+ * no revision to compare, before or now, as from a daemon that sends none, no frame counts, and
+ * only the daemon's answer can settle the outcome.
+ */
+export function shapingFrameIsReceipt(baseline: ShapingReceiptBaseline, config: ShapingConfigView, id: string): boolean {
+  if (!baseline.shown) return true;
+  const now = shapingViewRevision(config, id);
+  return baseline.revision !== null && now !== null && now !== baseline.revision;
+}
+
+/**
  * The shapers an accepted write's `answer` shows at a revision `view` does not, when `view` shows
  * an earlier commit than the answer. A write's answer can arrive before the frame that carries it,
  * and a frame from another writer can land in between, moving a row's revision on without reaching

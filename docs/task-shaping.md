@@ -397,7 +397,8 @@ since the same state can come from another write or predate this one. When a str
 showed the change stored, the message says so, and an import's dialog stays open for the
 operator to close. For an import of a definition already stored, an update shows it stored only
 once that shaper's revision has moved on: before then any frame, an unrelated write's included,
-would look the same. An import's outcome that arrives after its dialog was closed is shown
+would look the same. From a daemon that sends no revisions there is nothing to compare, so no
+update counts and only the daemon's answer settles such an import. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
 arrives while the dialog is open again. Both name the shaper whose save it answers, and the
 dialog says so when that is not the manifest it shows.
@@ -416,7 +417,8 @@ and dry run unavailable, since any of them would name an older revision and be r
 names the daemon commit it shows (`commit`, which every change of the view advances, by any
 writer), and the write's answer names the commit it made, so the row waits until the stream
 reaches that commit or a later one, even when another writer's frame moved the row's revision on
-in between. An outcome shown above the list, for a shaper no longer listed or for the
+in between. Answers can arrive out of order, so a late answer naming an earlier commit never
+lowers the commit a row already waits for. An outcome shown above the list, for a shaper no longer listed or for the
 last import, has a **Dismiss** button that clears it and changes nothing else. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays. A save whose answer never arrives clears

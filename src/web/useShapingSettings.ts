@@ -1,18 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { ShapingIntentSchema, shapingViewRevision, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
+import { ShapingIntentSchema, shapingWriteOrder, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
 import { nextShapingWriteSequence, shapingWriteIdentity, shapingWriteIdentityReady } from "./lib/shaping-write-identity.ts";
 import {
   previewShapingIntent,
   shapingIntentReflected,
+  shapingFrameIsReceipt,
   shapingIntentSuperseded,
+  shapingLaterCommit,
   shapingLockKeys,
+  shapingReceiptBaseline,
   shapingRefusalText,
   shapingRowsAhead,
   shapingUnconfirmedText,
   shapingViewCommit,
   shapingViewReached,
   type ShapingCommit,
+  type ShapingReceiptBaseline,
   type ShapingWriteOutcome,
 } from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
@@ -81,15 +85,14 @@ export function useShapingSettings(
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
   /**
-   * The revision each import's shaper had when the import was sent. An identical import matches
+   * Each import's receipt baseline, as the view stood when it was sent. An identical import matches
    * the stored manifest before it is applied, so any frame, an unrelated write's included, would
-   * show it "stored": only a frame where that revision has moved on is the import's.
+   * show it "stored": only a frame where its shaper's revision has moved on is the import's.
    */
-  const revisionBefore = useRef(new WeakMap<ShapingIntent, string | null>());
-  const revisionMovedOn = (config: ShapingConfigView, request: ShapingIntent): boolean => {
-    if (request.kind !== "upsert" || !revisionBefore.current.has(request)) return true;
-    const before = revisionBefore.current.get(request) ?? null;
-    return before === null || shapingViewRevision(config, (request.shaper as { id: string }).id) !== before;
+  const receiptBaselines = useRef(new WeakMap<ShapingIntent, ShapingReceiptBaseline>());
+  const frameIsReceipt = (config: ShapingConfigView, request: ShapingIntent): boolean => {
+    const baseline = receiptBaselines.current.get(request);
+    return baseline === undefined || request.kind !== "upsert" || shapingFrameIsReceipt(baseline, config, (request.shaper as { id: string }).id);
   };
   /** Numbers each outcome in the order it arrived, whichever request it answers. */
   const arrivals = useRef(0);
@@ -102,7 +105,7 @@ export function useShapingSettings(
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
-    if (shapingIntentReflected(config, request) && revisionMovedOn(config, request)) {
+    if (shapingIntentReflected(config, request) && frameIsReceipt(config, request)) {
       observed.current.add(request);
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     } else if (shapingIntentSuperseded(config, request)) {
@@ -145,9 +148,7 @@ export function useShapingSettings(
       return "refused";
     }
     const request = parsed.data;
-    if (request.kind === "upsert") {
-      revisionBefore.current.set(request, confirmed !== null ? shapingViewRevision(confirmed, (request.shaper as { id: string }).id) : null);
-    }
+    if (request.kind === "upsert") receiptBaselines.current.set(request, shapingReceiptBaseline(confirmed, request));
     lock(keys, true);
     const number = ++sent.current;
     writing.current = request;
@@ -198,7 +199,9 @@ export function useShapingSettings(
       // not show yet waits for the stream to reach the commit it made.
       const made = result.config ? shapingViewCommit(result.config) : null;
       const ahead = made && result.config && confirmedNow.current ? shapingRowsAhead(confirmedNow.current, result.config) : [];
-      if (made && ahead.length > 0) setAwaiting((current) => ({ ...current, ...Object.fromEntries(ahead.map((id) => [id, made])) }));
+      if (made && ahead.length > 0) {
+        setAwaiting((current) => ({ ...current, ...Object.fromEntries(ahead.map((id) => [id, shapingLaterCommit(current[id], made)])) }));
+      }
       // A later write on this control succeeded, so an earlier one's refusal no longer describes
       // it. A refusal of a request sent after this one is still news and stays.
       setRefusals((current) => withRefusals(current, key, (current[key] ?? []).filter((refusal) => refusal.number > number)));

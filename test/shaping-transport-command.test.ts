@@ -815,11 +815,9 @@ test("an overflow settles as soon as the cap is crossed, though a helper outside
   const startedFile = join(scratch, "overflow-started");
   rmSync(pidFile, { force: true });
   rmSync(startedFile, { force: true });
-  let pid = 0;
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "escape-overflow", pidFile, startedFile]), ctx(30_000));
     const answered = Date.now();
-    pid = Number(readFileSync(pidFile, "utf8"));
     assert.deepEqual(reply, { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
     // The drain this replaces waited a full second after the cap; the answer now comes at once.
     const sinceOutput = answered - Number(readFileSync(startedFile, "utf8"));
@@ -892,5 +890,24 @@ test("fallback cleanup stops the recorded helper through its stop file and signa
     helper.kill("SIGKILL");
     rmSync(pidFile, { force: true });
     rmSync(helperStopFile(pidFile), { force: true });
+  }
+});
+
+test("a helper whose directory is removed exits, though its stop file never appeared", async () => {
+  const { spawn } = await import("node:child_process");
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const aliveNow = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  // A teardown that removes the scratch directory before the helper polled for its stop file.
+  const home = mkdtempSync(join(scratch, "helper-home-"));
+  const helper = spawn(process.execPath, helperArgv(join(home, "helper.pid")), { stdio: "ignore" });
+  try {
+    await sleep(150);
+    assert.equal(aliveNow(helper.pid!), true, "it runs while its directory is there");
+    rmSync(home, { recursive: true, force: true });
+    let gone = false;
+    for (let waited = 0; !gone && waited < 5_000; waited += 50) { await sleep(50); gone = !aliveNow(helper.pid!); }
+    assert.equal(gone, true, "it exits once the directory is gone");
+  } finally {
+    helper.kill("SIGKILL");
   }
 });

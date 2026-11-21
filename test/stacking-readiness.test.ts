@@ -960,3 +960,24 @@ test("a blocker reported while the parent pull request is read stamps nothing", 
   assert.equal(s.reads, 1, "the read started before the blocker landed");
   assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite blocked mid-read");
 });
+
+test("a wait declared while the parent pull request is read stamps nothing", async () => {
+  const w = world();
+  const s = script();
+  // Lands inside the GitHub read, after the first eligibility check has already passed. The
+  // reconciler's clock reads 1_000, so this deadline is still ahead when the read returns.
+  s.duringRead = () => {
+    w.sessions.set("sA", mkSession({
+      id: "sA", state: "idle",
+      awaiting: {
+        id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command", expectedBy: 2_000,
+        referenceUrl: null, details: null, startedAt: 900, updatedAt: 900,
+      },
+    }));
+  };
+  readiness(w, s).reconcile();
+  await settle();
+  await settle();
+  assert.equal(s.reads, 1, "the read started before the wait was declared");
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite that began awaiting mid-read");
+});

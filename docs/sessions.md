@@ -2618,13 +2618,18 @@ stands on a blocker, and once its task has finished. A question for you never hi
 wait: a `request_input` asked while a wait stands ends the wait, and so does a `report_blocker`,
 because a human answer outranks a process. A second `report_awaiting` before the session wakes
 moves the deadline and keeps the start time, under a new id, so a Clear sent from a view of the
-earlier declaration is refused rather than ending a deadline its sender never saw.
+earlier declaration is refused rather than ending a deadline its sender never saw. Every Clear
+from the dashboard or a controlling session must name the wait it was sent from, so one that
+names none is refused as well.
 
 The wait is stored in SQLite under the note key, so it survives a daemon restart, and it moves
 with the note key whenever that rotates, as a blocker does. It ends on the
 session's own next turn: the turn that declared it is seen to end first, and a turn that starts
-after that is the wake, so the label drops with nobody clearing it. Your own message to the
-session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
+after that is the wake, so the label drops with nobody clearing it. When Mission Control already
+read the session as idle at the moment it declared (a turn too short for a discovery sweep to
+catch, or hooks that arrived after the call), the declaring turn ends at the first idle reading
+that carries agent activity newer than the declaration, so the next turn is still the wake.
+Your own message to the session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
 past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
 that follows one of their deliveries leaves the wait standing until the next turn that nobody in
 Mission Control started. Each delivery is recorded on the stored wait as it is claimed, with a

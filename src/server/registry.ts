@@ -9437,8 +9437,9 @@ export class Registry extends EventEmitter {
    *
    * The wake is the session's own NEXT turn. The declaration is made mid-turn, so a working
    * state seen before that turn ends says nothing; the turn's end is recorded (`settledAt`) the
-   * first time the session is seen idle, and a turn starting after that is the notification that
-   * woke it, or someone typing to it, and either ends the wait.
+   * first time the session is seen idle (`declaringTurnEnded`, which also covers a wait declared
+   * while the registry already read idle), and a turn starting after that is the notification
+   * that woke it, or someone typing to it, and either ends the wait.
    *
    * Mission Control's own nudges are not a wake. Past the deadline Foreman, a workflow or a
    * resident may type into the session again. Each of those deliveries is stored on the wait with
@@ -9500,7 +9501,7 @@ export class Registry extends EventEmitter {
       this.awaitings.set(key, undecided);
       return;
     }
-    if (record.settledAt === null && s.state === "idle" && last !== "idle") {
+    if (record.settledAt === null && declaringTurnEnded(s, record, last)) {
       if (record.undecidedTurn) {
         // The turn ended with no prompt ever reported. On a hook-instrumented session every
         // delivery Mission Control types reports its prompt, so a turn without one is the
@@ -11590,6 +11591,23 @@ const AWAITING_LIVENESS_GRACE_MS = 3 * 60_000;
  * Mission Control's own; one claimed long before has long since been read or dropped.
  */
 const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Has the turn that declared (or re-declared) this wait ended, as `s` reads now? `last` is
+ * the last confirmed state the watch saw.
+ *
+ * Ordinarily that is the session leaving its turn for idle. A wait declared while the registry
+ * already read idle sees no such transition: the turn was too short for a discovery sweep to
+ * catch, or its hooks lost the race with the MCP call. Its end is then an idle reading carrying
+ * agent activity newer than the declaration, which a hook, a driver event or the transcript
+ * can only produce after the declaring call returned. Strictly newer, so the declaration's own
+ * emit, made on the reading it was declared against, never settles it.
+ */
+function declaringTurnEnded(s: Session, record: SessionAwaitingRecord, last: Session["state"] | undefined): boolean {
+  if (s.state !== "idle") return false;
+  if (last !== "idle") return true;
+  return s.lastActivity !== null && s.lastActivity > record.awaiting.updatedAt;
+}
 
 /** Receipts kept per conversation: enough for a burst of steers, never an unbounded log. */
 const STEER_RECEIPTS_KEPT = 5;

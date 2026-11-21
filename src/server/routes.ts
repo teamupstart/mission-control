@@ -6378,15 +6378,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // End this session's declared wait, from the dashboard's Clear or `control_session
-  // clear_awaiting`. Not gated on the preview: ending a hold is always allowed. A stale
-  // `awaitingId` (the session re-declared since the caller looked) is refused.
+  // clear_awaiting`. Not gated on the preview: ending a hold is always allowed. The caller must
+  // name the wait it saw (`awaitingId`, required by the schema), and a stale one (the session
+  // re-declared since the caller looked) is refused rather than ending a wait it never saw.
   app.post("/api/sessions/:id/awaiting/clear", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, ClearAwaitingSchema);
     if (!parsed.ok) return parsed.res;
     const current = registry.getAwaiting(session.id);
-    if (parsed.data.awaitingId && current && current.id !== parsed.data.awaitingId) {
+    if (current && current.id !== parsed.data.awaitingId) {
       return c.json({ error: "This session declared a different wait since you looked. Read it again before clearing." }, 409);
     }
     const actor = sessionControlActor(c.req.raw) ?? "operator";

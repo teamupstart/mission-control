@@ -86,12 +86,16 @@ const BLOCKER: ReportBlockerBody = {
   details: null,
 };
 
-/** Drive a discovered terminal session's state through its hooks, as a real turn would. */
+/**
+ * Drive a discovered terminal session's state through its hooks, as a real turn would. `ts` is
+ * when the hook says it fired; omitted, it is the moment it arrives.
+ */
 function hook(
   registry: RegistryT,
   d: DiscoveredSession,
   event: "UserPromptSubmit" | "Stop" | "PreToolUse",
   prompt = "go",
+  ts?: number,
 ) {
   registry.applyHook({
     agent: "claude",
@@ -101,6 +105,7 @@ function hook(
     transcriptPath: null,
     ...(event === "UserPromptSubmit" ? { prompt } : {}),
     ...(event === "PreToolUse" ? { toolName: "Bash" } : {}),
+    ...(ts !== undefined ? { ts } : {}),
     env: { tmuxPane: (d.terminals[0] as { paneId: string }).paneId },
   });
 }
@@ -212,6 +217,73 @@ test("the wait ends on the session's next turn, not on the rest of the turn that
   assert.equal(registry.getAwaiting(d.syntheticId), null);
   assert.equal(registry.getSession(d.syntheticId)?.awaiting, null);
   assert.ok(!loadSessionAwaitings().some((row) => row.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!)));
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("a wait declared while the registry already reads the session idle still ends on the next turn", () => {
+  // The declaring turn's hooks lost the race with the MCP call, or never arrived: the registry
+  // read idle before the declaration and still does after it, so that turn's end is no
+  // transition. Its Stop, stamped after the call returned, is what says the turn is over.
+  const registry = new Registry();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const at = Date.now() - 60_000;
+  hook(registry, d, "UserPromptSubmit", "go", at - 2_000);
+  hook(registry, d, "Stop", "go", at - 1_000);
+  assert.equal(registry.getSession(d.syntheticId)?.state, "idle");
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
+
+  hook(registry, d, "Stop", "go", at + 1_000);
+  assert.ok(registry.getAwaiting(d.syntheticId), "the declaring turn's end ended the wait");
+
+  hook(registry, d, "UserPromptSubmit", "the build finished", at + 120_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the next turn after an idle declaration was not the wake");
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("a late hook from a turn that declared while the registry read idle is not the wake", () => {
+  // The same race, the other way round: the declaring turn's own hooks arrive after the call.
+  // Its working reading and its end are that turn's, and only the turn after it is the wake.
+  const registry = new Registry();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const at = Date.now() - 60_000;
+  hook(registry, d, "UserPromptSubmit", "go", at - 2_000);
+  hook(registry, d, "Stop", "go", at - 1_000);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
+
+  hook(registry, d, "PreToolUse", "go", at - 200);
+  assert.equal(registry.getSession(d.syntheticId)?.state, "working");
+  assert.ok(registry.getAwaiting(d.syntheticId), "the declaring turn's late tool call read as the wake");
+  hook(registry, d, "Stop", "go", at + 1_000);
+  assert.ok(registry.getAwaiting(d.syntheticId), "the declaring turn's end ended the wait");
+
+  hook(registry, d, "UserPromptSubmit", "the build finished", at + 120_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null);
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
+});
+
+test("a hookless session that declares while it reads idle still ends its wait on the next turn", () => {
+  // A transcript-read session whose declaring turn was too short for any sweep to see working.
+  // Its end moves only `lastActivity`; the sweep still emits that, and the fresher reading is
+  // what records the declaring turn's end.
+  const registry = new Registry();
+  const d = mkDiscovered({ agent: "codex" });
+  registry.applyDiscovery([d]);
+  const read = (state: "idle" | "working", lastActivity: number) => {
+    registry.applyPassiveActivity(registry.getSession(d.syntheticId)!, { state, lastActivity });
+    registry.applyDiscovery([d]);
+  };
+  const at = Date.now() - 60_000;
+  read("idle", at - 1_000);
+  assert.equal(registry.getSession(d.syntheticId)?.stateConfirmed, true);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body(at), at).ok, true);
+
+  read("idle", at + 1_000);
+  assert.ok(registry.getAwaiting(d.syntheticId), "the declaring turn's end ended the wait");
+
+  read("working", at + 120_000);
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the next turn after an idle declaration was not the wake");
   assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "wake");
 });
 
@@ -803,6 +875,12 @@ test("the MCP routes bind to the caller and follow the preview; the session clea
     assert.equal(staleView.status, 409, "a Clear from an earlier view ended the re-declared wait");
     assert.ok(registry.getAwaiting(sdk.id), "the refused Clear removed the wait");
     created.awaiting = redeclaredAgain.awaiting;
+
+    // A Clear that names no wait at all is refused too: it could end one declared after the
+    // caller looked, so the dashboard and every controller must say which wait they saw.
+    const unnamed = await api(`/api/sessions/${sdk.id}/awaiting/clear`, { resolution: "CI was cancelled" });
+    assert.equal(unnamed.status, 400, "a Clear naming no wait ended the standing one");
+    assert.ok(registry.getAwaiting(sdk.id), "the refused unnamed Clear removed the wait");
 
     // A Clear aimed at a wait the caller never saw is refused; the current one clears.
     assert.equal((await api(`/api/sessions/${sdk.id}/awaiting/clear`, { awaitingId: "some-other-wait" })).status, 409);

@@ -39,7 +39,9 @@ construction, moves a row on every note-key rotation as it moves a blocker, and 
 the session's next turn, on exit, after three minutes with no live session holding its key, on a
 clear, when its task reaches a terminal status, and when the `session-awaiting` preview is off.
 `settled_at` records when the declaring turn was seen to end, which is what tells the wake from
-the rest of that turn. `pending_nudges` holds one entry for each delivery Mission Control's own
+the rest of that turn: a reading that leaves the session's turn for idle, or, for a wait declared
+while the session already read idle, the first idle reading with agent activity newer than the
+declaration. `pending_nudges` holds one entry for each delivery Mission Control's own
 automation claimed into the session while the wait stood, or in the ten minutes before it was
 declared with its prompt not yet back from the session, and that has not yet started its turn,
 with the delivered text's fingerprint, so the turn whose prompt it is reads as that nudge rather

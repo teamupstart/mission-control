@@ -425,9 +425,10 @@ they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`,
 `awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one
 session returns its whole wait, Markdown details included. `control_session` adds
 `{"action":"clear_awaiting","awaitingId":"...","resolution":"..."}`, which ends the wait and
-sends the session nothing. Pass the `id` that `read_sessions` returned so a wait the session
-declared again since is refused with 409. Leave a wait inside its deadline alone: the session
-resumes on its own, and an overdue one is already back under the normal stuck-session rules.
+sends the session nothing. `awaitingId` is required: pass the `id` that `read_sessions`
+returned, so a wait the session declared again since is refused with 409. Leave a wait inside
+its deadline alone: the session resumes on its own, and an overdue one is already back under the
+normal stuck-session rules.
 
 ## Lifecycle
 

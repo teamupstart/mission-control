@@ -1166,11 +1166,13 @@ export const McpClearAwaitingSchema = z.object({
 
 /**
  * `POST /api/sessions/:id/awaiting/clear`, and the session-control action that maps to it.
- * `awaitingId` names the wait the caller was looking at, so a replacement is refused.
+ * `awaitingId` names the wait the caller was looking at, so a replacement is refused. Required:
+ * every view that offers Clear holds the id, and a Clear without one could end a wait the
+ * session declared after the caller looked.
  */
 export const ClearAwaitingSchema = z.object({
   resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
-  awaitingId: z.string().min(1).max(64).optional(),
+  awaitingId: z.string().min(1).max(64),
 }).strict();
 export type ClearAwaiting = z.infer<typeof ClearAwaitingSchema>;
 

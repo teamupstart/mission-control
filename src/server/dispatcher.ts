@@ -972,7 +972,7 @@ export class Dispatcher {
         );
         // A later attempt took the task while this driver started: `dispatchEmbedded` stopped
         // the worker, and nothing of this attempt is recorded or reported as a launch.
-        if (!currentAttempt()) return;
+        if (!currentAttempt() || embeddedSession === null) return;
         // Turn one IS the start on this runtime, so the launch reached its worker the moment
         // `supervisor.start` returned - cancelled underneath or not.
         this.commitShaping(taskId, attempt, shaping, embeddedSession);
@@ -2093,7 +2093,7 @@ export class Dispatcher {
     sessionId: string | null = null,
     /** Whether this dispatch is still the task's current attempt. */
     currentAttempt: () => boolean = () => true,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
       // Never silently fall back to the terminal path: the operator set this harness to the
@@ -2160,6 +2160,9 @@ export class Dispatcher {
     }
     const inputProblem = taskPlanInputProblem(task);
     if (inputProblem) throw new Error(inputProblem);
+    // Asked once more at the start itself: preparing the launch above awaits, and a later attempt
+    // that took the task meanwhile must not have this attempt's turn one handed to a worker.
+    if (!currentAttempt()) return null;
     const session = await supervisor.start({
       ...(sessionId ? { sessionId } : {}),
       agent: task.agent,

@@ -993,6 +993,41 @@ test("a launch a later dispatch replaced never overwrites the record its success
   assert.equal(currentShaping(getDurableTask("superseded")!)?.entries, 1);
 });
 
+test("an embedded launch replaced while its start was being prepared never reaches the supervisor", async () => {
+  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
+  const repo = seedRepo("replaced-prestart");
+  const taskId = "replaced-prestart";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "codex" }));
+  const gate = gatedSupervisor(registry);
+  let descriptors = 0;
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let firstPreparing!: () => void;
+  const preparing = new Promise<void>((resolve) => { firstPreparing = resolve; });
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    supervisor: gate.supervisor, verifyMissionMcpTools: async () => ({ ok: true }), shapeTask: standIn(SECTION).shapeTask,
+    // The first attempt's launch preparation is held; the replacement's is not.
+    missionMcpDescriptor: async () => {
+      if (++descriptors === 1) { firstPreparing(); await firstHeld; }
+      return MISSION_DESCRIPTOR;
+    },
+  });
+  const original = dispatcher.dispatch(taskId);
+  await preparing;
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "cancelled" });
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "dispatching", sessionId: null, worktreePath: null, branch: null });
+  const replacement = dispatcher.dispatch(taskId);
+  await gate.reached(1);
+  releaseFirst();
+  await original;
+  assert.equal(gate.supervisor.starts.length, 1, "only the replacement reached the supervisor");
+  gate.release();
+  await replacement;
+  assertRunning(registry.getTask(taskId)!);
+  assert.equal(registry.getTask(taskId)?.sessionId, gate.sessions[0]);
+});
+
 test("a dispatch replaced while its shapers ran launches nothing, and leaves the successor's mark alone", async () => {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });

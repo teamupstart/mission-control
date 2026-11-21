@@ -129,6 +129,22 @@ test("housekeeping tools carry session context and return the daemon results", a
   assert.equal(seen.at(-1)!.body.reason, "Obsolete");
 });
 
+test("withdraw_question accepts a 2000-character reason and rejects 2001 before contacting the daemon", async () => {
+  const reason = "x".repeat(2000);
+  const from = seen.length;
+  const rejected = await client.callTool({ name: "withdraw_question", arguments: { id: "q1", reason: `${reason}x` } });
+  assert.equal(rejected.isError, true);
+  assert.deepEqual(seen.slice(from), [], "an overlong reason cannot withdraw the question at the daemon");
+
+  const accepted = await client.callTool({ name: "withdraw_question", arguments: { id: "q1", reason } });
+  assert.notEqual(accepted.isError, true);
+  assert.ok(JSON.stringify(accepted.content).includes("withdrawn"));
+  const requests = seen.slice(from);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.path, "/mcp/questions/q1/withdraw");
+  assert.equal(requests[0]!.body.reason, reason, "the maximum-length reason is forwarded intact");
+});
+
 test("the bound returns an error result with recovery instructions and no wait", async () => {
   mode = "limit";
   const outcome = await ask({ question: "Eleventh?" });

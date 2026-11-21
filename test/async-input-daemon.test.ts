@@ -533,6 +533,34 @@ test("withdrawal releases completion without an answer and persists a non-human 
   assert.equal(stored?.resolved_by, null);
 });
 
+test("withdrawal accepts a 2000-character reason and rejects 2001 without settling the question", async () => {
+  setFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const filed = reviews.create(d.syntheticId, "input", "Still needed?", "Still needed?", null, {
+    snoozable: true, waitMode: "message",
+  });
+  const request = (reason: string) => app.request(`/mcp/questions/${filed.id}/withdraw`, {
+    method: "POST", headers: authed, body: JSON.stringify({ env: {}, cwd: d.cwd, reason }),
+  });
+  const reason = "x".repeat(2000);
+
+  assert.equal((await request(`${reason}x`)).status, 400);
+  assert.deepEqual(registry.getReview(filed.id), filed, "the rejected reason leaves the live question open");
+  assert.deepEqual(reviews.openQuestions(d.syntheticId).map((q) => q.id), [filed.id]);
+  const pending = openDb().prepare("SELECT status, response, resolved_at FROM reviews WHERE id = ?").get(filed.id);
+  assert.equal(pending?.status, "pending");
+  assert.equal(pending?.response, null);
+  assert.equal(pending?.resolved_at, null);
+
+  assert.equal((await request(reason)).status, 200);
+  assert.equal(registry.getReview(filed.id)?.status, "withdrawn");
+  assert.equal(registry.getReview(filed.id)?.response, reason);
+  const withdrawn = openDb().prepare("SELECT status, response FROM reviews WHERE id = ?").get(filed.id);
+  assert.equal(withdrawn?.status, "withdrawn");
+  assert.equal(withdrawn?.response, reason, "the maximum-length reason is persisted intact");
+});
+
 test("the review manager sends the full filed question and meanwhile plan through the durable answer row", () => {
   const { registry, reviews } = fleet();
   const d = mkDiscovered(); registry.applyDiscovery([d]);

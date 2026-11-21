@@ -2993,6 +2993,7 @@ export interface CodeRabbitReviewSummary {
   diagnostic: string;
   titles: string[];
   remainingRuns?: number;
+  retryableConnection?: true;
   retryAt?: number;
   expectedDuration?: string;
 }

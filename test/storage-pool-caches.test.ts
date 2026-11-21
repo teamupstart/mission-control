@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { openDb } from "../src/server/db.ts";
@@ -202,7 +202,9 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 1024,
 });
 
-after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;"));
+// Per test, not once at the end: every observation re-reads every pool and slot left in the
+// database with git, so one test's leftovers cost every test after it.
+afterEach(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;"));
 
 test("Remove idle previews exactly the chosen slots, blocks on one that is no longer idle, and removes on Execute", async () => {
   const { clone } = mkOriginAndClone("mission-storage-trim-");

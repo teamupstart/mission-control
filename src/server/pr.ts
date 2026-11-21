@@ -8,6 +8,7 @@ import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/ind
 import { run } from "./util/exec.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
 import { StackMergeWatch } from "./stacking/merges.ts";
+import { checkDetails } from "./github/check-details.ts";
 import { CHECK_CONTEXTS, rollUpChecks } from "./github/check-rollup.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
@@ -180,6 +181,7 @@ function parsePrCandidate(value: unknown, worktreeHeadSha: string | null): PrCan
   if (!state || typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string" ||
     (state === "merged" && !Number.isFinite(mergedAtMs))) return null;
   return { url, number: typeof number === "number" ? number : null, state, checks: checksOf(value),
+    checkDetails: checkDetails((value as Record<string, unknown>).statusCheckRollup),
     createdAt: createdAtMs, mergedAt: state === "merged" ? mergedAtMs : null,
     headSha: headRefOid, worktreeHeadSha };
 }

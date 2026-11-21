@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import {
   captureReviewSnapshot,
   pruneReviewSnapshots,
@@ -27,14 +28,12 @@ function git(dir: string, ...args: string[]): string {
 let counter = 0;
 function repo(): string {
   const dir = join(tmp, `repo-${counter++}`);
-  execFileSync("git", ["init", "-q", "-b", "main", dir]);
-  git(dir, "config", "user.email", "test@example.com");
-  git(dir, "config", "user.name", "Test");
-  writeFileSync(join(dir, "kept.txt"), "base\n");
-  writeFileSync(join(dir, "removed.txt"), "gone soon\n");
-  writeFileSync(join(dir, ".gitignore"), "ignored.log\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", "base");
+  seedGitRepo(dir, {
+    branch: "main",
+    files: { "kept.txt": "base\n", "removed.txt": "gone soon\n", ".gitignore": "ignored.log\n" },
+    email: "test@example.com",
+    name: "Test",
+  });
   return dir;
 }
 

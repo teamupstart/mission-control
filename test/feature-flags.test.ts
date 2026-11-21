@@ -82,6 +82,8 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     stage: "preview",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
+  // Session control requests ships off until the operator opts in.
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "session-control-requests")?.stage, "preview");
   assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);

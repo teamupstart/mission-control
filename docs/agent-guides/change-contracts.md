@@ -1224,6 +1224,8 @@ Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overla
 
 A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
 
+Backdrop clicks stop at the overlay, including when it is nested in a clickable tile. Modal overlays (`ariaModal`) move focus inside, contain Tab and Shift+Tab while topmost, and restore their connected opener on dismissal. Existing autofocus inside the panel is preserved. Use the shared behavior instead of adding a separate focus trap to a dialog.
+
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
 A fourth layout also requires render selection, expansion state, Escape handling, expand shortcuts, command bar behavior, `layoutNav.ts`, and `LayoutPanel`.

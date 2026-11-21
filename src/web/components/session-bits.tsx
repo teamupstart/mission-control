@@ -1,4 +1,6 @@
 import { WORKFLOW_HOLD_DETAILS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { prCheckSummary } from "@shared/pr-check-details.ts";
+import { PrChecksStatus } from "./PrChecksStatus.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { canMessage } from "@shared/pane.ts";
 import { branchUpdateLabel, branchConflictPrompt } from "@shared/pr-branch-update.ts";
@@ -1639,7 +1641,7 @@ export function prChipView(session: Session): PrChipView | null {
         : state === "closed"
           ? `Pull request ${label} closed - open on GitHub`
           : `Open pull request ${label} - open on GitHub`,
-    failingTitle: "A CI check failed on this pull request - open on GitHub",
+    failingTitle: prCheckSummary(session.prCheckDetails),
   };
 }
 
@@ -1692,7 +1694,7 @@ export function PrBranchUpdateDetails({ session }: { session: Session }): React.
   </div>;
 }
 
-/** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
+/** The PR chip, plus a separate results button when CI needs attention. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
@@ -1711,20 +1713,7 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
         </a>
       </Tooltip>
       <PrBranchUpdateStatus session={session} url={view.url} />
-      {view.failing && (
-        <Tooltip label={view.failingTitle}>
-          <a
-            className="pr-checks-alert"
-            href={view.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={view.failingTitle}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ChecksFailedIcon />
-          </a>
-        </Tooltip>
-      )}
+      {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
     </>
   );
 }
@@ -1756,18 +1745,11 @@ export function PrRailMark({ session }: { session: Session }): React.JSX.Element
   );
 }
 
-/**
- * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
- * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
- * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
- * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
- * tile don't behave differently on hover. Same shared `prChipView` gate as the other three
- * drawings - see its comment for the `prNumber` gate this replaced.
- */
+/** The board's PR link and separate CI results affordance share the console's decision. */
 export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
-  const title = view.failing ? view.failingTitle : view.title;
+  const title = view.title;
   return (
     <>
     <Tooltip label={title}>
@@ -1781,9 +1763,9 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
         onClick={(e) => e.stopPropagation()}
       >
         {view.label}
-        {view.failing && " ⚠"}
       </a>
     </Tooltip>
+    {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
     <PrBranchUpdateStatus session={session} url={view.url} />
     </>
   );
@@ -2188,6 +2170,7 @@ export function TaskRepoPrs({
               <span className="pr-num">{label}</span>
             </a>
           </Tooltip>
+          {entry.feedback?.prChecks === "failing" && <PrChecksStatus key={entry.prUrl} details={entry.feedback.prCheckDetails} url={entry.prUrl} />}
           <PrBranchUpdateStatus session={session} url={entry.prUrl} detailed />
           </span>
         );

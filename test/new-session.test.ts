@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const script = join(root, "scripts", "new-session.mjs");
@@ -53,13 +54,7 @@ async function close(server: Server): Promise<void> {
 
 function gitRepo(name: string): string {
   const path = join(fixture, name);
-  mkdirSync(path, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", path]);
-  execFileSync("git", ["-C", path, "config", "user.email", "test@example.com"]);
-  execFileSync("git", ["-C", path, "config", "user.name", "Test"]);
-  writeFileSync(join(path, "README.md"), "manual session\n");
-  execFileSync("git", ["-C", path, "add", "-A"]);
-  execFileSync("git", ["-C", path, "commit", "-qm", "fixture"]);
+  seedGitRepo(path, { branch: "main", files: { "README.md": "manual session\n" }, message: "fixture", email: "test@example.com", name: "Test" });
   return realpathSync(path);
 }
 

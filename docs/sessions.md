@@ -2599,6 +2599,77 @@ kind, reason, time since the blocker started (`sinceMs`) and whether it followed
 (`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
 how long the blocker stood (`durationMs`) and any one-line `resolution`.
 
+### Sessions awaiting a background process (preview)
+
+A session that has handed work to a background process and will resume on its own when it
+reports back declares that with `report_awaiting`: CI checks on a pull request it pushed, a long
+build or test run started in the background, a monitor watching a deploy, or a scheduled wakeup
+it set for itself. The declaration carries `what` it waits for (one line), its `wakeSource`
+(`command`, `monitor`, `wakeup` or `other`), a required `expectedBy` (when the process should be
+done, as an ISO 8601 date-time with a time zone, which must be in the future and no more than 240
+minutes after the daemon receives it), an optional http(s) `referenceUrl` and optional Markdown
+`details`. It is not a blocker kind: nobody is asked to do
+anything. It ships behind the **Awaiting background work** preview (`session-awaiting`) in
+**Settings > Feature flags**; with the preview off the tool answers that it is turned off and
+records nothing.
+
+`report_awaiting` is refused while the session has a `request_input` question pending, while it
+stands on a blocker, and once its task has finished. A question for you never hides behind a
+wait: a `request_input` asked while a wait stands ends the wait, and so does a `report_blocker`,
+because a human answer outranks a process. A second `report_awaiting` before the session wakes
+moves the deadline and keeps the start time, under a new id, so a Clear sent from a view of the
+earlier declaration is refused rather than ending a deadline its sender never saw.
+
+The wait is stored in SQLite under the note key, so it survives a daemon restart, and it moves
+with the note key whenever that rotates, as a blocker does. It ends on the
+session's own next turn: the turn that declared it is seen to end first, and a turn that starts
+after that is the wake, so the label drops with nobody clearing it. Your own message to the
+session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
+past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
+that follows one of their deliveries leaves the wait standing until the next turn that nobody in
+Mission Control started. Each delivery is recorded on the stored wait as it is claimed, with a
+fingerprint of its text, and matched to the turn whose prompt it is: that turn is the nudge, and
+a turn with any other prompt, such as your message arriving first, is the wake. So two deliveries
+are two nudged turns, a delivery that never lands is not counted, and a daemon restart between a
+delivery and its turn changes nothing. A delivery claimed just before the session declares the
+wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
+arrives after it starts is decided when it arrives, even across a restart; a turn that never
+reports one is the session's own wake on a hook-instrumented session, and uses up the oldest
+delivery on a harness without hooks. Only confirmed readings of the session's state count:
+rediscovering a session after a restart is never itself read as a wake, and a turn already
+under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. It also ends on `clear_awaiting`, when you or a
+controlling session clear it, when the task it was declared for reaches a terminal status, and
+when the agent process exits or has not been seen live for three minutes, because the wake
+source it declared was its own and is presumed gone with it. Switching the preview off ends
+every wait.
+
+While a wait stands and its deadline has not passed, the same idle-triggered automation a
+blocker holds leaves the session alone: prompted completion (without consuming the work-cycle
+generation), queue drain and the wrap-up ask, pre-PR ship recovery, review follow-through,
+backlog autopilot assignment, stack readiness for dependents, workflow resumption (the run page
+says the session is waiting on a background process it started) and the stuck-session idle
+rules. The deadline is the safety net: once it passes the hold lifts, the session reads as
+**Overdue**, and the normal handling, the stuck-session alerts included, applies again.
+
+On the Board a waiting card stays in Idle, under an **awaiting background work** rule at the top
+of the column, soonest due first, and the column head counts them (**1 awaiting**), a pinned
+resident that is waiting included, though its card keeps its pinned place. The card shows
+**Awaiting** and what it waits for, its due time, and a deadline track that fills from when the
+wait was declared to when it is due. Past the deadline the track turns amber with the overrun
+hatched after the due tick, the card reads **Overdue** and how late, and it leaves the Awaiting
+section for plain Idle. A wait never enters Needs you and never counts as work you owe. The
+console rail draws the same section and a short track beside the row's state. The Conversation
+tab opens with a grey band, where a blocker's red band would be: the wait, how it wakes, how long it
+has been waiting, the same track with declared, now and due marked, an **Open** link and **Clear**,
+which ends the hold without sending the session anything. See [Sessions awaiting a background process](residents.md#sessions-awaiting-a-background-process)
+for how residents read them.
+
+Every declaration, re-declaration and clear writes one `session_events` row:
+`session_awaiting_set` and `session_awaiting_updated` record what, the wake source and the
+deadline; `session_awaiting_cleared` records the actor (`session`, `operator`,
+`session:<controller-id>`, `wake`, `exit`, `task`, `input`, `blocker` or `flag`), how long the
+wait lasted (`durationMs`) and whether it was overdue.
+
 ### Review channel (MCP)
 
 ```sh

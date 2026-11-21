@@ -28,6 +28,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
+import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -926,6 +927,9 @@ export function ConsoleDetail({
                 and scrolls past that (`.detail-conv > .blocker-band`), so long details
                 cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
+            {/* A declared wait on a background process. Never beside the blocker band: a
+                blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
+            <SessionAwaitingBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {/* The session's own ask for Control other sessions: answered before reading on,
                 like the menu above. Capped and scrolled like the blocker band below its

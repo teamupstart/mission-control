@@ -13,6 +13,7 @@ import {
   clusterFallbackLabel,
   fleetColumnOf,
   fleetRows,
+  idleHeadCounts,
   orderSessions,
   repoSessionTotals,
   type FleetBlock,
@@ -32,6 +33,10 @@ import {
   type BoardColumnId,
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { anyAwaiting, awaitingSessionIds } from "../../lib/awaiting.ts";
+import { useFeatureFlag } from "../../useFeatureFlag.ts";
+import { useNow } from "../../useNow.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
@@ -173,6 +178,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     blockedPlacement,
     blockedFrameCollapsed,
   } = useUiConfig();
+  // The Awaiting rule's members, folded exactly as App folds them for the arrow keys.
+  const awaitingEnabled = useFeatureFlag(SESSION_AWAITING_FLAG_ID);
+  const awaitingNow = useNow(anyAwaiting(props.sessions, awaitingEnabled), 15_000);
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -181,6 +189,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     props.pipelineRunByKey,
     pinnedResidentSessions(props.residentBySession),
     blockedPlacement,
+    awaitingSessionIds(props.sessions, awaitingEnabled, awaitingNow),
   );
   const groups = order.groups;
   const columns = order.columns;
@@ -562,6 +571,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         .filter((c) => modes.get(c.id) !== "hidden")
         .map((c) => {
           const g = c.group;
+          // The head's awaiting / free / held split, from the one helper the rail head reads.
+          const head = g ? idleHeadCounts(g) : null;
           const isRail = focusedColumn === c.id;
           const width = columnWidthOf(widths, c.id);
           const wide = width === "wide";
@@ -687,6 +698,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     rule below it about whether this column had two halves at all. */}
                 {/* A placeholder is a visible row and counts in the unsplit Working column.
                     It is not included in the free/held split because no session exists yet. */}
+                {/* Awaiting agents first, in the order the column draws them: idle on purpose,
+                    so neither free to take work nor stuck. */}
+                {head && head.awaiting > 0 && (
+                  <Tooltip label="Idle on purpose until a background process they started reports back">
+                    <span className="board-col-n n-awaiting">{head.awaiting} awaiting</span>
+                  </Tooltip>
+                )}
                 {g === null || g.heldFrom === null ? (
                   <span className="board-col-n">{count}</span>
                 ) : (
@@ -699,16 +717,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         <span className="board-col-n n-blocked">{c.blocked.length} blocked</span>
                       </Tooltip>
                     )}
-                    {g.heldFrom > 0 && (
+                    {head!.free! > 0 && (
                       <Tooltip
-                        label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}
+                        label={`${head!.free} of ${g.sessions.length} idle agents can take work`}
                       >
-                        <span className="board-col-n n-free">{g.heldFrom} free</span>
+                        <span className="board-col-n n-free">{head!.free} free</span>
                       </Tooltip>
                     )}
                     <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
                       <span className="board-col-n n-held">
-                        {g.sessions.length - g.heldFrom} held
+                        {head!.held} held
                       </span>
                     </Tooltip>
                   </>

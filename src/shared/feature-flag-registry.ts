@@ -2,6 +2,8 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+/** The one owner of the session-awaiting flag id: the daemon gates and the dashboard import it. */
+export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const FEATURE_FLAGS = [
   {
@@ -61,6 +63,15 @@ export const FEATURE_FLAGS = [
       + "The request appears as a card on that session, and only your own click on Accept in the desktop app grants it.",
     stage: "preview",
     keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
+  },
+  {
+    id: SESSION_AWAITING_FLAG_ID,
+    label: "Awaiting background work",
+    description: "Let a session declare, with report_awaiting, that it is idle on purpose while a background process "
+      + "such as CI checks finishes. Its card shows what it waits for and when it is due, and idle automation leaves it "
+      + "alone until that deadline.",
+    stage: "preview",
+    keywords: ["awaiting", "report_awaiting", "background", "ci", "idle", "deadline", "overdue"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

@@ -1,5 +1,5 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
-import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -251,6 +251,9 @@ import {
   StatusSchema,
   McpReportBlockerSchema,
   McpClearBlockerSchema,
+  McpClearAwaitingSchema,
+  McpReportAwaitingSchema,
+  ClearAwaitingSchema,
   FlagBlockerReplySchema,
   ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
@@ -299,7 +302,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -360,7 +363,7 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -5540,6 +5543,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
   });
 
+  // A session declaring it is idle on purpose while a background process finishes. Bound to
+  // the caller like `/mcp/blocker`, and refused while the session has a `request_input` pending
+  // or stands on a blocker. 404 with `feature` while the preview is off, which the tool reads.
+  app.post("/mcp/awaiting", requireFeature(SESSION_AWAITING_FLAG_ID), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportAwaiting(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, awaiting: result.awaiting });
+  });
+
+  // The session ending its own wait. Not gated on the preview, so a session can always end a
+  // wait it declared; with none it is a no-op success.
+  app.post("/mcp/awaiting/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearAwaiting(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
+  });
+
   // The session clearing its own blocker. Clearing a session with none is a no-op success.
   app.post("/mcp/blocker/clear", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
@@ -6345,6 +6375,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
     if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
     return c.json({ ok: true, blocker });
+  });
+
+  // End this session's declared wait, from the dashboard's Clear or `control_session
+  // clear_awaiting`. Not gated on the preview: ending a hold is always allowed. A stale
+  // `awaitingId` (the session re-declared since the caller looked) is refused.
+  app.post("/api/sessions/:id/awaiting/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearAwaitingSchema);
+    if (!parsed.ok) return parsed.res;
+    const current = registry.getAwaiting(session.id);
+    if (parsed.data.awaitingId && current && current.id !== parsed.data.awaitingId) {
+      return c.json({ error: "This session declared a different wait since you looked. Read it again before clearing." }, 409);
+    }
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearAwaiting(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
   });
 
   // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
@@ -7295,6 +7342,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
     }
+    // Nor is one awaiting its own background process inside the deadline it declared.
+    if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -7395,7 +7446,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
     // The session can report a blocker while the diff runs; the decision below reads the
     // object taken before the await, so ask the live one first.
-    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+    const live = registry.getSession(session.id) ?? session;
+    if (hasBlocker(live) || isAwaiting(live)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
     const cfg = getForemanConfig();

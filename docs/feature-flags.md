@@ -4,7 +4,8 @@ The flag core stores one set of operator choices for this machine. The registry 
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
-[Session control requests](sessions.md#when-a-session-asks-for-control) and
+[Session control requests](sessions.md#when-a-session-asks-for-control),
+[Awaiting background work](sessions.md#sessions-awaiting-a-background-process) and
 [Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
@@ -29,6 +30,11 @@ route answers 404 and the `home-dispatch-v1` health capability is absent.
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
 Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
+**Awaiting background work** (`session-awaiting`) lets a session declare, with `report_awaiting`,
+that it is idle on purpose while a background process finishes. Turning it off refuses new
+declarations and ends every standing wait, so no card is left holding automation it no longer
+explains. Clearing a wait, by the session or from the dashboard, keeps working either way.
 
 **Session control requests** (`session-control-requests`) lets a session ask for **Control other
 sessions** with `request_session_control`; only a desktop click on the card's Accept grants it.
@@ -56,7 +62,8 @@ answer within 10 seconds counts as failed, so Retry is never stuck behind a stal
 
 Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAGS`,
 `RETIRED_FEATURE_FLAG_IDS` and one `<FLAG>_ID` constant for each flag whose gates need to name it
-(today `HEADLESS_MODE_FLAG_ID`), so a gate imports the id instead of respelling it. It holds data
+(today `HEADLESS_MODE_FLAG_ID` and `SESSION_AWAITING_FLAG_ID`), so a gate imports the id instead
+of respelling it. It holds data
 only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
 at most 64 characters. `FeatureFlagId` is derived from the tuple.
@@ -159,6 +166,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and

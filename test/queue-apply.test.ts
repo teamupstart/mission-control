@@ -35,6 +35,7 @@ const CFG: QueueConfig = {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",

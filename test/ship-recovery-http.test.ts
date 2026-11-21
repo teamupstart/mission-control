@@ -502,3 +502,48 @@ test("a blocked session's ship-recovery claim is refused at the route and at the
   });
   assert.equal(accepted.status, 200, await accepted.clone().text());
 });
+
+test("a session awaiting its own background process has its ship-recovery claim refused until the deadline, at the route and at the registry write", async () => {
+  const wait = (expectedBy: number) => ({
+    what: "CI checks on PR #7", wakeSource: "command" as const, expectedBy, referenceUrl: null, details: null,
+  });
+  const claimFor = (taskId: string, noteKey: string) => {
+    const identity = {
+      taskId, logicalKey: noteKey, generation: 1, decisionGeneration: null, decisionOutcome: null,
+      reason: "idle_empty" as const, attempt: 1,
+    };
+    return { ...identity, marker: shipRecoveryMarker(identity), payloadSummary: "Resume the bounded implementation task." };
+  };
+
+  // The route: refused inside the deadline, accepted once the wait is overdue.
+  {
+    const { sessionId, noteKey, taskId } = seed("-awaiting-route");
+    const claim = claimFor(taskId, noteKey);
+    assert.equal(registry.reportAwaiting(sessionId, wait(Date.now() + 20 * 60_000)).ok, true);
+    const refused = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+      method: "POST", headers, body: JSON.stringify(claim),
+    });
+    assert.equal(refused.status, 409);
+    assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+    // Declared twenty minutes ago with a ten-minute deadline: overdue now, so the hold has lifted.
+    const past = Date.now() - 20 * 60_000;
+    assert.equal(registry.reportAwaiting(sessionId, wait(past + 10 * 60_000), past).ok, true);
+    const accepted = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+      method: "POST", headers, body: JSON.stringify(claim),
+    });
+    assert.equal(accepted.status, 200, await accepted.clone().text());
+  }
+
+  // The registry write boundary, on its own clock: refused a millisecond before the deadline,
+  // claimed at it.
+  {
+    const { sessionId, noteKey, taskId } = seed("-awaiting-registry");
+    const claim = claimFor(taskId, noteKey);
+    const declared = registry.reportAwaiting(sessionId, wait(Date.now() + 20 * 60_000));
+    assert.ok(declared.ok);
+    const expectedBy = declared.awaiting.expectedBy;
+    assert.equal(registry.claimPromptedRecovery(sessionId, claim, expectedBy - 1), null, "the registry claimed for a session inside its wait");
+    assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+    assert.ok(registry.claimPromptedRecovery(sessionId, claim, expectedBy), "the deadline passing did not release the claim");
+  }
+});

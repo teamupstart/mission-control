@@ -1150,15 +1150,22 @@ export function FleetSectionHead({
   kind,
   count,
 }: {
-  kind: "free" | "held";
+  kind: "free" | "held" | "awaiting";
   count: number;
 }): React.JSX.Element {
   return (
     <div className={`fleet-section fleet-section-${kind}`} role="presentation">
       <span className="fleet-section-line">
-        <b>{kind === "free" ? "free" : "held by a workflow"}</b>
+        <b>{kind === "free" ? "free" : kind === "held" ? "held by a workflow" : "awaiting background work"}</b>
         <span className="fleet-section-n">{count}</span>
       </span>
+      {kind === "awaiting" && (
+        // Count-agnostic like the held sentence, and the reason the section exists: these cards
+        // are quiet on purpose, and nothing will nudge them before the deadline on each card.
+        <span className="fleet-section-why">
+          Each resumes on its own when its process reports back. Nothing nudges them before their deadline.
+        </span>
+      )}
       {kind === "held" && (
         // Count-agnostic on purpose. "Each finished its turn and is waiting..." was written for
         // the plural and reads as a grammar error over a section of one, which is the common

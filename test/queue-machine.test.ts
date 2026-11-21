@@ -53,6 +53,7 @@ const CFG: QueueConfig = {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -1657,4 +1658,10 @@ test("a blocked session holds its queue whole: no wrap-up ask until the blocker 
   const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   assert.deepEqual(tick({ session: { blocker }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
   assert.equal(tick({ session: { blocker: null }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
+});
+
+test("a session awaiting its own background process holds its queue until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(tick({ session: { awaiting }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
+  assert.equal(tick({ session: { awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
 });

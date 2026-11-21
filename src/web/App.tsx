@@ -2,6 +2,10 @@ import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useNow } from "./useNow.ts";
+import { anyAwaiting, awaitingSessionIds } from "./lib/awaiting.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -2658,6 +2662,15 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
+  // section), so a slow clock runs while any wait stands; BoardView and ConsoleView fold the same
+  // set from the same inputs, so the arrow keys walk the order the columns draw.
+  const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
+  const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
+  const awaitingIds = useMemo(
+    () => awaitingSessionIds(sessions, awaitingEnabled, awaitingNow),
+    [sessions, awaitingEnabled, awaitingNow],
+  );
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
@@ -2666,8 +2679,9 @@ export function App(): React.JSX.Element {
     const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
+  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the

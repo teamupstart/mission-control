@@ -91,6 +91,7 @@ function queue(openCount: number): SessionQueueSummary {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "atlas",
@@ -1158,4 +1159,12 @@ test("a blocked session is not nudged about review feedback until the blocker cl
   const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
   assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
   assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");
+});
+
+test("a session awaiting its own background process is not nudged about review feedback until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  const held = decide({ session: mkSession({ awaiting, inspector: inspector({ open: 2 }) }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is awaiting a background process" });
+  const overdue = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.equal(decide({ session: mkSession({ awaiting: overdue, inspector: inspector({ open: 2 }) }) }).kind, "nudge");
 });

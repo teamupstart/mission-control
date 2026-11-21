@@ -3,7 +3,8 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
-import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -27,7 +28,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
@@ -225,6 +226,17 @@ try {
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
 const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// A declared wait holds idle automation, so it must not outlive the preview that draws it on the
+// card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
+const endAwaitingsWhenOff = (): void => {
+  if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) registry.clearAllAwaitings("flag");
+};
+endAwaitingsWhenOff();
+const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
+// Mission Control's own deliveries, stored on a waiting session's wait as they are claimed, so
+// the turn one starts is never taken for the session's wake, even across a restart.
+const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
+  registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
@@ -1049,6 +1061,8 @@ async function shutdown(): Promise<void> {
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
   stopFeatureFlags();
+  stopAwaitingFlag();
+  stopAutomatedDeliveries();
   stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();

@@ -919,6 +919,28 @@ test("a blocked prerequisite stamps no dependent until its blocker is cleared", 
   assert.equal(childEdge(w).stackReadyAt, 1_000, "clearing the blocker releases the stamp");
 });
 
+test("a prerequisite awaiting its own background process stamps no dependent until its deadline passes", async () => {
+  // The reconciler's clock reads 1_000 (see `readiness`), so a deadline at 2_000 is still ahead.
+  const awaiting = (expectedBy: number) => ({
+    id: "aw-fixture", what: "CI checks on PR #7", wakeSource: "command" as const, expectedBy,
+    referenceUrl: null, details: null, startedAt: 500, updatedAt: 500,
+  });
+  const w = world();
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", awaiting: awaiting(2_000) }));
+  const s = script();
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "an episode still awaiting its CI is not finished");
+  assert.equal(s.reads, 0, "no GitHub read for a prerequisite that is awaiting");
+
+  // The deadline passes without a wake: the hold lifts and the episode is judged as usual.
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", awaiting: awaiting(1_000) }));
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "the deadline passing did not release the stamp");
+});
+
 test("a blocker reported while the parent pull request is read stamps nothing", async () => {
   const w = world();
   const s = script();

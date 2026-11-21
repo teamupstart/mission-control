@@ -14,6 +14,7 @@ function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
 function sessionFixture(p: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "x",
     agent: "claude",
     name: "n",

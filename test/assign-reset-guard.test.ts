@@ -38,6 +38,7 @@ function fixture(): string {
 function sess(cwd: string | null): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1", agent: "claude", name: "work", runtime: "terminal", foremanInvite: null, nameSource: "process", state: "idle",
     cwd, gitBranch: "main", gitRoot: null, repoRoot: null, pid: 1, tty: null,
     permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,

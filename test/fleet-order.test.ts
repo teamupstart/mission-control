@@ -13,11 +13,13 @@ import {
   clusterFallbackLabel,
   fleetBlocks,
   fleetRows,
+  idleHeadCounts,
   orderSessions,
   repoSessionTotals,
   type FleetRow,
 } from "../src/web/lib/fleet-order.ts";
 import { TONE_GROUPS } from "../src/web/lib/tone.ts";
+import { awaitingSessionIds } from "../src/web/lib/awaiting.ts";
 import { moveSelection } from "../src/web/lib/layoutNav.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import { mkMemberSession, mkSession } from "./helpers/session-fixture.ts";
@@ -633,4 +635,89 @@ test("the rollup counts a repository across the whole board, not one column", ()
   assert.equal(totals.get(REPO_B), 1);
   // A session in no repository is in no total, so nothing can render "1 of 1" for it.
   assert.equal(totals.size, 2);
+});
+
+/** A session awaiting a background process, due `dueIn` ms after `AT`. */
+const AT = 5_000_000;
+function awaiting(name: string, dueIn: number, over: Partial<Session> = {}): Session {
+  return plain(name, {
+    ...IDLE,
+    awaiting: {
+      id: `aw-${name}`, what: `checks for ${name}`, wakeSource: "command", expectedBy: AT + dueIn,
+      referenceUrl: null, details: null, startedAt: AT - 60_000, updatedAt: AT - 60_000,
+    },
+    ...over,
+  });
+}
+
+test("awaiting sessions lead idle soonest-due first, under their own rule, with the rest labelled free", () => {
+  const fleet = [plain("alpha", IDLE), awaiting("bravo", 20 * 60_000), awaiting("charlie", 5 * 60_000), plain("delta", IDLE)];
+  const ordered = orderSessions(
+    fleet, new Set(), false, undefined, undefined, undefined, undefined,
+    awaitingSessionIds(fleet, true, AT),
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(names(idle.sessions), ["charlie", "bravo", "alpha", "delta"]);
+  assert.deepEqual(idle.awaiting, { startIndex: 0, length: 2 });
+  assert.equal(idle.heldFrom, null);
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster")),
+    ["--awaiting:2", "charlie", "bravo", "--free:2", "alpha", "delta"],
+  );
+  // The flat order the arrow keys walk is the drawn order.
+  assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
+});
+
+test("an overdue wait leaves the section, and the preview off draws no section at all", () => {
+  const fleet = [awaiting("alpha", -60_000), awaiting("bravo", 60_000), plain("charlie", IDLE)];
+  const idleOf = (ids: ReadonlySet<string>) => orderSessions(
+    fleet, new Set(), false, undefined, undefined, undefined, undefined, ids,
+  ).groups.find((g) => g.tone === "idle")!;
+  const on = idleOf(awaitingSessionIds(fleet, true, AT));
+  assert.deepEqual(names(on.sessions), ["bravo", "alpha", "charlie"], "the overdue one sorts as a plain idle card");
+  assert.deepEqual(on.awaiting, { startIndex: 0, length: 1 });
+  const off = idleOf(awaitingSessionIds(fleet, false, AT));
+  assert.equal(off.awaiting, null);
+  assert.deepEqual(fleetRows(off).filter((r) => r.kind === "section"), []);
+});
+
+test("awaiting, free and held compose: three rules, and nothing straddles a boundary", () => {
+  const fleet = [plain("alpha", IDLE), awaiting("bravo", 60_000), plain("charlie", IDLE)];
+  const ordered = orderSessions(
+    fleet, new Set(["plain-charlie"]), false, undefined, undefined, undefined, undefined,
+    awaitingSessionIds(fleet, true, AT),
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(names(idle.sessions), ["bravo", "alpha", "charlie"]);
+  assert.equal(idle.heldFrom, 2);
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster")),
+    ["--awaiting:1", "bravo", "--free:1", "alpha", "--held:1", "charlie"],
+  );
+});
+
+test("a pinned resident inside a wait keeps its pinned place but counts as awaiting, never as free", () => {
+  const fleet = [
+    awaiting("alpha-resident", 30 * 60_000),
+    awaiting("bravo", 60_000),
+    plain("charlie", IDLE),
+    plain("delta", IDLE),
+  ];
+  const ordered = orderSessions(
+    fleet, new Set(["plain-delta"]), false, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
+    awaitingSessionIds(fleet, true, AT),
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  // Pinned first, then the Awaiting section, then free, then held.
+  assert.deepEqual(names(idle.sessions), ["alpha-resident", "bravo", "charlie", "delta"]);
+  assert.deepEqual(idle.awaiting, { startIndex: 1, length: 1 }, "the pinned card left its pinned place for the section");
+  assert.equal(idle.awaitingCount, 2);
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 2, free: 1, held: 1 });
+
+  // With nothing held there is no free/held split, and the awaiting count still includes the pin.
+  const unheld = orderSessions(
+    fleet, new Set(), false, undefined, undefined, new Set(["plain-alpha-resident"]), undefined,
+    awaitingSessionIds(fleet, true, AT),
+  ).groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(idleHeadCounts(unheld), { awaiting: 2, free: null, held: null });
 });

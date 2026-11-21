@@ -6,6 +6,7 @@ import { relativeTime, uptime } from "../../lib/format.ts";
 import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { AwaitingRailMark } from "../SessionAwaiting.tsx";
 import {
   AgentDot,
   InspectorRailMark,
@@ -198,6 +199,9 @@ export function RailRow({
                 <span className="rail-held">held</span>
               </Tooltip>
             )}
+            {/* A wait qualifies the "idle" beside it the way "held" does: idle on purpose,
+                with how long is left, or overdue. Draws nothing without a declared wait. */}
+            <AwaitingRailMark session={session} />
             <span className="rail-state">{st.label}</span>
           </span>
           <span className="rail-meta">

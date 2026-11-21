@@ -100,6 +100,8 @@ import type {
   WorkItemState,
   WorkCycleSummary,
   WorktreeProvider,
+  SessionAwaiting,
+  SessionAwaitingWakeSource,
   SessionBlocker,
   SessionBlockerKind,
   SessionBlockerReply,
@@ -108,6 +110,7 @@ import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
   REVIEW_SNOOZE_MODES,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   TASK_KINDS,
 } from "@shared/types.ts";
@@ -271,7 +274,9 @@ let db: DatabaseSync | undefined;
 //     backfill: no task was hibernated before it existed.
 // 38: enable CodeRabbit follow-up (`shipping.codeRabbitAutoResolve`) once, preserving every
 //     other Shipping setting and any later opt-out.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 38;
+// 39: declared waits on background processes (`session_awaitings`), keyed by note key. A new
+//     empty table: no session declared a wait before it existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4507,6 +4512,39 @@ function migrate(d: DatabaseSync): void {
   // Each blocker's identity, kept across re-reports. A row written before it existed reads
   // back with an id derived from its key and start (see `rowToSessionBlocker`).
   addColumn(d, "session_blockers", "blocker_id", "TEXT");
+  // Schema 39: a session idle on purpose while a background process finishes. Keyed like
+  // session_blockers, so a daemon restart reloads it; `task_id` is recorded for the
+  // terminal-task clear. `settled_at` is when the declaring turn was seen to end, which is what
+  // tells the session's NEXT turn (the wake) from the rest of the turn that declared it.
+  // `pending_nudges` is a JSON array of the deliveries Mission Control's own automation claimed
+  // into the session while the wait stood, or shortly before it was declared with their prompt
+  // not yet back (`outstandingAutomatedClaims`), each `{ at, key }` with the delivered text's
+  // fingerprint and not yet matched to its turn: a turn whose prompt is one of them is that
+  // nudge, not the wake. Stored so a daemon restart between a delivery and its turn cannot
+  // forget whose turn it was.
+  // Created here, beside its upgrade path, so an older database gains the table on next open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_awaitings (
+      note_key      TEXT PRIMARY KEY,
+      task_id       TEXT,
+      awaiting_id   TEXT NOT NULL,
+      what          TEXT NOT NULL,
+      wake_source   TEXT NOT NULL,
+      expected_by   INTEGER NOT NULL,
+      reference_url TEXT,
+      details       TEXT,
+      started_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      settled_at    INTEGER,
+      pending_nudges TEXT,
+      undecided_turn INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_awaitings_task ON session_awaitings(task_id);
+  `);
+  addColumn(d, "session_awaitings", "pending_nudges", "TEXT");
+  // `undecided_turn`: a turn started while a delivery was pending and its prompt has not been
+  // reported yet. Stored so a restart before the prompt arrives can still decide that turn.
+  addColumn(d, "session_awaitings", "undecided_turn", "INTEGER");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -12627,6 +12665,152 @@ export function moveSessionBlocker(fromKey: string, toKey: string): void {
     d.prepare(`DELETE FROM session_blockers WHERE note_key = ? AND EXISTS
       (SELECT 1 FROM session_blockers WHERE note_key = ?)`).run(toKey, fromKey);
     d.prepare(`UPDATE session_blockers SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+// ---- session awaitings (idle on purpose while a background process finishes) ----
+
+/** A stored wait and the columns the wire record does not carry. */
+export interface SessionAwaitingRecord {
+  noteKey: string;
+  taskId: string | null;
+  awaiting: SessionAwaiting;
+  /**
+   * When the turn that declared the wait was seen to end, or null while it is still running.
+   * Only a turn that starts after this is the session's wake.
+   */
+  settledAt: number | null;
+  /**
+   * The deliveries Mission Control's own automation (Foreman, a workflow, the harness, a
+   * resident) claimed into the session while the wait stood, or shortly before it was declared
+   * with their prompt not yet back, oldest first, each not yet matched to its turn: when it was claimed, and the delivered text's fingerprint
+   * (`injectionFingerprint`). A turn whose prompt is one of them is that nudge and uses it up;
+   * any other turn is the session's wake. A claim that provably never landed is removed.
+   */
+  pendingNudges: PendingNudge[];
+  /**
+   * A turn started while a delivery was pending and its prompt has not been reported yet: the
+   * prompt decides whose turn it was, or, if none comes, the turn's end does.
+   */
+  undecidedTurn: boolean;
+}
+
+interface SessionAwaitingRow {
+  note_key: string;
+  task_id: string | null;
+  awaiting_id: string;
+  what: string;
+  wake_source: string;
+  expected_by: number;
+  reference_url: string | null;
+  details: string | null;
+  started_at: number;
+  updated_at: number;
+  settled_at: number | null;
+  pending_nudges: string | null;
+  undecided_turn: number | null;
+}
+
+const SESSION_AWAITING_COLUMNS = `note_key, task_id, awaiting_id, what, wake_source, expected_by,
+  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn`;
+
+/** One automated delivery a waiting session has not yet started a turn for. */
+export interface PendingNudge {
+  at: number;
+  /** `injectionFingerprint` of the delivered text, matched against the turn's prompt. */
+  key: string;
+}
+
+/** A stored `pending_nudges` array, or empty for NULL or anything that is not one. */
+function parsePendingNudges(raw: string | null): PendingNudge[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!Array.isArray(v)) return [];
+    return v.filter((n): n is PendingNudge =>
+      typeof n === "object" && n !== null
+      && typeof (n as PendingNudge).at === "number" && Number.isFinite((n as PendingNudge).at)
+      && typeof (n as PendingNudge).key === "string");
+  } catch {
+    return [];
+  }
+}
+
+function rowToSessionAwaiting(r: SessionAwaitingRow): SessionAwaitingRecord {
+  // An unknown wake source (a newer build appended one) reads as `other` rather than dropping
+  // the wait: the deadline is the part that must survive a downgrade, not the label.
+  const wakeSource = (SESSION_AWAITING_WAKE_SOURCES as readonly string[]).includes(r.wake_source)
+    ? (r.wake_source as SessionAwaitingWakeSource)
+    : "other";
+  return {
+    noteKey: r.note_key,
+    taskId: r.task_id,
+    awaiting: {
+      id: r.awaiting_id,
+      what: r.what,
+      wakeSource,
+      expectedBy: r.expected_by,
+      referenceUrl: r.reference_url,
+      details: r.details,
+      startedAt: r.started_at,
+      updatedAt: r.updated_at,
+    },
+    settledAt: r.settled_at,
+    pendingNudges: parsePendingNudges(r.pending_nudges),
+    undecidedTurn: r.undecided_turn === 1,
+  };
+}
+
+/** Every stored wait, reloaded into the registry on start. */
+export function loadSessionAwaitings(): SessionAwaitingRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT ${SESSION_AWAITING_COLUMNS} FROM session_awaitings ORDER BY started_at`)
+    .all() as unknown as SessionAwaitingRow[];
+  return rows.map(rowToSessionAwaiting);
+}
+
+/** Write a wait whole: a first declaration, a re-declaration, or the declaring turn's end. */
+export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
+  const a = record.awaiting;
+  openDb()
+    .prepare(
+      `INSERT INTO session_awaitings (${SESSION_AWAITING_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         task_id=excluded.task_id, awaiting_id=excluded.awaiting_id, what=excluded.what,
+         wake_source=excluded.wake_source, expected_by=excluded.expected_by,
+         reference_url=excluded.reference_url, details=excluded.details,
+         started_at=excluded.started_at, updated_at=excluded.updated_at, settled_at=excluded.settled_at,
+         pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn`,
+    )
+    .run(
+      record.noteKey, record.taskId, a.id, a.what, a.wakeSource, a.expectedBy, a.referenceUrl,
+      a.details, a.startedAt, a.updatedAt, record.settledAt,
+      record.pendingNudges.length ? JSON.stringify(record.pendingNudges) : null,
+      record.undecidedTurn ? 1 : 0,
+    );
+}
+
+export function deleteSessionAwaiting(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_awaitings WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a wait across a note-key rotation, as `moveSessionBlocker` carries a blocker: the
+ * process that declared it is the same one, so what it is waiting for has not changed.
+ */
+export function moveSessionAwaiting(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_awaitings WHERE note_key = ? AND EXISTS
+      (SELECT 1 FROM session_awaitings WHERE note_key = ?)`).run(toKey, fromKey);
+    d.prepare(`UPDATE session_awaitings SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
     d.exec("COMMIT");
   } catch (err) {
     if (d.isTransaction) d.exec("ROLLBACK");

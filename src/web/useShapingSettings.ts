@@ -60,7 +60,7 @@ export function useShapingSettings(
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
   /** This window's id for the daemon's write ordering: a newer write from it is never overwritten. */
-  const windowId = useRef(newWindowId());
+  const windowId = useRef(tabWriteIdentity());
   /** Numbers each outcome in the order it arrived, whichever request it answers. */
   const arrivals = useRef(0);
   /**
@@ -127,7 +127,7 @@ export function useShapingSettings(
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
     const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, number, keys, viewInstance(confirmed)) });
+      const result = await api.setShaping(request, { signal: timeout, order: shapingWriteOrder(windowId.current, nextWriteSequence(), keys, viewInstance(confirmed)) });
       if (!result.ok && result.status === undefined) {
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal, nor as saved: only the daemon's answer
@@ -219,11 +219,51 @@ function viewInstance(view: ShapingConfigView | null): string | undefined {
   return typeof instance === "string" && /^[A-Za-z0-9-]{1,64}$/.test(instance) ? instance : undefined;
 }
 
-/** A random id for one window's hook, as the write-order header accepts it. */
+/** A random id, as the write-order header accepts it. */
 function newWindowId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `w-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+const TAB_ID_KEY = "mission.shaping.write-identity";
+const TAB_SEQUENCE_KEY = "mission.shaping.write-sequence";
+
+/**
+ * This tab's identity for the daemon's write ordering, kept in session storage so a reload keeps
+ * it: a write sent before the reload and delayed past it is then ordered against the writes sent
+ * after, rather than against a fresh history of its own. Without session storage it lasts one load.
+ */
+function tabWriteIdentity(): string {
+  try {
+    const stored = sessionStorage.getItem(TAB_ID_KEY);
+    if (stored && /^[A-Za-z0-9-]{1,64}$/.test(stored)) return stored;
+    const created = newWindowId();
+    sessionStorage.setItem(TAB_ID_KEY, created);
+    return created;
+  } catch {
+    return newWindowId();
+  }
+}
+
+/** The last write sequence this load handed out, for when session storage is unavailable. */
+let lastSequence = 0;
+
+/**
+ * The next write sequence for this tab: never lower than one handed out before, across reloads
+ * too, and grounded in the clock, so a write sent later always outranks one sent earlier, even
+ * from a duplicated tab that shares this identity. Kept in session storage beside the identity.
+ */
+function nextWriteSequence(): number {
+  let previous = lastSequence;
+  try {
+    const stored = Number(sessionStorage.getItem(TAB_SEQUENCE_KEY));
+    if (Number.isSafeInteger(stored) && stored > previous) previous = stored;
+  } catch { /* Session storage unavailable: this load's own counter stands. */ }
+  const next = Math.max(Date.now() * 1000, previous + 1);
+  lastSequence = next;
+  try { sessionStorage.setItem(TAB_SEQUENCE_KEY, String(next)); } catch { /* As above. */ }
+  return next;
 }
 
 interface Refusal {

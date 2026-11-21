@@ -1329,6 +1329,9 @@ export function applyShapingIntent(
     }
     case "move":
     case "place": {
+      // A placement checks the definition it was sent for first: one replaced since, even by an
+      // entry this build cannot run, is "changed", which tells the sender to review it.
+      if (intent.kind === "place" && index(intent.id) !== -1 && stale(intent.id, intent.expect)) return changed(intent.id);
       const known = classifyShapers(config, definitions).flatMap((entry, position) => entry.kind === "known"
         ? [{ id: entry.shaper.id, stage: entry.shaper.stage, position }] : []);
       const moved = known.find((entry) => entry.id === intent.id);
@@ -1336,7 +1339,6 @@ export function applyShapingIntent(
         return refuse(index(intent.id) === -1 ? "unknown_shaper" : "unsupported_shaper",
           `No registered shaper this build can run has the id "${intent.id}".`);
       }
-      if (intent.kind === "place" && stale(intent.id, intent.expect)) return changed(intent.id);
       const rows = known.filter((entry) => entry.stage === moved.stage).sort(compareShapingOrder(config.order, definitions.stages))
         .map((entry) => entry.id);
       if (intent.after !== null && (intent.after === intent.id || !rows.includes(intent.after))) {

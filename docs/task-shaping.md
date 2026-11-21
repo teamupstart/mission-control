@@ -314,8 +314,11 @@ before the body limit, so such a request is refused as forbidden whatever its si
   That ordering lives in the daemon's memory, so the header also names the daemon process whose
   view the window last read (the view's `instance`, random per process): a write made against a
   process that has since restarted answers 409 `daemon_restarted` instead of being applied, since
-  the restarted daemon no longer knows what came after it. A write without the header, from any
-  other client, is not ordered.
+  the restarted daemon no longer knows what came after it. The window's id and its last sequence
+  are kept in the tab's session storage, and each sequence is grounded in the clock and never
+  lower than the last, so reloading the tab keeps its order: a write sent before the reload and
+  delayed past it is refused once one sent after it has applied. A write without the header, from
+  any other client, is not ordered.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
   is refused with 409 `shaper_changed` or `stale_dashboard` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping

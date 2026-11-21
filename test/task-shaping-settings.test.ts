@@ -680,3 +680,16 @@ test("the dashboard places shapers with a kind of its own, so a daemon without i
   const older = ShapingIntentSchema.options.filter((option) => option.shape.kind.value !== "place");
   assert.equal(z.discriminatedUnion("kind", older as never).safeParse(placement).success, false);
 });
+
+test("a placement whose shaper was replaced by one this build cannot run is changed, not unsupported", () => {
+  const stored = ShapingConfigSchema.parse({ shapers: [gatherer("a"), gatherer("b")] });
+  const placement = moveIntent(daemonShapingView(stored), "b", -1)!;
+  // A restore puts an entry this build cannot run under the same id.
+  const restored = ShapingConfigSchema.parse({ shapers: [gatherer("a"), { ...unsupported, id: "b" }] });
+  const refused = applyShapingIntent(restored, placement, [], { revise: shapingReviser });
+  assert.equal(refused.ok ? "" : refused.error, "shaper_changed", "the sender is told to review the replacement");
+  // With no entry under the id at all, it is unknown, as before.
+  const gone = ShapingConfigSchema.parse({ shapers: [gatherer("a")] });
+  const missing = applyShapingIntent(gone, placement, [], { revise: shapingReviser });
+  assert.equal(missing.ok ? "" : missing.error, "unknown_shaper");
+});

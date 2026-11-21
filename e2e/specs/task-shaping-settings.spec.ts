@@ -1942,3 +1942,39 @@ test("a save delayed across a daemon restart never overwrites a newer save made 
   expect((await shapingConfig(daemon)).caller.user).toBe("before-restart-second");
   await page.unroute("**/api/shaping");
 });
+
+test("a save delayed past a reload of its tab never overwrites a newer save made after the reload", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  // The first save is held on its way to the daemon until after the tab has reloaded.
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  let late: number | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    // Delivered to the daemon as it was sent, though its page is gone.
+    late = (await route.fetch()).status();
+    await route.abort("connectionreset").catch(() => {});
+  });
+  await identity.fill("before-reload");
+  await save.click();
+  await reached.opened;
+  // The operator reloads the tab and saves a newer identity, which lands.
+  await page.reload();
+  await expect(identity).toHaveValue("");
+  await identity.fill("after-reload");
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("after-reload");
+  // The save from before the reload now arrives: the tab kept its identity, so it is refused.
+  goes.open();
+  await expect.poll(() => late, { timeout: 15_000 }).toBe(409);
+  expect((await shapingConfig(daemon)).caller.user).toBe("after-reload");
+  await page.unroute("**/api/shaping");
+});

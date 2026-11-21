@@ -114,6 +114,8 @@ test("the Board's Idle head counts a pinned resident inside a wait as awaiting, 
     onRenameStart: () => {}, onRenameClose: () => {}, foremanMode: "dry-run", foremanEnabled: false, foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(), pendingReviewIds: new Set<string>(), reviews: [],
     residentBySession: new Map([["res-1", mark]]),
+    // App's one set: the Board draws from it rather than reading its own clock.
+    awaitingIds: new Set(["res-1", "aw-1"]),
   } as unknown as SessionViewProps;
   const html = render(createElement(BoardView, props), true);
   const idleColumn = html.slice(html.indexOf('class="board-col tone-idle'));
@@ -127,4 +129,29 @@ test("the Board's Idle head counts a pinned resident inside a wait as awaiting, 
   assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("awaiting background work"),
     "the pinned resident left its pinned place for the Awaiting section");
   assert.match(idleColumn, /fleet-section-awaiting[\s\S]*?fleet-section-n">1</, "the section rule counts only the cards under it");
+});
+
+test("the Board draws the Awaiting section from App's set, not from a clock of its own", () => {
+  // Both sessions carry a live wait, but App's set (on App's clock) names only one: the Board
+  // follows App, so the arrow keys and the columns never disagree around a deadline.
+  const idle = { state: "idle" as const, activity: null };
+  const a = mkSession({ id: "aw-a", name: "Alpha", pid: 21, ...idle, awaiting: wait({ id: "aw-a" }) });
+  const b = mkSession({ id: "aw-b", name: "Bravo", pid: 22, ...idle, awaiting: wait({ id: "aw-b" }) });
+  const base = {
+    sessions: [a, b], tasks: [], backlog: [], onEditTask: () => {}, backlogPlan: null, selectedId: null,
+    consoleZone: "rail", onConsoleZoneChange: () => {}, onSelect: () => {}, onCursorTo: () => {}, onDeselect: () => {},
+    detailId: null, onOpenReviews: () => {}, onRequeue: () => {}, onOpenFiles: () => {}, onOpenFile: () => false,
+    onOpenFilePath: () => {}, fileTabRequest: null, conversationTabRequest: null, workflowsTabRequest: null,
+    diffTabRequest: null, files: {} as SessionFilesController, onReset: () => {}, onComplete: () => {}, onKill: () => {},
+    onKilled: () => {}, resetNonces: {}, registerEl: () => {}, registerActions: () => {}, registerLaunchers: () => {},
+    registerFind: () => {}, registerDetailScroll: () => {}, registerReaderTab: () => {}, renamingId: null,
+    onRenameStart: () => {}, onRenameClose: () => {}, foremanMode: "dry-run", foremanEnabled: false, foremanAllowlist: [],
+    inputReviewBySession: new Map<string, string>(), pendingReviewIds: new Set<string>(), reviews: [],
+  };
+  const idleColumn = (awaitingIds: ReadonlySet<string> | undefined) => {
+    const html = render(createElement(BoardView, { ...base, awaitingIds } as unknown as SessionViewProps), true);
+    return html.slice(html.indexOf('class="board-col tone-idle'));
+  };
+  assert.match(idleColumn(new Set(["aw-b"])), /class="board-col-n n-awaiting"[^>]*>1 awaiting</);
+  assert.doesNotMatch(idleColumn(undefined), /n-awaiting/, "with no set from App the Board drew a section of its own");
 });

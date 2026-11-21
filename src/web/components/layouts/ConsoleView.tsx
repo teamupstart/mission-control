@@ -16,10 +16,7 @@ import {
 } from "../../lib/fleet-order.ts";
 import { BlockedRailHead } from "../BlockedGroup.tsx";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
-import { anyAwaiting, awaitingSessionIds } from "../../lib/awaiting.ts";
-import { useFeatureFlag } from "../../useFeatureFlag.ts";
-import { useNow } from "../../useNow.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
@@ -83,9 +80,6 @@ export function ConsoleView(props: SessionViewProps & {
   // as the fleet regrouping when only the layout moved - the same reason the free/held rule is
   // drawn by one shared component in both places.
   const { groupBoardByRepo, blockedPlacement } = useUiConfig();
-  // The Awaiting rule's members, folded exactly as App folds them for the arrow keys.
-  const awaitingEnabled = useFeatureFlag(SESSION_AWAITING_FLAG_ID);
-  const awaitingNow = useNow(anyAwaiting(props.sessions, awaitingEnabled), 15_000);
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -94,7 +88,8 @@ export function ConsoleView(props: SessionViewProps & {
     props.pipelineRunByKey,
     pinnedResidentSessions(props.residentBySession),
     blockedPlacement,
-    awaitingSessionIds(props.sessions, awaitingEnabled, awaitingNow),
+    // App's one set, on App's one clock, so this draws the order the arrow keys walk.
+    props.awaitingIds ?? NO_AWAITING_SESSIONS,
   );
   const pending = provisioningTasks(props.tasks);
   // Every open failure: the rail has no Backlog column and its rows carry no notices, so a

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReportAwaitingBody, ReportBlockerBody } from "../src/shared/protocol.ts";
+import type { Session } from "../src/shared/types.ts";
 import { SESSION_AWAITING_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
@@ -1211,6 +1212,30 @@ test("a restart reloads the wait, and drops it once its session has been gone pa
   assert.ok(mine(), "dropped inside the grace");
   assert.ok(third.pruneAwaitings(180_000, now + 181_000) >= 1);
   assert.ok(!mine(), "a wait outlived its session past the grace");
+  // The audit row of that clear is filed under the session that held the wait, not the key.
+  assert.equal(clearedEvents(d.syntheticId).at(-1)?.actor, "exit", "the prune's audit row is not under the session");
+});
+
+test("a blocker replacing a wait is published as one update carrying both", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const published: Array<{ awaiting: unknown; blocker: unknown }> = [];
+  const listen = (e: { type: string; session?: Session }) => {
+    if (e.type === "session_upsert" && e.session?.id === d.syntheticId) {
+      published.push({ awaiting: e.session.awaiting, blocker: e.session.blocker });
+    }
+  };
+  registry.on("event", listen);
+  try {
+    assert.equal(registry.reportBlocker(d.syntheticId, BLOCKER).ok, true);
+  } finally {
+    registry.off("event", listen);
+  }
+  assert.ok(published.length > 0);
+  assert.ok(published.every((p) => p.awaiting !== null || p.blocker !== null), "a listener saw the session with neither hold");
+  assert.equal(published.at(-1)?.awaiting, null);
+  assert.ok(published.at(-1)?.blocker);
 });
 
 test("a wait is refused while a request_input is pending, and a new question ends a standing wait", () => {

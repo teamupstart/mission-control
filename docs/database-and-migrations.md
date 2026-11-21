@@ -57,6 +57,9 @@ marks a turn that started while a delivery was pending and whose prompt has not 
 yet, so a restart before that prompt arrives can still decide whose turn it was.
 `redeclared_in_turn` marks that the session declared its wait again during that turn: the turn
 is still decided, so a delivery that started it is used up, but it no longer ends the wait.
+`session_id` is the last session seen holding the wait, so a clear with no live holder (a prune
+after a restart, the preview switched off) still files its `session_awaiting_cleared` row under a
+session.
 
 ## Full-database recovery points
 

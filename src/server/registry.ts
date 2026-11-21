@@ -9186,7 +9186,9 @@ export class Registry extends EventEmitter {
       if (replacesWait) deleteSessionAwaiting(key);
       upsertSessionBlocker(record);
     });
-    if (replacesWait) this.clearAwaitingKey(key, s.id, "blocker", undefined, now);
+    // Cleared without its own publish: `syncSessionsForBlocker` below publishes the wait's end
+    // and the blocker together.
+    if (replacesWait) this.clearAwaitingKey(key, s.id, "blocker", undefined, now, false);
     this.blockers.set(key, record);
     logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
       actor: "session",
@@ -9334,9 +9336,12 @@ export class Registry extends EventEmitter {
   private syncSessionsForBlocker(key: string): void {
     for (const [id, s] of this.sessions) {
       if (noteKeyFor(s) !== key) continue;
+      // The wait is projected beside the blocker, so a blocker that replaces a wait is published
+      // as ONE update carrying both: no listener ever sees the session with neither hold.
       const blocker = this.blockerFor(s);
-      if (JSON.stringify(s.blocker ?? null) === JSON.stringify(blocker)) continue;
-      const next = { ...s, blocker };
+      const awaiting = this.awaitingFor(s);
+      if (JSON.stringify([s.blocker ?? null, s.awaiting ?? null]) === JSON.stringify([blocker, awaiting])) continue;
+      const next = { ...s, blocker, awaiting };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -9425,7 +9430,7 @@ export class Registry extends EventEmitter {
       updatedAt: now,
     };
     const record: SessionAwaitingRecord = {
-      noteKey: key, taskId: s.task?.id ?? null, awaiting, settledAt: null,
+      noteKey: key, taskId: s.task?.id ?? null, sessionId: s.id, awaiting, settledAt: null,
       // A re-declaration keeps the deliveries still on their way: each will still start a turn
       // of Mission Control's own, whatever the session now says it is waiting for. A first
       // declaration starts from the deliveries Mission Control claimed into this session just
@@ -9502,7 +9507,9 @@ export class Registry extends EventEmitter {
     const sessionFor = (key: string) => [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
     const keys = new Map<string, string>();
     for (const [key, record] of this.awaitings) {
-      if (record.taskId === task.id) keys.set(key, sessionFor(key)?.id ?? task.sessionId ?? previous?.sessionId ?? key);
+      if (record.taskId === task.id) {
+        keys.set(key, sessionFor(key)?.id ?? task.sessionId ?? previous?.sessionId ?? record.sessionId ?? key);
+      }
     }
     for (const sid of [task.sessionId, previous?.sessionId]) {
       const s = sid ? this.sessions.get(sid) : undefined;
@@ -9521,7 +9528,8 @@ export class Registry extends EventEmitter {
     let n = 0;
     for (const key of this.awaitings.keys()) {
       const holder = [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
-      if (this.clearAwaitingKey(key, holder?.id ?? key, actor, undefined, now)) n++;
+      const logged = holder?.id ?? this.awaitings.get(key)?.sessionId ?? key;
+      if (this.clearAwaitingKey(key, logged, actor, undefined, now)) n++;
     }
     return n;
   }
@@ -9561,6 +9569,17 @@ export class Registry extends EventEmitter {
     // is actually removed (`remove`), never here.
     if (s.state === "exited") return;
     this.awaitingSeenAt.set(key, now);
+    const holder = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
+    if (record.sessionId !== s.id && (!holder || holder.state === "exited")) {
+      // The last session seen holding the wait (a resumed process can hold the key under a new
+      // id), so a clear with no live holder still logs under a session. Taken over only from a
+      // holder that is gone, so two live sessions sharing the key never trade it on each emit.
+      const held = { ...record, sessionId: s.id };
+      upsertSessionAwaiting(held);
+      this.awaitings.set(key, held);
+      this.observeAwaitingTurn(s);
+      return;
+    }
     // A presumed state says nothing about turns: discovery presumes `working` until a hook, a
     // transcript or a driver confirms what the session is doing. Only confirmed readings move
     // the watch, so the first one after a restart is a real observation, not a guess.
@@ -9903,7 +9922,9 @@ export class Registry extends EventEmitter {
         continue;
       }
       if (now - seen < graceMs) continue;
-      if (this.clearAwaitingKey(key, key, "exit", undefined, now)) removed++;
+      // Logged under the last session seen holding the wait, so the audit row is found by
+      // session id even though no live session holds the key now.
+      if (this.clearAwaitingKey(key, this.awaitings.get(key)?.sessionId ?? key, "exit", undefined, now)) removed++;
     }
     return removed;
   }

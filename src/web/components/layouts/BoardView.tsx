@@ -33,10 +33,7 @@ import {
   type BoardColumnId,
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
-import { anyAwaiting, awaitingSessionIds } from "../../lib/awaiting.ts";
-import { useFeatureFlag } from "../../useFeatureFlag.ts";
-import { useNow } from "../../useNow.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
@@ -178,9 +175,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     blockedPlacement,
     blockedFrameCollapsed,
   } = useUiConfig();
-  // The Awaiting rule's members, folded exactly as App folds them for the arrow keys.
-  const awaitingEnabled = useFeatureFlag(SESSION_AWAITING_FLAG_ID);
-  const awaitingNow = useNow(anyAwaiting(props.sessions, awaitingEnabled), 15_000);
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -189,7 +183,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     props.pipelineRunByKey,
     pinnedResidentSessions(props.residentBySession),
     blockedPlacement,
-    awaitingSessionIds(props.sessions, awaitingEnabled, awaitingNow),
+    // App's one set, on App's one clock, so this draws the order the arrow keys walk.
+    props.awaitingIds ?? NO_AWAITING_SESSIONS,
   );
   const groups = order.groups;
   const columns = order.columns;

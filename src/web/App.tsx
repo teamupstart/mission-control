@@ -2663,8 +2663,9 @@ export function App(): React.JSX.Element {
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
   // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
-  // section), so a slow clock runs while any wait stands; BoardView and ConsoleView fold the same
-  // set from the same inputs, so the arrow keys walk the order the columns draw.
+  // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
+  // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
+  // even in the tick a deadline passes.
   const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
   const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
   const awaitingIds = useMemo(
@@ -3509,6 +3510,7 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    awaitingIds,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),

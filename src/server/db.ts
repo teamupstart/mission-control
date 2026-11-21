@@ -4565,6 +4565,9 @@ function migrate(d: DatabaseSync): void {
   // turn may still use up the delivery that started it, but it can no longer be the wake, since
   // the agent has just said it is still waiting. Stored for the same restart.
   addColumn(d, "session_awaitings", "redeclared_in_turn", "INTEGER");
+  // `session_id`: the last session seen holding the wait, so a clear with no live holder (a
+  // prune after a restart, the preview switched off) still logs its audit row under a session.
+  addColumn(d, "session_awaitings", "session_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -12787,6 +12790,8 @@ export function moveSessionBlocker(fromKey: string, toKey: string): void {
 export interface SessionAwaitingRecord {
   noteKey: string;
   taskId: string | null;
+  /** The last session seen holding the wait; null for a row written before this was stored. */
+  sessionId: string | null;
   awaiting: SessionAwaiting;
   /**
    * When the turn that declared the wait was seen to end, or null while it is still running.
@@ -12829,10 +12834,11 @@ interface SessionAwaitingRow {
   pending_nudges: string | null;
   undecided_turn: number | null;
   redeclared_in_turn: number | null;
+  session_id: string | null;
 }
 
 const SESSION_AWAITING_COLUMNS = `note_key, task_id, awaiting_id, what, wake_source, expected_by,
-  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn`;
+  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn, session_id`;
 
 /** One automated delivery a waiting session has not yet started a turn for. */
 export interface PendingNudge {
@@ -12881,6 +12887,7 @@ function rowToSessionAwaiting(r: SessionAwaitingRow): SessionAwaitingRecord {
   return {
     noteKey: r.note_key,
     taskId: r.task_id,
+    sessionId: r.session_id,
     awaiting: {
       id: r.awaiting_id,
       what: r.what,
@@ -12912,14 +12919,14 @@ export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
   openDb()
     .prepare(
       `INSERT INTO session_awaitings (${SESSION_AWAITING_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          task_id=excluded.task_id, awaiting_id=excluded.awaiting_id, what=excluded.what,
          wake_source=excluded.wake_source, expected_by=excluded.expected_by,
          reference_url=excluded.reference_url, details=excluded.details,
          started_at=excluded.started_at, updated_at=excluded.updated_at, settled_at=excluded.settled_at,
          pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn,
-         redeclared_in_turn=excluded.redeclared_in_turn`,
+         redeclared_in_turn=excluded.redeclared_in_turn, session_id=excluded.session_id`,
     )
     .run(
       record.noteKey, record.taskId, a.id, a.what, a.wakeSource, a.expectedBy, a.referenceUrl,
@@ -12927,6 +12934,7 @@ export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
       record.pendingNudges.length ? JSON.stringify(record.pendingNudges) : null,
       record.undecidedTurn ? 1 : 0,
       record.undecidedTurn && record.redeclaredInTurn ? 1 : 0,
+      record.sessionId,
     );
 }
 

@@ -56,21 +56,20 @@ export function shaperCommandEnv(
 ): NodeJS.ProcessEnv {
   const token = daemonToken.trim();
   const carriesToken = (value: string) => token.length > 0 && value.includes(token);
-  const env: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(executableChildEnv(base))) {
-    if (value === undefined || NEVER_PASSED.has(name)) continue;
-    if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
-    if (credentialShapedName(name) || carriesToken(value) || carriedEnvName(name)) continue;
-    env[name] = value;
-  }
-  dropPaneIdentityEnv(env);
+  // Built from entries, never by assignment: a variable named `__proto__` is then an own
+  // property the child receives, not a write to the object's prototype.
+  const inherited: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(executableChildEnv(base)).filter(([name, value]) =>
+    value !== undefined && !NEVER_PASSED.has(name) && !(MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)
+    && !credentialShapedName(name) && !carriesToken(value) && !carriedEnvName(name)));
+  dropPaneIdentityEnv(inherited);
+  const env = new Map(Object.entries(inherited));
   for (const name of names) {
     // The environment's own string only: `constructor` must not read an inherited property.
     const value = Object.hasOwn(base, name) && typeof base[name] === "string" ? base[name] : undefined;
     if (NEVER_PASSED.has(name) || carriedEnvName(name) || value === undefined || value === "" || carriesToken(value)) continue;
-    env[name] = value;
+    env.set(name, value);
   }
-  return withCarriedEnv(env, trace, workUnitId);
+  return withCarriedEnv(Object.fromEntries(env), trace, workUnitId);
 }
 
 function killGroup(child: ChildProcess): void {

@@ -217,6 +217,12 @@ test("a reply that repeats one escaped spacing variant thousands of times is scr
   assert.ok(elapsed < 3_000, `scrubbed in ${Math.round(elapsed)} ms`);
 });
 
+test("a value with a line break or a NUL is unresolved: a header could not carry it as written", () => {
+  for (const value of ["tok-9f8e7d\r\n", "tok\n9f8e7d", "\rtok", "tok\u00009f"]) {
+    assert.deepEqual(resolveReferences("Bearer {env:BROKEN}", { ...ctx, env: { BROKEN: value } }), { ok: false, missing: ["{env:BROKEN}"] }, JSON.stringify(value));
+  }
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

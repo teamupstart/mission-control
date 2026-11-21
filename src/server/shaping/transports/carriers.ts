@@ -46,8 +46,8 @@ export function carriedHeaderName(name: string): boolean {
  * context through the one carrier agents use, and `WORK_UNIT_ID` when the run has one.
  */
 export function withCarriedEnv(env: NodeJS.ProcessEnv, trace: ShapingTraceContext | null, workUnitId: string | null): NodeJS.ProcessEnv {
-  const next: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(env)) if (!carriedEnvName(name)) next[name] = value;
+  // Built from entries, so a variable named `__proto__` stays an own property.
+  const next: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !carriedEnvName(name)));
   const traced = withAgentTraceContext(next, trace);
   if (workUnitId) traced[WORK_UNIT_ID_ENV] = workUnitId;
   return traced;

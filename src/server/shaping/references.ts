@@ -85,6 +85,10 @@ function resolveOne(reference: string, ctx: ReferenceContext, token: string): st
   const env = ctx.env ?? process.env;
   const value = Object.hasOwn(env, name) ? env[name] : undefined;
   if (typeof value !== "string" || value.trim() === "") return null;
+  // A header cannot carry a line break or a NUL: one inside the value is refused when the header
+  // is built, and one at an end is stripped before it is sent, leaving the server a form no
+  // scrub would know. Such a value is unresolved, so nothing is sent.
+  if (/[\r\n\u0000]/.test(value)) return null;
   if (token.length > 0 && value.includes(token)) return null;
   return value;
 }

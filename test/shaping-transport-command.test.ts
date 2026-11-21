@@ -134,6 +134,15 @@ test("an unset named variable that matches an inherited property cannot break re
   assert.equal(decoded(reply).guidance[0].body, "first entry for billing-api");
 });
 
+test("a named variable called __proto__ is an own property of the child's environment", () => {
+  const base = JSON.parse('{"__proto__":"proto-value","PATH":"/usr/bin:/bin"}') as NodeJS.ProcessEnv;
+  const env = shaperCommandEnv(base, ["__proto__"], "", null, "wu_01JD5Z");
+  assert.ok(Object.hasOwn(env, "__proto__"), Object.keys(env).join(","));
+  assert.equal(Object.getOwnPropertyDescriptor(env, "__proto__")?.value, "proto-value");
+  assert.ok(Object.keys(env).includes("__proto__"), "and is enumerated, so a spawn passes it on");
+  assert.equal(env.WORK_UNIT_ID, "wu_01JD5Z");
+});
+
 test("argv reaches the program verbatim, with no shell in between", async () => {
   const args = [FIXTURE, "echo", "$(echo injected)", "; rm -rf /", "*", "a b"];
   const seen = echoed(await callCommand(request(), shaper(args), ctx()));

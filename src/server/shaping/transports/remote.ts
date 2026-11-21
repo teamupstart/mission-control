@@ -85,7 +85,8 @@ export function callHeaders(
  */
 function withTransmittedForms(resolved: readonly ResolvedValue[]): ResolvedValue[] {
   return resolved.flatMap((entry) => {
-    const trimmed = entry.value.replace(/^[\t ]+|[\t ]+$/g, "");
+    // The HTTP whitespace `Headers` strips from each end: spaces, tabs, CR and LF.
+    const trimmed = entry.value.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
     return trimmed && trimmed !== entry.value ? [entry, { name: entry.name, value: trimmed }] : [entry];
   });
 }

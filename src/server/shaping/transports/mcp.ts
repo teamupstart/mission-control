@@ -192,6 +192,15 @@ const pendingCall = new AsyncLocalStorage<{
 }>();
 
 /**
+ * The handshake a request belongs to, as `pendingCall` is for a call. `openHttp` runs `connect`
+ * inside it, so the `initialize` POST records its id here and a stream the SDK resumes for it is
+ * watched for the handshake. `done` is set once `connect` has settled: the shared GET stream is
+ * also started from inside it, and a reconnection of that stream must not read as a resumed
+ * `initialize`.
+ */
+const pendingHandshake = new AsyncLocalStorage<{ requestId?: string | number; done: boolean }>();
+
+/**
  * Which events of one SSE stream make it resumable, read as the text arrives. The SDK resumes from
  * the id of an event its parser dispatched: one ended by a blank line, with a data line, whose own
  * `id` is not empty. Only newly arrived text is scanned for line endings, and an unfinished line is
@@ -305,11 +314,14 @@ type ReplyTracker = ReturnType<typeof replyTracker>;
 function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInterrupted: () => void): FetchLike {
   return async (input, init) => {
     const call = pendingCall.getStore();
+    const handshake = pendingHandshake.getStore();
     const request = requestOf(init?.body);
     // A resumed stream: the GET the SDK sends with the last event id it saw, to resume a call's
     // POST stream. It has no body naming its request, so the request is the call's, from its context.
-    const resuming = request === null && call?.requestId !== undefined && (init?.method ?? "GET").toUpperCase() === "GET"
-      && new Headers(init?.headers).has("last-event-id");
+    const resumedGet = request === null && (init?.method ?? "GET").toUpperCase() === "GET" && new Headers(init?.headers).has("last-event-id");
+    const resuming = resumedGet && call?.requestId !== undefined;
+    // The same for the handshake: a stream resumed for `initialize` while the handshake is under way.
+    const resumingHandshake = resumedGet && !call && handshake !== undefined && !handshake.done && handshake.requestId !== undefined;
     // The call's own requests, its `tools/call` and a resumed stream for it, end when the call
     // does: a call that timed out releases its stream at once, while the connection and every
     // other call on it go on. Notifications, such as the SDK's cancellation, are not tied to it.
@@ -324,7 +336,13 @@ function watchReplyStreams(base: FetchLike, replies: ReplyTracker, handshakeInte
     }
     // The call's own request, so that a stream the SDK resumes for it later is watched for it too.
     if (call && request?.method === "tools/call") call.requestId = request.id;
+    if (handshake && !handshake.done && request?.method === "initialize") handshake.requestId = request.id;
     let watched = request;
+    if (resumingHandshake && handshake?.requestId !== undefined) {
+      // As for a call: nothing to resume, so the handshake's reply can no longer arrive.
+      if (response.status === 405) { handshakeInterrupted(); return response; }
+      watched = { id: handshake.requestId, method: "initialize" };
+    }
     if (resuming && call?.requestId !== undefined) {
       // A server that offers no stream to resume answers 405, which the SDK takes as nothing to
       // wait for: the call's reply can no longer arrive, so the call fails now, not at its deadline.
@@ -577,10 +595,11 @@ async function openHttp(
     // handshake or the call. The connection is not failed over it here.
     if (error instanceof AcceptedRequestError) return;
     const call = pendingCall.getStore();
-    // The SDK gave up resuming a call's stream: its reply can no longer arrive.
-    if (call && error instanceof Error && error.message.startsWith("Maximum reconnection attempts")) {
-      call.fail(INTERRUPTED_REASON);
-      return;
+    // The SDK gave up resuming a call's stream, or the handshake's: its reply can no longer arrive.
+    if (error instanceof Error && error.message.startsWith("Maximum reconnection attempts")) {
+      if (call) { call.fail(INTERRUPTED_REASON); return; }
+      const handshake = pendingHandshake.getStore();
+      if (handshake && !handshake.done) { interrupted(); return; }
     }
     const malformed = malformedReason(error);
     if (!malformed) return;
@@ -596,7 +615,9 @@ async function openHttp(
     }
     await client.close();
   });
-  const connecting = client.connect(transport, { timeout: handshakeMs() });
+  const handshake = { done: false } as { requestId?: string | number; done: boolean };
+  const connecting = pendingHandshake.run(handshake, () => client.connect(transport, { timeout: handshakeMs() }));
+  void connecting.then(() => { handshake.done = true; }, () => { handshake.done = true; });
   try {
     await Promise.race([connecting, state.lost]);
   } catch (error) {

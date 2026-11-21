@@ -493,6 +493,44 @@ test("a present value never reads as an absent one, or as another value, in the 
   assert.match(block({}), /^- Title: Retry failed charges$/m);
 });
 
+/** A loopback MCP server whose `initialize` reply is a resumable stream it closes, and whose resumed GET answers as `resume` says. */
+async function startResumableHandshake(resume: "empty" | "405") {
+  let initializes = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      if (!req.headers["last-event-id"] || resume === "405") { res.writeHead(405).end(); return; }
+      // A stream that ends with neither the result nor a new event id to resume from.
+      res.writeHead(200, { "content-type": "text/event-stream" }).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    initializes += 1;
+    res.writeHead(200, { "content-type": "text/event-stream" }).end("id: i1\ndata: \n\n");
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    initializes: () => initializes,
+    close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+test("a resumed handshake stream that can no longer deliver the result fails the handshake at once", async () => {
+  for (const resume of ["empty", "405"] as const) {
+    const server = await startResumableHandshake(resume);
+    try {
+      const started = Date.now();
+      const reply = await callMcp(request(false), shaper({ type: "http", url: server.url }), ctx({}, 20_000));
+      assert.deepEqual(reply, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." }, resume);
+      assert.ok(Date.now() - started < 8_000, `${resume}: answered after ${Date.now() - started} ms, not at the 20 s budget`);
+      assert.equal(server.initializes(), 1, resume);
+    } finally { await server.close(); }
+  }
+});
+
 /** A loopback MCP server whose tool replies on a resumable stream it closes, and whose resumed GET answers as `resume` says. */
 async function startResumable(resume: "empty" | "405") {
   let pendingId: number | undefined;

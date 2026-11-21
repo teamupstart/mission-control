@@ -4,19 +4,13 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { computePinnedRefDiff, computeSessionDiff, sourceRef } from "../src/server/diff.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
 
 function mkRepo(): string {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "harness-diff-")));
-  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
-  git("init", "-q");
-  git("branch", "-M", "main");
-  git("config", "user.email", "t@test");
-  git("config", "user.name", "t");
-  writeFileSync(join(repo, "keep.txt"), "line1\nline2\nline3\n");
-  git("add", "-A");
-  git("commit", "-qm", "base");
+  seedGitRepo(repo, { branch: "main", files: { "keep.txt": "line1\nline2\nline3\n" } });
   return repo;
 }
 

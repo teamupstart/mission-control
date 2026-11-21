@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -174,6 +175,44 @@ test("credentialShapedName is the name rule on its own", () => {
   assert.equal(credentialShapedName("PATH"), false);
   // The one that matters most: a variable this repository has never heard of.
   assert.equal(credentialShapedName("SOME_FUTURE_TOOL_TOKEN"), true);
+});
+
+test("git's GIT_CONFIG family never reaches a Command, whatever shape it arrives in", () => {
+  // Never forwarded: a config key can carry a secret in its URL subsection, and a value can carry
+  // one too, neither of them name-shaped. And always whole: git refuses to start at all under a
+  // partial family, which is what the name rule used to leave behind by taking KEY_<n> alone.
+  const shapes: Record<string, NodeJS.ProcessEnv> = {
+    "complete": { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "credential in a key": {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "url.https://user:secret-in-key@example.invalid/.insteadOf",
+      GIT_CONFIG_VALUE_0: "https://example.invalid/",
+    },
+    "credential in a value": {
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: "Authorization: Bearer secret-in-value",
+    },
+    "daemon token in a value": { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: TOKEN },
+    "missing a promised entry": { GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "an unreadable count": { GIT_CONFIG_COUNT: "0.0", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "an oversized count": { GIT_CONFIG_COUNT: "9".repeat(400), GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+    "entries without a count": { GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" },
+  };
+  for (const [shape, family] of Object.entries(shapes)) {
+    const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8", ...family }, TOKEN);
+    for (const name of Object.keys(family)) assert.equal(scrubbed[name], undefined, `${shape}: ${name} survived`);
+    assert.equal(scrubbed.HOME, "/home/me", shape);
+    assert.equal(scrubbed.LANG, "en_US.UTF-8", shape);
+    assert.ok(!JSON.stringify(scrubbed).includes("secret-in-"), shape);
+    const listed = spawnSync("git", ["config", "--list"], { env: scrubbed, encoding: "utf8" });
+    assert.equal(listed.status, 0, `${shape}: git reads its config under what remains: ${listed.stderr}`);
+  }
+});
+
+test("the family has to go whole: git refuses to start under the half the name rule would leave", () => {
+  // The premise for removing all of it, asserted: COUNT without its KEY is fatal to every git.
+  const half = { PATH: process.env.PATH, GIT_CONFIG_COUNT: "1", GIT_CONFIG_VALUE_0: "true" };
+  assert.equal(credentialShapedName("GIT_CONFIG_KEY_0"), true, "the name rule alone would take the key");
+  assert.equal(spawnSync("git", ["config", "--list"], { env: half, encoding: "utf8" }).status, 128);
 });
 
 test("a Command never inherits make's recursion state from whatever launched the daemon", () => {

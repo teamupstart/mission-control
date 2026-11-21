@@ -13,6 +13,7 @@ import { nativePlanFiles } from "../src/server/plans/native.ts";
 import type { PlanAuthority } from "../src/server/plans/store.ts";
 import { SavePlanInputSchema, type SavePlanInput } from "../src/shared/managed-plans.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
 process.env.MISSION_HOME = join(home, "state");
@@ -29,9 +30,7 @@ beforeEach(() => { openDb().exec("DELETE FROM managed_plan_revisions; DELETE FRO
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 function repo(parent = randomUUID(), name = "same-name"): PlanAuthority {
   const checkout = join(home, parent, name);
-  mkdirSync(checkout, { recursive: true });
-  git(checkout, "init", "-q", "-b", "main");
-  git(checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial", "--allow-empty");
+  seedGitRepo(checkout, { branch: "main", files: {}, message: "initial", name: "Test", email: "test@example.com", storeIdentity: false });
   return { sessionId: randomUUID(), taskId: randomUUID(), episodeId: randomUUID(), repoSlot: "repo-01", checkout, repoRoot: checkout };
 }
 function input(slug = `plan-${randomUUID()}`, title = "A saved plan"): SavePlanInput {

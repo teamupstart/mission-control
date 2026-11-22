@@ -211,7 +211,10 @@ test("a session finishing while away lands in the buffer", () => {
   w.stop();
 });
 
-test("with the inbox flag on, a resident's digest line is named by the one naming rule", () => {
+test("with the inbox flag on, a resident's digest line is named by the one naming rule", (t) => {
+  // Restore the flag on every path, so a failed assertion here cannot leave resident naming on
+  // for the tests after it.
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
   const resident = mkSession({ id: "a", name: "watcher-1", task: { id: "t-resident", title: "Watch lint" } as Session["task"] });
   const residentRuns = [{ taskId: "t-resident", settings: { identity: { name: "Linter watcher" }, board: { colorId: "teal" } } }];
   const titleWith = (enabled: boolean): string | undefined => {
@@ -230,7 +233,6 @@ test("with the inbox flag on, a resident's digest line is named by the one namin
   };
   assert.equal(titleWith(false), "Watch lint went idle");
   assert.equal(titleWith(true), "Linter watcher went idle");
-  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false });
 });
 
 test("workflow transitions use the same away window and coalesce stable ids", () => {

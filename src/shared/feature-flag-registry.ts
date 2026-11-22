@@ -86,10 +86,10 @@ export const FEATURE_FLAGS = [
     id: INBOX_FLAG,
     label: "Reports and inbox upgrades",
     description:
-      "Agents post reports to the attention inbox, stuck sessions get their own rows there, and one rule " +
-      "names an agent everywhere: its resident name in its board colour, else its task title, else its session name.",
+      "One rule names an agent in alert titles, the attention inbox, the review modal and question cards: " +
+      "its resident name in its board colour, else its task title, else its session name.",
     stage: "preview",
-    keywords: ["inbox", "reports", "stuck", "names", "display name", "attention"],
+    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

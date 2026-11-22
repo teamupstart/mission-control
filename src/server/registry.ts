@@ -7348,15 +7348,6 @@ export class Registry extends EventEmitter {
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
     this.sessionControlRequests.delete(id);
-    // The session is gone for good, so a wait it declared ends with it: the wake source it
-    // named was its own command, monitor or wakeup, presumed gone with the process. Here and
-    // not on its `exited` reading, which an eviction a later sweep cancels also emits. Kept
-    // when another live session still holds the key, as a rotation or a resumed process does.
-    if (leaving) {
-      const key = noteKeyFor(leaving);
-      const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
-      if (!held) this.clearAwaitingKey(key, id, "exit", undefined, Date.now());
-    }
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -7364,6 +7355,21 @@ export class Registry extends EventEmitter {
     // that should show the hint is typically an idle session at the same cwd, which
     // is exactly the case where nothing else about it moves.
     this.syncAllOrphanHints();
+    // The session is gone for good, so a wait it declared ends with it: the wake source it
+    // named was its own command, monitor or wakeup, presumed gone with the process. Here and
+    // not on its `exited` reading, which an eviction a later sweep cancels also emits. Kept
+    // when another live session still holds the key, as a rotation or a resumed process does.
+    // Last, and never able to stop the removal above: a wait that cannot be cleared stays
+    // stored, and is pruned once its session has been gone past the grace.
+    if (leaving) {
+      const key = noteKeyFor(leaving);
+      const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
+      try {
+        if (!held) this.clearAwaitingKey(key, id, "exit", undefined, Date.now());
+      } catch (err) {
+        console.error(`[registry] could not end the wait of removed session ${id}:`, err);
+      }
+    }
   }
 
   private reconcileObservedEffort(

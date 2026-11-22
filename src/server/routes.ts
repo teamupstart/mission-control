@@ -6714,9 +6714,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // delivery's or a person's: nothing is typed, and the delivery settles below as one that
     // never reached the pane.
     let attributionRefused: string | null = null;
+    // Whether this call's own reservation was made: only that one is released below, since a
+    // refused one recorded nothing and releasing would give back an earlier one of the same text.
+    let reserved = false;
     if (daemonOrigin) {
       try {
         reserveInjection(session.id, text, daemonOrigin);
+        reserved = true;
       } catch (error) {
         if (!(error instanceof AutomatedAttributionError)) throw error;
         attributionRefused = error.message;
@@ -6785,7 +6789,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (daemonOrigin) {
+    if (reserved && daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
       // would each owe an echo for one delivery.
       if (r.ok) confirmReservedInjection(session.id, text, daemonOrigin);

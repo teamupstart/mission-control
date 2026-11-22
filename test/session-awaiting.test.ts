@@ -1030,6 +1030,71 @@ test("an automated delivery whose attribution cannot be stored on the wait is re
   assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });
 
+test("a refused reservation never gives back an earlier reservation of the same text", async (t) => {
+  // A sender's failure path releases the text it reserved. A reservation refused for its
+  // attribution reserved nothing, so releasing there would take back an earlier delivery of the
+  // same words, whose turn would then read as the session's wake or the operator's Goal.
+  const WRAP = "Please wrap up and open the pull request.";
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const app = mkApp(registry);
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key)!;
+  reserveInjection(d.syntheticId, WRAP, "workflow");
+  const earlier = outstandingAutomatedClaims(d.syntheticId, 0);
+  assert.equal(earlier.length, 1);
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_store_down BEFORE UPDATE ON session_awaitings
+    BEGIN SELECT RAISE(ABORT, 'store down'); END`);
+  try {
+    const res = await app.request(`/api/sessions/${d.syntheticId}/inject`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ text: WRAP, origin: "workflow" }),
+    });
+    const sent = await res.json() as { ok: boolean; pasted?: boolean };
+    assert.equal(sent.ok, false);
+    assert.equal(sent.pasted, false);
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_store_down");
+  }
+  assert.deepEqual(outstandingAutomatedClaims(d.syntheticId, 0), earlier, "the refusal gave back the earlier delivery's claim");
+  assert.equal(originOf(d.syntheticId, WRAP), "workflow", "the earlier delivery lost its authorship");
+  assert.equal(stored().pendingNudges.length, 1, "the earlier delivery's nudge was taken off the wait");
+  releaseInjection(d.syntheticId, WRAP);
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
+});
+
+test("a removal whose wait cannot be cleared still publishes session_remove, and the wait stays stored for the prune", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const errors = t.mock.method(console, "error", () => {});
+  const registry = new Registry();
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const removed: string[] = [];
+  const listen = (e: { type: string; id?: string }) => { if (e.type === "session_remove" && e.id) removed.push(e.id); };
+  registry.on("event", listen);
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_audit_down BEFORE INSERT ON session_events
+    WHEN NEW.kind = 'session_awaiting_cleared' BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+  try {
+    registry.applyDiscovery([]);
+    t.mock.timers.tick(8_000);
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_audit_down");
+    registry.off("event", listen);
+  }
+  assert.equal(registry.getSession(d.syntheticId), undefined);
+  assert.deepEqual(removed, [d.syntheticId], "a failed wait clear stopped the removal from being published");
+  assert.ok(loadSessionAwaitings().some((row) => row.noteKey === key), "the wait's row went without its audit row");
+  assert.ok(errors.mock.calls.some((call) => String(call.arguments[0]).includes(d.syntheticId)),
+    "the failed clear left no log line naming the session");
+  // Every Registry reloads stored waits: leave none behind for the tests after this one.
+  deleteSessionAwaiting(key);
+});
+
 test("a person's send whose attribution cannot be stored on the wait is refused before it is written, and contests nothing", async (t) => {
   // An operator's words repeating a pending nudge must contest it, or their turn is used up as
   // Mission Control's and the wait stands. The wait cannot be written, so the send is refused:

@@ -83,8 +83,10 @@ export function formatCompletionDecision(record: CompletionDecisionRecord): stri
 }
 
 /**
- * Append one decision. Never throws: the generation is already consumed when this runs, and a
- * lost audit line must not turn into a failed tick that the loop would treat as no progress.
+ * Append one decision, returning null on success or the failure's error code. Never throws:
+ * the generation is already consumed when this runs, and a lost audit line must not turn into
+ * a failed tick that the loop would treat as no progress. The caller reports the returned
+ * failure, so an unwritable log is visible rather than silently disabling the history.
  *
  * ROTATION COPIES, THEN TRUNCATES IN PLACE - it never renames. The Electron supervisor holds
  * `foreman.log` open for its whole process life (`openPrivateUtilityLog`, mode `"a"`). A rename
@@ -98,12 +100,13 @@ export function formatCompletionDecision(record: CompletionDecisionRecord): stri
 export function recordCompletionDecision(
   record: CompletionDecisionRecord,
   path: string = foremanLogPath(),
-): void {
+): string | null {
   try {
     let size = 0;
     try {
       size = statSync(path).size;
     } catch {
+      // No file yet is an empty log; any real write problem surfaces from the append below.
       size = 0;
     }
     if (size >= FOREMAN_LOG_MAX_BYTES) {
@@ -111,7 +114,11 @@ export function recordCompletionDecision(
       truncateSync(path, 0);
     }
     appendFileSync(path, `${formatCompletionDecision(record)}\n`, { mode: 0o600 });
-  } catch {
-    // An unwritable state directory costs the audit line, never the decision.
+    return null;
+  } catch (err) {
+    // An unwritable state directory costs the audit line, never the decision. Report only
+    // the code: a filesystem error's message carries the log path.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code ?? (err instanceof Error ? err.name : "unknown error");
   }
 }

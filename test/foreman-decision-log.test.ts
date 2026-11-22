@@ -126,6 +126,12 @@ test("the supervisor's open append handle still reaches foreman.log after repeat
   }
 });
 
-test("an unwritable log costs the line, never the decision", () => {
-  assert.doesNotThrow(() => recordCompletionDecision(held, join(dir, "missing", "dir", "foreman.log")));
+test("an unwritable log costs the line, never the decision, and says why", () => {
+  let result: string | null = "unset";
+  assert.doesNotThrow(() => {
+    result = recordCompletionDecision(held, join(dir, "missing", "dir", "foreman.log"));
+  });
+  // The code, never the message: a filesystem message carries the state directory path.
+  assert.equal(result, "ENOENT");
+  assert.equal(recordCompletionDecision(held, join(dir, "writable.log")), null);
 });

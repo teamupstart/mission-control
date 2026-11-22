@@ -583,3 +583,52 @@ test("a held plan joins the recovery ledger only while its foreman_complete work
   assert.equal(queue.promptedRecovery?.reason, "held_gaps");
   assert.equal(queue.promptedRecovery?.attempt, 1);
 });
+
+test("a plan binding switched to Manual while the claim reads the diff refuses that recovery", async () => {
+  // The route reads plan ownership, then awaits the checkout diff. A binding replaced or
+  // switched to Manual inside that await must not be authorized by the answer read before it.
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "The plan's phase dependencies are incomplete.",
+    gaps: [{ id: "phase-deps", path: "docs/plans/x/phase-3.md", detail: "Phase 3 must depend on phase 2." }],
+  };
+  const seeded = seed("-plan-race", heldDecision, "plan");
+  bindPlan(seeded.sessionId, seeded.noteKey, "foreman_complete");
+  const identity = {
+    taskId: seeded.taskId,
+    logicalKey: seeded.noteKey,
+    generation: 1,
+    episodeKey: "intent:1:1",
+    decisionGeneration: 1,
+    decisionOutcome: "held" as const,
+    reason: "held_gaps" as const,
+    attempt: 1,
+  };
+  const claim = {
+    ...identity,
+    marker: shipRecoveryMarker(identity),
+    payloadSummary: "Deliver the held plan gaps.",
+    deliveryRoute: "immediate-held" as const,
+  };
+
+  const original = workflows.planPublicationContext.bind(workflows);
+  let reads = 0;
+  workflows.planPublicationContext = (sessionId: string) => {
+    const live = original(sessionId);
+    reads += 1;
+    // The first read is the pre-diff gate; every later read sees the operator's switch.
+    return reads === 1 || live.owner !== "workflow" ? live : { ...live, triggerMode: "manual" };
+  };
+  try {
+    const refused = await app.request(`/api/sessions/${seeded.sessionId}/queue/ship-recovery/claim`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(claim),
+    });
+    assert.equal(refused.status, 409, await refused.clone().text());
+    assert.ok(reads >= 2, "plan ownership was not read again after the diff");
+    assert.equal(registry.getQueue(seeded.sessionId)?.promptedRecovery ?? null, null, "no attempt was claimed");
+  } finally {
+    workflows.planPublicationContext = original;
+  }
+});

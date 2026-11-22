@@ -7490,6 +7490,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (hasBlocker(registry.getSession(session.id) ?? session)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
+    // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan
+    // ownership so a stale foreman_complete answer cannot authorize this attempt.
+    const livePlanStartsWorkflow = task.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
+    if (!heldGapRecoveryApplies(task.kind, livePlanStartsWorkflow)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
@@ -7504,7 +7511,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
-      planStartsWorkflowOnCompletion: planStartsWorkflow,
+      planStartsWorkflowOnCompletion: livePlanStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),

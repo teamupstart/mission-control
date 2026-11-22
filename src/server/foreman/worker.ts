@@ -300,27 +300,30 @@ async function consumePromptedCycle(
     promptRevision: candidate.promptRevision,
     episodeKey: candidate.episodeKey,
   };
+  // One bounded value for both the durable write and its audit line, so the log can never
+  // carry a gap id or count the stored decision does not.
+  const bounded = boundedDecision(decision);
   try {
     await client.consumePromptedGeneration(
       session.id,
       candidate.logicalKey,
       candidate.generation,
       expectedIntent,
-      boundedDecision(decision),
+      bounded,
       opts,
     );
     promptedFailures.onConsumed(candidate.logicalKey);
-    recordCompletionDecision({
+    noteDecisionLogWrite(recordCompletionDecision({
       at: Date.now(),
       sessionId: session.id,
       sessionName: session.name,
       taskKind: session.task?.kind ?? null,
       generation: candidate.generation,
       episodeKey: candidate.episodeKey,
-      outcome: decision.outcome,
-      summary: decision.summary ?? "",
-      gaps: decision.gaps ?? [],
-    });
+      outcome: bounded.outcome,
+      summary: bounded.summary,
+      gaps: bounded.gaps,
+    }));
     return true;
   } catch (err) {
     const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
@@ -330,6 +333,21 @@ async function consumePromptedCycle(
     );
     return false;
   }
+}
+
+/** The last decision-log write failure reported, so a persistent one is logged once. */
+let decisionLogFailure: string | null = null;
+
+/**
+ * Surface a `foreman.log` write failure without failing the tick that already consumed the
+ * generation. Logged on the first failure, on a different failure, and on recovery - a CHANGE
+ * is news, the same unwritable directory on every decision is not.
+ */
+function noteDecisionLogWrite(error: string | null): void {
+  if (error === decisionLogFailure) return;
+  if (error) log(`could not record a completion decision in foreman.log: ${error}`);
+  else log("recording completion decisions in foreman.log again");
+  decisionLogFailure = error;
 }
 
 /** This process's identity for the lease. New per start, by design. */
@@ -2541,7 +2559,7 @@ export async function processPromptedWrapup(
       return false;
     }
     if (claim.kind === "claimed") {
-      recordCompletionDecision({
+      noteDecisionLogWrite(recordCompletionDecision({
         at: Date.now(),
         sessionId: current.session.id,
         sessionName: current.session.name,
@@ -2552,7 +2570,7 @@ export async function processPromptedWrapup(
         summary: claimSummary,
         gaps: [],
         runId: claim.result.runId,
-      });
+      }));
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }

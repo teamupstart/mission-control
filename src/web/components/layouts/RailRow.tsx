@@ -20,6 +20,7 @@ import {
   PipelineCommissionRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { ShapingRailMark } from "../ShapingChip.tsx";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
@@ -225,6 +226,7 @@ export function RailRow({
                 is nothing outstanding. The DECISION and the tooltip are the shared ones;
                 only the rendering is this terse. */}
             <InspectorRailMark session={session} />
+            <ShapingRailMark session={session} />
             <WorkflowRailMark
               run={workflowRun}
               onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}

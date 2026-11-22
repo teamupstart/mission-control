@@ -2725,7 +2725,9 @@ The MCP tools are:
 - `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
   plan inputs, regardless of status or whether the task remains on the live board. Both read
   tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
-  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps, and `shaping` (`state`,
+  `sessionId` and a one-line `summary`) when [task shaping](task-shaping.md#the-record) added
+  context to the launch the linked session received. Pull request references come from
   durable work-episode bindings, so running work can report a PR before completion. See
   [MCP task-read access](security.md#mcp-task-reads) for the security contract.
   Neither tool launches, modifies, or reorders work.

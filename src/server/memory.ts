@@ -43,6 +43,11 @@ export function hasRepoMemory(repoRoot: string | null): boolean {
  * it after a file that does not exist, which is a failed tool call and a paragraph of
  * confusion before turn one has begun.
  */
-export function withRepoMemoryPointer(repoRoot: string | null, prompt: string): string {
-  return hasRepoMemory(repoRoot) ? withMemoryPointer(prompt) : prompt;
+export function withRepoMemoryPointer(
+  repoRoot: string | null,
+  prompt: string,
+  /** Whether the checkout carries an index, when the caller already read it for this launch. */
+  hasMemory: boolean = hasRepoMemory(repoRoot),
+): string {
+  return hasMemory ? withMemoryPointer(prompt) : prompt;
 }

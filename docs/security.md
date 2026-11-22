@@ -560,6 +560,19 @@ per entry, per shaper and in total, and placed in its own labelled section, whic
 cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
 or returns something else is recorded as an outcome, never an error reply.
 
+Every dispatch calls the enabled shapers after its worktrees are provisioned and before the
+worker starts, and the section is appended to the worker's first prompt after the kind
+contract. Nothing a shaper does can stop the launch: a shaper that fails, times out or answers
+something else is recorded as `degraded` and the worker starts without its text, and the
+section is cut to what the delivery path can carry, so it never makes a launch that works today
+fail. What each session received is recorded on the task and shown only for that session.
+
+**The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
+the state home can run at the next dispatch without a click, so anything that can write that
+folder can add one, worker agents included. The ownership checks, what Mission Control shows
+and records, and the full trust statement are in
+[the shaper folder](task-shaping.md#the-shaper-folder).
+
 **Remote shapers.** An `mcp` shaper reached over streamable HTTP and an `http` shaper send the
 request off the machine, so they follow the egress rule resident MCP servers follow, through
 the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
@@ -666,11 +679,6 @@ that one place and only once, so a later close never signals a group id the syst
 have given to an unrelated process. A server that stops reading its stdin while it keeps
 running loses the connection at the first write that fails, and the call answers at once. A helper that leaves the
 group on purpose is out of reach, as it is for a `command` shaper.
-
-This build only dry-runs shapers through the API: no worker receives their text yet. Calling
-them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The shapers folder is declared but not yet reachable: it answers `unavailable`
-until its phase lands, and its folder ownership rules are documented with it.
 
 **The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
 in the daemon and reads the paths its options list, nothing else. Containment and size are

@@ -40,11 +40,13 @@ eleven further findings. These are the ones that decide phase boundaries:
 - **`revises` needs persistence.** A withdrawn form is not in the live registry after a restart
   (`loadPendingReviews` restores pending and snoozed rows only, `src/server/db.ts:5878`), so the
   link and its number are stored on the new row. That is the only migration in this plan.
-- **The review status `withdrawn` has one writer.** `ReviewManager.withdrawQuestion`
-  (`src/server/reviews.ts:385-398`) is the only code that settles a review as `withdrawn`. It
-  finds the review among the calling session's own open asks and refuses a call-mode row, and it
-  records no actor (`resolvedBy` is null). So today a `withdrawn` review was withdrawn by its own
-  agent. The source plan's revision rule ("withdrawn by its agent") rests on that.
+- **Today the review status `withdrawn` is written in one place.** The body of
+  `ReviewManager.withdrawQuestion` (`src/server/reviews.ts:385-398`) is, as of `7626494d8`, the
+  only code that settles a review as `withdrawn`. It finds the review among the calling session's
+  own open asks and refuses a call-mode row, and it records no actor (`resolvedBy` is null). So
+  today a `withdrawn` review was withdrawn by its own agent. The source plan's revision rule
+  ("withdrawn by its agent") rests on that, and the contract below keeps it true once `revises`
+  exists.
 - **The prompt and four skills tell agents the tool blocks** (`src/server/plans/prompt.ts:123-125`,
   `skills/html-plans/SKILL.md:129`, `skills/grill/SKILL.md:53`, `skills/retro/SKILL.md:132`), and
   the Grill session action is generated from its skill (`npm run session-actions`).
@@ -58,8 +60,23 @@ One finding was accepted and applied:
   withdrew it. Phase 2 now states the rule as the source plan does, decides it through one named
   predicate (`withdrawnByItsAgent`), lists "withdrawn, but not by its own agent" as a refusal
   case, and adds tests for who withdrew the target. The rule is also a cross-phase contract
-  below: Phase 1 keeps `withdrawQuestion` the only writer of that status. The source plan's
-  sentence was made explicit about the other closures that are never valid targets.
+  below, in the form round 2 gave it. The source plan's sentence was made explicit about the
+  other closures that are never valid targets.
+
+## Plan validation round 2
+
+One finding was accepted and applied:
+
+- **One write path for the status `withdrawn`.** Round 1's contract said `withdrawQuestion`
+  stays the only writer of `withdrawn`, while Phase 2 directed `ReviewManager.create` to settle
+  an open target as `withdrawn` itself. That was two writers, against the contract. The write
+  path is now specified once and the same way everywhere. The status is written in one place,
+  the review manager's agent withdrawal, which has two entries, both the asking agent's own act:
+  `withdraw_question` (from Phase 1) and a `revises` that names an open form (from Phase 2).
+  Phase 2 no longer writes the status in `create`. It calls the same path, split into a persist
+  half and a publish half so the withdrawal commits in the new form's transaction. This is now
+  said by the contract below, by Phase 1's step 6, exit criterion and handoff, by Phase 2's
+  finding, step 4, tests, exit criteria and handoff, and by the source plan's revision sentence.
 
 ## Sizing and phase count
 
@@ -99,7 +116,8 @@ Phase 1's merge.
 
 ## Cross-phase contracts, owned by Phase 1
 
-Phase 2 may rely on these and must not change them.
+Phase 2 may rely on these and must not change them. Where a contract names something Phase 2
+adds, that addition is the whole of what Phase 2 may do to it.
 
 - **Flag.** Id `filed-plan-decisions`, exported as `FILED_PLAN_DECISIONS_FLAG` from
   `src/shared/async-input.ts`. One gate: `createMcpReview` reads it together with
@@ -117,11 +135,19 @@ Phase 2 may rely on these and must not change them.
   both `/mcp/reviews` and `/mcp/v2/reviews`.
 - **Lifecycle helper.** `ReviewManager.openAsks(sessionId)` is what listing and withdraw read;
   `openQuestions(sessionId)` stays the limit's count.
-- **Withdrawn means withdrawn by its agent.** `ReviewManager.withdrawQuestion` stays the only
-  writer of the review status `withdrawn`, and it keeps admitting only the calling session's own
-  filed ask. Phase 1 widens which asks it admits (plan forms) and nothing else about it. Every
-  other closure keeps its own status: an answer, `dismissed`, `orphaned` (eviction or merge) and
-  `superseded`.
+- **One write path for `withdrawn`, entered only by the asking agent's own act.** The review
+  status `withdrawn` is written in exactly one place: the review manager's agent withdrawal,
+  which is the body of `ReviewManager.withdrawQuestion` today. Its entries are:
+  - `withdraw_question`, the only entry when Phase 1 merges. Phase 1 widens which asks it admits
+    (plan forms) and changes nothing else about it: it still admits only the calling session's
+    own filed ask.
+  - from Phase 2, a `revises` that names an open filed plan form of the same session. Phase 2
+    adds this second entry to the same write path, and may split the path into a persist half
+    and a publish half so the withdrawal can commit inside `create`'s transaction.
+  No phase adds a second place that writes the status, and no entry lets another session, the
+  operator, Foreman or the daemon acting on its own produce it. Every other closure keeps its
+  own status: an answer, `dismissed`, `orphaned` (eviction or merge) and `superseded`. A
+  `withdrawn` review was therefore withdrawn by its own agent.
 - **Wait mode is fixed at insert.** No path turns a call-mode form into a filed one. An older
   MCP child that re-asks a filed form turns it back into a call (`attachCall`), as for questions.
 
@@ -156,3 +182,7 @@ confirm `publish_plan` or the bound workflow accepts that approval.
 - After Plan validation round 1, the revision-target rule reads the same in the source plan
   ("Withdraw, list and revise"), in the contract above and in Phase 2's step 4, refusal cases,
   tests and exit criteria: an open filed form, or one its own agent withdrew, and nothing else.
+- After Plan validation round 2, every statement about who writes `withdrawn` names the same
+  thing: one write path, entered by `withdraw_question` from Phase 1 and also by the `revises`
+  replacement from Phase 2. No file describes a second writer, and Phase 2's replacement step
+  no longer settles the status in `create`.

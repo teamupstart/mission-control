@@ -1,9 +1,9 @@
 # Filed plan decisions
 
-Revision 4, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
-split into two implementation phases (`phased-plan.md`). Revision 4 applies Plan Validation round
-1, recorded in `phased-plan.md`. This is a plan-only task: it ships no product code. The phase
-tasks scheduled from this plan build the feature.
+Revision 5, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
+split into two implementation phases (`phased-plan.md`). Revision 5 applies Plan Validation rounds
+1 and 2, recorded in `phased-plan.md`. This is a plan-only task: it ships no product code. The
+phase tasks scheduled from this plan build the feature.
 
 ## Summary
 
@@ -253,10 +253,13 @@ waits and filed gates), and `openQuestions` counts pending reviews the agent wor
   for a filed plan form of the same session that is still open or was withdrawn by its agent
   with `withdraw_question`. A form closed any other way (answered, dismissed, closed by a merge
   or an eviction, replaced as a reworded retry, or withdrawn by anyone but its agent) is never a
-  valid target. An
-  open one is withdrawn in the same transaction as the new form is written, so the operator never
-  sees both. The new row stores the link and its revision number (the earlier form's number plus
-  one, starting at 2). An invalid `revises` is refused with the reason, and nothing is filed.
+  valid target. An open one is withdrawn in the same transaction as the new form is written, so
+  the operator never sees both. That withdrawal goes through the same write path as
+  `withdraw_question`, so the status `withdrawn` has one write path and is only ever the asking
+  agent's own act. A form already replaced this way cannot be revised again; the agent revises
+  its replacement. The new row stores the link and its revision number (the earlier form's
+  number plus one, starting at 2). An invalid `revises` is refused with the reason, and nothing
+  is filed.
 - The dashboard tags the revised card "Revision N" and links the earlier version, which the
   session's conversation keeps as a withdrawn entry.
 

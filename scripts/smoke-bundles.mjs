@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
+import { findDisallowedModCalls } from "./mod-calls.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -533,6 +534,15 @@ async function smokeSatellitePaths() {
  * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
  * engine would refuse shows up here rather than on a person's machine.
  */
+function smokeModCalls() {
+  const refused = findDisallowedModCalls(resolve("."));
+  if (refused.length > 0) {
+    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+    return;
+  }
+  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
+}
+
 async function smokeModBuild() {
   const modRoot = resolve("dist/mod");
   const pluginDir = join(modRoot, "mission-control");
@@ -854,6 +864,7 @@ await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+smokeModCalls();
 await smokeModBuild();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");

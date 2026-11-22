@@ -35,8 +35,11 @@ order:
 5. The task context section, only when [task shaping](task-shaping.md) is on and a shaper
    added something. It is appended by one helper, so the normal turn one and the
    standing-instructions fallback carry identical text.
+6. Repository task skills, only with the `headless-mode` flag on and a skill the repository
+   ships for the task's kind (`.claude/skills/{kind}/SKILL.md`).
 
-Repository task skills, when they arrive, follow the task context section. Pi receives turn
+Shaping budgets against the turn one with the skills included, so the section never pushes the
+whole prompt past its delivery path. Pi receives turn
 one as its launch argument, with the repository memory pointer in front of it; every other
 pair receives it through the embedded driver or a pane paste. How each path bounds the size of
 turn one is in [Where the section lands](task-shaping.md#where-the-section-lands).

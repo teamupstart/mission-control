@@ -147,6 +147,8 @@ interface DispatchOptions {
   argMax?: () => Promise<number | null>;
   failSpawn?: boolean;
   workflowName?: (workflowId: string) => string | null;
+  /** Turn repository task skills on (the `headless-mode` flag's seam). */
+  headlessMode?: boolean;
 }
 
 /** One terminal dispatch through the real dispatcher, faking only the home and the pane. */
@@ -169,6 +171,7 @@ async function terminalDispatch(options: DispatchOptions): Promise<Run> {
     ...(options.shapeTask ? { shapeTask: options.shapeTask } : {}),
     ...(options.argMax ? { argMax: options.argMax } : {}),
     ...(options.workflowName ? { workflowName: options.workflowName } : {}),
+    ...(options.headlessMode ? { headlessModeEnabled: () => true } : {}),
     spawn: async (_label, _short, cwd, _bin, args, home, _backend, env, fallback) => {
       if (options.failSpawn) throw new Error("the terminal could not start");
       argv = [...(args ?? [])];
@@ -354,6 +357,28 @@ test("Claude, Codex and Pi each receive their own turn one followed by the secti
     assertRunning(sdk.task);
     assert.equal(sdk.start!.prompt, `${await unshapedExpectation(sdk.task, intent)}\n\n${SECTION}`, `${agent} · sdk`);
   }
+});
+
+test("a shaped launch with a repository task skill orders turn one as kind contract, task context, skill", async () => {
+  const repo = seedRepo("task-skill-order");
+  mkdirSync(join(repo, ".claude", "skills", "ship"), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", "ship", "SKILL.md"), "Run the focused tests before pushing.\n");
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "ship skill"]);
+  const intent = "THE-OPERATOR-REQUEST";
+  // Unshaped, the launch is what it is today: the skill follows the kind contract.
+  setFlag(false);
+  const unshaped = await terminalDispatch({ agent: "claude", repo, taskId: "skill-unshaped", intent, headlessMode: true });
+  assertRunning(unshaped.task);
+  setFlag(true);
+  const contract = await unshapedExpectation(unshaped.task, intent);
+  assert.ok(unshaped.prompt.startsWith(contract), "the kind contract leads");
+  const skill = unshaped.prompt.slice(contract.length);
+  assert.match(skill, /^\n\nThis repository adds the following ship skill\.[\s\S]*Run the focused tests before pushing\./);
+  // Shaped, the section sits between the two: kind contract, task context, repository task skill.
+  const shaped = await terminalDispatch({ agent: "claude", repo, taskId: "skill-shaped", intent, headlessMode: true, shapeTask: standIn(SECTION).shapeTask });
+  assertRunning(shaped.task);
+  assert.equal(shaped.prompt, `${await unshapedExpectation(shaped.task, intent)}\n\n${SECTION}${skill}`);
 });
 
 // ---- nothing stops the launch ----

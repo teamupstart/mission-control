@@ -380,7 +380,7 @@ import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
-  type StandingInstructionsDelivery,
+  type StandingInstructionsResponse,
 } from "@shared/standing-instructions.ts";
 import {
   standingInstructionsConfig,
@@ -4978,7 +4978,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       text: snapshot.text,
       mechanism: snapshot.mechanism,
       sources: snapshot.sources,
-    } satisfies StandingInstructionsDelivery);
+      // Present only for a launch that included or skipped a repository task skill, so a
+      // session without one answers exactly as it did before.
+      ...(snapshot.repoTaskSkills ? { repoTaskSkills: snapshot.repoTaskSkills } : {}),
+    } satisfies StandingInstructionsResponse);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).

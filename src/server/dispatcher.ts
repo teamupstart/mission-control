@@ -62,7 +62,7 @@ import {
   type PersonaLookup,
 } from "./instructions/persona.ts";
 import { standingInstructionsForLaunch } from "./instructions/resolve.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import {
@@ -109,7 +109,9 @@ import { withTaskKindContract } from "./task-contract.ts";
 import type { shapeTask } from "./shaping/engine.ts";
 import { launchFellBack, launchUnconfirmed, shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
 import { sessionTraceContext } from "./telemetry/index.ts";
+import { appendRepoTaskSkills, resolveRepoTaskSkills } from "./instructions/repo-task-skill.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { appleScriptPasteFits, pasteTravelsAsArgument, platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
@@ -365,6 +367,11 @@ export class Dispatcher {
       workflowName?: (workflowId: string) => string | null;
       /** The platform's `ARG_MAX`. A seam so a test can stand at the combined limit. */
       argMax?: () => Promise<number | null>;
+      /**
+       * Whether the `headless-mode` flag is on, which gates repository task skills (spec 7.15).
+       * A seam so a test can pick a side without writing a flag document.
+       */
+      headlessModeEnabled?: () => boolean;
       /**
        * The resident launch composer, asked once per resident task for its standing
        * instructions. Supplied by `ResidentManager`; a daemon without one refuses resident
@@ -755,10 +762,22 @@ export class Dispatcher {
       const planDiscovery = await taskPlanDiscovery(provisioned);
       const inputProblemAtDelivery = taskPlanInputProblem(provisioned);
       if (inputProblemAtDelivery) throw new Error(inputProblemAtDelivery);
+      // Repository task skills (spec 7.15): resolved ONCE per launch, from each attached
+      // worktree in manifest order, and only with the headless-mode flag on. Null leaves
+      // turn one byte-identical to what it was before this existed.
+      const repoSkills =
+        taskHasRepository(provisioned) && (this.deps.headlessModeEnabled ?? (() => featureEnabled(HEADLESS_MODE_FLAG_ID)))()
+          ? resolveRepoTaskSkills(provisioned.kind, [
+              { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
+              ...extras
+                .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
+                .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
+            ])
+          : null;
       // Turn one up to and including the kind contract. The task context section, when this
-      // launch is shaped, follows it through `withTaskContext` below - after the contract and
-      // before anything appended later - so both variants carry identical text.
-      const unshapedTurnOne = (standingBlock: string) =>
+      // launch is shaped, follows it through `withTaskContext` below, and the repository task
+      // skills come last: kind contract, task context, repository task skill.
+      const contractTurnOne = (standingBlock: string) =>
         claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
@@ -769,6 +788,9 @@ export class Dispatcher {
           // base it names is that pull request's branch. `undefined`: no episode exists yet.
           stackInstruction: stackPrInstruction(provisioned, undefined),
         });
+      // The whole turn one an unshaped launch sends, skills included: what the shaping budget
+      // measures, and byte-identical to a launch from before shaping.
+      const unshapedTurnOne = (standingBlock: string) => appendRepoTaskSkills(contractTurnOne(standingBlock), repoSkills);
       if (task.kind === "scout") {
         (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
       }
@@ -925,7 +947,7 @@ export class Dispatcher {
         return;
       }
       const composeTurnOne = (standingBlock: string) =>
-        withTaskContext(unshapedTurnOne(standingBlock), shaping.section);
+        appendRepoTaskSkills(withTaskContext(contractTurnOne(standingBlock), shaping.section), repoSkills);
       const intent = composeTurnOne(standingPrefix);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
       // channel turns out to be unusable once the driver is already talking to its subprocess.
@@ -963,6 +985,7 @@ export class Dispatcher {
           standing,
           standingFallbackTurnOne,
           residentMcp,
+          repoSkills?.record ?? null,
           // Only a launch a shaper actually ran for shares the pre-minted id: those shapers were
           // handed its trace context, so the agent must start under the same one. When no
           // shaper applied, nothing saw that id, and the supervisor mints its own exactly as an
@@ -1176,7 +1199,7 @@ export class Dispatcher {
       // the registry's rotation move carries the row to the native key, and to every key a
       // later `/clear` rotates to. Pi has already bound its pre-minted conversation id
       // above, so it records under that.
-      this.registry.recordStandingInstructions(session.id, standing);
+      this.registry.recordStandingInstructions(session.id, standing, repoSkills?.record ?? null);
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId && !this.registry.getTask(taskId)?.terminalResourceId) {
@@ -2092,6 +2115,8 @@ export class Dispatcher {
     standingFallbackTurnOne: string,
     /** A resident run's pinned MCP set, rendered beside Mission's descriptor. */
     residentMcp: ResidentMcpLaunch | null = null,
+    /** What repository task skills this launch included or skipped (spec 7.15). */
+    repoTaskSkills: RepoTaskSkillRecord | null = null,
     /** The session id to start under, minted before shaping so both share its trace context. */
     sessionId: string | null = null,
     /** Whether this dispatch is still the task's current attempt. */
@@ -2193,7 +2218,11 @@ export class Dispatcher {
       // back to turn one - and it therefore owns this runtime's launch snapshot. On the pairs
       // with no channel the block is already inside `intent` above, and the supervisor sends
       // nothing out of band for them.
-      standingInstructions: { delivery: standing, fallbackPrompt: standingFallbackTurnOne },
+      standingInstructions: {
+        delivery: standing,
+        fallbackPrompt: standingFallbackTurnOne,
+        ...(repoTaskSkills ? { repoTaskSkills } : {}),
+      },
       taskId,
       gitBranch: wt.branch,
       gitRoot: taskHasRepository(task) ? wt.path : null,

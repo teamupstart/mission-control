@@ -32,6 +32,7 @@ import {
   type TaskDependencyInput,
 } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
+import { kindAfterWork } from "@shared/after-work.ts";
 import {
   BACKLOG_TASK_KINDS,
   SCHEDULE_TASK_KINDS,
@@ -43,7 +44,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   isGrillFirstTaskKind,
-  taskDefaultWorkflowId,
   taskAllowsBacklog,
   taskKindAllowsBacklog,
   CHAT_WORKFLOW_REFUSAL,
@@ -1678,7 +1678,7 @@ function DispatchModal({
   // Null while the config is out, as it always was: the rows are not known yet, and arming a
   // built-in the operator may have replaced would gate the launch on Foreman for nothing.
   const defaultWorkflowId = workflowConfig
-    ? taskDefaultWorkflowId(
+    ? kindAfterWork(
       draft.kind,
       workflowConfig.kindWorkflowDefaults,
       draft.planStorage ?? planStorage ?? "repository",
@@ -1789,11 +1789,11 @@ function DispatchModal({
     }
     const rows = workflowConfig?.kindWorkflowDefaults ?? {};
     const storage = draft.planStorage ?? planStorage ?? "repository";
-    const target = taskDefaultWorkflowId(kind, rows, storage);
+    const target = kindAfterWork(kind, rows, storage);
     if (
       !hasReviewableDiff(kind)
       && !hasReviewableDiff(draft.kind)
-      && target === taskDefaultWorkflowId(draft.kind, rows, storage)
+      && target === kindAfterWork(draft.kind, rows, storage)
     ) {
       // The rows only agree as built-ins, so a guess still standing stays a guess.
       if (guess && guess.kind === draft.kind && guess.workflowId === draft.workflowId) {
@@ -1817,7 +1817,7 @@ function DispatchModal({
     // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
     // in Settings must not land on it late, where the daemon would refuse the save.
     if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
-    const resolved = taskDefaultWorkflowId(
+    const resolved = kindAfterWork(
       guess.kind,
       workflowConfig.kindWorkflowDefaults,
       draft.planStorage ?? planStorage ?? "repository",
@@ -2694,7 +2694,7 @@ function DispatchModal({
     if (!config) return editing ? { resolved: false } : { resolved: true, workflowId: undefined };
     return {
       resolved: true,
-      workflowId: taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
+      workflowId: kindAfterWork(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
     };
   }
 
@@ -3416,14 +3416,14 @@ function DispatchModal({
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
                         const rows = workflowConfig?.kindWorkflowDefaults ?? {};
-                        const previousDefault = taskDefaultWorkflowId("plan", rows, draft.planStorage ?? planStorage ?? "repository");
+                        const previousDefault = kindAfterWork("plan", rows, draft.planStorage ?? planStorage ?? "repository");
                         const savedDefault = editing?.kind === "plan"
-                          && editing.workflowId === taskDefaultWorkflowId("plan", rows, editing.planPolicy?.storage ?? "repository");
+                          && editing.workflowId === kindAfterWork("plan", rows, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
                           // A None plan row makes an explicit null look like the default.
                           ...(draft.workflowId !== null && draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
-                            : taskDefaultWorkflowId("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
+                            : kindAfterWork("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
                       }}>
                       <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
                       <option value="local">Local plan store</option>

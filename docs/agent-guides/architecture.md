@@ -376,6 +376,57 @@ controller twice cannot swap names and stays bindable. Withdrawing a send and re
 delivery both call `reconsider`, which clears a contest only when no other send is remembered
 and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
 
+The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
+uses it unchanged. Both ledgers are constructed and registered together in `delivery-ledgers.ts`,
+which each table's owner imports, so the shared claim space never depends on import order. The ledgers share one claim space: a turn is bound by at most one row of
+either table, and an unbound row of the same words in the other table is a rival that contests
+both, exactly as two controllers do. Outbox rows the daemon writes about a review
+(`review-continuation:` ids) start with a marker line owned by
+`src/shared/review-message-envelope.ts`: a message-mode answer always, and a call-mode late answer
+or a snooze instruction only while `async-input` is enabled when the row is queued
+(`queueReviewPendingTurn`); with the flag off those two are written unmarked, exactly as before.
+At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row through
+`review-deliveries.ts` for such a row instead of noting another send, and only for a row with
+that id prefix, so an operator message that starts with the marker is noted like any other send.
+`attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
+(`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
+`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available",
+or "Couldn't load the question" once the history read was refused or its retries ran out), never as the raw turn. The resolved-reviews route adds every review the
+conversation's deliveries name, bound yet or not (`deliveredReviewIds`), to its capped history, so an old delivered answer keeps its
+card however many newer reviews there are. A delivery's words on a turn no delivery claims drop the live label, as a
+delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
+(they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
+delivery window is pruned on the goal tick only once a binding walk has expired it (the tick
+walks live conversations itself, so a turn nobody read for a day is bound, not dropped), or once
+no live session holds its conversation and the delivery itself is older than the goal table's prune
+age (the cutoff compares `delivered_at`, not when a session last held the conversation, so an old
+unbound row can go on the first tick after its session exits). A steered delivery's plain echo record (the same words
+right after its mid-turn record, before any agent turn) is found by walking the file from the
+row's offset, so it is answered like its record whichever page holds it. That decision is
+persisted on the row (`steer_echo`), and any other send of the same words - an operator or
+Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
+`DeliveryLedger.reserve` - settles it from what the file already holds before that send is
+written (`onSend`), so an identical copy that lands right after a steered delivery is never
+taken for its echo. That listener (`review-steer-echo.ts`) is installed in `delivery-ledgers.ts`
+with the review ledger itself, so it runs before every send into the claim space even in a
+process that never imported `review-deliveries.ts`. Only a read that reaches the end of the file settles "no echo"; a failed read
+or a missing transcript decides nothing. Each row also persists the one prompt-hook echo it owes:
+`captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
+delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
+work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
+operator sends of the same words yield M Goal revisions whenever each delivery's own hook echo
+arrives before its debt clears. A delivery whose echo never arrives leaves its debt standing until
+then, and an operator copy of the same words submitted in that time spends it and is not captured. The debt's turn is stamped when
+the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
+terminal write boundary), not at reservation, and no completion or TTL clears it before then.
+That handoff is persisted (`handed_at`) before the write, and only a handed-over delivery's debt
+can be spent, so a reservation a restart interrupted before the handoff never swallows an
+operator prompt;
+the TTL itself restarts at the handoff. Bound rows are kept for good, so a conversation's rows
+grow with its history; the Goal reader and the expiry scan only a per-conversation list of the
+deliveries that still owe an echo, rebuilt from the rows whenever the ledger's caches drop. An arrival that spent the
+echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
+
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through
 `workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
 other targets require the existing Registry grant. The daemon enforces ownership for list,

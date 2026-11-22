@@ -49,6 +49,7 @@ const { MEMORY_INDEX_PATH } = await import("../src/shared/memory.ts");
 const { loadLaunchWorkUnits } = await import("../src/server/db.ts");
 const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 const { WORK_UNIT_ENV_VAR } = await import("../src/shared/work-unit.ts");
+const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
 
 type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
 type ShapeTaskInput = Parameters<ShapeTask>[0];
@@ -1458,6 +1459,68 @@ test("a new agent's shapers carry its launch's one work unit decision, and none 
     } finally {
       setHarnessesConfig({ sessionRuntime: { claude: "terminal", codex: "terminal", pi: "terminal" } });
     }
+  }
+});
+
+test("a dispatch through the real engine gives each MCP get_guidance call the WORK_UNIT_ID its agent is started with", async (t) => {
+  const GUIDANCE_FIXTURE = fileURLToPath(new URL("./fixtures/fake-guidance-mcp.mjs", import.meta.url));
+  const remote = await startGuidanceHttp({ mode: "echo" });
+  const daemonOwn = process.env[WORK_UNIT_ENV_VAR];
+  // The daemon's own environment has one, and each shaper is configured to send one of its own:
+  // neither may reach a call. Only the launch's decision does.
+  process.env[WORK_UNIT_ENV_VAR] = "wu_01JD000000000000000DAEMON";
+  t.after(async () => {
+    setWorkUnitPreview(false);
+    if (daemonOwn === undefined) delete process.env[WORK_UNIT_ENV_VAR];
+    else process.env[WORK_UNIT_ENV_VAR] = daemonOwn;
+    await remote.close();
+  });
+  const register = (shaper: unknown, id: string) => {
+    assert.equal(shapingStore.applyShapingIntent(ShapingIntentSchema.parse({ kind: "upsert", shaper })).ok, true);
+    assert.equal(shapingStore.applyShapingIntent({ kind: "enable", id, enabled: true }).ok, true);
+  };
+  register({
+    id: "wu-remote", label: "Remote guidance", stage: "select", timeoutMs: 30_000,
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: remote.url, headers: { "x-work-unit-id": "wu-configured" } } },
+  }, "wu-remote");
+  register({
+    id: "wu-local", label: "Local guidance", stage: "select", timeoutMs: 30_000,
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [GUIDANCE_FIXTURE, "echo"], env: [WORK_UNIT_ENV_VAR] } },
+  }, "wu-local");
+  const repo = seedRepo("work-unit-mcp-end-to-end");
+
+  for (const [name, preview, expected] of [["on", true, WU_A], ["off", false, null]] as const) {
+    setWorkUnitPreview(preview);
+    const registry = new Registry();
+    seedTask(registry, `wu-mcp-${name}`, repo, "claude", WU_A);
+    const seen = remote.requests.length;
+    // No stand-in: the real engine and the real `mcp` transport, to two real servers.
+    const run = await terminalDispatch({ agent: "claude", repo, taskId: `wu-mcp-${name}`, intent: "do it", registry, beneathWrapper: true });
+    assertRunning(run.task);
+    const agentUnit = run.extraEnv[WORK_UNIT_ENV_VAR] ?? null;
+    assert.equal(agentUnit, expected, `${name}: the agent is started with the launch's decision`);
+    assert.equal(run.registry.getSession(run.sessionId)?.launchWorkUnitId ?? null, expected, `${name}: and its record holds it`);
+
+    // The streamable-HTTP server's own record: every request of the call carries the header.
+    const posts = (remote.requests.slice(seen) as Array<{ method: string; headers: Record<string, string> }>).filter((r) => r.method === "POST");
+    assert.ok(posts.length >= 2, `${name}: the call made its requests (${posts.length})`);
+    for (const request of posts) assert.equal(request.headers["x-work-unit-id"] ?? null, agentUnit, `${name}: every request's header is the agent's value`);
+
+    // What each server's get_guidance tool saw, echoed into the section the agent was handed.
+    const text = getTaskShapingText(`wu-mcp-${name}`)?.text ?? "";
+    const echoes = [...text.matchAll(/^\{"arguments".*$/gm)].map((match) => JSON.parse(match[0]) as {
+      arguments: unknown; meta: Record<string, string> | null; env: Record<string, string | null>; headers: Record<string, string> | null;
+    });
+    assert.equal(echoes.length, 2, `${name}: both shapers answered (${text.slice(0, 300)})`);
+    const overHttp = echoes.find((echo) => echo.headers);
+    const local = echoes.find((echo) => !echo.headers);
+    assert.ok(overHttp && local, `${name}: one call over streamable HTTP and one to a local process`);
+    for (const echo of [overHttp, local]) {
+      assert.equal(echo.meta?.work_unit_id ?? null, agentUnit, `${name}: tools/call params._meta.work_unit_id is the agent's value`);
+      assert.equal(JSON.stringify(echo.arguments).includes("wu_"), false, `${name}: the tool's arguments carry no work unit`);
+    }
+    assert.equal(overHttp.headers?.["x-work-unit-id"] ?? null, agentUnit, `${name}: the tool saw the agent's value in its header`);
+    assert.equal(local.env[WORK_UNIT_ENV_VAR], agentUnit, `${name}: the local server's WORK_UNIT_ID is the agent's value, never the daemon's`);
   }
 });
 

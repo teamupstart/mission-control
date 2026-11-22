@@ -594,3 +594,30 @@ test("a pane open that fails is retried on the next tick, and one that succeeded
   await core.tick();
   assert.equal(fake.paneOpens.length, 1);
 });
+
+test("a session ended while a pane retry is pending starts no inbox request", async () => {
+  const held = gate();
+  const daemon = createFakeDaemon();
+  const fake = createFakeModHost({ daemon });
+  let mode: "fail" | "hold" | "ok" = "fail";
+  const host = {
+    ...fake.host,
+    paneOpen: async (opts: Parameters<typeof fake.host.paneOpen>[0]) => {
+      if (mode === "fail") throw new Error("ui.open refused");
+      if (mode === "hold") await held.opened;
+      return fake.host.paneOpen(opts);
+    },
+  };
+  const core = createModCore(host, FACTS);
+  await core.start();
+  assert.equal(core.phase(), "active");
+  const inboxRequests = () => daemon.requests.filter((r) => r.pattern === "/dispatch/inbox").length;
+  const before = inboxRequests();
+  mode = "hold";
+  const ticking = core.tick();
+  await flush();
+  core.stop();
+  held.release();
+  await ticking;
+  assert.equal(inboxRequests(), before);
+});

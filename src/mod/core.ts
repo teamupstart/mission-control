@@ -191,6 +191,7 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     try {
       if (phase === "active") {
         await ensurePane();
+        if (stopped) return;
         await poll();
       } else await connect();
     } finally {

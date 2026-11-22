@@ -54,7 +54,9 @@ export function register(on: EngineOn, _options: unknown): void {
     });
     core = started;
     // Not awaited past the first attempt: a daemon that is slow to answer must not hold the prompt.
-    void started.start().catch(() => {});
+    // Every expected failure is a value inside the controller, so a throw here is a defect: leave a
+    // trace in the person's own log instead of looking like "flag off".
+    void started.start().catch((error: unknown) => $.ui.log(describeFailure("startup", error)));
     return next(e);
   });
 
@@ -87,7 +89,7 @@ export function register(on: EngineOn, _options: unknown): void {
               key: "open-needs-you",
               label: band.button.label,
               hotkey: band.button.hotkey,
-              onPress: () => void core?.openNeedsYou().catch(() => {}),
+              onPress: () => void core?.openNeedsYou().catch((error: unknown) => $.ui.log(describeFailure("the 1 button", error))),
             }),
           ],
         }),
@@ -194,6 +196,11 @@ async function readEnv($: Engine): Promise<DaemonEnv> {
   put("MISSION_API_TOKEN_FILE", tokFile);
   put("HOME", home);
   return out;
+}
+
+/** One line for the person's log when the controller throws, which only a defect does. */
+function describeFailure(where: string, error: unknown): string {
+  return "mission-control: " + where + " failed: " + (error instanceof Error ? error.message : String(error));
 }
 
 /** Clears the shared glance view and the status entry, and asks for a redraw. */

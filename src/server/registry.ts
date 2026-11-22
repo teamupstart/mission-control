@@ -158,7 +158,7 @@ import type {
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor } from "./harness/index.ts";
+import { hooksFor, sessionMessages } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -362,6 +362,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -3319,6 +3320,8 @@ export class Registry extends EventEmitter {
     // (idle noise, or the hook and the driver both reporting one Stop) changes nothing here.
     if (signal === "turn_completed" && workCycle) {
       expireHumanEchoes(s.id, logicalKey, workCycle.generation, updatedAt);
+      // And the echo each review message delivered into that turn owed (`review-deliveries.ts`).
+      expireReviewDeliveryEchoes(logicalKey, workCycle.generation, updatedAt);
     }
     const projected = workCycle ?? undefined;
     if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
@@ -9129,6 +9132,27 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Drop ordinary review-message deliveries that never bound and are past the delivery window,
+   * once a binding walk has expired them. The tick walks every live conversation that has such a
+   * row, so expiry does not wait for someone to open it; a conversation no live session holds is
+   * given up on after `olderThan`, the goal table's own age. Contested and offset-less rows, and
+   * bound ones, are kept. Bound
+   * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
+   * and offset-less rows, which keep a turn with their words from reading as the operator's.
+   */
+  pruneReviewDeliveries(now: number, olderThan: number): number {
+    if (!this.sweptSessions) return pruneReviewDeliveries(now, { conversation: null });
+    const byKey = new Map([...this.sessions.values()].map((s) => [noteKeyFor(s), s] as const));
+    return pruneReviewDeliveries(now, {
+      conversation: (noteKey) => {
+        const session = byKey.get(noteKey);
+        return session ? { transcript: sessionMessages(session) } : undefined;
+      },
+      abandonedBefore: olderThan,
+    });
+  }
+
+  /**
    * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
    *
    * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
@@ -9577,8 +9601,20 @@ export class Registry extends EventEmitter {
     // pending human follow-up, claiming first would hand the daemon's packet the human's
     // revision and leave the human's own echo to be swallowed as the daemon's. Checked first,
     // the packet spends its own owed echo and the human entry waits for its real one.
-    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
+    //
+    // A review message (`async-input`) owes its echo on its durable delivery row as well, so a
+    // restart between the delivery and its echo cannot capture the daemon's text as the Goal.
+    // Both debts describe the same one delivery, so one arrival spends both: evaluated without
+    // short-circuiting, or the in-memory claim would leave the durable one to swallow the
+    // operator's next copy of the same words.
     const noteKey = noteKeyFor(s);
+    const submittedText = spec.submittedPromptText(evt);
+    // An arrival that spends the echo of a delivery the runtime then refuses was never that
+    // delivery's echo: it is the operator's, and is captured once the refusal is known.
+    const reviewEcho = claimReviewDeliveryEcho(noteKey, submittedText === null ? [prompt] : [submittedText, prompt], now,
+      () => { this.captureAcceptedPrompt(s.id, prompt, noteKey); });
+    const daemonEcho = this.isDaemonAuthoredPrompt(s, spec, evt, prompt);
+    if (reviewEcho || daemonEcho) return;
     const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
     if (claim.kind === "skip") return;
     if (claim.kind === "capture") {

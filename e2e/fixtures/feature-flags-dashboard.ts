@@ -19,7 +19,7 @@ export async function buildFeatureFlagsDashboard(outDir: string): Promise<void> 
       enforce: "pre",
       transform(source, id) {
         if (id === join(root, "src/shared/feature-flag-registry.ts")) {
-          return `export { FEATURE_FLAGS, RETIRED_FEATURE_FLAG_IDS, HEADLESS_MODE_FLAG_ID, PINNED_PLAN_CHANGE_FLAG_ID } from ${JSON.stringify(join(root, "test/fixtures/feature-flag-registry.ts"))};`;
+          return `export { FEATURE_FLAGS, RETIRED_FEATURE_FLAG_IDS, HEADLESS_MODE_FLAG_ID, PINNED_PLAN_CHANGE_FLAG_ID, WORKFLOW_HOLD_DETAILS_FLAG_ID } from ${JSON.stringify(join(root, "test/fixtures/feature-flag-registry.ts"))};`;
         }
         if (id === join(root, "src/web/App.tsx")) {
           const anchor = "<FeatureFlagsContext.Provider value={featureFlags}>";

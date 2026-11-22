@@ -111,8 +111,9 @@ Not here: pipelines (a non-goal), Settings (Phase 3).
   the same task is cleared when this launch reaches its worker (step 2).
 - Order with FR-05 repository task skills when both exist: kind contract, task context,
   repository task skill.
-- Schema step 41. 38 went to #1556, 39 to the asynchronous input inbox and 40 to the work unit
-  id, all of which merged first, so this phase renumbered as the later one. Whichever of this phase and FR-05 merges second
+- Schema step 42. 38 went to #1556, 39 to the asynchronous input inbox, 40 to the work unit id
+  and 41 to review-message deliveries, all of which merged first, so this phase renumbered as the
+  later one. Whichever of this phase and FR-05 merges second
   renumbers its step.
 
 ## Rebase note: FR-05 repository task skills (#1565)

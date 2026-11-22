@@ -1,3 +1,4 @@
+import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
 import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
 import {
@@ -82,6 +83,7 @@ export function SessionTile({
   workflowRun = null,
   workflowStageDetail = "load",
   workflowRuns = null,
+  workflowHoldRuns = null,
   registerWorkflowDisclosure,
   onOpenWorkflowRun,
   onOpenSchedule,
@@ -118,6 +120,8 @@ export function SessionTile({
   workflowStageDetail?: "load" | "summary";
   /** Every review this conversation carries - one per repository a multi-repo task changed. */
   workflowRuns?: readonly WorkflowRunSummary[] | null;
+  /** Unfolded open runs, consumed only by the preview hold explanations. */
+  workflowHoldRuns?: readonly WorkflowRunSummary[] | null;
   /** Register the same disclosure transition the Show/Collapse workflow button drives. */
   registerWorkflowDisclosure?: (id: string, handle: WorkflowDisclosureHandle | null) => void;
   onOpenWorkflowRun?: (runId: string) => void;
@@ -478,6 +482,8 @@ export function SessionTile({
           )}
         </span>
       )}
+
+      <WorkflowHolds runs={workflowHoldRuns} blocker={session.blocker} />
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`

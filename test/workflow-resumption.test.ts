@@ -1650,11 +1650,17 @@ test("the observer records why it withheld, as a transition rather than a tick",
  * on a long one, because `events` is a page - which is exactly backwards, since the runs that
  * accumulate hundreds of events are the ones whose history is hardest to read.
  */
-test("run detail carries the withheld reason, and drops it once the run moves", async () => {
+test("run summary and detail carry the persisted withheld reason, and drop it once the run moves", async () => {
   const h = await personaFeedbackRun("withheld-detail", "v-withheld-detail", "auto");
   reportIdle(h, "withheld-detail", h.agentSessionId, h.paneId);
   await h.manager.sweepResumptions(SETTLED());
 
+  const withheld = h.store.listEvents(h.runId).filter(event => event.kind === "resumption_withheld").at(-1);
+  assert.ok(withheld, "the observer must persist its withheld reason before Fleet reads it");
+  assert.equal((withheld.payload as { reason: string }).reason, "repository_unchanged");
+  assert.deepEqual(h.store.runSummary(h.runId)?.resumption, {
+    reason: "repository_unchanged", round: 1, resumesItself: true,
+  }, "Fleet reads the persisted observer event, not synthetic summary data");
   const parked = h.store.runDetail(h.runId)!;
   assert.equal(parked.resumption?.reason, "repository_unchanged");
   assert.equal(parked.resumption?.round, 1);
@@ -1669,6 +1675,17 @@ test("run detail carries the withheld reason, and drops it once the run moves", 
     "the moved head never opened a round",
   );
   assert.equal(h.store.runDetail(h.runId)?.resumption, null);
+  assert.equal(h.store.runSummary(h.runId)?.resumption, null, "Fleet drops the old reason after resumption");
+  await waitFor(() => h.store.getRun(h.runId)?.status === "waiting_for_session",
+    "the second repair round never returned to waiting");
+  assert.equal(h.store.listEvents(h.runId).filter(event => event.kind === "resumption_withheld").at(-1)?.id,
+    withheld.id, "no new withheld reason has been recorded for this wait");
+  assert.equal(h.store.runSummary(h.runId)?.resumption, null, "Fleet cannot reuse round one's reason in round two");
+  assert.equal(h.store.runDetail(h.runId)?.resumption, null, "run detail uses the same current-wait boundary");
+  await h.manager.sweepResumptions(SETTLED());
+  assert.deepEqual(h.store.runSummary(h.runId)?.resumption, {
+    reason: "repository_unchanged", round: 2, resumesItself: true,
+  }, "the current wait appears once the observer records it");
   await h.manager.stop();
 });
 

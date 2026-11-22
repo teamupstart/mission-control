@@ -954,7 +954,8 @@ export function ConsoleDetail({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={visibleEpisodes}
-              reviews={timelineReviews}
+              reviews={timelineReviews.reviews}
+              reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
               onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}

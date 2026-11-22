@@ -1,3 +1,4 @@
+import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { useCallback, useEffect, useId, useRef } from "react";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
@@ -47,6 +48,7 @@ export function RailRow({
   registerEl,
   workflowRun = null,
   workflowRuns = null,
+  workflowHoldRuns = null,
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
@@ -75,6 +77,8 @@ export function RailRow({
   workflowRun?: WorkflowRunSummary | null;
   /** Every review this conversation carries; the rail's one glyph still marks the newest. */
   workflowRuns?: readonly WorkflowRunSummary[] | null;
+  /** Unfolded open runs, consumed only by the preview hold explanations. */
+  workflowHoldRuns?: readonly WorkflowRunSummary[] | null;
   onOpenWorkflowRun?: (runId: string) => void;
   /** Open Recurring Missions from a scheduled task's rail glyph. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -266,6 +270,7 @@ export function RailRow({
         </span>
         <WorkflowActionWait runs={actionWaitRuns} idPrefix={actionWaitId} />
       </button>
+      <WorkflowHolds runs={workflowHoldRuns} blocker={session.blocker} />
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>
   );

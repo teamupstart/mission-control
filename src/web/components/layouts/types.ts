@@ -228,8 +228,8 @@ export interface SessionViewProps {
    */
   reviews: ReviewItem[];
   /**
-   * App-owned join from compact run SSE summaries to each live session: the newest run per
-   * repository a multi-repo task changed.
+   * App-owned join from compact run SSE summaries to each live session: EVERY run the session
+   * carries, one per repository a multi-repo task changed.
    *
    * One entry for the fleet's single-repo sessions, so every rule built on it answers exactly
    * what it answered when there was one run: the held mark, the drop target, the bind
@@ -240,8 +240,6 @@ export interface SessionViewProps {
    * than reading a second map, so a session's list and its one run cannot disagree.
    */
   workflowRunsBySession?: ReadonlyMap<string, readonly WorkflowRunSummary[]>;
-  /** All open runs for preview hold explanations only; existing chips use the newest-run fold. */
-  workflowHoldRunsBySession?: ReadonlyMap<string, readonly WorkflowRunSummary[]>;
   /** App-owned join from compact binding SSE summaries to each live session. */
   workflowBindingBySession?: ReadonlyMap<string, WorkflowBindingSummary>;
   onOpenWorkflowRun?: (runId: string) => void;

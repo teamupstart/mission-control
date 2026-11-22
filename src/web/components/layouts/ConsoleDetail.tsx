@@ -22,6 +22,7 @@ import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
+import { ShapingChip } from "../ShapingChip.tsx";
 import { SessionScoutsPane } from "../scouts/SessionScoutsPane.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -609,6 +610,7 @@ export function ConsoleDetail({
             chip that re-resolved would quote it text it never saw the moment the operator
             edits the rule, which is exactly when they are most likely to be reading it. */}
         <StandingInstructionsChip sessionId={session.id} />
+        <ShapingChip session={session} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />

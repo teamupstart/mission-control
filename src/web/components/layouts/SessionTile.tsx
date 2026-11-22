@@ -1,4 +1,3 @@
-import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
 import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
 import {
@@ -44,6 +43,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ShapingTileFlag } from "../ShapingChip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -83,7 +83,6 @@ export function SessionTile({
   workflowRun = null,
   workflowStageDetail = "load",
   workflowRuns = null,
-  workflowHoldRuns = null,
   registerWorkflowDisclosure,
   onOpenWorkflowRun,
   onOpenSchedule,
@@ -120,8 +119,6 @@ export function SessionTile({
   workflowStageDetail?: "load" | "summary";
   /** Every review this conversation carries - one per repository a multi-repo task changed. */
   workflowRuns?: readonly WorkflowRunSummary[] | null;
-  /** Unfolded open runs, consumed only by the preview hold explanations. */
-  workflowHoldRuns?: readonly WorkflowRunSummary[] | null;
   /** Register the same disclosure transition the Show/Collapse workflow button drives. */
   registerWorkflowDisclosure?: (id: string, handle: WorkflowDisclosureHandle | null) => void;
   onOpenWorkflowRun?: (runId: string) => void;
@@ -488,8 +485,6 @@ export function SessionTile({
           state above, because it is why this idle card is quiet; nothing for any other card. */}
       <AwaitingTileTrack session={session} />
 
-      <WorkflowHolds runs={workflowHoldRuns} blocker={session.blocker} />
-
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
           is where the gate's reasoning lives: it answers with the line only while there is
@@ -605,6 +600,7 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <ShapingTileFlag session={session} />
         {/* Stacked pull requests: why this child is held and what moves it - the same
             component, label and actions as its merge-queue row. */}
         {session.inspector?.stack?.label && (

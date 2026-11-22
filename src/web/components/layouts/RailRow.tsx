@@ -1,4 +1,3 @@
-import { WorkflowHolds } from "../WorkflowHolds.tsx";
 import { useCallback, useEffect, useId, useRef } from "react";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
@@ -21,6 +20,7 @@ import {
   PipelineCommissionRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { ShapingRailMark } from "../ShapingChip.tsx";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
@@ -48,7 +48,6 @@ export function RailRow({
   registerEl,
   workflowRun = null,
   workflowRuns = null,
-  workflowHoldRuns = null,
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
@@ -77,8 +76,6 @@ export function RailRow({
   workflowRun?: WorkflowRunSummary | null;
   /** Every review this conversation carries; the rail's one glyph still marks the newest. */
   workflowRuns?: readonly WorkflowRunSummary[] | null;
-  /** Unfolded open runs, consumed only by the preview hold explanations. */
-  workflowHoldRuns?: readonly WorkflowRunSummary[] | null;
   onOpenWorkflowRun?: (runId: string) => void;
   /** Open Recurring Missions from a scheduled task's rail glyph. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -229,6 +226,7 @@ export function RailRow({
                 is nothing outstanding. The DECISION and the tooltip are the shared ones;
                 only the rendering is this terse. */}
             <InspectorRailMark session={session} />
+            <ShapingRailMark session={session} />
             <WorkflowRailMark
               run={workflowRun}
               onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
@@ -272,7 +270,6 @@ export function RailRow({
         </span>
         <WorkflowActionWait runs={actionWaitRuns} idPrefix={actionWaitId} />
       </button>
-      <WorkflowHolds runs={workflowHoldRuns} blocker={session.blocker} />
       <span id={descriptionId} className="tt-desc">{description}</span>
     </>
   );

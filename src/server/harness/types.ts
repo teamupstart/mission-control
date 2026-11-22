@@ -1377,4 +1377,10 @@ interface HarnessDaemonSlots {
    * shared capability declares `advisor`.
    */
   advisorEnvironment: (() => import("@shared/protocol.ts").AdvisorEnvironment) | null;
+  /**
+   * How a dispatched session's turn one reaches it on each runtime, with that path's byte
+   * ceiling: null where the path has none. Task shaping budgets its section against it, so a
+   * launch that works today still launches with a section. See `turn-one-budget.ts`.
+   */
+  turnOne: import("../turn-one-budget.ts").TurnOneDeliverySpec;
 }

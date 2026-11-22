@@ -32,7 +32,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 test("version 40 upgrade creates session_review_deliveries and its indexes, and a delivery can be recorded", () => {
   const d = db.openDb();
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  // The review deliveries table arrives at 41; a later schema version must keep it.
+  // Later schemas build on 41; a 40 file goes all the way to the current one.
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 41);
   const columns = new Set((d.prepare("PRAGMA table_info(session_review_deliveries)").all() as Array<{ name: string }>).map((c) => c.name));
   for (const column of ["note_key", "fingerprint", "envelope", "review_ids", "transcript_offset", "message_id", "echo_owed", "steer_echo", "handed_at"]) {

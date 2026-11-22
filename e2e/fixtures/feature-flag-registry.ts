@@ -1,4 +1,3 @@
-export const WORKFLOW_HOLD_DETAILS_FLAG_ID = "workflow-hold-details" as const;
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
 // The shipped registry also exports these ids; the private builds that substitute it keep the export.

@@ -20,6 +20,7 @@ import {
   shapingViewHasRevisions,
   shapingViewRevision,
   TaskShapingSchema,
+  type DiscoveredShaper,
   type Shaper,
   type ShapingConfigView,
   type ShapingIntent,
@@ -42,10 +43,20 @@ export function isUnsupportedShaper(entry: Shaper | UnsupportedShaperView): entr
   return "unsupported" in entry;
 }
 
-/** One registered shaper's row in the list. */
+/** One shaper's row in the list, registered or found in the shapers folder. */
 export interface ShapingListRow {
   id: string;
   label: string;
+  /** Registered in Settings or the API, or found on disk in the shapers folder. */
+  origin: "registered" | "discovered";
+  /** The folder a discovered shaper was read from. Null for a registered one. */
+  path: string | null;
+  /** What the folder scan said about a discovered shaper. Null for a registered one. */
+  folderState: DiscoveredShaper["state"] | null;
+  /** The SHA-256 of a discovered shaper's manifest, sent with a switch so it acts on what was shown. */
+  manifest: string | null;
+  /** A discovered shaper whose manifest asks to start switched off, with no stored choice yet. */
+  startsOff: boolean;
   /** The definition, or null for an entry that cannot run. */
   shaper: Shaper | null;
   /**
@@ -70,18 +81,31 @@ export interface ShapingListRow {
   repeats: number;
 }
 
-/** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
+/**
+ * Rows for one stage, in run order, or the stored entries this build cannot run (`stage: null`),
+ * or the folder's shapers that are not run (`stage: null, folder: true`).
+ */
 export interface ShapingListGroup {
   stage: ShapingStage | null;
+  folder?: true;
   rows: ShapingListRow[];
+}
+
+const REGISTERED = { origin: "registered", path: null, folderState: null, manifest: null, startsOff: false } as const;
+
+/** A manifest's definition, as the list shows it: without the manifest's own `enabled`. */
+function manifestDefinition(manifest: NonNullable<DiscoveredShaper["shaper"]>): Shaper {
+  const { enabled: _enabled, ...shaper } = manifest;
+  return shaper;
 }
 
 /**
  * The list Settings draws: one group per stage in stage order, each in the order a launch runs
- * it, then the entries this build cannot run, in stored order. Every stage is listed, empty or
- * not, so the operator can see where a new shaper will land.
+ * it, registered and found-on-disk shapers together, then the entries this build cannot run, in
+ * stored order, then the folder's shapers that are not run, by id. Every stage is listed, empty
+ * or not, so the operator can see where a new shaper will land.
  */
-export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
+export function shapingList(view: ShapingConfigView, discovered: readonly DiscoveredShaper[] = []): ShapingListGroup[] {
   const known: Array<ShapingListRow & { position: number; stage: string }> = [];
   const unsupported: ShapingListRow[] = [];
   const owners = new Map<string, ShapingListRow>();
@@ -91,7 +115,7 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
       // The daemon classifies a repeat as unsupported; it is drawn without controls of its own.
       owner.repeats += 1;
       unsupported.push({
-        id: entry.id, label: entry.label, shaper: null, on: false,
+        id: entry.id, label: entry.label, ...REGISTERED, shaper: null, on: false,
         problem: isUnsupportedShaper(entry) ? entry.unsupported : null, revision: null, duplicate: true, repeats: 0,
       });
       return;
@@ -99,7 +123,7 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
     const revision = shapingViewRevision(view, entry.id);
     if (isUnsupportedShaper(entry)) {
       const row: ShapingListRow = {
-        id: entry.id, label: entry.label, shaper: null,
+        id: entry.id, label: entry.label, ...REGISTERED, shaper: null,
         on: view.overrides[entry.id] === true, problem: entry.unsupported, revision, duplicate: false, repeats: 0,
       };
       owners.set(entry.id, row);
@@ -107,18 +131,44 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
       return;
     }
     const row = {
-      id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
+      id: entry.id, label: entry.label, ...REGISTERED, shaper: entry, stage: entry.stage as string, position,
       on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision, duplicate: false, repeats: 0,
     };
     owners.set(entry.id, row);
     known.push(row);
   });
+  const blocked: ShapingListRow[] = [];
+  for (const entry of discovered) {
+    const shaper = entry.shaper ? manifestDefinition(entry.shaper) : null;
+    const stored = Object.hasOwn(view.overrides, entry.id);
+    const base = {
+      id: entry.id, label: shaper?.label ?? entry.id, origin: "discovered" as const, path: entry.path, folderState: entry.state,
+      manifest: entry.sha256, shaper, revision: null, duplicate: false, repeats: 0,
+    };
+    // A registered id shadows it, and owns the id's stored choice: there is nothing to switch here.
+    if (entry.state === "shadowed" || owners.has(entry.id)) {
+      blocked.push({ ...base, folderState: "shadowed", on: false, startsOff: false,
+        problem: entry.problem ?? `A registered shaper has the id "${entry.id}", so it runs instead and this one does not.` });
+      continue;
+    }
+    if (entry.state !== "ok" || !shaper) {
+      // It never runs, but a stored on can still be switched off.
+      blocked.push({ ...base, on: view.overrides[entry.id] === true, startsOff: false, problem: entry.problem ?? "It cannot run." });
+      continue;
+    }
+    known.push({
+      ...base, stage: shaper.stage, position: Number.MAX_SAFE_INTEGER, problem: null,
+      on: shaperSwitchedOn(view, entry.id, "discovered", entry.shaper?.enabled),
+      startsOff: !stored && entry.shaper?.enabled === false,
+    });
+  }
   known.sort(compareShapingOrder(view.order));
   const strip = ({ position: _position, stage: _stage, ...row }: (typeof known)[number]): ShapingListRow => row;
   const groups: ShapingListGroup[] = SHAPING_STAGES.map((stage) => ({
     stage, rows: known.filter((row) => row.stage === stage).map(strip),
   }));
   if (unsupported.length > 0) groups.push({ stage: null, rows: unsupported });
+  if (blocked.length > 0) groups.push({ stage: null, folder: true, rows: blocked.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) });
   return groups;
 }
 
@@ -131,10 +181,12 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
  * knows the folder's shapers, decides what may make room when the order is full.
  */
 export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "place" }> | null {
+  // Only registered shapers are placed: the daemon refuses a move relative to a folder's shaper.
   const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === id));
   if (!group) return null;
-  const rows = group.rows.map((row) => row.id);
+  const rows = group.rows.filter((row) => row.origin === "registered").map((row) => row.id);
   const at = rows.indexOf(id);
+  if (at === -1) return null;
   const to = at + offset;
   if (to < 0 || to >= rows.length) return null;
   const others = rows.filter((row) => row !== id);
@@ -189,7 +241,8 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       if (!group) return view;
       // No pruning here: only the daemon knows which stored ids still name a shaper. A move it
       // has to make room for draws nothing until its frame arrives.
-      const placed = moveInShapingOrder({ rows: group.rows.map((row) => row.id), order: view.order, id: intent.id, after: intent.after });
+      const rows = group.rows.filter((row) => row.origin === "registered").map((row) => row.id);
+      const placed = moveInShapingOrder({ rows, order: view.order, id: intent.id, after: intent.after });
       return placed.ok ? { ...view, order: placed.order } : view;
     }
     case "settings":

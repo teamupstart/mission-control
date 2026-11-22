@@ -928,6 +928,14 @@ function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reas
   return `${at}${message}`.slice(0, maxChars);
 }
 
+/**
+ * A schema failure as one sentence that names where the problem is and never a value, for a
+ * manifest in the shapers folder as for a stored entry.
+ */
+export function describeShapingIssue(error: z.ZodError): string {
+  return issueSentence(error);
+}
+
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
 export function classifyShaper(
   stored: StoredShaper,
@@ -1188,6 +1196,12 @@ export const DiscoveredShaperSchema = z.object({
 });
 export type DiscoveredShaper = z.output<typeof DiscoveredShaperSchema>;
 
+/** Where the folder scan looked, and how many entries beyond its bound it left unread. */
+export interface ShapingFolderStatus {
+  path: string;
+  ignored: number;
+}
+
 /** Set or not set, per `{env:NAME}` any shaper references. Never a value. */
 export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 
@@ -1195,6 +1209,8 @@ export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 export interface ShapingReply {
   config: ShapingConfigView;
   discovered: DiscoveredShaper[];
+  /** The folder that was scanned. Absent from a daemon older than the shapers folder. */
+  folder?: ShapingFolderStatus;
   references: ShapingReferenceStatus;
 }
 
@@ -1213,7 +1229,15 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
    * a replacement written meanwhile.
    */
   z.object({ kind: z.literal("remove"), id: z.string().min(1).max(64), expect: ShapingRevisionSchema.optional() }),
-  z.object({ kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional() }),
+  /**
+   * `manifest`, when sent, is the SHA-256 of the folder manifest the sender showed. Switching on
+   * is refused once the folder holds another manifest for the id, or a registered shaper has
+   * taken the id, so a click never switches on a definition the operator was not shown.
+   */
+  z.object({
+    kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional(),
+    manifest: z.string().regex(/^[0-9a-f]{64}$/, { message: "A manifest hash is 64 hexadecimal digits." }).optional(),
+  }),
   z.object({ kind: z.literal("reorder"), order: z.array(z.string().min(1).max(64)).max(SHAPING_LIMITS.choices) }),
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
@@ -1362,6 +1386,13 @@ export function applyShapingIntent(
       const found = discovered.find((entry) => entry.id === intent.id);
       if (at === -1 && !found) return refuse("unknown_shaper", `No shaper has the id "${intent.id}".`);
       if (stale(intent.id, intent.expect)) return changed(intent.id);
+      // Bound to the manifest the sender showed: switching on what replaced it, or a registration
+      // that took its id, needs a fresh look first. Switching off is always safe.
+      if (intent.enabled && intent.manifest !== undefined && (at !== -1 || found?.sha256 !== intent.manifest)) {
+        return refuse("shaper_changed", at !== -1
+          ? `A registered shaper now has the id "${intent.id}", so the folder's shaper was not switched on. Review it again first.`
+          : `"${intent.id}" changed in the shapers folder since it was shown here, so it was not switched on. Review it again first.`);
+      }
       if (intent.enabled) {
         if (at !== -1) {
           const classified = classifyShaper(shapers[at]!, definitions);
@@ -1713,8 +1744,75 @@ export const TaskShapingSchema = z.object({
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
   shapers: z.array(ShapingShaperSummarySchema).max(SHAPING_LIMITS.shapers * 2),
+  /**
+   * Set by dispatch when this launch's delivery path left the section less room than
+   * `limits.totalBytes`: how many bytes it allowed, and why. Absent when the configured total
+   * applied. Truncation it caused is recorded as truncation, never as degradation.
+   */
+  limit: z.object({
+    bytes: z.number().int().nonnegative(),
+    reason: z.string().max(SHAPING_LIMITS.reasonChars),
+  }).optional(),
 });
 export type TaskShaping = z.output<typeof TaskShapingSchema>;
+
+/**
+ * The one reader rule for a task's shaping record: it counts only while it names the session
+ * the task is executing on now. A record left by an earlier launch, including one whose
+ * successor's commit failed, describes a session this task no longer shows, so every reader -
+ * task reads, the shaping route, the board and rail markers, the chip and the viewer - sees
+ * nothing rather than another launch's context or `degraded`.
+ */
+export function currentShaping(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShaping | null {
+  const record = task.shaping;
+  if (!record || !record.sessionId || !task.sessionId) return null;
+  return record.sessionId === task.sessionId ? record : null;
+}
+
+/**
+ * A task as a read returns it: `shaping` kept only while `currentShaping` shows it, and absent
+ * otherwise, so no read carries a record that describes another session.
+ */
+export function withCurrentShaping<T extends { shaping?: TaskShaping | null; sessionId: string | null }>(task: T): T {
+  if (task.shaping === undefined || currentShaping(task)) return task;
+  const { shaping: _stale, ...rest } = task;
+  return rest as T;
+}
+
+/** A launch that is shaping context right now: the step has started and nothing is committed yet. */
+export interface ShapingInProgress {
+  state: "shaping";
+  startedAt: number;
+}
+
+/**
+ * The second stable reader, for a surface that has to show the wait as well as the outcome:
+ * `{ state: "shaping" }` while a dispatch or handover is running the step - the derived,
+ * unpersisted `shapingContext` mark that rides `task_upsert` - and `currentShaping(task)`
+ * otherwise. `state` is always `shaping`, `ok` or `degraded`; null when there is nothing to show.
+ */
+export function shapingView(task: {
+  shaping?: TaskShaping | null;
+  shapingContext?: { startedAt: number } | null;
+  sessionId: string | null;
+}): ShapingInProgress | TaskShaping | null {
+  if (task.shapingContext) return { state: "shaping", startedAt: task.shapingContext.startedAt };
+  return currentShaping(task);
+}
+
+/** What a task read carries: the state, the session it describes, and one line. */
+export interface TaskShapingRead {
+  state: TaskShaping["state"];
+  sessionId: string;
+  summary: string;
+}
+
+/** `shaping` in a task read, or null when `currentShaping` shows nothing. */
+export function taskShapingRead(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShapingRead | null {
+  const record = currentShaping(task);
+  if (!record?.sessionId) return null;
+  return { state: record.state, sessionId: record.sessionId, summary: shapingSummaryLine(record) };
+}
 
 /** One entry as it would be injected, for the record, the viewer and the dry run. */
 export interface ShapingInjectedEntry {

@@ -3,17 +3,9 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
-export const WORKFLOW_HOLD_DETAILS_FLAG_ID = "workflow-hold-details" as const;
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 
 export const FEATURE_FLAGS = [
-  {
-    id: WORKFLOW_HOLD_DETAILS_FLAG_ID,
-    label: "Workflow hold details",
-    description: "Show why each workflow holds a Fleet session, who acts next, and a link to its run.",
-    stage: "preview",
-    keywords: ["fleet", "workflow", "held", "waiting"],
-  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",
@@ -60,7 +52,7 @@ export const FEATURE_FLAGS = [
   {
     id: "task-shaping",
     label: "Task shaping",
-    description: "Register shapers in Settings > Task shaping and dry-run them to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",
+    description: "Call registered shapers at dispatch and add the context they return to a worker's first prompt. Register and dry-run them in Settings > Task shaping.",
     stage: "preview",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },

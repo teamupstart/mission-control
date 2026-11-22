@@ -40,6 +40,19 @@ switch (mode) {
       repo: request.stage === "gather" ? { facts: { language: "typescript" }, summary: `summary of ${request.repo.name}` } : undefined,
     });
     break;
+  case "large": {
+    // Entries of `size` bytes each until `total` bytes, so the budget has something to cut.
+    const total = Number(rest[0] ?? 64 * 1024);
+    const size = Number(rest[1] ?? 15 * 1024);
+    const guidance = [];
+    for (let at = 0, n = 1; at < total; at += size, n++) {
+      const want = Math.min(size, total - at);
+      const line = "line " + n + " of a large entry\n";
+      guidance.push({ id: "large/" + n, title: "Large " + n, body: line.repeat(Math.ceil(want / line.length)).slice(0, want) });
+    }
+    reply({ guidance });
+    break;
+  }
   case "degraded":
     reply({ degraded: true, notes: ["The guidance model is unavailable."], guidance: [{ id: "fallback", body: "fallback entry" }] });
     break;

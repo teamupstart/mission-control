@@ -498,7 +498,6 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
   const unadopted = await seed({ withHint: true, adopted: false });
   assert.equal(unadopted.store.getRun(unadopted.ids.run)?.status, "waiting_for_pr");
   assert.equal((unadopted.store.getRun(unadopted.ids.run)?.gateState as { waitReason?: string })?.waitReason, "unadopted_pr");
-  assert.equal(unadopted.store.runSummary(unadopted.ids.run)?.gateWaitReason, "unadopted_pr", "Fleet names the missing Inspector association");
   assert.equal(
     (openDb().prepare(`SELECT COUNT(*) AS n FROM inspector_prs WHERE key = ?`).get(unadopted.key) as { n: number }).n,
     0,

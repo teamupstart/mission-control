@@ -1592,6 +1592,11 @@ export class WorkflowManager {
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
   }
 
+  /** A workflow's name, for a shaper's view of the task's after-work step. Null when unknown. */
+  workflowName(workflowId: string): string | null {
+    return this.store.getWorkflow(workflowId)?.name ?? null;
+  }
+
   /** Whether the selected current immutable version can consume visual evidence. */
   supportsImageEvidence(workflowId: string): boolean {
     const workflow = this.store.getWorkflow(workflowId);
@@ -8915,18 +8920,7 @@ export class WorkflowManager {
   private publishRun(runId: string): void {
     const summary = this.store.runSummary(runId);
     if (!summary || runIsTerminal(summary)) this.inspectorFeedbackRefreshes.delete(runId);
-    if (summary) {
-      this.registry.upsertWorkflowRun(summary);
-      // Queue ownership is a join: changing one run can change a sibling's explanation
-      // without changing that sibling's durable row. Publish that projection over SSE too.
-      for (const sibling of this.registry.workflowRunSummaries()) {
-        if (sibling.id === runId || sibling.noteKey !== summary.noteKey || runIsTerminal(sibling)) continue;
-        const fresh = this.store.runSummary(sibling.id);
-        if (fresh && JSON.stringify(fresh.deliveryHold) !== JSON.stringify(sibling.deliveryHold)) {
-          this.registry.upsertWorkflowRun(fresh);
-        }
-      }
-    }
+    if (summary) this.registry.upsertWorkflowRun(summary);
   }
 
   /**

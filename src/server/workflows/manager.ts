@@ -8915,7 +8915,18 @@ export class WorkflowManager {
   private publishRun(runId: string): void {
     const summary = this.store.runSummary(runId);
     if (!summary || runIsTerminal(summary)) this.inspectorFeedbackRefreshes.delete(runId);
-    if (summary) this.registry.upsertWorkflowRun(summary);
+    if (summary) {
+      this.registry.upsertWorkflowRun(summary);
+      // Queue ownership is a join: changing one run can change a sibling's explanation
+      // without changing that sibling's durable row. Publish that projection over SSE too.
+      for (const sibling of this.registry.workflowRunSummaries()) {
+        if (sibling.id === runId || sibling.noteKey !== summary.noteKey || runIsTerminal(sibling)) continue;
+        const fresh = this.store.runSummary(sibling.id);
+        if (fresh && JSON.stringify(fresh.deliveryHold) !== JSON.stringify(sibling.deliveryHold)) {
+          this.registry.upsertWorkflowRun(fresh);
+        }
+      }
+    }
   }
 
   /**

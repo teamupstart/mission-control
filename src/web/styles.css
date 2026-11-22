@@ -42188,6 +42188,24 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
 .shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* Workflow state is a read-only projection, separate from durable session blockers. */
+.workflow-holds { display: grid; gap: 6px; min-width: 0; }
+.workflow-hold {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-left: 2px solid var(--muted);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.workflow-hold-owner { color: var(--muted); }
+.workflow-hold.is-waiting { border-color: var(--attention); }
+.workflow-hold.is-progress { border-color: var(--working); }
+.workflow-hold:hover { background: var(--panel-2); }
+
 .pr-checks-modal { width: min(640px, calc(100vw - 32px)); }
 .pr-check-results { padding-left: 20px; overflow-wrap: anywhere; }
 .pr-check-results li { margin-block: 8px; }

@@ -2,7 +2,7 @@ import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
-  MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
+  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -166,6 +166,7 @@ interface ArmedDrain {
  */
 function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
   return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+    || turn.id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)
     ? "harness"
     : null;
 }
@@ -455,6 +456,30 @@ export class PendingTurnManager {
       delivery: "pending",
       pendingTurn,
     };
+  }
+
+  /**
+   * Queue a turn the daemon wrote. `create` inserts it, together with whatever records that it
+   * is owed, in one transaction, and answers null when it is no longer owed; nothing is queued
+   * then. Delivered like any other row, through the one drain.
+   */
+  submitDaemonTurn(
+    sessionId: string,
+    create: (noteKey: string, now: number) => PendingTurn | null,
+  ): PendingTurnSubmitResult {
+    if (!this.started) {
+      return { ok: false, pasted: false, submitVerified: false, error: "pending turns are still starting" };
+    }
+    const session = this.registry.getSession(sessionId);
+    if (!session) return { ok: false, pasted: false, submitVerified: false, error: "no such session" };
+    if (!canMessage(session) || session.state === "exited") {
+      return { ok: false, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    const pendingTurn = create(noteKeyFor(session), this.deps.now());
+    if (!pendingTurn) return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };
+    this.registry.refreshPendingTurns(pendingTurn.noteKey);
+    this.scheduleDrain(pendingTurn.noteKey);
+    return { ok: true, pasted: false, submitVerified: false, delivery: "pending", pendingTurn };
   }
 
   recall(sessionId: string, id: string, revision: number): PendingTurn | null {

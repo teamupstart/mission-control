@@ -347,9 +347,20 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
   previousFingerprint?: string;
 }
 
+/**
+ * Task shaping's after-work prompt (`src/server/shaping/after-work.ts`), told when the after-work
+ * step starts and when a completion claim finds no binding. Each call is once per launch on its
+ * side, and never throws.
+ */
+export interface WorkflowAfterWorkSkills {
+  prompt(sessionId: string, options?: { hold?: boolean }): unknown;
+}
+
 export interface WorkflowManagerOptions {
   /** Foreman's CI preference, read only when preparing a new PR action packet. */
   trackCiFailures?: () => boolean;
+  /** Routed after-work skills, prompted when a submission is activated or a claim finds no binding. */
+  afterWorkSkills?: WorkflowAfterWorkSkills;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -733,6 +744,11 @@ export class WorkflowManager {
         onSessionActionWaiting: (attemptId) => {
           this.scheduleSessionActionDelivery(attemptId);
           options.engine?.onSessionActionWaiting?.(attemptId);
+        },
+        onSubmissionActivated: (submissionId) => {
+          const sessionId = this.sessionForSubmission(submissionId);
+          if (sessionId) options.afterWorkSkills?.prompt(sessionId);
+          options.engine?.onSubmissionActivated?.(submissionId);
         },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
@@ -3793,6 +3809,25 @@ export class WorkflowManager {
       : captured;
   }
 
+  /** The live session a submission's run is bound to, or null. */
+  private sessionForSubmission(submissionId: string): string | null {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    return (run ? this.store.getBinding(run.bindingId)?.sessionId : null) ?? null;
+  }
+
+  /**
+   * The catalog skill ids the session's armed workflow runs itself as session-action stages, so
+   * a routed after-work skill it already runs is not prompted a second time.
+   */
+  sessionActionSkills(sessionId: string): Set<string> {
+    const session = this.registry.getSession(sessionId);
+    const binding = session ? this.store.activeBindingForNote(noteKeyFor(session)) : null;
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    return new Set(version?.graph.nodes.flatMap((node) =>
+      node.kind === "session_action" && node.action.requiredSkillId ? [node.action.requiredSkillId] : []) ?? []);
+  }
+
   async claimCompletion(
     sessionId: string,
     claim: WorkflowCompletionClaim,
@@ -3837,7 +3872,12 @@ export class WorkflowManager {
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
     const anchor = this.store.activeBindingForNote(noteKeyFor(session));
-    if (!anchor) return { claimed: false, reason: "no_binding" };
+    if (!anchor) {
+      // Foreman judged the work complete on a task with no workflow (D16). The after-work prompt
+      // is held until Foreman's wrap-up is answered, so the wrap-up reaches the session first.
+      this.options.afterWorkSkills?.prompt(session.id, { hold: true });
+      return { claimed: false, reason: "no_binding" };
+    }
     if (anchor.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };
     }

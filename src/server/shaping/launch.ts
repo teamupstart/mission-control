@@ -54,6 +54,12 @@ export interface LaunchShapingInput {
    * such as a pane paste that travels as an `osascript` argument.
    */
   finalCheck?: (section: string) => Promise<string | null>;
+  /**
+   * The attached repositories, by name, whose own task skill for this kind turn one carries
+   * (FR-05's `resolveRepoTaskSkills`). A routed skill of the kind's name is not announced for
+   * them (D14). `Dispatcher.shapeTurnOne` passes it from the reader's record.
+   */
+  repositoryTaskSkills?: readonly string[];
 }
 
 export interface LaunchShaping {
@@ -197,6 +203,7 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
       ...shapingInputFor({ ...input, workflowName: workflowNameOf(input.workflowName) }),
       signal: cancel.signal,
       ...(allowance ? { maxSectionBytes: allowance.maxSectionBytes } : {}),
+      ...(input.repositoryTaskSkills ? { repositoryTaskSkills: input.repositoryTaskSkills } : {}),
     };
     poll = setInterval(() => { if (!input.stillDispatching()) cancel.abort(); }, CANCEL_POLL_MS);
     input.onShaping(true);

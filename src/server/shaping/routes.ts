@@ -14,7 +14,7 @@ import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers, scanShaperFolder } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
-import { taskShapingForReads } from "./reads.ts";
+import { taskAfterWorkForReads, taskShapingForReads } from "./reads.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
   dropShapingWriteRecords,
@@ -42,9 +42,10 @@ import { referenceStatus } from "./references.ts";
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
- * - `GET /api/tasks/:id/shaping` returns what the task's current session received: the summary
- *   and the delivered text, `text` null when nothing was kept. 404 when `currentShaping` shows
- *   nothing, including a record that names an earlier session.
+ * - `GET /api/tasks/:id/shaping` returns what the task's current session received: the summary,
+ *   the delivered text (`text` null when nothing was kept) and the launch's after-work prompt
+ *   (`afterWork` null until one was written). 404 when `currentShaping` shows nothing,
+ *   including a record that names an earlier session.
  */
 /**
  * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
@@ -115,9 +116,11 @@ export function registerShapingRoutes(
     // Through the same projection as every other task read, so a record a failed commit superseded
     // (its clean-up still pending) is not served as this session's, whether the task came from memory
     // or from its durable row.
-    const summary = currentShaping(taskShapingForReads(task));
+    const shown = taskShapingForReads(task);
+    const summary = currentShaping(shown);
     if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
-    return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null });
+    // The launch's after-work prompt, null until one was written for this session.
+    return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null, afterWork: taskAfterWorkForReads(shown) });
   });
 
   app.get("/api/shaping", gate, async (c) => {
@@ -167,7 +170,7 @@ export function registerShapingRoutes(
   app.post("/api/shaping/test", gate, loopbackWrite, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const { id, repository, prompt, kind, expect } = parsed.data;
+    const { id, repository, prompt, kind, expect, agent } = parsed.data;
     // One snapshot of the config, taken now, is both what the revision is checked against and what
     // the engine runs. The checkout probes below await Git, and a replacement written during them
     // must not be what runs, so the engine never reads the store again for this request.
@@ -207,6 +210,8 @@ export function registerShapingRoutes(
       // Aborted when the client's connection closes before the reply, so a dry run nobody is
       // waiting for stops its shapers' process groups instead of running to their timeout.
       signal: c.req.raw.signal,
+      // A router's skills are rendered for a harness; the request has none of its own.
+      previewAgent: agent ?? "claude",
     }, { config });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);

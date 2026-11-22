@@ -413,6 +413,17 @@ export class QueueManager {
 
   setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {
     this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now);
+    // Every writer of an answer comes through here: Foreman's automatic wrap-up once its
+    // instruction landed, the Ship it? card, and a skipped wrap-up's marker.
+    if (answer !== null) for (const listener of this.wrapupListeners) listener(key);
+  }
+
+  private readonly wrapupListeners = new Set<(key: string) => void>();
+
+  /** Told each time a wrap-up answer is recorded for a conversation key. A listener must not throw. */
+  onWrapupAnswered(listener: (key: string) => void): () => void {
+    this.wrapupListeners.add(listener);
+    return () => this.wrapupListeners.delete(listener);
   }
 
   /**

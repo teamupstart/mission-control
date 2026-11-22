@@ -773,7 +773,7 @@ function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
 }
 
 function withTaskShapingRead(task: McpTaskSnapshot): { shaping?: TaskShapingRead } {
-  const shaping = taskShapingRead(task);
+  const shaping = taskShapingRead(task, task.shapingAfterWork ?? null);
   return shaping ? { shaping } : {};
 }
 
@@ -786,7 +786,7 @@ server.registerTool(
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
       "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs, " +
-      "and shaping {state, sessionId, summary} when task shaping added context to the launch that session received. " +
+      "and shaping {state, sessionId, summary, skills?, afterWork?} when task shaping added context to the launch that session received. " +
       "Pass workUnitId to list the tasks of one work unit. " +
       "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
       TASK_REFERENCE_RULE,
@@ -813,7 +813,7 @@ server.registerTool(
   {
     title: "Read a saved task (read-only)",
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
-      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary} " +
+      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary, skills?, afterWork?} " +
       "when task shaping added context to the launch that session received. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
       "Never launches, modifies or reorders work and does not read session-private state. " +

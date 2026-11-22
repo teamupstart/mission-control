@@ -24,6 +24,7 @@ import { Tooltip } from "./Tooltip.tsx";
 const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported" | "folder", { title: string; hint: string }> = {
   gather: { title: "Gather", hint: "Read each repository and report facts and a summary. They run first." },
   select: { title: "Select", hint: "Choose guidance for the task, with what the gatherers found." },
+  route: { title: "Route", hint: "Choose skills for the task once guidance is selected. Turn one names them, and Mission Control prompts the after-work ones when the work is complete." },
   unsupported: { title: "Not supported by this build", hint: "Kept exactly as stored and never called. Switch one off or remove it." },
   folder: {
     title: "Found on disk, not run",

@@ -324,6 +324,7 @@ import {
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
   rekeyTaskShaping as dbRekeyTaskShaping,
+  rekeyTaskSkillPrompt as dbRekeyTaskSkillPrompt,
   clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
@@ -7810,9 +7811,14 @@ export class Registry extends EventEmitter {
   commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
     const summary = unstamped ? { ...unstamped, sessionId } : null;
     try {
-      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
+      // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
+      // prompt an earlier launch into this session left.
+      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId);
       // This commit settled the row, so no earlier clean-up may touch it now.
       forgetSupersededShaping(taskId);
+      // An earlier launch's after-work turn may have just left this session's outbox.
+      const delivered = this.sessions.get(sessionId);
+      if (delivered) this.refreshPendingTurns(noteKeyFor(delivered));
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
       this.hideSupersededShaping(taskId, sessionId);
@@ -7847,6 +7853,9 @@ export class Registry extends EventEmitter {
     if (!record || record.sessionId !== prior.sessionId) return null;
     try {
       if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+      // The launch's after-work prompt row moves with its record: the same conversation
+      // continuing is the same launch, so it is never prompted a second time.
+      dbRekeyTaskSkillPrompt(taskId, prior.sessionId, toSessionId);
     } catch (error) {
       // The successor still binds: the record keeps naming the prior session, so
       // `currentShaping` hides it rather than show it for a conversation it no longer describes.

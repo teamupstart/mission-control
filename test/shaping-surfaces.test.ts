@@ -6,7 +6,10 @@ import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import { currentShaping, shapingView, taskShapingRead, withCurrentShaping, type TaskShaping } from "../src/shared/shaping.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
-import { ShapingChip, ShapingRailMark, ShapingTileFlag, deliveredState } from "../src/web/components/ShapingChip.tsx";
+import {
+  RoutedSkills, ShapingChip, ShapingRailMark, ShapingTileFlag, afterWorkPromptWords, deliveredState, shapingChipLabel,
+} from "../src/web/components/ShapingChip.tsx";
+import type { ShapingSkillSummary, TaskSkillPrompt } from "../src/shared/shaping.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 // The reader rule and the session surfaces that apply it: the chip's two states, the board and
@@ -110,4 +113,60 @@ test("the viewer tells an unavailable delivery apart from a launch that added no
   // Only a matching reply with no text, or a record that counts no entries, says nothing was added.
   assert.deepEqual(deliveredState({ summary: delivered, text: null }, delivered), { kind: "none" });
   assert.deepEqual(deliveredState(null, record("s1", "degraded", 0)), { kind: "none" });
+});
+
+function skill(name: string, state: ShapingSkillSummary["state"], lifecyclePoint = "during", extra: Partial<ShapingSkillSummary> = {}): ShapingSkillSummary {
+  return { name, lifecyclePoint, reasonId: `route/${name}`, shaper: "acme", repositories: [], state, verified: false, reason: null, ...extra };
+}
+
+test("the chip counts announced skills beside entries, or reads Skills: N when only skills were added", () => {
+  const skills = [skill("ship", "announced"), skill("retro", "announced", "after-work"), skill("odd", "unsupported")];
+  assert.equal(shapingChipLabel(record("s1", "ok", 3)), "Context: 3 entries", "no router, as before");
+  assert.equal(shapingChipLabel({ ...record("s1", "ok", 3), skills }), "Context: 3 entries, 2 skills");
+  assert.equal(shapingChipLabel({ ...record("s1", "ok", 1), skills: skills.slice(0, 1) }), "Context: 1 entry, 1 skill");
+  assert.equal(shapingChipLabel({ ...record("s1", "ok", 0), skills }), "Skills: 2");
+  assert.equal(shapingChipLabel({ ...record("s1", "ok", 0), skills: [skill("odd", "dropped")] }), "Context: 0 entries");
+  const html = render(on, createElement(ShapingChip, { session: session({ ...record("s1", "ok", 0), skills }) }));
+  assert.match(html, />Skills: 2</);
+  assert.match(render(on, createElement(ShapingChip, { session: session({ ...record("s1", "degraded", 0), skills }) })), />Context degraded</,
+    "degraded wins over the counts");
+});
+
+test("the viewer lists each skill with when, its reason id, its router, whether it was verified, and its state", () => {
+  const html = renderToStaticMarkup(createElement(RoutedSkills, {
+    skills: [
+      skill("ship", "announced", "task-start", { verified: true, repositories: ["billing-api"] }),
+      skill("retro", "unavailable", "after-work", { reason: "Enable Skills and the retro skill before sending this instruction." }),
+      skill("odd", "unsupported", "before-merge", { reason: 'This build does not know the lifecycle point "before-merge".' }),
+    ],
+    shapers: record("s1", "ok").shapers,
+    afterWork: null,
+  }));
+  assert.match(html, /aria-label="Skills for this task"/);
+  assert.match(html, /aria-label="ship: Announced"/);
+  assert.match(html, /at the start · routed by Acme guidance · verified in the skill catalog · billing-api/);
+  assert.match(html, /<code>route\/ship<\/code>/);
+  assert.match(html, /aria-label="retro: Unavailable"[\s\S]*Enable Skills and the retro skill/);
+  assert.match(html, /aria-label="odd: Unsupported"[\s\S]*before-merge · routed by Acme guidance · not verified/);
+  assert.equal(html.includes("Not prompted yet"), false, "an after-work skill that was not announced has no prompt line");
+});
+
+test("an announced after-work skill says whether, and when, it was prompted", () => {
+  const prompt = (state: TaskSkillPrompt["state"], extra: Partial<TaskSkillPrompt> = {}): TaskSkillPrompt =>
+    ({ sessionId: "s1", state, reason: null, skills: ["retro"], createdAt: 1, deliveredAt: null, ...extra });
+  assert.match(afterWorkPromptWords(prompt("delivered", { deliveredAt: Date.UTC(2026, 0, 1, 9, 30) }), "retro", false), /^Prompted at /);
+  assert.equal(afterWorkPromptWords(prompt("delivered"), "retro", false), "Prompted.");
+  assert.match(afterWorkPromptWords(prompt("delivered", { skills: ["notes"] }), "retro", false), /^Not prompted: /);
+  assert.match(afterWorkPromptWords(prompt("queued"), "retro", false), /^Prompt queued/);
+  assert.equal(afterWorkPromptWords(prompt("held"), "retro", false), "Prompt held until Foreman's wrap-up is answered.");
+  assert.equal(afterWorkPromptWords(prompt("not_delivered", { reason: "The session ended before the prompt was delivered." }), "retro", false),
+    "Not delivered: The session ended before the prompt was delivered.");
+  assert.match(afterWorkPromptWords(null, "retro", false), /^Not prompted yet/);
+  assert.match(afterWorkPromptWords(null, "retro", true), /^Checking/);
+  const html = renderToStaticMarkup(createElement(RoutedSkills, {
+    skills: [skill("retro", "announced", "after-work")], shapers: [], afterWork: prompt("delivered"),
+  }));
+  assert.match(html, /role="note">Prompted\.</);
+  const dryRun = renderToStaticMarkup(createElement(RoutedSkills, { skills: [skill("retro", "announced", "after-work")], shapers: [], afterWork: undefined }));
+  assert.equal(dryRun.includes("role=\"note\""), false, "a dry run prompts nothing, so it says nothing about prompting");
 });

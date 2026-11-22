@@ -11,6 +11,7 @@ import {
   SHAPING_LIMITS,
   shapingReferences,
   ShapingResultSchema,
+  ShapingRouteResultSchema,
   type DiscoveredShaper,
   type Shaper,
   type ShapingConfig,
@@ -494,7 +495,10 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
   // replacing a long value can shorten an oversized title. Left alone, it is refused by the
   // engine as sent, none of its content is ever returned, and the diagnostic built from it goes
   // through the reply's redactor, which marks the record when it removes a named value.
+  // A route reply is checked against its own schema as well: `skills` is not a key of the result
+  // schema, which would let an invalid list through as unknown and then rewrite it.
   if (!ShapingResultSchema.safeParse(data).success) return { data, redacted: false, notes: [] };
+  if ("skills" in data && !ShapingRouteResultSchema.safeParse(data).success) return { data, redacted: false, notes: [] };
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;
@@ -548,6 +552,19 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
         else if (Array.isArray(value)) facts[name] = value.map((item) => (typeof item === "string" ? scrub(item, SHAPING_LIMITS.factValueChars) : item));
       }
     }
+  }
+  // A routed skill's name and reason id are identities, like an entry id: one that holds a value
+  // is dropped, never renamed, so redaction can never turn it into another skill's name.
+  if (Array.isArray(root.skills)) {
+    root.skills = root.skills.filter((skill) => {
+      if (!isRecord(skill)) return true;
+      const hit = [skill.name, skill.reason_id].map((value) => (typeof value === "string" ? holdsResolved(value, values) : undefined))
+        .find((found) => found !== undefined);
+      if (!hit) return true;
+      notes.push(`A skill was dropped because its name or reason id contained the value of ${marker.name(hit)}.`);
+      redacted = true;
+      return false;
+    });
   }
   // The reply's own notes are left as written: a reply that was valid stays valid. The drops are
   // returned beside it for the engine to record.

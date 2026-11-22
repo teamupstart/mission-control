@@ -1320,3 +1320,74 @@ test("Pi's launch message uses the memory pointer its budget measured, even if a
   assert.ok(worktree, "the shaper saw the worktree");
   assert.equal(run.prompt, await unshapedExpectation(run.task, "THE REQUEST"), "no pointer the budget did not count");
 });
+
+// ---- the route stage in turn one (Phase 7) ----
+
+function registerCommandShaper(id: string, stage: "select" | "route", args: string[]): void {
+  assert.equal(shapingStore.applyShapingIntent(ShapingIntentSchema.parse({ kind: "upsert", shaper: {
+    id, label: id, stage, timeoutMs: 30_000, transport: { type: "command", command: process.execPath, args: [FIXTURE, ...args] },
+  } })).ok, true);
+  assert.equal(shapingStore.applyShapingIntent({ kind: "enable", id, enabled: true }).ok, true);
+}
+
+/** What FR-05 appends for a repository's own task skill: the file's own text. */
+const OWN_TASK_SKILL = "OWN-SHIP-SKILL-BODY: the repository's own ship procedure.";
+
+test("turn one runs kind contract, task context, skills for this task, and a repository's own task skill last", async () => {
+  const repo = seedRepo("route-order");
+  // The repository ships its own task skill for the kind, so the routed skill of the same name
+  // must stay out of turn one (D14).
+  mkdirSync(join(repo, ".claude", "skills", "ship"), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", "ship", "SKILL.md"), `---\nname: ship\n---\n${OWN_TASK_SKILL}\n`);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "own task skill"]);
+  registerCommandShaper("guide", "select", ["ok"]);
+  registerCommandShaper("router", "route", ["route", "ship:task-start,lint-fix:during,wrap-notes:after-work"]);
+  const intent = "THE-OPERATOR-REQUEST";
+  // FR-05's reader includes the repository's own task skill only with this flag on.
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: true }).ok, true);
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "route-order", intent });
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: false }).ok, true);
+  assertRunning(run.task);
+  const prompt = run.prompt;
+  const unshaped = await unshapedExpectation(run.task, intent);
+  assert.ok(prompt.startsWith(unshaped), "the kind contract and everything before it come first, unchanged");
+  const at = (marker: string) => prompt.indexOf(marker);
+  assert.ok(at("## Task context") >= unshaped.length, "the task context follows the contract");
+  assert.ok(at("## Skills for this task") > at("## Task context"), "the skills follow the task context");
+  assert.ok(at("- `/lint-fix` - during the work") > at("## Skills for this task"));
+  assert.ok(at("- `/wrap-notes` - after the work: do not use it yet.") > at("- `/lint-fix`"));
+  // With FR-05's block in turn one it is last, and the routed skill of the kind's name has no line.
+  const own = at(OWN_TASK_SKILL);
+  assert.notEqual(own, -1, "the repository's own task skill is in turn one");
+  const record = currentShaping(run.task)!;
+  assert.ok(own > at("## Skills for this task"), "the repository's own task skill is last");
+  assert.equal(prompt.includes("- `/ship` -"), false, "the repository's own task skill wins (D14)");
+  assert.equal(record.skills?.find((skill) => skill.name === "ship")?.state, "superseded");
+  assert.deepEqual(record.skills?.filter((skill) => skill.name !== "ship").map((skill) => [skill.name, skill.state]),
+    [["lint-fix", "announced"], ["wrap-notes", "announced"]]);
+  assert.equal(record.bytes, Buffer.byteLength(getTaskShapingText("route-order")!.text));
+});
+
+test("a launch no router applies to is byte-identical to one from before routing, and records no skills", async () => {
+  const repo = seedRepo("route-none");
+  registerCommandShaper("guide", "select", ["ok"]);
+  const intent = "sort out the flexbox helper";
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "route-none", intent });
+  assertRunning(run.task);
+  const section = getTaskShapingText("route-none")!.text;
+  assert.equal(run.prompt, `${await unshapedExpectation(run.task, intent)}\n\n${section}`);
+  assert.equal(section.includes("Skills for this task"), false);
+  assert.equal("skills" in currentShaping(run.task)!, false);
+});
+
+test("Codex and Pi name a routed skill in their own grammar in turn one", async () => {
+  const repo = seedRepo("route-harness");
+  registerCommandShaper("router", "route", ["route", "lint-fix:during"]);
+  const codex = await terminalDispatch({ agent: "codex", repo, taskId: "route-codex", intent: "work" });
+  assertRunning(codex.task);
+  assert.ok(codex.prompt.includes("- `$lint-fix` - during the work: use this skill when it applies."), codex.prompt.slice(-400));
+  const pi = await terminalDispatch({ agent: "pi", repo, taskId: "route-pi", intent: "work" });
+  assertRunning(pi.task);
+  assert.ok(pi.prompt.includes("- `/skill:lint-fix` - during the work"), pi.prompt.slice(-400));
+});

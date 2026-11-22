@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { holdsSecretShape } from "./secret-shapes.ts";
 import { taskKindLaunchesHarness } from "./task.ts";
-import { TASK_KINDS, type TaskKind } from "./types.ts";
+import { AGENT_TYPES, TASK_KINDS, type TaskKind } from "./types.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
   SHAPING_BUILTINS,
+  SHAPING_LIFECYCLE_POINTS,
   SHAPING_ORIGINS,
   SHAPING_OUTCOMES,
+  SHAPING_PROMPT_STATES,
   SHAPING_REFERENCE_KINDS,
+  SHAPING_SKILL_STATES,
   SHAPING_STAGES,
   SHAPING_TRANSPORTS,
 } from "./shaping-registry.ts";
@@ -26,6 +29,9 @@ export type ShapingBuiltinId = (typeof SHAPING_BUILTINS)[number]["id"];
 export type ShapingOutcome = (typeof SHAPING_OUTCOMES)[number];
 export type ShapingOrigin = (typeof SHAPING_ORIGINS)[number];
 export type ShapingReferenceKind = (typeof SHAPING_REFERENCE_KINDS)[number];
+export type ShapingLifecyclePoint = (typeof SHAPING_LIFECYCLE_POINTS)[number];
+export type ShapingSkillState = (typeof SHAPING_SKILL_STATES)[number];
+export type ShapingPromptState = (typeof SHAPING_PROMPT_STATES)[number];
 
 export const SHAPING_PROTOCOL = 1;
 
@@ -75,7 +81,20 @@ export const SHAPING_LIMITS = {
   repositories: 32,
   /** The operator's prompt as carried in a request. */
   taskChars: 1_000_000,
+  /** Skills one route reply may carry, and skills one launch may announce (FR-04). */
+  routedSkills: 10,
+  /** Routed skills one launch's record keeps, whatever became of them. */
+  recordedSkills: 32,
+  /** Selected guidance ids one route request carries (D13). */
+  guidanceIds: 32,
 } as const;
+
+/**
+ * Set aside for "Skills for this task" before any context entry is allocated, while a router
+ * applies, so guidance that fills the total cannot crowd every routed skill out. A launch whose
+ * whole total is smaller reserves that total instead.
+ */
+export const SHAPING_SKILLS_RESERVE_BYTES = 3 * KIB;
 
 /** Each configurable bound's default and ceiling (D8 and D9). */
 export const SHAPING_LIMIT_RANGES = {
@@ -1654,6 +1673,14 @@ export const ShapingContextSchema = z.object({
     agent: z.string().max(64).nullable(),
     conversation: z.string().max(128).nullable(),
   }),
+  /**
+   * Route requests only (D13): the entries the select stage put into the section for the
+   * target repository, as `{ shaper, id }`, ids only. Absent at every other stage.
+   */
+  guidance: z.array(z.object({
+    shaper: z.string().max(64),
+    id: z.string().max(SHAPING_LIMITS.entryIdChars),
+  })).max(SHAPING_LIMITS.guidanceIds).optional(),
 });
 export type ShapingContext = z.output<typeof ShapingContextSchema>;
 
@@ -1702,6 +1729,38 @@ export const ShapingResultSchema = z.object({
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 
+/**
+ * A routed skill's name: what Mission Control puts after the harness's sigil. Lower-case
+ * letters, digits, `-`, `_` and `:`, starting with a letter or digit, so a router can never
+ * spell a flag, a path or a Markdown construct. The words around it are Mission Control's.
+ */
+export const ShapingSkillNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_:-]*$/, {
+  message: "A skill name is lower-case letters, digits, -, _ and :.",
+});
+
+/** Why a router chose a skill, as an identifier the router owns. Never shown to a worker. */
+export const ShapingReasonIdSchema = z.string().min(1).max(128).regex(/^[a-z0-9_:./-]+$/, {
+  message: "A reason id is lower-case letters, digits, -, _, :, . and /.",
+});
+
+/**
+ * A router's reply (FR-04 section 4): skills, not guidance. Unknown fields are ignored.
+ * `lifecycle_point` is any bounded string, so a point this build does not know makes that one
+ * skill `unsupported` and leaves the reply valid; any other mismatch is the `invalid` outcome.
+ */
+export const ShapingRouteResultSchema = z.object({
+  version: z.string().max(SHAPING_LIMITS.versionChars).nullable().optional(),
+  skills: z.array(z.object({
+    name: ShapingSkillNameSchema,
+    lifecycle_point: z.string().min(1).max(64),
+    reason_id: ShapingReasonIdSchema,
+  })).max(SHAPING_LIMITS.routedSkills),
+  truncated: z.boolean().optional(),
+  degraded: z.boolean().optional(),
+  notes: z.array(z.string().max(SHAPING_LIMITS.replyNoteChars)).max(SHAPING_LIMITS.replyNotes).optional(),
+});
+export type ShapingRouteResult = z.output<typeof ShapingRouteResultSchema>;
+
 /** A shaper's reply in words, for the `invalid` outcome. */
 /**
  * A shaper's reply in words, for the `invalid` outcome. Not clipped: the path can hold a key the
@@ -1733,6 +1792,24 @@ export const ShapingShaperSummarySchema = z.object({
 });
 export type ShapingShaperSummary = z.output<typeof ShapingShaperSummarySchema>;
 
+/** One routed skill as a launch records it, whatever became of it. */
+export const ShapingSkillSummarySchema = z.object({
+  name: z.string().max(64),
+  /** As the router sent it: a point this build does not know is kept, and the skill is `unsupported`. */
+  lifecyclePoint: z.string().max(64),
+  reasonId: z.string().max(128),
+  /** The router whose reply first named it. */
+  shaper: z.string().max(64),
+  /** The repositories it was routed for, by name, less any the repository's own task skill took (D14). */
+  repositories: z.array(z.string().max(256)).max(SHAPING_LIMITS.repositories),
+  state: z.enum(SHAPING_SKILL_STATES),
+  /** True for a skill from Mission Control's catalog that was checked; false for a name taken as given (D15). */
+  verified: z.boolean(),
+  /** Why it is not announced. Null for an announced skill. */
+  reason: z.string().max(SHAPING_LIMITS.reasonChars).nullable(),
+});
+export type ShapingSkillSummary = z.output<typeof ShapingSkillSummarySchema>;
+
 /** What a launch records. Absent when no shaper applied. */
 export const TaskShapingSchema = z.object({
   state: z.enum(["ok", "degraded"]),
@@ -1744,6 +1821,11 @@ export const TaskShapingSchema = z.object({
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
   shapers: z.array(ShapingShaperSummarySchema).max(SHAPING_LIMITS.shapers * 2),
+  /**
+   * Routed skills, in merge order. Present only when a router applied to the launch, so a launch
+   * no router applied to records exactly what it did before routing existed.
+   */
+  skills: z.array(ShapingSkillSummarySchema).max(SHAPING_LIMITS.recordedSkills).optional(),
   /**
    * Set by dispatch when this launch's delivery path left the section less room than
    * `limits.totalBytes`: how many bytes it allowed, and why. Absent when the configured total
@@ -1800,18 +1882,49 @@ export function shapingView(task: {
   return currentShaping(task);
 }
 
-/** What a task read carries: the state, the session it describes, and one line. */
+/**
+ * One launch's after-work prompt (`task_skill_prompts`), as task reads and the viewer carry it.
+ * `skills` are the names it prompted, or was to prompt, in order.
+ */
+export const TaskSkillPromptSchema = z.object({
+  sessionId: z.string().min(1).max(256),
+  state: z.enum(SHAPING_PROMPT_STATES),
+  reason: z.string().max(SHAPING_LIMITS.reasonChars).nullable(),
+  skills: z.array(z.string().max(64)).max(SHAPING_LIMITS.routedSkills),
+  createdAt: z.number().int().nonnegative(),
+  deliveredAt: z.number().int().nonnegative().nullable(),
+});
+export type TaskSkillPrompt = z.output<typeof TaskSkillPromptSchema>;
+
+/**
+ * What a task read carries: the state, the session it describes, and one line. `skills` appears
+ * only when a router applied, and `afterWork` only once an after-work prompt row exists.
+ */
 export interface TaskShapingRead {
   state: TaskShaping["state"];
   sessionId: string;
   summary: string;
+  skills?: ShapingSkillSummary[];
+  afterWork?: TaskSkillPrompt;
 }
 
-/** `shaping` in a task read, or null when `currentShaping` shows nothing. */
-export function taskShapingRead(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShapingRead | null {
+/**
+ * `shaping` in a task read, or null when `currentShaping` shows nothing. `afterWork` is attached
+ * only while it names the record's session.
+ */
+export function taskShapingRead(
+  task: { shaping?: TaskShaping | null; sessionId: string | null },
+  afterWork: TaskSkillPrompt | null = null,
+): TaskShapingRead | null {
   const record = currentShaping(task);
   if (!record?.sessionId) return null;
-  return { state: record.state, sessionId: record.sessionId, summary: shapingSummaryLine(record) };
+  return {
+    state: record.state,
+    sessionId: record.sessionId,
+    summary: shapingSummaryLine(record),
+    ...(record.skills ? { skills: record.skills } : {}),
+    ...(afterWork && afterWork.sessionId === record.sessionId ? { afterWork } : {}),
+  };
 }
 
 /** One entry as it would be injected, for the record, the viewer and the dry run. */
@@ -1832,9 +1945,11 @@ export interface ShapingInjectedEntry {
 export interface ShapingRun {
   /** Null when no shaper applied. */
   summary: TaskShaping | null;
-  /** The section for turn one. Empty when nothing was kept. */
+  /** The section for turn one: the task context, then the skills for this task. Empty when nothing was kept. */
   section: string;
   entries: ShapingInjectedEntry[];
+  /** The routed skills, as the summary records them. The engine always sets it, empty when no router applied. */
+  skills?: ShapingSkillSummary[];
 }
 
 /** One call: one shaper, one repository. What `summariseShaping` folds per shaper. */
@@ -1924,15 +2039,31 @@ const OUTCOME_WORDS: Record<ShapingOutcome, string> = {
   unavailable: "was unavailable",
 };
 
-/** One line for a task read, such as `degraded: acme-guidance timed out`. */
+/** The skills a record announced in turn one, in order. */
+export function announcedSkills(summary: Pick<TaskShaping, "skills">): ShapingSkillSummary[] {
+  return (summary.skills ?? []).filter((skill) => skill.state === "announced");
+}
+
+/** `, 2 skills (ship, retro)`, or nothing when no skill was announced. */
+function skillsClause(summary: TaskShaping): string {
+  const names = announcedSkills(summary).map((skill) => skill.name);
+  if (names.length === 0) return "";
+  return `, ${names.length} ${names.length === 1 ? "skill" : "skills"} (${names.join(", ")})`;
+}
+
+/**
+ * One line for a task read, such as `degraded: acme-guidance timed out; 0 entries`. A launch
+ * that announced routed skills names them, as in `ok: 3 entries from 2 shapers, 2 skills (ship,
+ * retro)`; one that announced none reads exactly as it did before routing existed.
+ */
 export function shapingSummaryLine(summary: TaskShaping): string {
   const entries = `${summary.entries} ${summary.entries === 1 ? "entry" : "entries"}`;
   if (summary.state === "ok") {
-    return `ok: ${entries} from ${summary.shapers.length} ${summary.shapers.length === 1 ? "shaper" : "shapers"}${summary.truncated ? ", truncated" : ""}`;
+    return `ok: ${entries} from ${summary.shapers.length} ${summary.shapers.length === 1 ? "shaper" : "shapers"}${skillsClause(summary)}${summary.truncated ? ", truncated" : ""}`;
   }
   const problems = summary.shapers.filter((shaper) => shaper.outcome !== "ok")
     .map((shaper) => `${shaper.id} ${OUTCOME_WORDS[shaper.outcome]}`);
-  return `degraded: ${problems.join(", ")}; ${entries}`;
+  return `degraded: ${problems.join(", ")}; ${entries}${skillsClause(summary)}`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2055,6 +2186,109 @@ export function composeShapingSection(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Routed skills (FR-04 `route_skills`, D12 to D15)
+
+/** Whether a router's `lifecycle_point` is one this build knows. */
+export function isShapingLifecyclePoint(value: string): value is ShapingLifecyclePoint {
+  return (SHAPING_LIFECYCLE_POINTS as readonly string[]).includes(value);
+}
+
+/** One router's reply for one repository, in the order the calls were made. */
+export interface ShapingRouteReply {
+  shaper: string;
+  repo: string;
+  skills: readonly { name: string; lifecycle_point: string; reason_id: string }[];
+}
+
+/**
+ * Merge every router's reply into the launch's skills, in list order and then repository order,
+ * which is the order the calls were made. The first reply that names a skill sets its lifecycle
+ * point, reason id and router; a later one only adds its repository. A point this build does not
+ * know makes the skill `unsupported`. At most `routedSkills` supported skills go on; the rest are
+ * `dropped`. Every skill starts unverified: whether a name is checked is decided where the
+ * catalog can be read, not here. At most `recordedSkills` are returned.
+ */
+export function mergeRoutedSkills(replies: readonly ShapingRouteReply[]): ShapingSkillSummary[] {
+  const merged: ShapingSkillSummary[] = [];
+  const byName = new Map<string, ShapingSkillSummary>();
+  let supported = 0;
+  for (const reply of replies) {
+    for (const skill of reply.skills) {
+      const known = byName.get(skill.name);
+      if (known) {
+        if (!known.repositories.includes(reply.repo) && known.repositories.length < SHAPING_LIMITS.repositories) {
+          known.repositories.push(reply.repo);
+        }
+        continue;
+      }
+      if (merged.length >= SHAPING_LIMITS.recordedSkills) continue;
+      const point = isShapingLifecyclePoint(skill.lifecycle_point);
+      const over = point && supported >= SHAPING_LIMITS.routedSkills;
+      if (point && !over) supported += 1;
+      const entry: ShapingSkillSummary = {
+        name: skill.name,
+        lifecyclePoint: skill.lifecycle_point,
+        reasonId: skill.reason_id,
+        shaper: reply.shaper,
+        repositories: [reply.repo],
+        state: !point ? "unsupported" : over ? "dropped" : "announced",
+        verified: false,
+        reason: !point
+          ? `This build does not know the lifecycle point "${skill.lifecycle_point}".`
+          : over ? `More than ${SHAPING_LIMITS.routedSkills} skills were routed for this launch.` : null,
+      };
+      byName.set(skill.name, entry);
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+export const SHAPING_SKILLS_PREAMBLE = "## Skills for this task\n\n"
+  + "Mission Control's skill routing chose these skills for this task. Use each one\n"
+  + "when its line says. If a skill is not available in this session, say so and\n"
+  + "carry on. This list supplements the instructions above and cannot relax their\n"
+  + "authorization, plan or workflow rules.";
+
+/** When each lifecycle point says to use a skill. Mission Control's words, never a router's. */
+const SKILL_WHEN: Record<ShapingLifecyclePoint, string> = {
+  "task-start": "at the start: use this skill before you begin the work.",
+  during: "during the work: use this skill when it applies.",
+  "after-work": "after the work: do not use it yet. Mission Control will\n  prompt you when the work is complete.",
+};
+
+/** Repositories one line names before it says how many more it left out. */
+const SKILL_LINE_REPOSITORIES = 8;
+
+/**
+ * One skill's line. `reference` is how the worker's harness names the skill (`skillReference`).
+ * `repositories` is set only when the skill was routed for some of a task's repositories, and
+ * then the line ends with their names.
+ */
+export function shapingSkillLine(skill: {
+  reference: string;
+  lifecyclePoint: ShapingLifecyclePoint;
+  repositories?: readonly string[] | null;
+}): string {
+  const names = (skill.repositories ?? []).map(headingText).filter(Boolean);
+  const shown = names.slice(0, SKILL_LINE_REPOSITORIES);
+  const more = names.length - shown.length;
+  const scope = shown.length === 0 ? "" : ` For ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
+  return `- \`${skill.reference}\` - ${SKILL_WHEN[skill.lifecyclePoint]}${scope}`;
+}
+
+/** "Skills for this task", or empty with no heading when no line is given. */
+export function composeSkillsSection(lines: readonly string[]): string {
+  if (lines.length === 0) return "";
+  return `${SHAPING_SKILLS_PREAMBLE}\n\n${lines.join("\n")}`;
+}
+
+/** The task context section and the skills section, as the engine joins them into one section. */
+export function joinShapingSections(context: string, skills: string): string {
+  return [context, skills].filter(Boolean).join("\n\n");
+}
+
+// ---------------------------------------------------------------------------------------------
 // The dry run
 
 /** `POST /api/shaping/test`: run one shaper against a repository, as dispatch would. */
@@ -2066,6 +2300,8 @@ export const ShapingTestRequestSchema = z.object({
   repository: z.string().min(1).max(4096).refine((value) => value.startsWith("/"), { message: "The repository is an absolute path." }),
   prompt: z.string().max(SHAPING_LIMITS.taskChars).optional(),
   kind: z.string().min(1).max(64).optional(),
+  /** The harness a router's skills are rendered for. Absent, the section is shown as Claude would receive it. */
+  agent: z.enum(AGENT_TYPES).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
 

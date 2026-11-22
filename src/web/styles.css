@@ -42220,6 +42220,14 @@ body.foreman-sidecar-open .modal-backdrop {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.task-context-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.task-context-skill code {
+  font: 12px/1.5 var(--mono);
+}
 .task-context-delivered-text {
   margin: 0;
   max-height: 360px;

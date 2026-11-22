@@ -9,9 +9,10 @@ import {
 } from "../lib/shaping-settings.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { RoutedSkills } from "./ShapingChip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-const STAGE_LABEL: Record<string, string> = { gather: "Gather", select: "Select" };
+const STAGE_LABEL: Record<string, string> = { gather: "Gather", select: "Select", route: "Route" };
 
 /**
  * The most manifest text the dialog takes, pasted or from a file, before anything parses it. A
@@ -352,8 +353,13 @@ export function ShapingTestDialog({ id, label, revision, current, waiting = fals
               </p>
             ) : <p className="shaping-note">It did not apply to this repository.</p>}
             {summary?.reason && <p className="shaping-reason">{summary.reason}</p>}
+            {result.skills && result.skills.length > 0 && (
+              <RoutedSkills skills={result.skills} shapers={result.summary?.shapers ?? []} afterWork={undefined} />
+            )}
             <h4>{result.entries.length === 0
-              ? "Nothing would be added."
+              ? result.skills?.some((skill) => skill.state === "announced")
+                ? "No context entries would be added. The skills above would be named in turn one."
+                : "Nothing would be added."
               : `${result.entries.length} ${result.entries.length === 1 ? "entry" : "entries"} would be added`}</h4>
             {result.entries.map((entry) => (
               <article className="shaping-entry" key={`${entry.repo}:${entry.id}`} aria-label={entry.title ?? entry.id}>

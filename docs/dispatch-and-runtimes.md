@@ -35,8 +35,14 @@ order:
 5. The task context section, only when [task shaping](task-shaping.md) is on and a shaper
    added something. It is appended by one helper, so the normal turn one and the
    standing-instructions fallback carry identical text.
-6. Repository task skills, only with the `headless-mode` flag on and a skill the repository
-   ships for the task's kind (`.claude/skills/{kind}/SKILL.md`).
+6. "Skills for this task", only when a [router](task-shaping.md#skill-routing) announced a
+   skill. It rides in the same section as the task context, after it.
+7. Repository task skills, only with the `headless-mode` flag on and a skill the repository
+   ships for the task's kind (`.claude/skills/{kind}/SKILL.md`). A routed skill of the kind's
+   name is not announced for a repository whose own task skill is here.
+
+Repository lessons (FR-06), when they arrive, go between the skills for this task and the
+repository task skills.
 
 Shaping budgets against the turn one with the skills included, so the section never pushes the
 whole prompt past its delivery path. Pi receives turn

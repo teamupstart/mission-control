@@ -567,6 +567,17 @@ something else is recorded as `degraded` and the worker starts without its text,
 section is cut to what the delivery path can carry, so it never makes a launch that works today
 fail. What each session received is recorded on the task and shown only for that session.
 
+**A routed skill is a name, never text.** A router supplies only a skill name and a reason id,
+both held to strict character sets, and Mission Control writes every word around them. A name
+from Mission Control's catalog is checked before it is announced, and a catalog skill the
+operator switched off never is. Any other name is announced as given and marked not verified,
+because a skill installed some other way is not inventoried. A router can therefore point the
+worker at any skill installed for its harness; the record and the viewer show every routed skill
+and who routed it. The after-work prompt Mission Control sends is its own text, delivered only
+when the session is idle, once per launch, and recorded as daemon-written, never as the
+operator's words. A name or reason id that holds a resolved credential value is dropped, never
+rewritten.
+
 **The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
 the state home can run at the next dispatch without a click, so anything that can write that
 folder can add one, worker agents included. The ownership checks, what Mission Control shows

@@ -270,7 +270,8 @@ Because the queue row keeps only the latest decision, the worker also appends on
 decision to `foreman.log` in the state directory, beside the app's Foreman lifecycle lines.
 Each line carries the time, session, task kind, generation, intent episode, outcome, blocking gap
 ids with their kind, a claimed run id, and the verifier's summary clamped to one line. Gap
-details, transcripts and diffs are never written. The file rotates to `foreman.log.1` at 5 MiB.
+details, transcripts and diffs are never written. At 5 MiB the file is copied to `foreman.log.1`
+and truncated in place, so the app's open log handle keeps writing to `foreman.log`.
 A hold that later turns out to have stalled a workflow can therefore still be read after the
 next completion has replaced it.
 

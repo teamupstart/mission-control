@@ -538,3 +538,13 @@ test("a durable read hides a superseded record while its clean-up is pending", a
   registry.upsertTask({ ...registry.getTask("durable-pending")!, priority: "high" });
   assert.equal(db.getTask("durable-pending")?.shaping, undefined);
 });
+
+test("deleting a task drops a clean-up still pending for it", async () => {
+  const reads = await import("../src/server/shaping/reads.ts");
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "deleted-pending", status: "backlog", sessionId: null }));
+  reads.noteSupersededShaping("deleted-pending", "kept");
+  assert.equal(reads.supersededShapingFor("deleted-pending"), "kept");
+  registry.removeTask("deleted-pending");
+  assert.equal(reads.supersededShapingFor("deleted-pending"), undefined, "nothing is left pending for a task that is gone");
+});

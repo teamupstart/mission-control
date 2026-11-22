@@ -3127,17 +3127,6 @@ export function worktreeSlotPath(taskId: string, slot: number): string {
 }
 
 /**
- * The full object id a freshly provisioned tree stands on, or null if it cannot be read.
- *
- * Null is "unknown", which is the same thing the column already means for every task
- * dispatched before it existed - and it is the only honest answer here. Every rule that
- * consumes a baseline compares a later head against it, so a fabricated value would be
- * indistinguishable from a measured one and would report an untouched repo as changed (or
- * the reverse). A failure to read HEAD is deliberately NOT fatal: the tree is provisioned
- * and the agent can work in it, and refusing the whole dispatch over a baseline that is
- * only consumed by later phases would trade a working session for a bookkeeping field.
- */
-/**
  * The checkout's current branch, null when HEAD is detached, or undefined when it cannot be read.
  * `symbolic-ref -q` exits 1 for a detached HEAD and with another status for an error, so a failed
  * read is never mistaken for a detached checkout.
@@ -3151,6 +3140,17 @@ export async function headBranch(dir: string): Promise<string | null | undefined
   return r.code === 1 ? null : undefined;
 }
 
+/**
+ * The full object id a freshly provisioned tree stands on, or null if it cannot be read.
+ *
+ * Null is "unknown", which is the same thing the column already means for every task
+ * dispatched before it existed - and it is the only honest answer here. Every rule that
+ * consumes a baseline compares a later head against it, so a fabricated value would be
+ * indistinguishable from a measured one and would report an untouched repo as changed (or
+ * the reverse). A failure to read HEAD is deliberately NOT fatal: the tree is provisioned
+ * and the agent can work in it, and refusing the whole dispatch over a baseline that is
+ * only consumed by later phases would trade a working session for a bookkeeping field.
+ */
 export async function headCommit(dir: string): Promise<string | null> {
   const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,

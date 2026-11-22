@@ -7877,8 +7877,7 @@ export class Registry extends EventEmitter {
     this.resyncSessionTask(sessionId);
   }
 
-  /** Superseded records whose on-disk clear has not succeeded yet: task id to the session they name. */
-
+  /** Try once more to clear a superseded record whose on-disk clear is still pending. */
   private retryShapingClear(taskId: string): void {
     const sessionId = supersededShapingFor(taskId);
     if (sessionId === undefined) return;
@@ -8056,6 +8055,8 @@ export class Registry extends EventEmitter {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
     dbDeleteTask(id);
+    // Its row and record are gone, so a clean-up still pending for it has nothing left to clear.
+    forgetSupersededShaping(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });

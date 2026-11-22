@@ -556,3 +556,41 @@ test("stopping an active core closes its pane, and stopping an inert one calls n
   off.core.stop();
   assert.equal(off.fake.paneCloses, 0);
 });
+
+test("an inbox that keeps refusing the token notices once, not on every reconnect", async () => {
+  const { daemon, fake, core } = setup();
+  await core.start();
+  daemon.override("GET /dispatch/inbox", () => ({ status: 401, body: { error: "unauthorized" } }));
+  for (let i = 0; i < 4; i++) await core.tick();
+  assert.equal(fake.notices.filter((n) => /mctl doctor/.test(n)).length, 1);
+  daemon.override("GET /dispatch/inbox", () => ({ body: CANNED_INBOX }));
+  await core.tick();
+  await core.tick();
+  // A fresh refusal after a success says so again.
+  daemon.override("GET /dispatch/inbox", () => ({ status: 401, body: { error: "unauthorized" } }));
+  await core.tick();
+  assert.equal(fake.notices.filter((n) => /mctl doctor/.test(n)).length, 2);
+});
+
+test("a pane open that fails is retried on the next tick, and one that succeeded is never repeated", async () => {
+  const daemon = createFakeDaemon();
+  const fake = createFakeModHost({ daemon });
+  let failures = 1;
+  const flaky = {
+    ...fake.host,
+    paneOpen: async (opts: Parameters<typeof fake.host.paneOpen>[0]) => {
+      if (failures-- > 0) throw new Error("ui.open refused");
+      return fake.host.paneOpen(opts);
+    },
+  };
+  const core = createModCore(flaky, FACTS);
+  await core.start();
+  assert.equal(core.phase(), "active");
+  assert.equal(fake.paneOpens.length, 0);
+  assert.ok(fake.bands.at(-1));
+  await core.tick();
+  assert.equal(fake.paneOpens.length, 1);
+  await core.tick();
+  await core.tick();
+  assert.equal(fake.paneOpens.length, 1);
+});

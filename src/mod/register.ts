@@ -259,6 +259,8 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     paneOpen: async (opts: ModPaneOpen) => {
       // A close from the session before must finish first, or it could remove this open's pane.
       await session.pane.closing;
+      // This session ended while it waited: opening now would leave a pane nobody owns.
+      if (session.mine !== session.current()) return { isPlaced: false };
       const opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
       // Only the current session takes the pane; a stopped one's late open leaves it unowned.
       if (session.mine === session.current()) session.pane.owner = session.mine;

@@ -109,13 +109,34 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     if (!registration) return toConnecting();
     const result = await fetchInbox(host, { repoRoot: registration.repoRoot, sessionId: facts.sessionId });
     if (stopped) return;
-    if (result.kind === "ok") return showInbox(result.value);
+    if (result.kind === "ok") {
+      noticed = null;
+      return showInbox(result.value);
+    }
     // A transient bad reply keeps what is shown; the next tick tries again.
     if (result.kind === "error") return;
     if (result.kind === "down") notifyOnce("down");
     if (result.kind === "unauthorized") notifyOnce("token");
     // `off`: the flag was turned off while the session ran. Show nothing, and watch for it coming back.
     toConnecting();
+  };
+
+  /**
+   * Opens the pane once, unasked and unfocused so the person's typing is not interrupted. A
+   * rejected open leaves `paneOpened` false, so the next tick tries again; one that succeeded is
+   * never repeated.
+   */
+  const ensurePane = async (): Promise<void> => {
+    if (paneOpened || stopped) return;
+    try {
+      await host.paneState.set("paneTab", "needs-you");
+      if (stopped) return;
+      await host.paneOpen({ tab: "needs-you" });
+    } catch {
+      return;
+    }
+    paneOpened = true;
+    if (stopped) host.paneClose();
   };
 
   const connect = async (): Promise<void> => {
@@ -144,7 +165,8 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
       noticed = null;
       return;
     }
-    noticed = null;
+    // `noticed` is cleared by the first successful inbox poll, not here: a token the inbox keeps
+    // refusing would otherwise notice again on every reconnect.
     // This daemon no longer serves a mod this old (or the mod is newer than the daemon's floor
     // allows): show nothing and stop polling. `mctl doctor` names the mismatch.
     if (answer.value.minModApi > MOD_API) {
@@ -158,17 +180,8 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     await host.paneState.set("registration", registration);
     if (stopped) return;
     if (beforeFirstPrompt) host.banner(bannerLines(registration));
-    if (!paneOpened) {
-      // Opened unasked and unfocused: the person's typing is not interrupted.
-      await host.paneState.set("paneTab", "needs-you");
-      if (stopped) return;
-      await host.paneOpen({ tab: "needs-you" });
-      paneOpened = true;
-      if (stopped) {
-        host.paneClose();
-        return;
-      }
-    }
+    await ensurePane();
+    if (stopped) return;
     await poll();
   };
 
@@ -176,8 +189,10 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     if (busy || stopped || phase === "inert") return;
     busy = true;
     try {
-      if (phase === "active") await poll();
-      else await connect();
+      if (phase === "active") {
+        await ensurePane();
+        await poll();
+      } else await connect();
     } finally {
       busy = false;
     }

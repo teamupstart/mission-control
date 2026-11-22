@@ -235,3 +235,18 @@ test('a stopped session\'s late registration reply does not overwrite its replac
   await new Promise((resolve) => setTimeout(resolve, 200))
   expect(seen.state.registration.repoRoot).toBe('/repo1')
 })
+
+test('a session that ends while its pane open waits for the previous close never opens', async ($, on) => {
+  const seen = world(on, { flag: true })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.opened.length >= 1)
+  let release
+  seen.holdClose = new Promise((resolve) => { release = resolve })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  // The second session is waiting on the first's close; it ends before the close completes.
+  await $.session.end({ reason: 'other', sessionId: 's1' })
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.opened).toEqual(['mission'])
+})

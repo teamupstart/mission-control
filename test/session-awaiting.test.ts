@@ -1095,6 +1095,42 @@ test("a removal whose wait cannot be cleared still publishes session_remove, and
   deleteSessionAwaiting(key);
 });
 
+test("a wait whose bookkeeping cannot be written never stops a session or a question being published", (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const registry = new Registry();
+  const reviews = new ReviewManager(registry);
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  const states: string[] = [];
+  const questions: string[] = [];
+  const listen = (e: { type: string; session?: { id: string; state: string }; review?: { id: string } }) => {
+    if (e.type === "session_upsert" && e.session?.id === d.syntheticId) states.push(e.session.state);
+    if (e.type === "review_upsert" && e.review) questions.push(e.review.id);
+  };
+  registry.on("event", listen);
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_audit_down BEFORE INSERT ON session_events
+    WHEN NEW.kind = 'session_awaiting_cleared' BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+  let review: { id: string };
+  try {
+    // The session's next turn is its wake. Ending the wait fails; the hook and its publish do not.
+    assert.doesNotThrow(() => hook(registry, d, "UserPromptSubmit", "Check the build log for me."));
+    assert.equal(states.at(-1), "working", "the session's new state was never published");
+    // A new question ends a standing wait. That fails too; the question is still published.
+    review = reviews.create(d.syntheticId, "input", "Pick one", "Which?");
+    assert.ok(questions.includes(review.id), "the question was never published");
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_audit_down");
+    registry.off("event", listen);
+  }
+  // Left standing, to a later reading, the prune or its deadline, and logged with the session.
+  assert.ok(registry.getAwaiting(d.syntheticId), "a failed clear dropped the wait anyway");
+  assert.ok(errors.mock.calls.some((call) => String(call.arguments[0]).includes(d.syntheticId)),
+    "the failed bookkeeping left no log line naming the session");
+  reviews.resolve(review.id, "approve", "the first");
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
+});
+
 test("a person's send whose attribution cannot be stored on the wait is refused before it is written, and contests nothing", async (t) => {
   // An operator's words repeating a pending nudge must contest it, or their turn is used up as
   // Mission Control's and the wait stands. The wait cannot be written, so the send is refused:

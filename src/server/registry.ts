@@ -2267,7 +2267,13 @@ export class Registry extends EventEmitter {
     if (LINE_INPUT_EVENTS.has(e.type)) this.scheduleLineRecompute();
   }
   private emitSession(s: Session): void {
-    this.observeAwaitingTurn(s);
+    // Wait bookkeeping writes SQLite, and must never stop a publish: a failure is logged, and the
+    // wait is left to a later reading, `pruneAwaitings` or its own deadline.
+    try {
+      this.observeAwaitingTurn(s);
+    } catch (err) {
+      console.error(`[registry] could not judge the wait of session ${s.id}:`, err);
+    }
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
     s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
@@ -7570,8 +7576,14 @@ export class Registry extends EventEmitter {
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
     // is asking now, so the wait ends and the question reads as what it is.
+    // Never able to stop the question being published: a failed clear is logged, and the wait is
+    // left to its own deadline.
     if (review.kind === "input" && review.status === "pending" && review.sessionId) {
-      this.clearAwaiting(review.sessionId, "input");
+      try {
+        this.clearAwaiting(review.sessionId, "input");
+      } catch (err) {
+        console.error(`[registry] could not end the wait of session ${review.sessionId} for its question:`, err);
+      }
     }
   }
 

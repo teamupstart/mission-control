@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
+import { defaultHomeDeps, launchHome } from "../src/server/terminal/home.ts";
 import { macosTerminalEmulator } from "../src/server/terminal/macos-terminal.ts";
 import { defaultTerminalTargetDeps, launchTerminal, terminalTargetViews } from "../src/server/terminal/targets.ts";
 import { shellCommand } from "../src/server/terminal/shell.ts";
@@ -28,7 +29,20 @@ test("preview exposes the macOS adapter and explicit launch uses its new window"
   assert.equal((await launchTerminal(emulator.id, spec, deps)).status, 404);
   assert.equal(scripts.length, 0);
   enabled = true;
-  assert.equal(terminalTargetViews(deps)[0]?.unavailable, null);
+  const target = terminalTargetViews(deps)[0];
+  assert.equal(target?.unavailable, null);
+  assert.match(target?.dispatchUnavailable ?? "", /Choose a multiplexer/);
+  const homeDeps = {
+    ...defaultHomeDeps,
+    emulators: { ...defaultHomeDeps.emulators, [emulator.id]: emulator },
+    installed: (bin: typeof emulator.bin) => bin === emulator.bin,
+    unsupported: deps.unsupported,
+  };
+  const dispatch = await launchHome({ ...spec, sidePane: false }, homeDeps, emulator.id);
+  assert.equal(dispatch.ok, false);
+  assert.equal(dispatch.ok ? null : dispatch.error, target?.dispatchUnavailable);
+  assert.equal(scripts.length, 0);
+
   assert.match(emulator.bin.unsupportedReason!("linux")!, /macOS only/);
   assert.deepEqual(await launchTerminal(emulator.id, spec, deps), {
     label: "macOS Terminal",

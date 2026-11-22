@@ -70,6 +70,7 @@ export function macosTerminalEmulator(
     label: "macOS Terminal",
     glyph: "▣",
     macBundleId: BUNDLE_ID,
+    dispatchUnavailable: "Choose a multiplexer for dispatch, then select macOS Terminal under Opens in.",
     bin: {
       id: "macos-terminal",
       enabled,

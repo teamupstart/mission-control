@@ -184,7 +184,7 @@ function emulatorView(
     blurb: "New window in the worktree.",
     detail: null,
     unavailable: null,
-    dispatchUnavailable: null,
+    dispatchUnavailable: emulator.dispatchUnavailable ?? null,
   };
 }
 

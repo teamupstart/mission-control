@@ -586,7 +586,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     label: "macOS Terminal",
     family: "terminals",
     requirement: "optional",
-    enables: "Opens agent sessions and shows detached sessions in the Terminal app built into macOS.",
+    enables: "Opens shells and displays detached sessions in the Terminal app built into macOS.",
     remedy: {
       kind: "link",
       url: "https://support.apple.com/guide/terminal/trml1003/mac",

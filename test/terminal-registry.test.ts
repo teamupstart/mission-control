@@ -14,7 +14,7 @@ import type {
   TerminalEmulator,
 } from "../src/server/terminal/types.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
-import { paneToken } from "../src/shared/pane.ts";
+import { canWriteTo, paneToken } from "../src/shared/pane.ts";
 import {
   EMULATOR_IDS,
   MULTIPLEXER_IDS,
@@ -134,6 +134,7 @@ test("an emulator-only session binds to its emulator", () => {
     assert.equal(bound?.kind, "emulator");
     assert.equal(bound?.token, `${emulator}:5`);
     assert.equal(Boolean(bound?.write), Boolean(EMULATORS[emulator].write));
+    assert.equal(canWriteTo({ terminals: [{ ...EMU_HANDLE, backend: emulator }] }), Boolean(bound?.write));
     // No multiplexer mode probe exists for a standalone emulator.
     assert.equal(bound?.mode, null);
   }

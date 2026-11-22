@@ -86,7 +86,7 @@ export const FEATURE_FLAGS = [
   {
     id: MACOS_TERMINAL_FLAG_ID,
     label: "macOS Terminal",
-    description: "Open agent sessions and show multiplexer sessions in the Terminal app built into macOS.",
+    description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
     keywords: ["terminal", "apple", "macos", "dispatch"],
   },

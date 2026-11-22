@@ -1,8 +1,9 @@
 # Filed plan decisions
 
-Revision 3, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
-split into two implementation phases (`phased-plan.md`). This is a plan-only task: it ships no
-product code. The phase tasks scheduled from this plan build the feature.
+Revision 4, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
+split into two implementation phases (`phased-plan.md`). Revision 4 applies Plan Validation round
+1, recorded in `phased-plan.md`. This is a plan-only task: it ships no product code. The phase
+tasks scheduled from this plan build the feature.
 
 ## Summary
 
@@ -249,7 +250,10 @@ waits and filed gates), and `openQuestions` counts pending reviews the agent wor
 - A withdrawn managed approval never approves: `approval` requires an answered row from an
   approving actor.
 - `request_plan_decisions` takes an optional `revises: <review id>`. The daemon accepts it only
-  for a filed plan form of the same session that is still open or was withdrawn by its agent. An
+  for a filed plan form of the same session that is still open or was withdrawn by its agent
+  with `withdraw_question`. A form closed any other way (answered, dismissed, closed by a merge
+  or an eviction, replaced as a reworded retry, or withdrawn by anyone but its agent) is never a
+  valid target. An
   open one is withdrawn in the same transaction as the new form is written, so the operator never
   sees both. The new row stores the link and its revision number (the earlier form's number plus
   one, starting at 2). An invalid `revises` is refused with the reason, and nothing is filed.

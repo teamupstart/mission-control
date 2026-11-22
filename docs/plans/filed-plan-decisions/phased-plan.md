@@ -40,9 +40,26 @@ eleven further findings. These are the ones that decide phase boundaries:
 - **`revises` needs persistence.** A withdrawn form is not in the live registry after a restart
   (`loadPendingReviews` restores pending and snoozed rows only, `src/server/db.ts:5878`), so the
   link and its number are stored on the new row. That is the only migration in this plan.
+- **The review status `withdrawn` has one writer.** `ReviewManager.withdrawQuestion`
+  (`src/server/reviews.ts:385-398`) is the only code that settles a review as `withdrawn`. It
+  finds the review among the calling session's own open asks and refuses a call-mode row, and it
+  records no actor (`resolvedBy` is null). So today a `withdrawn` review was withdrawn by its own
+  agent. The source plan's revision rule ("withdrawn by its agent") rests on that.
 - **The prompt and four skills tell agents the tool blocks** (`src/server/plans/prompt.ts:123-125`,
   `skills/html-plans/SKILL.md:129`, `skills/grill/SKILL.md:53`, `skills/retro/SKILL.md:132`), and
   the Grill session action is generated from its skill (`npm run session-actions`).
+
+## Plan validation round 1
+
+One finding was accepted and applied:
+
+- **A revision target that was withdrawn must have been withdrawn by its own agent.** The source
+  plan said so; Phase 2 accepted any target whose status was `withdrawn` and never tested who
+  withdrew it. Phase 2 now states the rule as the source plan does, decides it through one named
+  predicate (`withdrawnByItsAgent`), lists "withdrawn, but not by its own agent" as a refusal
+  case, and adds tests for who withdrew the target. The rule is also a cross-phase contract
+  below: Phase 1 keeps `withdrawQuestion` the only writer of that status. The source plan's
+  sentence was made explicit about the other closures that are never valid targets.
 
 ## Sizing and phase count
 
@@ -100,6 +117,11 @@ Phase 2 may rely on these and must not change them.
   both `/mcp/reviews` and `/mcp/v2/reviews`.
 - **Lifecycle helper.** `ReviewManager.openAsks(sessionId)` is what listing and withdraw read;
   `openQuestions(sessionId)` stays the limit's count.
+- **Withdrawn means withdrawn by its agent.** `ReviewManager.withdrawQuestion` stays the only
+  writer of the review status `withdrawn`, and it keeps admitting only the calling session's own
+  filed ask. Phase 1 widens which asks it admits (plan forms) and nothing else about it. Every
+  other closure keeps its own status: an answer, `dismissed`, `orphaned` (eviction or merge) and
+  `superseded`.
 - **Wait mode is fixed at insert.** No path turns a call-mode form into a filed one. An older
   MCP child that re-asks a filed form turns it back into a call (`attachCall`), as for questions.
 
@@ -131,3 +153,6 @@ confirm `publish_plan` or the bound workflow accepts that approval.
 - Phase 1's receipt does not mention `revises`, because the argument does not exist until Phase
   2. Phase 2 adds that sentence. Found while writing Phase 2 and corrected in Phase 1.
 - Phase 2 consumes only contracts Phase 1 owns and adds no reader of the flag.
+- After Plan validation round 1, the revision-target rule reads the same in the source plan
+  ("Withdraw, list and revise"), in the contract above and in Phase 2's step 4, refusal cases,
+  tests and exit criteria: an open filed form, or one its own agent withdrew, and nothing else.

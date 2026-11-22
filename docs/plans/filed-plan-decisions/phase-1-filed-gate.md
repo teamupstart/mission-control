@@ -41,6 +41,9 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
   (`src/server/reviews.ts:343-348`). The limit block (`:358-369`) and `openQuestions` (`:381-383`)
   are `isRequestInputQuestion`-scoped. `continuationText` picks `asyncInputAnswer` for any
   message-mode row (`:199-200`). `mergeClosure` filters by `questionHoldsCompletion` (`:815`).
+- `withdrawQuestion` (`src/server/reviews.ts:385-398`) is the only writer of the review status
+  `withdrawn`. It admits only the calling session's own ask, refuses a call-mode row and records
+  no actor.
 - Counts: `countPending` and `countOpenQuestions` (`src/server/registry.ts:7370-7383`);
   `completionHeldByQuestion` (`:7396-7400`). The three completion gates also refuse a `needs-you`
   bucket (`src/server/registry.ts:10589-10594`, `src/server/workflows/manager.ts:5492-5494`,
@@ -116,7 +119,10 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
    asked; never store `snoozable` or `meanwhile` for it. In `continuationText`, use
    `filedPlanAnswer` for a filed gate. Add `openAsks(sessionId)` (outstanding reviews passing
    `isAgentAsk`) and move `withdrawQuestion` and the list route to it; leave `openQuestions` and
-   the limit block alone. The list route (`src/server/routes.ts:5494-5504`) adds `kind` to each row.
+   the limit block alone. `withdrawQuestion` keeps its two refusals (a review that is not the
+   calling session's own, and a call-mode row) and stays the only writer of the status
+   `withdrawn`; this phase adds no other. The list route (`src/server/routes.ts:5494-5504`) adds
+   `kind` to each row.
 7. **Managed identity in the answer.** Register a continuation addendum from
    `src/server/plans/publication.ts` that, for a review bound in `managed_plan_reviews`, names the
    plan id, slug and revision the form approved or refused. Register it where the resident
@@ -156,6 +162,7 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
   it; `attachCall` turns it into a call-mode form. Keep that path working for plan forms.
 - Either flag switched off: new asks block; an open filed form stays filed, answerable and
   withdrawable only while `async-input` is on, since the two question routes stay behind it.
+  Switching a flag off closes nothing: no open form is withdrawn by it.
 - Call-mode plan forms are unchanged in every reader: not held by `questionHoldsCompletion`,
   not closed by a merge, not withdrawable.
 
@@ -171,8 +178,9 @@ Extend the existing suites rather than adding parallel ones:
   question; prompted completion, workflow resumption and evidence preparation refuse while it is
   open, working or idle; a resident is held; the limit neither counts nor refuses a plan form
   (ten questions open, a plan form is accepted; many plan forms, an eleventh question is still
-  judged on questions alone); list and withdraw for plan forms; a merge closes a filed gate with
-  `merged` and still leaves a call-mode gate alone (rewrite the test at line 324).
+  judged on questions alone); list and withdraw for plan forms, including that another session's
+  `withdraw_question` on the form answers 409 and leaves it open; a merge closes a filed gate
+  with `merged` and still leaves a call-mode gate alone (rewrite the test at line 324).
 - `test/async-input-mcp.test.ts`: the tool returns the receipt and makes no `/wait` request; an
   older daemon's response long-polls.
 - `test/async-input-lifecycle.test.ts`: the answer row is daemon-authored, coalesces with a
@@ -209,13 +217,15 @@ Commands: the focused files with
   session hibernate past an open filed form; a merge closes it with `merged`.
 - No surface describes the agent behind a filed form as working, and no plan form offers a snooze.
 - The limit code is untouched and no cross-session cap exists.
+- `withdrawQuestion` is still the only writer of the status `withdrawn`.
 - Documentation matches the behavior. The pull request records any deviation from this file.
 
 ## Downstream handoff
 
 Phase 2 may rely on the contracts listed in `phased-plan.md` under "Cross-phase contracts, owned
-by Phase 1". It adds one sentence to `filedPlanReceipt` and an option to `ReviewManager.create`.
-It must not add a second reader of the flag, change the counts, or change who is held.
+by Phase 1", including that a `withdrawn` review was withdrawn by its own agent. It adds one
+sentence to `filedPlanReceipt` and an option to `ReviewManager.create`. It must not add a second
+reader of the flag, change the counts, or change who is held.
 
 ## Cross-phase audit record
 
@@ -224,3 +234,7 @@ It must not add a second reader of the flag, change the counts, or change who is
 - After Phase 2 was written: the receipt here must not mention `revises`, which does not exist
   until Phase 2. Step 3 was corrected to describe withdraw only; Phase 2 adds the sentence.
 - After Phase 2 was written: `openAsks` was named here so Phase 2's validation can reuse it.
+- Plan validation round 1: Phase 2's revision rule needs "withdrawn" to mean "withdrawn by its
+  own agent". That holds because `withdrawQuestion` is the status's only writer. Recorded here as
+  a finding, a constraint in step 6, a compatibility note (a flag switch withdraws nothing), a
+  test and an exit criterion, so Phase 1 cannot widen it unnoticed.

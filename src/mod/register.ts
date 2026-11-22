@@ -82,7 +82,7 @@ export function register(on: EngineOn, _options: unknown): void {
               key: "open-needs-you",
               label: band.button.label,
               hotkey: band.button.hotkey,
-              onPress: () => core?.openNeedsYou(),
+              onPress: () => void core?.openNeedsYou().catch(() => {}),
             }),
           ],
         }),
@@ -269,7 +269,11 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     // The pane's values are a convenience for drawing: a refused write never stops the glance
     // layer, so it is dropped.
     paneState: {
-      set: async (key, value) => void (await stateSet($, key, value).catch(() => undefined)),
+      set: async (key, value) => {
+        // A stopped session's late write must not overwrite the replacement's value.
+        if (session.mine !== session.current()) return;
+        await stateSet($, key, value).catch(() => undefined);
+      },
     },
   };
 }

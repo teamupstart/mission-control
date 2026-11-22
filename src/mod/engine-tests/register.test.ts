@@ -8,8 +8,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const HEALTH = (on) => JSON.stringify({ ok: true, service: 'mission-control', version: '2.3.0', capabilities: on ? ['home-dispatch-v1'] : [] })
-const registration = (minModApi) => JSON.stringify({
-  sessionId: 's1', repoRoot: '/repo', created: true, offerLauncher: false,
+const registration = (minModApi, n = 0) => JSON.stringify({
+  sessionId: 's1', repoRoot: '/repo' + n, created: true, offerLauncher: false,
   counts: { running: 0, waiting: 1 }, daemonVersion: '2.3.0', minModApi, dashboardUrl: 'http://127.0.0.1:7317/',
   banner: ['◆ Mission Control   ● Claude Code', 'Dispatch, check on and answer tasks without leaving this session', '0 running | 1 waiting on you | /mission-dispatch opens the menu'],
 })
@@ -20,14 +20,15 @@ const INBOX = JSON.stringify({
 })
 
 function world(on, { flag, minModApi = 1 }) {
-  const seen = { inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
+  const seen = { registrations: 0, inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
   mock.env(on, {})
   seen.clock = mock.clock(on)
   on('session.id', () => ({ value: 's1' }))
   on('fs.read', () => ({ value: 'a-token' }))
-  on('http.fetch', (_, e) => {
+  on('http.fetch', async (_, e) => {
     seen.urls.push(e.url)
-    const text = e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi) : seen.inbox
+    if (seen.holdFirstSessionsReply && e.url.endsWith('/dispatch/sessions') && !seen.heldOnce) { seen.heldOnce = true; await seen.holdFirstSessionsReply }
+    const text = e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi, ++seen.registrations) : seen.inbox
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
@@ -218,4 +219,19 @@ test('the glance layer as drawn: banner, band with its 1 button, status, pane, a
   console.log('GLANCE_FRAME::' + JSON.stringify(frame))
   expect(frame.toasts).toEqual(['Mission Control: "flaky test" asks a question'])
   expect(frame.bannerAfter.join(' ')).toMatch(/2 tasks need you/)
+})
+
+test('a stopped session\'s late registration reply does not overwrite its replacement\'s state', async ($, on) => {
+  const seen = world(on, { flag: true })
+  let release
+  seen.holdFirstSessionsReply = new Promise((resolve) => { release = resolve })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.urls.some((u) => u.endsWith('/dispatch/sessions')))
+  // The first session's registration reply is still held when its replacement registers.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.state.registration !== undefined)
+  expect(seen.state.registration.repoRoot).toBe('/repo1')
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.state.registration.repoRoot).toBe('/repo1')
 })

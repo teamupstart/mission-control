@@ -35,6 +35,7 @@ const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = aw
 );
 const {
   claimHumanEcho, HUMAN_ECHO_TTL_MS, injectionFingerprint, observeInjections, onPersonDelivery, originOf,
+  onAutomatedDelivery,
 } = await import("../src/server/injections.ts");
 const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
 const { SNOOZE_INSTRUCTION_TURN_PREFIX, MESSAGE_ANSWER_TURN_PREFIX, insertReview, updateReviewStatus, markReviewWaitDetached } = await import("../src/server/db.ts");
@@ -2934,6 +2935,26 @@ test("a snoozed question's carry-on instruction is delivered as the daemon's wor
   f.manager.stop();
   clearPendingTurns(f.key);
   clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("a daemon-written row whose attribution cannot be stored is refused before the driver sees it, and goes back to the queue", async (t) => {
+  const f = sdkFixture("attribution-refused", async () => "started");
+  // A declared wait that cannot record the delivery as Mission Control's (its store failed).
+  t.after(onAutomatedDelivery(() => { throw new Error("store down"); }));
+  const text = 'Your earlier request_input question "Which build?" ended before the operator chose.';
+  createPendingTurn({ id: `${SNOOZE_INSTRUCTION_TURN_PREFIX}review-refused`, noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued"
+    && f.registry.getSession(f.id)?.pendingTurns[0]?.lastError != null);
+
+  assert.deepEqual(f.calls, [], "the driver was handed a delivery whose attribution was not stored");
+  const row = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.match(row?.lastError ?? "", /could not record this delivery/);
+  assert.equal(originOf(f.id, text), undefined, "a refused delivery still claimed authorship");
+  f.manager.stop();
+  clearPendingTurns(f.key);
 });
 
 // ---- async-input: answers to filed questions are the daemon's words ----------------------

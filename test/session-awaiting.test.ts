@@ -35,6 +35,7 @@ const { detectStall, NO_UNPUSHED } = await import("../src/shared/stall.ts");
 const {
   reserveInjection, releaseInjection, recordInjection, confirmReservedInjection, onAutomatedDelivery, forgetInjections,
   onPersonDelivery, notePersonDelivery, withdrawPersonDelivery, injectionFingerprint,
+  AutomatedAttributionError, originOf, outstandingAutomatedClaims,
 } = await import("../src/server/injections.ts");
 
 type ReviewManagerT = import("../src/server/reviews.ts").ReviewManager;
@@ -768,18 +769,25 @@ test("a delivery's turn on a driver session that never reports prompts uses up t
   assert.equal(clearedEvents(sdk.id).at(-1)?.actor, "wake");
 });
 
-test("a delivery listener that fails is logged with the session and delivery, and the delivery goes on", (t) => {
+test("a delivery listener that fails is logged with the session and delivery; a reservation it fails is refused, a landed record goes on", (t) => {
   const errors = t.mock.method(console, "error", () => {});
   const stop = onAutomatedDelivery(() => { throw new Error("listener down"); });
   const heard: string[] = [];
   const stopNext = onAutomatedDelivery((delivery) => { heard.push(delivery.sessionId); });
   try {
-    reserveInjection("sdk:listener-check", "Please wrap up and open the pull request.", "foreman");
+    // Not yet typed: refused, so nothing is sent with an attribution that was not stored.
+    assert.throws(() => reserveInjection("sdk:listener-check", "Please wrap up and open the pull request.", "foreman"),
+      AutomatedAttributionError);
+    assert.equal(originOf("sdk:listener-check", "Please wrap up and open the pull request."), undefined);
+    // Already landed: nothing left to refuse, so it is recorded and the failure only logged.
+    recordInjection("sdk:listener-landed", "Round 2 repair packet", "workflow");
+    assert.equal(originOf("sdk:listener-landed", "Round 2 repair packet"), "workflow");
   } finally {
     stop();
     stopNext();
+    forgetInjections("sdk:listener-landed");
   }
-  assert.deepEqual(heard, ["sdk:listener-check"], "one failing listener kept the next from hearing the delivery");
+  assert.deepEqual(heard, ["sdk:listener-check", "sdk:listener-landed"], "one failing listener kept the next from hearing the delivery");
   const logged = errors.mock.calls.map((call) => String(call.arguments[0]));
   assert.ok(logged.some((line) => line.includes("sdk:listener-check") && line.includes(injectionFingerprint("Please wrap up and open the pull request."))),
     "the failing listener left no log line naming the session and delivery");
@@ -979,6 +987,47 @@ test("the dashboard's send and inject doors announce the operator's words as a p
   assert.deepEqual(heard.map((h) => [h.key, h.released]), [
     [injectionFingerprint("Terminal words"), false], [injectionFingerprint("Terminal words"), true],
   ]);
+});
+
+test("an automated delivery whose attribution cannot be stored on the wait is refused before anything is typed", async (t) => {
+  // A nudge typed without its claim on the wait would start a turn read as the session's own
+  // wake. The wait cannot be written, so the reservation is refused: nothing is claimed, no
+  // authorship is on file, and the inject door settles it as never having reached the pane.
+  const WRAP = "Please wrap up and open the pull request.";
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const app = mkApp(registry);
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key)!;
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_store_down BEFORE UPDATE ON session_awaitings
+    BEGIN SELECT RAISE(ABORT, 'store down'); END`);
+  try {
+    assert.throws(() => reserveInjection(d.syntheticId, WRAP, "foreman"), AutomatedAttributionError);
+    const res = await app.request(`/api/sessions/${d.syntheticId}/inject`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ text: WRAP, origin: "workflow" }),
+    });
+    const sent = await res.json() as { ok: boolean; error?: string; pasted?: boolean };
+    assert.equal(sent.ok, false);
+    assert.equal(sent.pasted, false, "the refusal did not read as nothing reaching the pane");
+    assert.match(sent.error ?? "", /could not record this delivery/, "the transport was called after all");
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_store_down");
+  }
+  assert.deepEqual(stored().pendingNudges, [], "a refused delivery was stored as pending");
+  assert.equal(originOf(d.syntheticId, WRAP), undefined, "a refused delivery still claimed authorship");
+  assert.deepEqual(outstandingAutomatedClaims(d.syntheticId, 0), [], "a refused delivery left its claim");
+  assert.ok(registry.getAwaiting(d.syntheticId));
+
+  // With the wait writable again, the same delivery is claimed and stored on it.
+  reserveInjection(d.syntheticId, WRAP, "foreman");
+  assert.equal(stored().pendingNudges.length, 1);
+  releaseInjection(d.syntheticId, WRAP);
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });
 
 test("a person's send that never landed lifts its contest, unless another send of the same words still stands", (t) => {
@@ -1358,6 +1407,39 @@ test("a declaration or a clear whose audit row cannot be written changes nothing
   assert.equal(clearedEvents(d.syntheticId).length, 1);
 });
 
+test("a declaration or a clear inside a caller's open transaction is refused before it writes, so a rollback cannot strand the Registry", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key);
+  const inOpenTransaction = (write: () => unknown) => {
+    openDb().exec("BEGIN IMMEDIATE");
+    try {
+      assert.throws(write, /transaction/);
+    } finally {
+      openDb().exec("ROLLBACK");
+    }
+  };
+
+  // A declaration: nothing in SQLite once the caller rolls back, and nothing in the Registry.
+  inOpenTransaction(() => registry.reportAwaiting(d.syntheticId, body()));
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the Registry holds a wait SQLite rolled back");
+  assert.equal(stored(), undefined);
+  assert.deepEqual(awaitingEvents(d.syntheticId, "session_awaiting_set"), []);
+
+  // A clear: the wait still stands in both after the caller rolls back.
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const before = stored();
+  const cached = registry.getAwaiting(d.syntheticId);
+  inOpenTransaction(() => registry.clearAwaiting(d.syntheticId, "operator"));
+  assert.deepEqual(registry.getAwaiting(d.syntheticId), cached, "the Registry dropped a wait SQLite still holds");
+  assert.deepEqual(stored(), before);
+  assert.deepEqual(clearedEvents(d.syntheticId), []);
+
+  // Every Registry reloads stored waits: leave none behind for the tests after this one.
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
+});
+
 test("a wait is refused while a request_input is pending, and a new question ends a standing wait", () => {
   const registry = new Registry();
   const reviews = new ReviewManager(registry);
@@ -1563,7 +1645,11 @@ test("the MCP routes bind to the caller and follow the preview; the session clea
 
     // Switching the preview off ends every standing wait.
     assert.equal(registry.reportAwaiting(sdk.id, body()).ok, true);
-    assert.equal(registry.clearAllAwaitings("flag"), 1);
+    // Every wait standing in the shared database, not only this test's: a wait an earlier test
+    // left behind is ended too, which is what switching the preview off promises.
+    const standing = loadSessionAwaitings().length;
+    assert.ok(standing >= 1);
+    assert.equal(registry.clearAllAwaitings("flag"), standing);
     assert.equal(registry.getAwaiting(sdk.id), null);
     assert.equal(clearedEvents(sdk.id).at(-1)?.actor, "flag");
   } finally {

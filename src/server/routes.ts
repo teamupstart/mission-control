@@ -366,6 +366,7 @@ import {
   notePersonDelivery,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
   withdrawPersonDelivery,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
@@ -6693,7 +6694,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
+    // Refused when its attribution could not be stored on a waiting session's wait: nothing is
+    // typed, and the delivery settles below as one that never reached the pane.
+    let attributionRefused: string | null = null;
+    if (daemonOrigin) {
+      try {
+        reserveInjection(session.id, text, daemonOrigin);
+      } catch (error) {
+        if (!(error instanceof AutomatedAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
     // A person's words, the operator's or a controller's, announced as such before the write,
     // for the reason `/send` gives.
     const personSend = origin === "human" || origin === "session" ? notePersonDelivery(session.id, text) : null;
@@ -6713,14 +6724,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // can release it, so a reservation failure cannot strand this conversation's lock.
     if (claim) codeRabbitSending.add(claim.noteKey);
     if (stackRequest) stackSending.add(stackRequest.prKey);
-    const r = await injectPromptForRuntime(
-      sdkSessions,
-      session,
-      text,
-      undefined,
-      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
-        ?? registry.promptResourceBlockerForSession(session.id),
-      origin,
+    const r = await (attributionRefused !== null
+      ? Promise.resolve({ ok: false, error: attributionRefused, pasted: false })
+      : injectPromptForRuntime(
+        sdkSessions,
+        session,
+        text,
+        undefined,
+        () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+          ?? registry.promptResourceBlockerForSession(session.id),
+        origin,
+      )
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => {
         if (claim) codeRabbitSending.delete(claim.noteKey);

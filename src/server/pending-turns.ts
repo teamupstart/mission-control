@@ -52,6 +52,7 @@ import {
   releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
   withdrawPersonDelivery,
   type HumanEchoTicket,
   type PersonDelivery,
@@ -1001,7 +1002,30 @@ export class PendingTurnManager {
     if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
   }
 
+  /**
+   * Reserve a daemon-written row's authorship before anything else of its send. A reservation
+   * refused because its attribution could not be stored (`AutomatedAttributionError`) typed
+   * nothing: the row goes back to the queue as undelivered, as a busy agent's does, and the send
+   * stops here.
+   */
+  private reserveDaemonTurn(session: Session, turn: PendingTurn, author: TurnOrigin): boolean {
+    try {
+      reserveInjection(session.id, turn.text, author);
+      return true;
+    } catch (error) {
+      if (!(error instanceof AutomatedAttributionError)) throw error;
+      releasePendingTurn(turn.id, turn.revision, error.message, this.deps.now());
+      this.registry.refreshPendingTurns(turn.noteKey);
+      return false;
+    }
+  }
+
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+    // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
+    // report it back while the send is still in flight (see `reserveInjection`). First of all,
+    // so a reservation refused for its attribution leaves nothing else to undo.
+    const author = daemonAuthorOf(turn);
+    if (author && !this.reserveDaemonTurn(session, turn, author)) return;
     // The operator's queued words may race a delegated send of the same ones. Every path below
     // that releases the row is positive evidence nothing landed, so it withdraws this record.
     const outboxSend = recordOutboxSend(session, turn);
@@ -1021,15 +1045,11 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
-    // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
-    // report it back while the send is still in flight (see `reserveInjection`).
-    const author = daemonAuthorOf(turn);
     // The operator's own words: always the session's wake, even when they repeat an automated
     // delivery still on its way (see `notePersonDelivery`). Withdrawn wherever this row is
     // released as positively undelivered, beside `withdrawOutboxSend`.
     let personSend: PersonDelivery | null = null;
-    if (author) reserveInjection(session.id, turn.text, author);
-    else personSend = notePersonDelivery(session.id, turn.text);
+    if (!author) personSend = notePersonDelivery(session.id, turn.text);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -1176,12 +1196,13 @@ export class PendingTurnManager {
   }
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
-    const outboxSend = recordOutboxSend(session, turn);
+    // Reserved first, as `deliverSdk` does.
     const author = daemonAuthorOf(turn);
+    if (author && !this.reserveDaemonTurn(session, turn, author)) return;
+    const outboxSend = recordOutboxSend(session, turn);
     // The operator's own words, announced and withdrawn as `deliverSdk` does.
     let personSend: PersonDelivery | null = null;
-    if (author) reserveInjection(session.id, turn.text, author);
-    else personSend = notePersonDelivery(session.id, turn.text);
+    if (!author) personSend = notePersonDelivery(session.id, turn.text);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);

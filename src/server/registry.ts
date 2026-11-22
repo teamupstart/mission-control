@@ -325,7 +325,6 @@ import {
   upsertTask as dbUpsertTask,
   storedTaskWorkUnitId,
   inTransaction,
-  openDb,
   upsertUsageCell,
   loadInspectorInspections,
   hasHumanResolvedReview,
@@ -11862,13 +11861,14 @@ const AWAITING_LIVENESS_GRACE_MS = 3 * 60_000;
 const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
 
 /**
- * Commit a wait's row and its audit row as one: a failed insert of either leaves both as they
- * were. Joins a transaction the caller already holds (as `upsertTask` does), whose commit then
- * carries both; otherwise opens its own.
+ * Commit a wait's row and its audit row as one transaction this call owns: a failed insert of
+ * either leaves both as they were, and the Registry's caches, changed only after this returns,
+ * always match what committed. Never joined to a caller's transaction, which could still roll
+ * back after the caches moved. Called inside one, `inTransaction`'s BEGIN throws before anything
+ * is written, and the caller's transaction is left as it was.
  */
 function commitAwaiting(write: () => void): void {
-  if (openDb().isTransaction) write();
-  else inTransaction(write);
+  inTransaction(write);
 }
 
 /**

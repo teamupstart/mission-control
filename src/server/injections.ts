@@ -173,26 +173,46 @@ const automatedListeners = new Set<AutomatedDeliveryListener>();
  * so this is told before the nudged turn can start, and the registry stores it on the wait
  * itself: the turn may only be observed after a daemon restart, and this module forgets
  * everything across one.
+ *
+ * A listener that throws on a claim about to be typed refuses that delivery: the claim is taken
+ * back and `reserveInjection` throws `AutomatedAttributionError`, so the sender types nothing.
+ * A delivery whose attribution cannot be stored must not land, or its turn would read as the
+ * session's own wake.
  */
 export function onAutomatedDelivery(listener: AutomatedDeliveryListener): () => void {
   automatedListeners.add(listener);
   return () => automatedListeners.delete(listener);
 }
 
-function announceAutomated(delivery: AutomatedDelivery): void {
+/**
+ * An automated delivery refused before anything was typed, because a listener could not store
+ * its attribution (`onAutomatedDelivery`). Thrown by `reserveInjection`; every sender treats it
+ * as positive evidence that nothing was delivered.
+ */
+export class AutomatedAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record this delivery as its own, so it was not sent", { cause });
+    this.name = "AutomatedAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announceAutomated(delivery: AutomatedDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
   for (const listener of automatedListeners) {
     try {
       listener(delivery);
     } catch (err) {
-      // A listener that cannot record must not break the delivery it was told about, but its
-      // failure is logged: a nudge the declared-wait writer failed to store would later read
-      // as the session's wake, and this line is the only trace of why.
+      // Logged whether or not the caller can still refuse: a nudge the declared-wait writer
+      // failed to store reads as the session's wake, and this line is the trace of why.
       console.error(
         `[injections] automated delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
         err,
       );
+      failure ??= { error: err };
     }
   }
+  return failure;
 }
 
 /** A person's words Mission Control is about to write into a session (`notePersonDelivery`). */
@@ -283,14 +303,24 @@ function noteAutomatedClaim(sessionId: string, key: string, landed: boolean): vo
   const at = Date.now();
   // Moved to the back on every write, so the ceiling below forgets the quietest session.
   automatedClaims.delete(sessionId);
-  claims.push({ at, key, landed });
+  const claim = { at, key, landed };
+  claims.push(claim);
   if (claims.length > CLAIMS_PER_SESSION) claims.shift();
   automatedClaims.set(sessionId, claims);
   if (automatedClaims.size > SESSIONS) {
     const oldest = automatedClaims.keys().next();
     if (!oldest.done) automatedClaims.delete(oldest.value);
   }
-  announceAutomated({ sessionId, at, key, released: false });
+  const failure = announceAutomated({ sessionId, at, key, released: false });
+  // A reservation is made before anything is typed, so a claim whose attribution could not be
+  // stored is refused here: taken back, and thrown to the sender. One recorded after it already
+  // landed cannot be refused, and stays logged.
+  if (failure && !landed) {
+    const i = claims.lastIndexOf(claim);
+    if (i >= 0) claims.splice(i, 1);
+    if (claims.length === 0 && automatedClaims.get(sessionId) === claims) automatedClaims.delete(sessionId);
+    throw new AutomatedAttributionError(sessionId, failure.error);
+  }
 }
 
 /**
@@ -397,6 +427,10 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
  * Deliberately does NOT notify the observer. A reservation is a claim about a send that has
  * not happened yet, and the durable journal must archive turns that exist rather than turns
  * that were attempted - so the journal waits for `recordInjection` to confirm.
+ *
+ * Throws `AutomatedAttributionError` for an automated origin whose claim could not be stored
+ * on a waiting session's wait (`onAutomatedDelivery`). Nothing is reserved then, and the sender
+ * types nothing: it handles the throw as positive evidence that nothing was delivered.
  */
 export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: () => void): void {
   remember(sessionId, text, origin, false, onEcho);

@@ -1842,8 +1842,10 @@ export class SdkSupervisor {
       // substitution the record exists to prevent, still reachable through its own path. The
       // reservation closes that window; the release below gives it back when the driver is
       // known to have taken nothing.
-      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
       try {
+        // Inside the try: a reservation refused because its attribution could not be stored
+        // (`AutomatedAttributionError`) typed nothing, which the catch below already handles.
+        reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
         // unconditional `turn/start`. Claude's handle starts the new continuation turn.
@@ -1854,9 +1856,9 @@ export class SdkSupervisor {
         // happened, and the durable archive must carry turns that exist.
         confirmReservedInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
       } catch (err) {
-        // Positive evidence that nothing was delivered: `send` rejects only when the guard
-        // refused before the driver was invoked, or the driver refused the turn outright. No
-        // echo is coming, so the reservation goes back rather than sitting there waiting to
+        // Positive evidence that nothing was delivered: the reservation was refused, or `send`
+        // rejected, which it does only when the guard refused before the driver was invoked or
+        // the driver refused the turn outright. No echo is coming, so the reservation goes back rather than sitting there waiting to
         // swallow a later turn that happens to repeat the text.
         releaseInjection(row.id, RESTART_CONTINUATION_PROMPT);
         // The conversation itself DID resume, so do not send it through the unresumable
@@ -2111,9 +2113,11 @@ export class SdkSupervisor {
     if (this.handles.get(id) !== handle || this.shuttingDown) return;
     // Harness-authored, like the restart continuation: the agent's prompt echo must not be
     // captured as the operator's Goal or read back to a workflow as their words.
-    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
     const busy = new Error("the driver was already running a turn");
     try {
+      // Inside the try: a reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) typed nothing, which the catch below already handles.
+      reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
       // Asked again at send time: the send waits its turn on the session's chain, and a pause can
       // begin meanwhile. Thrown as the paused error, so the catch below re-arms the retry.
       const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT }, () => {
@@ -2122,9 +2126,9 @@ export class SdkSupervisor {
       });
       if (started !== "started") throw busy;
     } catch (err) {
-      // Both ways in are positive evidence nothing was delivered: `sendWhenIdle` rejects only
-      // when its guard or the driver refused the turn, and null is the driver declining an
-      // idle-only turn because one was already running.
+      // Every way in is positive evidence nothing was delivered: a refused reservation typed
+      // nothing, `sendWhenIdle` rejects only when its guard or the driver refused the turn, and
+      // null is the driver declining an idle-only turn because one was already running.
       releaseInjection(id, CAPACITY_CONTINUATION_PROMPT);
       // That already-running turn continues the work and its own completion settles the
       // card, so there is nothing left to retry.

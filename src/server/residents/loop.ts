@@ -358,8 +358,10 @@ export class ResidentLoop {
     if (!claim) return;
     const text = residentWakeTextFor(claim, run);
     let crossed = false;
-    reserveInjection(session.id, text, "resident");
     try {
+      // Inside the try: a reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) typed nothing, so the catch releases the wake's claim.
+      reserveInjection(session.id, text, "resident");
       const accepted = await this.deps.sdk.sendWhenIdle(session.id, { text }, () => {
         const blocked = this.blocker(run, session);
         if (!blocked) crossed = true;

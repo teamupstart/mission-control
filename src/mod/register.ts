@@ -43,6 +43,11 @@ export function register(on: EngineOn, _options: unknown): void {
       sessionId,
       cwd: e.cwd,
       modVersion: MOD_VERSION,
+      // The engine's `session.start` input carries only `cwd`, `surface` and `isInteractive`: the
+      // resume, clear, compact and fork `source` exists only on the classic command-hook event.
+      // A /clear raises `session.end` with no `session.start` after it, and a reload re-runs this
+      // hook in the same session, so "startup" is the one honest value here. The daemon uses the
+      // field for the banner (the mod builds the same lines itself) and for its own record.
       source: "startup",
       entrypoint: entrypoint ?? null,
       interactive: e.isInteractive,

@@ -50,7 +50,7 @@ counts or the flag gate.
 - **What the stored wait mode says.** A filed form's row carries `wait_mode = 'message'`. A
   withdrawal does not clear it, so a withdrawn filed form still carries it. The only thing that
   clears it is `attachCall`, when an older MCP child re-asks an open filed form
-  (`markReviewWaitAttached`, `src/server/db.ts:5643-5651`), and that runs only while the row is
+  (`markReviewWaitAttached`, `src/server/db.ts:5644-5652`), and that runs only while the row is
   pending. No column records an earlier mode. By the Phase 1 contract a converted form is a
   call-mode form, so the stored mode is the whole answer to "is this a filed form".
 - A settled review stays in the live registry until the daemon restarts; afterwards only pending
@@ -74,9 +74,10 @@ counts or the flag gate.
 
 1. **Wire and tool.** Add optional `revises` (a review id) to `CreateReviewSchema`, refused for
    any kind but `plan-decisions`. Add it to the tool's input schema with a description saying
-   when to pass it, and send it through `postReview`. Add one sentence to `filedPlanReceipt`:
-   after withdrawing, or instead of withdrawing, file the revised plan with `revises` set to
-   this id.
+   when to pass it, and send it through `postReview`. Add one sentence to `filedPlanReceipt`,
+   the one the Phase 1 receipt deliberately left out: after withdrawing, or instead of
+   withdrawing, file the revised plan with `revises` set to this id. Neither text writer's
+   signature changes.
 2. **Persistence.** Add nullable `reviews.revises_review_id TEXT` and `reviews.revision INTEGER`
    with `addColumn`; map them in `rowToReview` and `insertReview`; add a load-by-id reader for
    one review row. Raise `CURRENT_DATABASE_SCHEMA_VERSION` to the next free number with its
@@ -182,6 +183,7 @@ counts or the flag gate.
     differing only in the reason; Phase 1's withdraw tests pass unchanged after the writer is
     split; and the replaced form is refused as a later target because it is already revised,
     not because of its status.
+- `test/async-input.test.ts`: the receipt now carries the `revises` sentence.
 - `test/local-plan-publication.test.ts`: approving a revised managed form publishes its own
   revision, and the withdrawn earlier form never approves.
 - `test/async-input-migration.test.ts`: the new columns on a database at the previous version.
@@ -199,7 +201,8 @@ Commands: the focused files with
 
 ## Merge and exit criteria
 
-- Every test above passes, and Phase 1's suites pass unchanged.
+- Every test above passes, and Phase 1's suites pass unchanged apart from the receipt wording
+  this phase adds.
 - A revised form never coexists in the inbox with the form it replaces.
 - The only valid targets are an open filed plan form of the same session and one its own agent
   withdrew, each decided from the mode stored on the row. A form closed by anyone or anything
@@ -241,9 +244,15 @@ withdrew the row, and keeps `withdrawnByItsAgent` false for it.
   `withdraw_question` and the replacement call it, so `create` writes no status of its own. The
   contract in `phased-plan.md` names both entries; the finding, the validation rule, the tests
   ("one write path") and the exit criteria were updated to match.
-- Pull request review: step 4's rule accepted a target that "has, or had" message mode and its
-  refusals listed a call-mode form, so a filed form an older MCP child converted fit both, and
-  nothing stored could tell "had" apart. Reconciled to the contract's rule: a converted form is
-  a call-mode form. The rule now reads the stored mode only, a finding explains why that is
-  enough for a withdrawn target, the converted form is a named refusal, a compatibility note, a
-  test and part of the exit criterion, and recording an earlier mode is out of scope.
+- Pull request review, round 1: step 4's rule accepted a target that "has, or had" message mode
+  and its refusals listed a call-mode form, so a filed form an older MCP child converted fit
+  both, and nothing stored could tell "had" apart. Reconciled to the contract's rule: a
+  converted form is a call-mode form. The rule now reads the stored mode only, a finding
+  explains why that is enough for a withdrawn target, the converted form is a named refusal, a
+  compatibility note, a test and part of the exit criterion, and recording an earlier mode is
+  out of scope.
+- Pull request review, round 2: nothing in this phase's rules changed. Step 1 now says its
+  receipt sentence is the one Phase 1 left out and that neither text writer's signature changes,
+  with a test for the sentence; the first exit criterion allows for that one wording change in
+  Phase 1's receipt test; and the citation for `markReviewWaitAttached` was corrected by one
+  line.

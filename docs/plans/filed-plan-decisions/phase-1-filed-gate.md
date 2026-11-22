@@ -45,7 +45,7 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
   writes the review status `withdrawn`, and `withdraw_question` is its only entry. It admits only
   the calling session's own ask, refuses a call-mode row and records no actor.
 - `attachCall` (`src/server/reviews.ts:406-411`) turns a filed row an older MCP child re-asked
-  into a call-mode row: `markReviewWaitAttached` (`src/server/db.ts:5643-5651`) clears the stored
+  into a call-mode row: `markReviewWaitAttached` (`src/server/db.ts:5644-5652`) clears the stored
   `wait_mode` and `meanwhile`, only while the row is pending. Nothing keeps the original mode.
 - Counts: `countPending` and `countOpenQuestions` (`src/server/registry.ts:7370-7383`);
   `completionHeldByQuestion` (`:7396-7400`). The three completion gates also refuse a `needs-you`
@@ -86,15 +86,16 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
    - `questionHoldsCompletion` also returns true for an outstanding filed gate, with no flag
      condition (it exists only because both flags were on).
    All of these read the mode stored on the row now. None asks what the mode used to be.
-3. **Text**, in the same module:
+3. **Text**, in the same module. These two signatures are the Text contract in `phased-plan.md`:
    - `filedPlanReceipt(review, { bundleApproved? })`, four points in order: filed and not
      answered, with the review id; this is a gate, so no edits, commits, pushes, task creation or
      other outward action until the answer arrives, while read-only preparation is fine; do not
      file it again or poll, the answer arrives as a message, and `withdraw_question` with this id
-     and a reason takes it back if the operator says scope changed or it is no longer needed;
-     when preparation is done, say what is waiting and end the turn. With `bundleApproved`, a
-     leading line says the final bundle was approved automatically and only the remaining
-     decisions are filed.
+     and a reason takes it back if the operator says scope changed or it is no longer needed,
+     after which the agent files the new plan as a new form; when preparation is done, say what
+     is waiting and end the turn. With `bundleApproved`, a leading line says the final bundle was
+     approved automatically and only the remaining decisions are filed. This receipt does not
+     mention `revises`: the argument does not exist until Phase 2, which adds that one sentence.
    - `filedPlanAnswer(review, now)`: a lead naming the review id and how long ago it was filed;
      `Plan: <title>`; the plan body cut at a line boundary to about 2,000 characters with a
      marker saying how much was cut; `reviewToolResult(review).text`, which already restates each
@@ -149,9 +150,10 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
     answer arrives as a message; a dismissal still ends the work. Make the same change in
     `skills/html-plans/SKILL.md` (around line 129 and its "Always" sections),
     `skills/grill/SKILL.md:53` (each round may be filed; the answer message starts the next
-    round), `skills/retro/SKILL.md:131-132`, and wherever `skills/phased-plan/SKILL.md` describes
-    waiting for final approval. Run `npm run session-actions` and commit the regenerated
-    `src/server/workflows/builtin-session-actions.generated.ts`; never hand-edit it.
+    round), `skills/retro/SKILL.md:131-132`, and `skills/phased-plan/SKILL.md` where it tells the
+    agent to obtain final approval through the tool (line 192). Run `npm run session-actions` and
+    commit the regenerated `src/server/workflows/builtin-session-actions.generated.ts`; never
+    hand-edit it.
 12. **Documentation.** `docs/sessions.md`: the `request_plan_decisions` entry (line 2676) and a
     "Filed plan decisions" part under "Asking without stopping" (line 3063) covering the gate,
     what holds, withdraw, the flag pair, what switching a flag off does to open forms, and what
@@ -174,9 +176,10 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
   `questionHoldsCompletion` does not cover it and a merge does not close it. This is the only
   change of mode there is, it goes one way, and it cannot happen to a form that is no longer
   pending.
-- Either flag switched off: new asks block; an open filed form stays filed, answerable and
-  withdrawable only while `async-input` is on, since the two question routes stay behind it.
-  Switching a flag off closes nothing and converts nothing: no open form is withdrawn by it.
+- Either flag switched off: new asks block. An open filed form stays filed and stays answerable
+  whichever flag is off. It can be listed and withdrawn only while `async-input` is on, because
+  the two question routes stay behind that flag, as they are today. Switching a flag off closes
+  nothing and converts nothing: no open form is withdrawn by it.
 - Call-mode plan forms are unchanged in every reader, whether they were asked in call mode or
   converted to it: not held by `questionHoldsCompletion`, not closed by a merge, not
   withdrawable.
@@ -187,7 +190,7 @@ Extend the existing suites rather than adding parallel ones:
 
 - `test/async-input.test.ts`: the `decideWaitMode` matrix with `gateFlagOn`; the three
   predicates; `questionHoldsCompletion` for filed gates; receipt and answer wording, including
-  dismissal, truncation and `bundleApproved`.
+  dismissal, truncation and `bundleApproved`, and that the receipt does not mention `revises`.
 - `test/async-input-daemon.test.ts`: negotiation on both routes for each flag combination, an
   older child and an unmessageable session; a filed gate is a pending review and never an open
   question; prompted completion, workflow resumption and evidence preparation refuse while it is
@@ -241,6 +244,7 @@ Commands: the focused files with
   path's only entry when this phase merges.
 - A filed plan form an older MCP child converted behaves as a call-mode form in every reader,
   and no reader depends on what a row's mode used to be.
+- The receipt this phase ships does not mention `revises`.
 - Documentation matches the behavior. The pull request records any deviation from this file.
 
 ## Downstream handoff
@@ -251,7 +255,7 @@ its own agent withdrew, and the wait-mode rule, which makes a converted form a c
 Phase 2 adds one sentence to `filedPlanReceipt`, an option to `ReviewManager.create`, and the
 second entry to that write path (the `revises` replacement). It must not add a second place that
 writes `withdrawn`, a second reader of the flag, a change to the counts, a change to who is
-held, or any record of a row's earlier mode.
+held, a change to either text writer's signature, or any record of a row's earlier mode.
 
 ## Cross-phase audit record
 
@@ -268,9 +272,16 @@ held, or any record of a row's earlier mode.
   contract's: one write path, whose only entry in this phase is `withdraw_question`, and to
   which Phase 2 adds the `revises` entry. The finding, step 6, the exit criterion and the
   handoff were reworded to say exactly that.
-- Pull request review: the compatibility note said only that `attachCall` turns a re-asked filed
-  form into a call-mode form, and the index called the mode "fixed at insert". The note now
-  states the one rule: a converted form is a call-mode form for listing, withdrawal, the
-  completion hold and merge closure. A finding, a line in step 2, a test group, an exit
-  criterion and the handoff carry it, so Phase 2 can decide a revision target from the stored
-  mode alone.
+- Pull request review, round 1: the compatibility note said only that `attachCall` turns a
+  re-asked filed form into a call-mode form, and the index called the mode "fixed at insert".
+  The note now states the one rule: a converted form is a call-mode form for listing,
+  withdrawal, the completion hold and merge closure. A finding, a line in step 2, a test group,
+  an exit criterion and the handoff carry it, so Phase 2 can decide a revision target from the
+  stored mode alone.
+- Pull request review, round 2: the source plan described a receipt that mentions `revises`,
+  against step 3 here, and the Text contract's signatures differed from step 3's. The source
+  plan and the contract were changed to match step 3; step 3 now says in so many words that the
+  receipt does not mention `revises` and that the agent files the new plan as a new form, with a
+  test and an exit criterion. The flag-off compatibility note was also reworded: an open filed
+  form stays answerable whichever flag is off, and only listing and withdrawal depend on
+  `async-input`.

@@ -1,10 +1,10 @@
 # Filed plan decisions
 
-Revision 6, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
-split into two implementation phases (`phased-plan.md`). Revision 6 applies Plan Validation rounds
-1 and 2 and the pull request's Inspector review, all recorded in `phased-plan.md`. This is a
-plan-only task: it ships no product code. The phase tasks scheduled from this plan build the
-feature.
+Revision 7, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
+split into two implementation phases (`phased-plan.md`). Revision 7 applies Plan Validation rounds
+1 and 2 and two rounds of the pull request's Inspector review, all recorded in `phased-plan.md`.
+This is a plan-only task: it ships no product code. The phase tasks scheduled from this plan
+build the feature.
 
 ## Summary
 
@@ -83,9 +83,10 @@ Submitted by the operator through `request_plan_decisions` on 2026-11-22, on rev
 1. **Flag: a new preview flag, `filed-plan-decisions`, effective only while `async-input` is
    on.** A plan form is filed only when both flags are on. The voice plan must therefore require
    three flags (`async-input`, `filed-plan-decisions`, the inbox flag) and offer to turn all on.
-2. **No snooze on plan forms.** A filed form stays amber and in `to answer` until it is
-   answered, dismissed or withdrawn. `snoozable` and `meanwhile` stay `input`-only, so spec check
-   4 needs no schema change.
+2. **No snooze on plan forms.** A filed form cannot be parked: it stays amber and in `to answer`
+   until it is settled, which means answered, dismissed, withdrawn, or closed by a merge or by
+   its session going away. `snoozable` and `meanwhile` stay `input`-only, so spec check 4 needs
+   no schema change.
 3. **The ten-question limit: plan forms are exempt.** The operator answered in their own words:
    "10 open asks per session is fine, and plans can be exempt, but we shouldn't limit a total of
    10 open asks in the inbox globally across all sessions". Read as: the limit stays ten open
@@ -240,8 +241,10 @@ waits and filed gates), and `openQuestions` counts pending reviews the agent wor
 - **Receipt** (`filedPlanReceipt`, the tool result): the plan is filed and not answered; this is
   a gate; read-only preparation is allowed; make no edits, commits, pushes, task creation or other
   outward action until the answer arrives; do not file it again or poll; the answer arrives as a
-  message; if the operator says scope changed, withdraw the form with a reason and file the
-  revised plan with `revises`; then say what is waiting and end the turn. The gate is an
+  message; if the operator says scope changed, withdraw the form with a reason and file the new
+  plan as a new form; then say what is waiting and end the turn. That is the whole Phase 1
+  receipt, and it does not mention `revises`: the argument does not exist until Phase 2, which
+  adds one sentence telling the agent to pass it when it files the new plan. The gate is an
   instruction, as it is for `request_input`; nothing enforces read-only at the tool level.
 - **Answer** (`filedPlanAnswer`, a daemon-authored message): the review id and how long ago it
   was filed, the plan's title, the managed plan identity when bound, a bounded excerpt of the plan

@@ -5408,7 +5408,7 @@ function migrateTaskWorkUnit(d: DatabaseSync): void {
 }
 
 /**
- * Schema 41: the launch record - the work unit each session's agent was started with.
+ * Schema 43: the launch record - the work unit each session's agent was started with.
  *
  * Its own table, keyed like `session_standing_instructions` (noteKeyFor = agentSessionId ??
  * synthetic id) and for the same reason: it describes the PROCESS, which a `/clear` or an

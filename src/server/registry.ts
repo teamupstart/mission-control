@@ -4015,7 +4015,15 @@ export class Registry extends EventEmitter {
       } finally {
         this.awaitingTurnPrompts.delete(next.id);
       }
-      if (promptKeys) this.observeAwaitingPrompt(this.sessions.get(next.id) ?? next, promptKeys);
+      // After the emit, so outside `emitSession`'s own guard: a late prompt's wake writes SQLite
+      // too, and a failure there is logged rather than stopping the rest of this hook.
+      if (promptKeys) {
+        try {
+          this.observeAwaitingPrompt(this.sessions.get(next.id) ?? next, promptKeys);
+        } catch (err) {
+          console.error(`[registry] could not judge the wait of session ${next.id} on its prompt:`, err);
+        }
+      }
       // After the emit above, so the summary is written through `setSubagents` - the field's
       // only writer - onto the projection that is now current, rather than onto `next` and then
       // overwritten by it.
@@ -7370,11 +7378,7 @@ export class Registry extends EventEmitter {
     if (leaving) {
       const key = noteKeyFor(leaving);
       const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
-      try {
-        if (!held) this.clearAwaitingKey(key, id, "exit", undefined, Date.now());
-      } catch (err) {
-        console.error(`[registry] could not end the wait of removed session ${id}:`, err);
-      }
+      if (!held) this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
     }
   }
 
@@ -9860,6 +9864,26 @@ export class Registry extends EventEmitter {
     return true;
   }
 
+  /**
+   * End a wait as the side effect of another write: a task ending, the preview switched off, a
+   * session removed or pruned. A failure is logged and never stops that other write; the wait is
+   * left standing, to a later reading, the prune or its own deadline. Returns whether it ended.
+   */
+  private tryClearAwaitingKey(
+    key: string,
+    sessionId: string,
+    actor: string,
+    resolution: string | undefined,
+    now: number,
+  ): boolean {
+    try {
+      return this.clearAwaitingKey(key, sessionId, actor, resolution, now);
+    } catch (err) {
+      console.error(`[registry] could not end the wait of session ${sessionId} (${actor}):`, err);
+      return false;
+    }
+  }
+
   /** Drop a wait's in-memory state: its record and every map kept under its note key. */
   private forgetAwaiting(key: string): void {
     this.awaitings.delete(key);
@@ -9904,7 +9928,7 @@ export class Registry extends EventEmitter {
       const record = this.awaitings.get(noteKeyFor(s));
       if (record && record.taskId === null) keys.set(noteKeyFor(s), s.id);
     }
-    for (const [key, sid] of keys) this.clearAwaitingKey(key, sid, "task", `task ${task.status}`, now);
+    for (const [key, sid] of keys) this.tryClearAwaitingKey(key, sid, "task", `task ${task.status}`, now);
   }
 
   /**
@@ -9916,7 +9940,7 @@ export class Registry extends EventEmitter {
     for (const key of this.awaitings.keys()) {
       const holder = [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
       const logged = holder?.id ?? this.awaitings.get(key)?.sessionId ?? key;
-      if (this.clearAwaitingKey(key, logged, actor, undefined, now)) n++;
+      if (this.tryClearAwaitingKey(key, logged, actor, undefined, now)) n++;
     }
     return n;
   }
@@ -10172,7 +10196,7 @@ export class Registry extends EventEmitter {
       if (now - seen < graceMs) continue;
       // Logged under the last session seen holding the wait, so the audit row is found by
       // session id even though no live session holds the key now.
-      if (this.clearAwaitingKey(key, this.awaitings.get(key)?.sessionId ?? key, "exit", undefined, now)) removed++;
+      if (this.tryClearAwaitingKey(key, this.awaitings.get(key)?.sessionId ?? key, "exit", undefined, now)) removed++;
     }
     return removed;
   }

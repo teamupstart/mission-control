@@ -1131,6 +1131,59 @@ test("a wait whose bookkeeping cannot be written never stops a session or a ques
   assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });
 
+test("a wait clear that fails as a side effect never stops a task write, the preview switching off, or a hook", (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const [first, second] = workingPair(registry);
+  for (const d of [first, second]) assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const failFor = (sessionId: string) => openDb().exec(`CREATE TEMP TRIGGER awaiting_audit_down BEFORE INSERT ON session_events
+    WHEN NEW.kind = 'session_awaiting_cleared' AND NEW.session_id = '${sessionId}' BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+  const restore = () => openDb().exec("DROP TRIGGER IF EXISTS awaiting_audit_down");
+
+  // The preview switched off: the first wait's clear fails, the second's still ends.
+  // Every wait standing in the shared database ends but the one whose clear fails.
+  const standing = loadSessionAwaitings().length;
+  failFor(first.syntheticId);
+  try {
+    assert.equal(registry.clearAllAwaitings("flag"), standing - 1, "one failed clear stopped the rest");
+  } finally {
+    restore();
+  }
+  assert.ok(registry.getAwaiting(first.syntheticId), "the failed clear dropped its wait anyway");
+  assert.equal(registry.getAwaiting(second.syntheticId), null);
+
+  // A task reaching a terminal status: its write completes though its wait's clear fails.
+  const task = mkTask({ id: `task-guarded-${++seq}`, sessionId: first.syntheticId, status: "running", worktreePath: first.cwd });
+  registry.upsertTask(task);
+  failFor(first.syntheticId);
+  try {
+    assert.doesNotThrow(() => registry.upsertTask({ ...task, status: "done" }));
+  } finally {
+    restore();
+  }
+  assert.equal(registry.getTask(task.id)?.status, "done", "the task write stopped at the wait");
+  assert.ok(registry.getAwaiting(first.syntheticId));
+
+  // A late prompt that wakes an undecided turn: the hook completes though the clear fails.
+  assert.equal(registry.clearAwaiting(first.syntheticId, "operator"), true);
+  assert.equal(registry.reportAwaiting(second.syntheticId, body()).ok, true);
+  hook(registry, second, "Stop");
+  reserveInjection(second.syntheticId, "Round 9 repair packet", "workflow");
+  hook(registry, second, "PreToolUse");
+  failFor(second.syntheticId);
+  try {
+    assert.doesNotThrow(() => hook(registry, second, "UserPromptSubmit", "Check the build log for me."));
+  } finally {
+    restore();
+  }
+  assert.ok(errors.mock.calls.some((call) => String(call.arguments[0]).includes(second.syntheticId)),
+    "the failed late-prompt clear left no log line naming the session");
+  releaseInjection(second.syntheticId, "Round 9 repair packet");
+  // Every Registry reloads stored waits: leave none behind for the tests after this one.
+  registry.clearAwaiting(second.syntheticId, "operator");
+});
+
 test("a person's send whose attribution cannot be stored on the wait is refused before it is written, and contests nothing", async (t) => {
   // An operator's words repeating a pending nudge must contest it, or their turn is used up as
   // Mission Control's and the wait stands. The wait cannot be written, so the send is refused:

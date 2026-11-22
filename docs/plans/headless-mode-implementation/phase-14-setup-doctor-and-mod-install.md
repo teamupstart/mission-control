@@ -1,6 +1,6 @@
 # Phase 14: Setup, doctor, mod install and the Claude-session loop proof (WP7 and WP12, reduced)
 
-Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start after P8 has merged, then `git rebase --onto origin/main <old base>`.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`). Branch from `main`; start after P8 has merged, then `git rebase --onto origin/main <old base>`.
 
 **1. Outcome.** On a clean machine `mctl setup` finds `claude` and stages and installs the Mission Control mod plugin itself (marketplace add, then install at user scope), so the pane and the banner above the prompt appear in the next Claude session with no manual step; `mctl doctor` reports what is wrong and the fix. The automated Claude-session loop test (plan.md 0.3) passes, and the manual walkthrough there works.
 

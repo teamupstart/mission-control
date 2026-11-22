@@ -10,7 +10,7 @@
 
 ## 0. Minimal Claude-session E2E plan (revision 18, current)
 
-This section replaces the scheduling in sections 5 to 8 below. Sections 1 to 9 are the full plan of revision 16, kept as history; where they disagree with this section, this section wins. The spec in Commonroom is now version 20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`), which adds the optional `shaping` field (D60). The repository wins over the spec where they differ. The user experience comes from the round 2 design artifact (claude.ai artifact `2dJEKTxXd9Hzi9zDgDayZo`) and its spike review. Phase detail is in `phased-plan.md` and the phase files. Revision 17 of this section used dialogs instead of the pane; revision 18 replaces that.
+This section replaces the scheduling in sections 5 to 8 below. Sections 1 to 9 are the full plan of revision 16, kept as history; where they disagree with this section, this section wins. The spec in Commonroom is now version 21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`), which adds the optional `shaping` field (D60), the minimal end-to-end scope (D61) and the shaper brief rule (D62). The repository wins over the spec where they differ. The user experience comes from the round 2 design artifact (claude.ai artifact `2dJEKTxXd9Hzi9zDgDayZo`) and its spike review. Phase detail is in `phased-plan.md` and the phase files. Revision 17 of this section used dialogs instead of the pane; revision 18 replaces that.
 
 ### 0.1 Goal and scope
 

@@ -9433,17 +9433,6 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Install what a launch that succeeded carries, under the key its session holds now.
-   *
-   * Replaces whatever an earlier launch into this session recorded, and removes the row when
-   * this launch carries none: the record describes the agent that is running, and that agent
-   * is the one this launch started. Called only from the steps that put a launched process in
-   * the map - `registerSdkSession` for an embedded launch or restore, `mergeDiscovered` on first
-   * sight of a terminal launch - and before either publishes the session, so no reader of its
-   * first event finds it without its record. A launch that fails never reaches either step, so
-   * it changes nothing.
-   */
-  /**
    * Put back the launch record a failed SDK registration replaced, exactly as it was. Never
    * throws: the registration's own error is the one its caller acts on.
    */
@@ -9461,6 +9450,18 @@ export class Registry extends EventEmitter {
     }
   }
 
+  /**
+   * Install what a launch that succeeded carries, under the key its session holds now.
+   *
+   * Replaces whatever an earlier launch into this session recorded, and removes the row when
+   * this launch carries none: the record describes the agent that is running, and that agent
+   * is the one this launch started. Called only from the steps that put a launched process in
+   * the map - `registerSdkSession` for an embedded launch or restore, `mergeDiscovered` on first
+   * sight of a terminal launch - and before either publishes the session, so no reader of its
+   * first event finds it without its record. A launch that fails before either step changes
+   * nothing, and an SDK registration that throws before publishing puts back what it replaced
+   * (`putBackLaunchWorkUnit`).
+   */
   private installLaunchWorkUnit(noteKey: string, workUnitId: string | null, now = Date.now()): void {
     if (workUnitId && isWorkUnitId(workUnitId)) {
       const record: LaunchWorkUnitRecord = { noteKey, workUnitId, createdAt: now };

@@ -99,7 +99,7 @@ export function settleTerminalLaunchWorkUnit(
 
 /**
  * Take the waiting decision of the launch at `launchHome`, for its agent's first sighting, and
- * remove it: `install` puts the record in place, and that record is final. Returns the decision
+ * remove it once `install` has put the record in place; that record is final. Returns the decision
  * taken, or null when this launch handed none over.
  */
 export function takeTerminalLaunchWorkUnit(
@@ -112,9 +112,12 @@ export function takeTerminalLaunchWorkUnit(
   if (!launchHome) return null;
   const index = pending.findIndex((decision) => decision.launchHome === launchHome);
   if (index < 0) return null;
-  const [decision] = pending.splice(index, 1);
-  install(decision!);
-  return decision!;
+  // Removed only once installed: an install that throws (its write failed) leaves the decision
+  // waiting, and the session is not in the map yet, so the next sweep's first sight retries it.
+  const decision = pending[index]!;
+  install(decision);
+  pending.splice(pending.indexOf(decision), 1);
+  return decision;
 }
 
 /** For tests: how many decisions are waiting. */

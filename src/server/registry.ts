@@ -2948,6 +2948,11 @@ export class Registry extends EventEmitter {
     // is the freshest truth - every rebinding goes through this process first - so
     // re-reading each sweep could only ever return what we already have.
     const known = d.agentSessionId ?? (prev ? prev.agentSessionId : lastAgentBinding(d.syntheticId));
+    // What this process was bound to before this daemon saw it, read before `rememberAgentSession`
+    // below overwrites it. Only a first sight that discovered a different conversation asks:
+    // the process rotated (a `/clear`) while no daemon was watching. The synthetic id names one
+    // process (`proc:<tty>:<pid>:<start>`), so the stored binding is this same agent's.
+    const boundBeforeSight = !prev && d.agentSessionId ? lastAgentBinding(d.syntheticId) : null;
     // Record the passive half separately - see `discoveredIdentity`. A sweep that could
     // not read the rollout this tick says nothing rather than retracting what it read
     // last tick, so one failed `lsof` does not briefly disarm the attribution guard.
@@ -3128,6 +3133,14 @@ export class Registry extends EventEmitter {
     // pane that merely shares the checkout cannot take it. This is the step that puts the
     // session in the map, before anything publishes it, so the record is installed here, under
     // the key the session holds now, and the rotation moves carry it from there.
+    //
+    // A rotation no daemon saw still moves the launch record: the record describes the process,
+    // and it is the same process under a new key. Not when a live session holds the old key -
+    // that conversation was reopened elsewhere, and its record is that agent's.
+    if (!prev && boundBeforeSight && boundBeforeSight !== noteKeyFor(base)
+      && ![...this.sessions.values()].some((s) => noteKeyFor(s) === boundBeforeSight)) {
+      this.moveLaunchWorkUnitKey(boundBeforeSight, noteKeyFor(base));
+    }
     if (!prev) {
       takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => this.installHandedLaunchWorkUnit(base, launched, now));
     }

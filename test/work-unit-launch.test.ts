@@ -444,6 +444,36 @@ test("a restore whose adoption fails stops the driver it started", async (t) => 
   assert.equal(stopped, 1, "nothing else owns that driver, so a retried wake would start a second one");
 });
 
+test("a restore whose adoption fails and whose driver will not stop logs that stop", async (t) => {
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    answersRequests: true,
+    launch: async () => {
+      const handle = idleHandle();
+      handle.stop = async () => { throw new Error("scripted: stop failed"); };
+      return handle;
+    },
+  };
+  t.after(() => { HARNESSES.claude.sdk = real; });
+  const logged = t.mock.method(console, "error", () => {});
+  upsertSdkSession({
+    id: "sdk:wu-stop-fails", agent: "claude", agentSessionId: "stop-fails-conversation", cwd: "/wt/wu-stop-fails",
+    taskId: null, model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const register = registry.registerSdkSession.bind(registry);
+  registry.registerSdkSession = (input) => {
+    if (input.id === "sdk:wu-stop-fails") throw new Error("scripted: registration failed");
+    return register(input);
+  };
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
+  const lines = logged.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.ok(
+    lines.some((line) => line.includes("could not stop the unadopted driver for sdk:wu-stop-fails") && line.includes("scripted: stop failed")),
+    lines.join("\n"),
+  );
+});
+
 test("an SDK registration that throws before publishing puts back the record it replaced", () => {
   const registry = new Registry();
   const register = (id: string, conversation: string, workUnitId: string | null) => registry.registerSdkSession({
@@ -640,7 +670,44 @@ test("an unclaimed decision waits as long as its launch home exists, with no tim
   rmSync(abandoned, { recursive: true, force: true });
   assert.equal(handOver.takeTerminalLaunchWorkUnit(null, install), null);
   assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), 1);
+  // An install that throws leaves the decision waiting for the next sighting.
+  const retried = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(retried, WU_A);
+  assert.throws(() => handOver.takeTerminalLaunchWorkUnit(retried, () => { throw new Error("scripted: write failed"); }));
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(retried, install)?.workUnitId, WU_A);
   assert.equal(handOver.takeTerminalLaunchWorkUnit(live, install)?.workUnitId, WU_B);
+});
+
+test("a /clear no daemon saw still carries the launch record to the conversation the process is in now", () => {
+  const home = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(home, WU_A);
+  const pane = discovered("/repo", { missionLaunched: true, missionLaunchHome: home });
+  const before = new Registry();
+  idleAgent(before, pane, "before-restart-conversation");
+  assert.equal(storedRecord("before-restart-conversation"), WU_A);
+
+  // The daemon restarts; while it was down the agent ran /clear, so its first sight names the
+  // new conversation and only the stored binding knows the old one.
+  const after = new Registry();
+  after.applyDiscovery([{ ...pane, agentSessionId: "after-clear-conversation" }]);
+  const session = after.getSession(pane.syntheticId)!;
+  assert.equal(session.launchWorkUnitId, WU_A);
+  assert.equal(storedRecord("after-clear-conversation"), WU_A);
+  assert.equal(storedRecord("before-restart-conversation"), null);
+
+  // Not when another live session holds the old conversation: it was reopened there, and the
+  // record under it is that agent's.
+  const heldHome = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(heldHome, WU_B);
+  const original = discovered("/repo", { missionLaunched: true, missionLaunchHome: heldHome });
+  idleAgent(new Registry(), original, "held-conversation");
+  assert.equal(storedRecord("held-conversation"), WU_B);
+  const restarted = new Registry();
+  const reopened = discovered("/repo", { agentSessionId: "held-conversation" });
+  restarted.applyDiscovery([reopened]);
+  restarted.applyDiscovery([reopened, { ...original, agentSessionId: "original-after-clear" }]);
+  assert.equal(storedRecord("held-conversation"), WU_B);
+  assert.equal(storedRecord("original-after-clear"), null);
 });
 
 test("discovery names the exact launch an agent runs beneath", () => {

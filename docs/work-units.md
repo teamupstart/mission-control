@@ -127,7 +127,9 @@ disagree.
   is stopped.
 - **What it survives.** A `/clear` or an assign starts a new conversation and not a new
   process, so the record follows the session across every note-key rotation, with the standing
-  instructions the launch delivered. Rows load at daemon start and are pruned with them.
+  instructions the launch delivered. A `/clear` made while no daemon was running moves it too,
+  on the agent's first sight after the restart, unless another live session holds the old
+  conversation. Rows load at daemon start and are pruned with them.
 - **Readers.** `launchWorkUnitFor(session)` is the recorded id: what the agent carries, read by
   capture and by the reuse guard. `sessionWorkUnitId(session, task)` is that id while the task
   has the same one, and null otherwise: what the session emits for a task in hand. The registry

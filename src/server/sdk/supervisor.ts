@@ -1846,8 +1846,14 @@ export class SdkSupervisor {
       }
     } catch (error) {
       // A driver that started but was never taken by `adopt` (its row or registration write
-      // threw) is stopped before its state home goes, as the shutdown branch does.
-      if (!adopted && launched && this.handles.get(row.id) !== launched) await launched.stop().catch(() => {});
+      // threw) is stopped before its state home goes, as the shutdown branch does. The home goes
+      // even when the stop fails: nothing will ever adopt that driver, and nothing else removes
+      // a launch's private home, so keeping it would only strand it. A failed stop is logged.
+      if (!adopted && launched && this.handles.get(row.id) !== launched) {
+        await launched.stop().catch((stopError: unknown) => {
+          console.error(`[sdk] could not stop the unadopted driver for ${row.id}:`, stopError);
+        });
+      }
       if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);

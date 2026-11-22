@@ -526,14 +526,7 @@ async function smokeSatellitePaths() {
   }
 }
 
-/**
- * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
- * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's
- * version and a `modApi` integer, a hooks file naming a module that exists, the state contract
- * the manifest names, and a marketplace whose relative `source` reaches the plugin. When the
- * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
- * engine would refuse shows up here rather than on a person's machine.
- */
+/** The `mod-calls` check (spec 7.10): the mod's source reaches only the daemon paths in `src/mod/allowed-calls.json`. */
 function smokeModCalls() {
   const refused = findDisallowedModCalls(resolve("."));
   if (refused.length > 0) {
@@ -543,6 +536,14 @@ function smokeModCalls() {
   console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
 }
 
+/**
+ * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
+ * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's
+ * version and a `modApi` integer, a hooks file naming a module that exists, the state contract
+ * the manifest names, and a marketplace whose relative `source` reaches the plugin. When the
+ * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
+ * engine would refuse shows up here rather than on a person's machine.
+ */
 async function smokeModBuild() {
   const modRoot = resolve("dist/mod");
   const pluginDir = join(modRoot, "mission-control");

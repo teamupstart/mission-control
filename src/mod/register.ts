@@ -277,7 +277,8 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       // A replacement session owns the pane now: a stale close must not take it away.
       if (session.pane.owner !== null && session.pane.owner !== session.mine) return;
       session.pane.owner = null;
-      const done = $.ui.close({ id: PANE_REQUEST_ID }).catch(() => undefined);
+      // A refused close leaves a line in the person's log: the pane may still be on screen.
+      const done = $.ui.close({ id: PANE_REQUEST_ID }).catch((error: unknown) => $.ui.log(describeFailure("closing the pane", error)));
       session.pane.closing = Promise.all([session.pane.closing, done]).then(() => undefined);
     },
     // The pane's values are a convenience for drawing: a refused write never stops the glance

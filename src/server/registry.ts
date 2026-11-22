@@ -3958,7 +3958,9 @@ export class Registry extends EventEmitter {
       if (!fromSubagent && (spec.promptText(evt)?.trim() || spec.submittedPromptText(evt)?.trim())) {
         this.promptReporters.add(next.id);
       }
-      const promptKeys = this.awaitings.size > 0 ? this.hookPromptKeys(spec, evt) : null;
+      // The main session's own prompt only: a subagent's is not the prompt of the turn a wait
+      // judges, so it never decides one, as it never makes the session a prompt reporter above.
+      const promptKeys = !fromSubagent && this.awaitings.size > 0 ? this.hookPromptKeys(spec, evt) : null;
       if (promptKeys) this.awaitingTurnPrompts.set(next.id, promptKeys);
       try {
         if (!sessionEqual(target, next) || next.lastActivity !== target.lastActivity) this.emitSession(next);

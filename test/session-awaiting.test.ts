@@ -635,6 +635,34 @@ test("a turn whose prompt arrives after it started is decided by that prompt, an
   assert.equal(clearedEvents(silent.syntheticId).at(-1)?.actor, "wake");
 });
 
+test("a subagent's prompt never decides the main session's undecided turn", (t) => {
+  // A subagent reports its own prompt through the parent's hooks. It is not the prompt of the
+  // turn the wait is judging, so it must not be read as the wake before the turn's own prompt
+  // (here Mission Control's delivery) arrives.
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  reserveInjection(d.syntheticId, "Please wrap up and open the pull request.", "foreman");
+  hook(registry, d, "PreToolUse");
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `agent-${d.syntheticId}`,
+    agentId: "subagent-1",
+    cwd: d.cwd,
+    transcriptPath: null,
+    prompt: "Search the repository for the failing test.",
+    env: { tmuxPane: (d.terminals[0] as { paneId: string }).paneId },
+  });
+  assert.ok(registry.getAwaiting(d.syntheticId), "a subagent's prompt was read as the wake");
+  hook(registry, d, "UserPromptSubmit", "Please wrap up and open the pull request.");
+  hook(registry, d, "Stop");
+  assert.ok(registry.getAwaiting(d.syntheticId), "the delivery's own turn ended the wait");
+  assert.deepEqual(clearedEvents(d.syntheticId), []);
+});
+
 test("a re-declaration inside an undecided nudge turn still uses up that nudge, so the next real wake ends the wait", (t) => {
   // A harness without prompt hooks: an automated nudge starts a turn nobody can attribute until
   // it ends. The agent finds its background work still running and declares again in that turn.

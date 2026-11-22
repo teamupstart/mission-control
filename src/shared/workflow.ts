@@ -2727,6 +2727,8 @@ const RESUMPTION_WITHHELD_ACTIVITY: Record<WorkflowResumptionWithheldReason, Wor
   packet_undelivered: { actor: "Workflow", inProgress: true },
   repository_unchanged: { actor: "Session", inProgress: false },
   session_blocked: { actor: "Blocker owner", inProgress: false },
+  // The session's own background process is still running, and it resumes by itself.
+  session_awaiting: { actor: "Session", inProgress: true },
 };
 
 /** Stored reason codes can come from a newer version; unknown waits must not imply progress. */

@@ -208,6 +208,8 @@ test("withheld resumption holds distinguish operator, session and delivery progr
       text: "Waiting on the session: the repository has not changed since round 1. Reviewing it again would return the same verdicts, so no round has been spent." },
     session_blocked: { actor: "Blocker owner", inProgress: false,
       text: "The session is blocked on someone other than you, so it has not been handed another round. The next round opens once its blocker is cleared." },
+    session_awaiting: { actor: "Session", inProgress: true,
+      text: "The session is waiting on a background process it started, such as CI checks, so it has not been handed another round. The next round opens once it wakes or its deadline passes." },
   };
   for (const reason of WORKFLOW_RESUMPTION_WITHHELD_REASONS) {
     const { actor, inProgress, text } = cases[reason];

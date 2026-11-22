@@ -59,12 +59,12 @@ function seedVersion(): void {
   ).run(JSON.stringify(GRAPH), DEFAULTS);
 }
 
-function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string, workflowVersionId = "v", suffix = "") {
+function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string, workflowVersionId = "v") {
   const binding = store.insertBinding({
-    id: `b${suffix}`,
+    id: "b",
     workflowVersionId,
-    noteKey: `claude:9f1c-4d2a-8e77${suffix}`,
-    sessionId: `session${suffix}`,
+    noteKey: "claude:9f1c-4d2a-8e77",
+    sessionId: "session",
     sessionAgent: "claude",
     sessionName,
     sessionCwd: "/repo",
@@ -75,60 +75,11 @@ function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string,
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run${suffix}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:b${suffix}:req`, now: 2 },
-    { id: `sub${suffix}`, triggerSource: "manual", triggerKey: `manual:b${suffix}:req`, context: {}, evidence: {}, now: 2 },
+    { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   return binding;
 }
-
-test("summary hold lookups skip inactive, Preview and terminal runs", (t) => {
-  const cases = [
-    { state: "active", mode: "live", status: "running", reads: 3 },
-    { state: "active", mode: "preview", status: "running", reads: 0 },
-    ...["paused", "orphaned", "archived"].map(state => ({ state, mode: "live", status: "running", reads: 0 })),
-    ...["completed", "cancelled", "failed"].map(status => ({ state: "active", mode: "live", status, reads: 0 })),
-  ];
-  for (const { state, mode, status, reads } of cases) {
-    clearWorkflowTables(db);
-    seedVersion();
-    const store = new WorkflowStore(db);
-    seedRun(store, "Queue lookup eligibility");
-    db.prepare("UPDATE workflow_bindings SET state = ?, delivery_mode = ? WHERE id = 'b'").run(state, mode);
-    db.prepare("UPDATE workflow_runs SET status = ? WHERE id = 'run'").run(status);
-    const latest = t.mock.method(store, "latestSubmission");
-    const deliveries = t.mock.method(store, "listDeliveries");
-    const summaries = [store.runSummary("run"), ...store.listRunSummaries(),
-      ...store.listRunSummaryPage({ limit: 50, cursor: null }).items];
-    assert.equal(summaries.length, 3);
-    assert.ok(summaries.every(summary => summary?.deliveryHold === null));
-    assert.equal(latest.mock.callCount(), reads, `${state}/${mode}/${status}: latest submission reads`);
-    assert.equal(deliveries.mock.callCount(), reads, `${state}/${mode}/${status}: delivery reads`);
-  }
-});
-
-test("unknown binding states preserve summaries without inferring queue ownership or recovery", () => {
-  for (const state of ["future_binding_state", ""]) {
-    clearWorkflowTables(db);
-    seedVersion();
-    const store = new WorkflowStore(db);
-    seedRun(store, "Unknown binding");
-    seedRun(store, "Healthy binding", "v", "-healthy");
-    db.prepare("UPDATE workflow_bindings SET state = ?, delivery_mode = 'live' WHERE id = 'b'").run(state);
-    const single = store.runSummary("run");
-    const all = store.listRunSummaries();
-    const page = store.listRunSummaryPage({ limit: 50, cursor: null });
-    assert.equal(all.length, 2, state);
-    assert.equal(page.items.length, 2, state);
-    for (const summary of [single, all.find(r => r.id === "run"), page.items.find(r => r.id === "run")]) {
-      assert.ok(summary, `the affected run remains visible: ${state}`);
-      assert.equal(summary.sessionName, "Unknown binding");
-      assert.equal(summary.deliveryHold, null);
-      assert.equal(summary.recovery, undefined, "an unrecognized binding cannot authorize recovery");
-    }
-    assert.equal(all.find(r => r.id === "run-healthy")?.sessionName, "Healthy binding");
-    assert.ok(page.items.find(r => r.id === "run-healthy")?.recovery);
-  }
-});
 
 test("a run summary carries the binding's captured session title, and it survives the session", () => {
   clearWorkflowTables(db);

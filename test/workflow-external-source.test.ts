@@ -825,9 +825,10 @@ test("run detail carries display provenance and never the opaque idempotency key
     "activeSessionActionIds",
     "bindingId",
     "bypassedPersonaReview",
-    // The two fields that decide whether a parked repair round is anybody's problem are
-    // always emitted rather than conditionally spread. They are absent only when the
-    // daemon cannot say - which every reader treats as "behave
+    // The two fields that decide whether a parked repair round is anybody's problem, and the
+    // only pair on this list that is ALWAYS emitted rather than conditionally spread. That is
+    // the point of them: every other optional key is absent when it has nothing to say, while
+    // these are absent only when the daemon cannot say - which every reader treats as "behave
     // as you did before this field existed". Emitting them always is what stops a run this
     // build knows nothing will ever resume from being read as one it is about to.
     //
@@ -839,11 +840,6 @@ test("run detail carries display provenance and never the opaque idempotency key
     // are compact scalars off joins the summary query already had.
     "deliveryMode",
     "resumptionPolicy",
-    // Fleet uses the same wait projection as run detail, including explicit nulls when
-    // a hold clears so its next summary event cannot leave a stale reason on screen.
-    "deliveryHold",
-    "gateWaitReason",
-    "resumption",
     "failedPersonaCount",
     "gate",
     "gateHeadShort",

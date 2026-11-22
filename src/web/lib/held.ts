@@ -244,31 +244,3 @@ export const HeldSessionsContext = createContext<ReadonlySet<string>>(new Set())
 export function useHeldSessions(): ReadonlySet<string> {
   return useContext(HeldSessionsContext);
 }
-
-
-function groupRunsBySessionAndRepo(runs: readonly WorkflowRunSummary[]): Map<string, Map<string, WorkflowRunSummary[]>> {
-  const grouped = new Map<string, Map<string, WorkflowRunSummary[]>>();
-  for (const run of runs) {
-    if (!run.sessionId) continue;
-    const repos = grouped.get(run.sessionId) ?? new Map<string, WorkflowRunSummary[]>();
-    const key = run.repoRoot ?? "";
-    repos.set(key, [...(repos.get(key) ?? []), run]);
-    grouped.set(run.sessionId, repos);
-  }
-  return grouped;
-}
-
-/** Existing chips and actions show only the newest run per repository, independently of previews. */
-export function fleetRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
-  return new Map([...groupRunsBySessionAndRepo(runs)].map(([sessionId, repos]) => [sessionId,
-    [...repos].sort(([a], [b]) => a.localeCompare(b)).map(([, entries]) => newestSessionRun(entries)!),
-  ]));
-}
-
-/** Preview explanations retain every open run, even beside a newer completed run of the same repo. */
-export function fleetHoldRunsBySession(runs: readonly WorkflowRunSummary[]): Map<string, WorkflowRunSummary[]> {
-  return new Map([...groupRunsBySessionAndRepo(runs)].map(([sessionId, repos]) => [sessionId,
-    [...repos].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, entries]) =>
-      entries.filter(run => workflowRunIsOpen(run.status)).sort((a, b) => a.id.localeCompare(b.id))),
-  ]));
-}

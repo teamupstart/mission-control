@@ -99,6 +99,19 @@ One consistency finding was accepted and applied:
   and 5 state their positions the same way, and Phase 2's tests assert that the Reports heading
   comes after Stuck finalizations and before Snoozed.
 
+## Plan validation round 6
+
+One consistency finding was accepted and applied:
+
+- **One rule for a click on a notification that arrived before its author was muted.** Phase 6
+  promised the click shows a report, while Phase 7 said the band is never reached for a muted
+  author. The second statement was wrong: a mute stops later notifications, and a notification
+  already delivered can still be clicked. The rule, stated the same way in R22, R29, the design
+  section, Phase 6 and Phase 7: the click opens the inbox and draws the report on its own, as for
+  any report the inbox does not list. Phase 6's rule is written for every reason the fold might
+  omit a report, so Phase 7 changes no code there and adds the test. The section "A click on a
+  report notification" below now lists every case, including the flag being off.
+
 ## Sizing and phase count
 
 Estimated 3,100 to 3,850 non-test implementation lines across shared contracts, the daemon, the
@@ -167,6 +180,23 @@ the final entry of `INBOX_SECTION_ORDER`. Because Snoozed is drawn after every f
 puts Reports immediately before Snoozed and never after it. The two insertions do not depend on
 each other, so either phase may merge first.
 
+## A click on a report notification
+
+This is the click half of R22 in full. Phase 6 builds it. The first matching row decides.
+
+| State at the time of the click | What the click does |
+| --- | --- |
+| The `inbox` flag is off | Focuses the window only |
+| The notified report was replaced | Resolves to the latest report of its chain, then continues below with that report |
+| The Reports section lists the report | Opens the inbox with that report's row open |
+| The report is unread but not listed: reports are unlisted by the setting, or its author has been muted since the notification arrived (Phase 7) | Opens the inbox and draws that one report, open, above the sections |
+| The report has been read | The same, with the report fetched by id |
+| The report cannot be loaded | Opens the inbox with a line saying so |
+
+The click never marks a report read, and the report drawn above the sections changes neither the
+Reports section nor the to read figure. A mute does not cancel a notification that already
+arrived; it stops later ones.
+
 ## Cross-phase contracts
 
 Owned by Phase 1:
@@ -210,9 +240,11 @@ Owned by later phases:
 - Phase 5: `Stall.facts` and `Stall.fingerprint`; fold item `session_stuck`;
   `POST /api/sessions/:id/inbox-message`; turn id prefix `inbox-message:`.
 - Phase 6: `Alert.notify`, alert kind `report`, `ui.alerts.notify` and `ui.alerts.reportsInInbox`;
-  `GET /api/reports/:id`; the inbox's pinned report; writes `announcedAs` and `announcedAt`.
+  `GET /api/reports/:id`; `reportToShow` and the inbox's pinned report, which apply to any report
+  the fold does not list; writes `announcedAs` and `announcedAt`.
 - Phase 7: table `report_mutes`, the `reports` settings entry, `GET /mcp/reports/guidance`,
-  `POST /api/reports/read-all`.
+  `POST /api/reports/read-all`. Its mute filter is one more reason the fold omits a report; it
+  does not change `reportToShow`.
 
 ## What takes a report out of to read
 
@@ -251,7 +283,7 @@ agent's display name.
 | `message` | Stuck | "{name}, ..." or "reply, ..." while the card is open | 5 |
 | `open-session`, `open-run` | Stuck | click-only: navigation | 5 |
 | `dismiss` | Stuck | click-only: dismissal | 5 |
-| `mute` | Report | "{name}, mute reports" | 7 |
+| `mute` | Report; not drawn when the author is already muted | "{name}, mute reports" | 7 |
 | `mark-all-read` | Reports heading | click-only: section-wide | 7 |
 
 ## Requirement ownership

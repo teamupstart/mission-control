@@ -1,7 +1,7 @@
 # Agent reports and inbox upgrades
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 to 5. This task delivers the plan and its phases only. No
+revised after plan validation rounds 1 to 6. This task delivers the plan and its phases only. No
 product code changes here.
 
 ## Goal
@@ -100,7 +100,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | --- | --- |
 | R20 | A **What notifies you** group under the existing alerts settings, five switches, all on by default: blocking questions notify; questions filed while the agent keeps working notify; agent reports notify; agent reports are listed in the inbox; stuck sessions notify. |
 | R21 | A notify switch only stops the notification; the item still appears in the inbox. Reports alone have the second switch: turned off, reports leave the inbox list and the to read figure and stay in each conversation. Other alerts are unchanged. |
-| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. If that report has since been replaced, the click opens the report that replaced it, since the inbox shows only the latest of a chain (R12). The click works even when the inbox does not list the report to open, because reports are unlisted (R21) or it was already read: the inbox then draws that one report on its own. |
+| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. If that report has since been replaced, the click opens the report that replaced it, since the inbox shows only the latest of a chain (R12). The click works whenever the inbox does not list the report to open, whatever the reason: reports are unlisted (R21), its author was muted after the notification arrived (R29), or it was already read. The inbox then draws that one report on its own. |
 | R23 | Away mode: reports do not interrupt and collect in the inbox. The return digest summarises them ("4 reports waiting: Steve, Carol and 2 others"). Stuck sessions still break through. |
 
 ### Order, voice compatibility, rollout and noise controls
@@ -112,7 +112,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | R26 | Hooks voice needs from reports: the line "When you have finished this, post a report." on spoken messages, the unseen-reports note, and binding speech to the report that is open on screen. Planned here as seams. |
 | R27 | One `inbox` preview flag turns on reports, Stuck rows and the naming rule together. |
 | R28 | **Report guidance** is editable: the operator can change the text that tells agents when to post a report, and reset it. |
-| R29 | **Per-agent mute**: muting an agent stops its report notifications and keeps its reports out of the inbox list and the to read figure. They stay in its conversation. |
+| R29 | **Per-agent mute**: muting an agent stops its later report notifications and keeps its reports out of the inbox list and the to read figure. They stay in its conversation. A notification that arrived before the mute still opens its report when clicked (R22). |
 | R30 | **Mark all read** on the Reports section marks every listed report read. |
 
 ## Reference verification
@@ -289,9 +289,9 @@ evidence, and neither contains reports.
   delivers by class, settings and Away state instead of by severity alone.
 - A `report` alert kind fires on the announce stamp, worded "X's back: title" or "X posted a
   report: title". Clicking it opens the inbox with that report open, or with the report that has
-  replaced it. A report the inbox does not list is drawn on its own above the sections, so the
-  click always has a report to show. The Away buffer gains a reports kind whose rollup names the
-  agents.
+  replaced it. A report the inbox does not list, for any reason, is drawn on its own above the
+  sections, so the click always has a report to show. The Away buffer gains a reports kind whose
+  rollup names the agents.
 - "Agent reports are listed in the inbox" off removes the Reports section and the to read
   figure; conversations keep their entries.
 
@@ -302,9 +302,11 @@ evidence, and neither contains reports.
   The MCP child reads it once when it starts and uses it in the tool's description, falling back
   to the default if the read fails. A change reaches sessions started afterwards.
 - **Per-agent mute.** A mute is keyed to a resident's profile, or to a standard session. A muted
-  agent can still post; its reports raise no notification and stay out of the inbox list and the
-  to read figure, and remain in its conversation. Mute is offered on the report card. The Reports
-  panel in Settings lists muted agents with Unmute.
+  agent can still post; its reports raise no notification from then on and stay out of the inbox
+  list and the to read figure, and remain in its conversation. A mute does not cancel a
+  notification that already arrived: clicking one still opens its report, drawn on its own like
+  any report the inbox does not list. Mute is offered on the report card. The Reports panel in
+  Settings lists muted agents with Unmute.
 - **Mark all read.** A button on the Reports section heading marks every listed report read. It
   is click-only, because it names no agent.
 
@@ -323,8 +325,9 @@ evidence, and neither contains reports.
 ### Flag off
 
 With `inbox` off: the tool is refused, no report surface renders, no Stuck rows fold, names
-resolve as today, and the new settings are hidden. Stored reports, mutes and guidance are kept
-and return when the flag is turned on again.
+resolve as today, and the new settings are hidden. A click on a report notification that arrived
+while the flag was on only focuses the window. Stored reports, mutes and guidance are kept and
+return when the flag is turned on again.
 
 ## Coordination with the sibling plans
 

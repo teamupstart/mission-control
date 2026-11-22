@@ -40,9 +40,11 @@ older version in the inbox.
 - The digest's kinds are `KIND_ORDER` (`src/shared/away-buffer.ts:272`) and its line is
   `rollupLine` (`:291`). `pipeline` is missing from that table today; leave that as it is.
 - `e2e/specs/notification-sound.spec.ts` shows how a spec captures notifications.
-- The notify switch and the listed-in-inbox switch are independent, so a notification can
-  arrive for a report the fold omits. A report can also be read, or replaced, between the
-  notification and the click.
+- A notification outlives the state it was raised in. Between its arrival and the click, the
+  report can be read or replaced, the listed-in-inbox switch can be turned off, the flag can be
+  turned off, and, once Phase 7 has merged, its author can be muted. The click has to do
+  something defined in each case; the index's table "A click on a report notification" lists
+  them.
 - R12: a replacing report takes the earlier one's place, and the inbox shows only the latest of
   a chain. The older version stays in the conversation.
 
@@ -63,20 +65,24 @@ older version in the inbox.
    `report:<id>`, severity `info`, carrying `reportId`) when a report's `announcedAs` goes from
    null to set: "<name>'s back: <title>" or "<name> posted a report: <title>", using the name
    stored on the report. A session that stops without a report raises nothing new.
-5. **Click and the pinned report.** A notification carrying `reportId` focuses the window and
-   opens the inbox. A pure `reportToShow(reportId, reports, fold)` decides which report opens and
+5. **Click and the pinned report.** A notification carrying `reportId` focuses the window. With
+   the `inbox` flag off at that moment it does nothing more. With the flag on it opens the
+   inbox, and a pure `reportToShow(reportId, reports, fold)` decides which report opens and
    where, in two steps:
    - **Which report.** The notified report, unless it has been replaced. A replaced report
      resolves, by following `supersededBy`, to the latest report of its chain, and that report
      is the one opened. This is the single rule for a replaced report, and it is the rule in the
      adopted decision and R22. The older version is never drawn in the inbox.
    - **Where.** If the fold lists the report to open, its row is opened in the Reports section,
-     as a click on the row would. If the fold does not list it, because reports are unlisted by
-     the setting or it has been read, the inbox draws that one `ReportCard`, open, in a band
-     above the sections headed "Opened from a notification". An unread report comes from the
-     dashboard's `reports` state. One already read, and the resolution of a replaced id the
-     dashboard no longer holds, come from a new `GET /api/reports/:id`, which returns the report
-     and, when it was replaced, the latest report of its chain.
+     as a click on the row would. If the fold does not list it, the inbox draws that one
+     `ReportCard`, open, in a band above the sections headed "Opened from a notification". The
+     rule asks only whether the fold lists the report, not why it does not, so it covers every
+     reason a report can be missing from the fold: reports unlisted by the setting, a report
+     already read, and, once Phase 7 has merged, an author muted after the notification arrived.
+     An unread report comes from the dashboard's `reports` state. One already read, and the
+     resolution of a replaced id the dashboard no longer holds, come from a new
+     `GET /api/reports/:id`, which returns the report and, when it was replaced, the latest
+     report of its chain.
    `openReportId` is set to the report that opens. That report is recorded as opened and is not
    marked read. The band holds only that card, goes when the inbox closes, and changes neither
    the Reports section nor `toRead`. If the fetch fails, the band says the report could not be
@@ -95,18 +101,20 @@ older version in the inbox.
 ## 6. Data and compatibility
 
 No migration. The new settings default to today's behaviour for every existing alert. With the
-flag off no report alert exists, the switches are hidden, the new route refuses, and
-`shouldDeliver` reduces to `deliverable`.
+flag off no report alert exists, the switches are hidden, the new route refuses, a click on an
+earlier report notification only focuses the window, and `shouldDeliver` reduces to
+`deliverable`.
 
 ## 7. Tests and verification
 
 - `test/alerts.test.ts`: classes on the right alerts; the report alert fires once, on the stamp,
   with both wordings; a matrix for `shouldDeliver`.
 - Report manager tests with a fake clock: both stamps, and the restart case.
-- A unit test for `reportToShow`: listed; unlisted by the setting; already read; an unknown id;
-  and replaced, in three forms: replaced once, replaced twice (the latest of the chain opens,
-  not the middle one), and replaced with the replacement already read (the replacement opens in
-  the band).
+- A unit test for `reportToShow`: listed; unlisted by the setting; an unread report that the
+  fold omits for a reason the function is not told (the case Phase 7's mute produces); already
+  read; an unknown id; and replaced, in three forms: replaced once, replaced twice (the latest
+  of the chain opens, not the middle one), and replaced with the replacement already read (the
+  replacement opens in the band).
 - An HTTP test for `GET /api/reports/:id`: a read report, a replaced report returning its
   chain's latest, an unknown id, flag off.
 - `test/away-buffer.test.ts`: the reports rollup with one, two and many names.
@@ -121,22 +129,25 @@ flag off no report alert exists, the switches are hidden, the new route refuses,
   no band. Mark a report read, then click its earlier notification: the band shows it. Post a
   report, replace it, then click the first report's notification: the inbox opens the
   replacement's row, showing the replacement's title, and the first report's text is not shown.
-  With Away on there is no notification and the digest names the agent.
+  Turn the flag off, then click an earlier notification: the inbox does not open. With Away on
+  there is no notification and the digest names the agent.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the spec.
 
 ## 8. Merge and exit criteria
 
 Each switch stops only its own notification. Report notifications are worded by the stamp, held
-while away and summarised on return. A click on a report notification always shows a report, in
-every combination of the two report switches and whether or not it has been read: the notified
-report, or the report that replaced it when it was replaced. Every pre-existing alert behaves as
-before.
+while away and summarised on return. With the flag on, a click on a report notification shows a
+report in every state the index's table lists: the notified report, or the report that replaced
+it, in its row when the fold lists it and on its own above the sections when the fold does not.
+With the flag off the click only focuses the window. Every pre-existing alert behaves as before.
 
 ## 9. Downstream handoff
 
 Phase 7 filters muted authors inside `shouldDeliver`, the fold and the watcher's scope; it must
-not add a second delivery path. A muted author raises no notification, so the band is never
-reached for one. Voice reuses the report alert unchanged.
+not add a second delivery path. A mute stops an author's later notifications. It does not cancel
+one that already arrived: clicking it reaches `reportToShow`, the fold no longer lists the
+report, and the band draws it. Phase 7 therefore changes nothing in step 5 and adds the test for
+that sequence. Voice reuses the report alert unchanged.
 
 ## 10. Cross-phase audit record
 
@@ -161,3 +172,7 @@ reached for one. Voice reuses the report alert unchanged.
 - Plan validation round 5: the band in step 5 is drawn above every section and is not a fold
   kind, so it is outside `INBOX_SECTION_ORDER` and does not move the Reports section, which
   stays immediately before Snoozed.
+- Plan validation round 6: the handoff used to say the band is never reached for a muted author.
+  That was wrong for a notification delivered before the mute. Step 5's rule is now worded for
+  any reason the fold omits a report, the handoff says what a later mute does, a unit test
+  covers an unlisted report without naming the reason, and the flag-off click is defined.

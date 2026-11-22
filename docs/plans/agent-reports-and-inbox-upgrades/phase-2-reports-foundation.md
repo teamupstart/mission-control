@@ -155,3 +155,6 @@ Reports section sits, or add a second way to set `readAt`.
 - Plan validation round 5: step 6 now states where `agent_reports` goes by its neighbours, and
   why that is immediately before Snoozed. Two tests and an exit criterion pin the rendered order.
   Phase 5's `session_stuck` is inserted earlier in the constant, so it cannot displace this.
+- Plan validation round 6: the dashboard's `reports` state keeps a muted author's unread reports
+  too, because Phase 7 applies the mute in the fold. That is what lets an earlier notification
+  still open its report. No change here.

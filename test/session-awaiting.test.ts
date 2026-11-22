@@ -1317,6 +1317,47 @@ test("a blocker replacing a wait whose audit row cannot be written leaves the wa
   assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });
 
+test("a declaration or a clear whose audit row cannot be written changes nothing, in SQLite or in the Registry", () => {
+  const registry = new Registry();
+  const d = working(registry);
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key);
+  const auditDown = (kind: string, write: () => unknown) => {
+    openDb().exec(`CREATE TEMP TRIGGER awaiting_audit_down BEFORE INSERT ON session_events
+      WHEN NEW.kind = '${kind}' BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+    try {
+      assert.throws(write, /audit down/);
+    } finally {
+      openDb().exec("DROP TRIGGER IF EXISTS awaiting_audit_down");
+    }
+  };
+
+  // A first declaration: no wait anywhere, and no event.
+  auditDown("session_awaiting_set", () => registry.reportAwaiting(d.syntheticId, body()));
+  assert.equal(registry.getAwaiting(d.syntheticId), null, "the Registry kept a wait with no audit row");
+  assert.equal(stored(), undefined, "SQLite kept a wait with no audit row");
+  assert.deepEqual(awaitingEvents(d.syntheticId, "session_awaiting_set"), []);
+
+  // A re-declaration: the earlier wait stands exactly as it was.
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  const before = stored();
+  const cached = registry.getAwaiting(d.syntheticId);
+  auditDown("session_awaiting_updated", () => registry.reportAwaiting(d.syntheticId, body(Date.now(), 30)));
+  assert.deepEqual(stored(), before, "SQLite took the re-declaration with no audit row");
+  assert.deepEqual(registry.getAwaiting(d.syntheticId), cached, "the Registry took the re-declaration with no audit row");
+  assert.deepEqual(awaitingEvents(d.syntheticId, "session_awaiting_updated"), []);
+
+  // A clear: the wait still stands in both, and no clear was logged.
+  auditDown("session_awaiting_cleared", () => registry.clearAwaiting(d.syntheticId, "operator"));
+  assert.deepEqual(registry.getAwaiting(d.syntheticId), cached, "the Registry dropped the wait with no audit row");
+  assert.deepEqual(stored(), before, "SQLite deleted the wait with no audit row");
+  assert.deepEqual(clearedEvents(d.syntheticId), []);
+
+  // Every Registry reloads stored waits: leave none behind for the tests after this one.
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
+  assert.equal(clearedEvents(d.syntheticId).length, 1);
+});
+
 test("a wait is refused while a request_input is pending, and a new question ends a standing wait", () => {
   const registry = new Registry();
   const reviews = new ReviewManager(registry);

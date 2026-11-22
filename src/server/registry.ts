@@ -325,6 +325,7 @@ import {
   upsertTask as dbUpsertTask,
   storedTaskWorkUnitId,
   inTransaction,
+  openDb,
   upsertUsageCell,
   loadInspectorInspections,
   hasHumanResolvedReview,
@@ -9552,18 +9553,22 @@ export class Registry extends EventEmitter {
       // Turns already judged stay judged across a re-declaration.
       judgedTurnAt: this.awaitings.get(key)?.judgedTurnAt ?? null,
     };
-    upsertSessionAwaiting(record);
+    // The declaration and its audit row commit together, and the caches follow the commit: a
+    // failed insert leaves the previous wait (or none) standing everywhere, with no event.
+    commitAwaiting(() => {
+      upsertSessionAwaiting(record);
+      logEvent(s.id, now, prev ? "session_awaiting_updated" : "session_awaiting_set", {
+        actor: "session",
+        what: awaiting.what,
+        wakeSource: awaiting.wakeSource,
+        expectedBy: awaiting.expectedBy,
+        ...(prev ? { sinceMs: now - awaiting.startedAt } : {}),
+      });
+    });
     this.awaitings.set(key, record);
     this.awaitingSeenAt.set(key, now);
     this.awaitingLastState.set(key, s.state);
     this.awaitingDeclaredReport.set(key, this.lifecycleReport(s)?.ref ?? null);
-    logEvent(s.id, now, prev ? "session_awaiting_updated" : "session_awaiting_set", {
-      actor: "session",
-      what: awaiting.what,
-      wakeSource: awaiting.wakeSource,
-      expectedBy: awaiting.expectedBy,
-      ...(prev ? { sinceMs: now - awaiting.startedAt } : {}),
-    });
     this.syncSessionsForAwaiting(key);
     return { ok: true, awaiting, created: !prev };
   }
@@ -9589,9 +9594,13 @@ export class Registry extends EventEmitter {
   ): boolean {
     const record = this.awaitings.get(key);
     if (!record) return false;
-    deleteSessionAwaiting(key);
+    // The delete and its `session_awaiting_cleared` row commit together, and the caches follow
+    // the commit: a failed insert leaves the wait standing in SQLite and in the Registry.
+    commitAwaiting(() => {
+      deleteSessionAwaiting(key);
+      this.logAwaitingCleared(sessionId, record, actor, resolution, now);
+    });
     this.forgetAwaiting(key);
-    this.logAwaitingCleared(sessionId, record, actor, resolution, now);
     if (sync) this.syncSessionsForAwaiting(key);
     return true;
   }
@@ -11851,6 +11860,16 @@ const AWAITING_LIVENESS_GRACE_MS = 3 * 60_000;
  * Mission Control's own; one claimed long before has long since been read or dropped.
  */
 const AWAITING_SEED_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Commit a wait's row and its audit row as one: a failed insert of either leaves both as they
+ * were. Joins a transaction the caller already holds (as `upsertTask` does), whose commit then
+ * carries both; otherwise opens its own.
+ */
+function commitAwaiting(write: () => void): void {
+  if (openDb().isTransaction) write();
+  else inTransaction(write);
+}
 
 /**
  * How long a person's delivery into a waiting session contests an automated delivery of the

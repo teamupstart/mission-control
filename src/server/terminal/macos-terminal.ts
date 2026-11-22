@@ -1,7 +1,5 @@
-import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { normTty } from "../discovery/tty.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
-import { featureEnabled } from "../feature-flags/index.ts";
 import { appleScriptString, appleScriptText } from "./applescript.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
@@ -60,7 +58,7 @@ end tell`;
 
 export function macosTerminalEmulator(
   exec: TerminalExec = defaultExec,
-  enabled = () => featureEnabled(MACOS_TERMINAL_FLAG_ID),
+  enabled = () => false,
 ): TerminalEmulator {
   const osa = (script: string) =>
     exec(FIXED_OS_EXECUTABLES.osascript, [], { input: script, timeoutMs: TIMEOUT_MS });

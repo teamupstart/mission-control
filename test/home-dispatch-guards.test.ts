@@ -40,11 +40,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
-  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default. The macOS Terminal backend extends
+  // enum validation for Pipeline console, Pipeline install, and Setup install.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 426);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "09f04de1c3db0082a899f489e78390d6f308aed4f8a24e4e27ed871c4e0e5079");
+    "7dea0dd065d7169555efe22707a07abd8a5b050d470e19245714290b85b5c3c0");
 });
 
 function sourceFiles(dir: string): string[] {

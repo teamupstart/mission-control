@@ -125,9 +125,11 @@ export interface DiscoveryInput {
  * that the same reading answers both the gate and the correlation, instead of an adapter
  * growing a private second way to ask whether its app is up.
  */
-export async function gatherDiscoveryInput(): Promise<DiscoveryInput> {
+export async function gatherDiscoveryInput(
+  emulators?: Parameters<typeof enumerateTerminals>[1],
+): Promise<DiscoveryInput> {
   const procs = await listProcesses();
-  const terminals = await enumerateTerminals(procs);
+  const terminals = await enumerateTerminals(procs, emulators);
   return { procs, terminals };
 }
 

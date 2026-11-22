@@ -38,7 +38,9 @@ and Stuck rows.
   (`src/web/residents/marker.ts:168`).
 - `detectAlerts` runs in the browser (`src/web/useNotifier.ts:120`) and in the daemon's away
   watcher (`src/server/away/watcher.ts:204`). Both must name alike.
-- The fold's section order is implicit in push order (`src/web/lib/attention.ts:355`).
+- The fold's section order is implicit in push order (`src/web/lib/attention.ts:355`). It
+  produces seven kinds. Snoozed is not one of them: the inbox draws it after every fold section
+  (`src/web/components/AttentionInbox.tsx:197`).
 - `test/tooltip-coverage.test.ts` is a source scan that fails on a control with no tooltip; the
   action test below follows it.
 
@@ -57,8 +59,11 @@ and Stuck rows.
 4. **Dashboard surfaces**, behind `useFeatureFlag(INBOX_FLAG)`: `inboxSubject` and the session
    row headers, the snoozed row, the review modal header, and a name line in the `ReviewCard`
    head. A resident's name takes its board colour.
-5. **Section order.** Add `INBOX_SECTION_ORDER` listing today's seven kinds in rendered order and
-   make the fold emit in that order. Correct the stale six-section comment.
+5. **Section order.** Add `INBOX_SECTION_ORDER` listing today's seven fold kinds in rendered
+   order: `ensemble_decision`, `session_reviews`, `session_dialog`, `pipeline_commission`,
+   `pipeline_halt`, `session_blocked`, `parked_finalization`. Make the fold emit in that order.
+   Snoozed stays where it is, drawn by the inbox after every fold section, so it is not in the
+   constant and remains the last heading. Correct the stale six-section comment.
 6. **Action seam.** In `src/shared/inbox.ts`: `InboxActionSpec { id, label, spoken, clickOnly }`
    and the `INBOX_ACTIONS` registry. An entry has a spoken form, or a `clickOnly` reason
    (`navigation`, `dismissal`, `disclosure`, `section-wide`). Seed it with the question card's
@@ -77,7 +82,8 @@ No storage. With the flag off every name is exactly what it is today, and tests 
 
 - `test/display-name.test.ts`: every rank, the fallbacks, `spoken`.
 - `test/alerts.test.ts`: titles with and without `names`.
-- `test/attention-inbox.test.ts`: the fold follows `INBOX_SECTION_ORDER`.
+- `test/attention-inbox.test.ts`: the fold follows `INBOX_SECTION_ORDER`, and the constant holds
+  exactly the seven kinds above in that order.
 - `test/feature-flags.test.ts`: the entry is `preview` and off by default.
 - `test/inbox-actions.test.ts`: every registry entry has a spoken form or a click-only reason and
   never both; ids are unique; a relabelled button keeps its action's id and spoken form; and a
@@ -96,19 +102,22 @@ No storage. With the flag off every name is exactly what it is today, and tests 
 ## 8. Merge and exit criteria
 
 The flag row exists and toggles live. With the flag on, the four surfaces agree on one name; with
-it off nothing changed. No new control is visible for the seam.
+it off nothing changed. The inbox's sections render in the order they do today. No new control is
+visible for the seam.
 
 ## 9. Downstream handoff
 
 Later phases rely on `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`,
 `InboxActionButton`, `SpokenHint` and `AlertScope.names`, and add to them without changing their
-shapes. Each adds its actions from the index table and its card file to the scan. Voice fills
-`callSign` and `referenceName` and turns the hints on.
+shapes. Phase 5 inserts `session_stuck` directly after `session_blocked`. Phase 2 inserts
+`agent_reports` directly after `parked_finalization`, as the constant's final entry, which the
+inbox draws immediately before Snoozed. Each phase adds its actions from the index table and its
+card file to the scan. Voice fills `callSign` and `referenceName` and turns the hints on.
 
 ## 10. Cross-phase audit record
 
 - Written first. Phases 2 and 5 each add one kind to `INBOX_SECTION_ORDER` at the position the
-  index fixes; neither reorders the existing seven.
+  index's section-order table fixes; neither reorders the existing seven.
 - After Phase 2: report rows store the resolver's name at post time, so the resolver must not
   need a live session. Its input is plain values. Confirmed.
 - After Phase 6: the report alert takes its name from the report, not from `sessionLabel`.
@@ -121,3 +130,6 @@ shapes. Each adds its actions from the index table and its card file to the scan
   also covers the report's conversation entry.
 - Plan validation round 3: no change here. An action a card does not draw, such as Mark done on
   a queue-only stall, stays a declared action; the registry does not say when a card shows it.
+- Plan validation round 5: step 5 now names the seven kinds and says Snoozed is outside the
+  constant and drawn last, and the handoff states each later insertion by its neighbours, so
+  "last in the constant" cannot be read as "after Snoozed".

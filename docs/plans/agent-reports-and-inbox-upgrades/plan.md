@@ -1,7 +1,7 @@
 # Agent reports and inbox upgrades
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 to 4. This task delivers the plan and its phases only. No
+revised after plan validation rounds 1 to 5. This task delivers the plan and its phases only. No
 product code changes here.
 
 ## Goal

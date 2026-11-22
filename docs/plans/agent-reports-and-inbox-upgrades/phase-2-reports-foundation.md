@@ -42,6 +42,8 @@ Mark all read (Phase 7).
   (`src/web/components/AttentionInbox.tsx:62`), `PulseStat` (`src/web/components/Topbar.tsx:377`).
   The pulse is pinned by `e2e/specs/topbar-one-row.spec.ts:148`, `test/topbar-ladder.test.ts`,
   `test/topbar-items.test.ts` and `test/tooltip-coverage.test.ts`.
+- The inbox draws the Snoozed heading itself, after every section the fold produces
+  (`AttentionInbox.tsx:197`). Snoozed is not a fold kind and is not in `INBOX_SECTION_ORDER`.
 - A session's checkout files are read through `src/server/routes.ts:3614`; reuse its path rules.
 - `ReviewManager` orphans reviews on `session_remove` (`src/server/reviews.ts:116`). Reports must
   not.
@@ -71,7 +73,11 @@ Mark all read (Phase 7).
    reply. Update every hand-kept list.
 6. **Dashboard state and fold.** Handle the snapshot field and `report_upsert`. Fold unread,
    unsuperseded reports into `agent_reports` items grouped by author key, groups ordered by
-   their oldest `rootCreatedAt`. Add `toRead`. Reports never add to `total` or `represented`.
+   their oldest `rootCreatedAt`. Insert `agent_reports` into `INBOX_SECTION_ORDER` directly after
+   `parked_finalization`, as the constant's final entry. The inbox draws Snoozed after every
+   fold section, so the Reports heading renders after Stuck finalizations and immediately before
+   Snoozed, which is the position R24 gives it. Add `toRead`. Reports never add to `total` or
+   `represented`.
 7. **Inbox.** Section title "Reports". A `ReportCard` collapsed to title, author name and age;
    opening it shows the body, the link, "updated N times" when `version > 1`, and Mark read, and
    posts opened once. `openReportId` lives in `src/web/App.tsx`. Declare two actions in
@@ -98,20 +104,25 @@ tool.
 - `test/reports-http.test.ts`: routes, flag off, a path outside the checkout, an oversized file.
 - A migration test for a version-40 database; `test/mission-mcp.test.ts`; `npm run smoke`.
 - `test/attention-inbox.test.ts`: grouping, order, `toRead`, `total` untouched; opening a report
-  does not change `toRead`.
+  does not change `toRead`; `agent_reports` is the final entry of `INBOX_SECTION_ORDER`, directly
+  after `parked_finalization`, whether or not `session_stuck` is present.
+- A `renderToStaticMarkup` test of the inbox with a parked finalization, a report and a snoozed
+  question: the headings read Stuck finalizations, Reports, Snoozed, in that order.
 - `test/inbox-actions.test.ts` now scans the report card and covers `toggle` and `mark-read`.
 - `e2e/specs/reports-inbox.spec.ts`: post on the tool's own channel (`/mcp/reports` with the
   daemon token, as `e2e/specs/async-input-ask-and-continue.spec.ts` does for questions). Assert
   "1 to read", the Reports row, the body on open with the figure unchanged, the state after a
   reload, Mark read clearing the row and the figure, a replacing report showing one row with
-  "updated 1 time", the session not amber, and nothing shown with the flag off.
+  "updated 1 time", the session not amber, and nothing shown with the flag off. With a snoozed
+  question also present, the Reports heading is above the Snoozed heading.
 - Update `e2e/specs/topbar-one-row.spec.ts` for the fifth segment.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and the specs.
 
 ## 8. Merge and exit criteria
 
 A posted report is durable across a daemon restart and a session eviction and is listed and
-counted only as to read. In this phase it leaves to read through Mark read, or by being replaced;
+counted only as to read. The Reports section renders after Stuck finalizations and immediately
+before Snoozed. In this phase a report leaves to read through Mark read, or by being replaced;
 opening it does not clear it. Phases 3 and 7 add the other ways R9 lists, each through
 `markRead`. Foreman's inputs are unchanged.
 
@@ -119,8 +130,8 @@ opening it does not clear it. Phases 3 and 7 add the other ways R9 lists, each t
 
 Phases 3, 4, 6 and 7 rely on the table, `ReportItem`, the author key, the routes, the fold item,
 `toRead`, `openReportId`, `markRead` and the stored document path. They add routes and write
-their own columns; they do not change the id format, how a chain keeps its queue place, or add a
-second way to set `readAt`.
+their own columns; they do not change the id format, how a chain keeps its queue place, where the
+Reports section sits, or add a second way to set `readAt`.
 
 ## 10. Cross-phase audit record
 
@@ -141,3 +152,6 @@ second way to set `readAt`.
   6's pinned report relies on this and reuses `ReportCard` unchanged.
 - Plan validation round 4: `supersededBy` is what Phase 6 follows to find the report that
   replaced a notified one. No change here.
+- Plan validation round 5: step 6 now states where `agent_reports` goes by its neighbours, and
+  why that is immediately before Snoozed. Two tests and an exit criterion pin the rendered order.
+  Phase 5's `session_stuck` is inserted earlier in the constant, so it cannot displace this.

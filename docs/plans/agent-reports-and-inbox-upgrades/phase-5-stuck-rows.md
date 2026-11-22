@@ -56,10 +56,12 @@ the switch).
    text). Add `fingerprint`: the kind and those facts with every clock left out. `reason` keeps
    its wording.
 2. **Fold.** With the flag on, each stall whose session is live becomes a `session_stuck` item
-   (`stuck:<sessionId>`), placed by `INBOX_SECTION_ORDER`, counted once in `total`. Its session
-   joins `represented` before the backstop runs. Its dismissal key is
-   `occurrenceOf(kind, fingerprint)`, so it stays dismissed while minutes pass and returns when
-   the facts change.
+   (`stuck:<sessionId>`), counted once in `total`. Insert `session_stuck` into
+   `INBOX_SECTION_ORDER` directly after `session_blocked` and directly before
+   `parked_finalization`, so the Stuck heading renders right after Waiting on you and before
+   Stuck finalizations, as R24 orders them. Its session joins `represented` before the backstop
+   runs. Its dismissal key is `occurrenceOf(kind, fingerprint)`, so it stays dismissed while
+   minutes pass and returns when the facts change.
 3. **Fixed messages.** The three texts from the source plan live in `src/shared/inbox.ts`.
    `POST /api/sessions/:id/inbox-message { kind: "nudge" | "continue" | "push" }` queues one
    with the id prefix `inbox-message:`, which `daemonAuthorOf` treats as daemon-written, so it is
@@ -93,8 +95,9 @@ fold ignores stalls and alerts are unchanged.
 - `test/stall.test.ts`: facts for each rule, including a task with no queue, a queue with no
   task (`task` null, `queueOpen` above zero) and both; `fingerprint` equal across two times,
   different when the round or the open work changes; every pinned sentence unchanged.
-- `test/attention-inbox.test.ts`: the item, its place, its count, no duplicate under Waiting on
-  you, the dismissal rule.
+- `test/attention-inbox.test.ts`: the item, its place directly between `session_blocked` and
+  `parked_finalization` whether or not `agent_reports` is present, its count, no duplicate under
+  Waiting on you, the dismissal rule.
 - A `renderToStaticMarkup` test for `StuckCard`: a task stall draws Mark done; a queue-only stall
   draws Continue and Open session and no Mark done; a parked run draws Resubmit or Tell it to
   push only under their conditions.
@@ -112,8 +115,9 @@ fold ignores stalls and alerts are unchanged.
 ## 8. Merge and exit criteria
 
 Each of the four rules produces a card that names its cause and offers only the actions that can
-work: no card draws a control whose target is missing. A dismissed row stays dismissed until its
-facts change.
+work: no card draws a control whose target is missing. The Stuck section renders right after
+Waiting on you and before Stuck finalizations. A dismissed row stays dismissed until its facts
+change.
 
 ## 9. Downstream handoff
 
@@ -136,3 +140,6 @@ the declared actions. `Stall.facts` is additive; do not rename its kinds.
 - Plan validation round 3: the unfinished-work facts now carry `task` and `queueOpen` separately,
   and Mark done is drawn only with a task. R16 and the index's action table say the same. No
   queue-completion route is added; that would be a new capability outside this plan.
+- Plan validation round 5: step 2 now states where `session_stuck` goes by its neighbours. It is
+  inserted before `parked_finalization`, and Phase 2's `agent_reports` after it, so the two
+  insertions land the same way in either merge order.

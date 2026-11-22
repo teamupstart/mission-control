@@ -158,3 +158,6 @@ reached for one. Voice reuses the report alert unchanged.
   opened a replaced report's successor. The successor is the adopted rule, now written into the
   adopted decision, R22 and the design section, and step 5 states it first, before where the
   report is drawn. It follows R12: the inbox shows only the latest of a chain.
+- Plan validation round 5: the band in step 5 is drawn above every section and is not a fold
+  kind, so it is outside `INBOX_SECTION_ORDER` and does not move the Reports section, which
+  stays immediately before Snoozed.

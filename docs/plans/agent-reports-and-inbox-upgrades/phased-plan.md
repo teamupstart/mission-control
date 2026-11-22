@@ -24,6 +24,9 @@ This task writes the plan and schedules the phases. It ships no product code.
   and 6). That is the least certain work, so it is its own phase and cannot hold up replies.
 - Notification classes replace one filter shared by the browser and the daemon
   (`src/shared/alerts.ts:116`). Mutes filter the same path, so noise controls follow it.
+- Snoozed is not a fold section. The inbox draws it itself, after every section the fold
+  produces (`src/web/components/AttentionInbox.tsx:197`). So the fold orders nine kinds, and
+  Snoozed is always the tenth and last heading.
 
 ## Plan validation round 1
 
@@ -85,6 +88,17 @@ One consistency finding was accepted and applied:
   replacing report takes the earlier one's place and the inbox shows only the latest of a chain.
   The older version is not shown in the inbox; it stays in the conversation.
 
+## Plan validation round 5
+
+One consistency finding was accepted and applied:
+
+- **Reports sits immediately before Snoozed, in every statement of the order.** The contract
+  below said Phase 2 adds `agent_reports` "last", which read as after Snoozed and against R24.
+  It now gives the full order, names the kind each phase inserts and the kinds on either side of
+  it, and says why Reports being the last fold kind puts it directly before Snoozed. Phases 1, 2
+  and 5 state their positions the same way, and Phase 2's tests assert that the Reports heading
+  comes after Stuck finalizations and before Snoozed.
+
 ## Sizing and phase count
 
 Estimated 3,100 to 3,850 non-test implementation lines across shared contracts, the daemon, the
@@ -129,6 +143,30 @@ graph LR
   rebases. Two phases that add a migration (2 and 7, and the sibling plan) take the next schema
   number at merge time.
 
+## The inbox section order
+
+This is R24 as the code will hold it. `INBOX_SECTION_ORDER` lists fold kinds only; Snoozed is
+drawn by the inbox after all of them.
+
+| Position | Heading | Fold kind | Added by |
+| --- | --- | --- | --- |
+| 1 | Decisions | `ensemble_decision` | exists |
+| 2 | Questions from agents | `session_reviews` | exists |
+| 3 | Parked on a menu | `session_dialog` | exists |
+| 4 | Pipeline lifecycle | `pipeline_commission` | exists |
+| 5 | Pipeline halts | `pipeline_halt` | exists |
+| 6 | Waiting on you | `session_blocked` | exists |
+| 7 | Stuck | `session_stuck` | Phase 5 |
+| 8 | Stuck finalizations | `parked_finalization` | exists |
+| 9 | Reports | `agent_reports` | Phase 2 |
+| 10 | Snoozed | none: drawn by the inbox after every fold section | exists |
+
+Phase 5 inserts `session_stuck` directly after `session_blocked` and directly before
+`parked_finalization`. Phase 2 inserts `agent_reports` directly after `parked_finalization`, as
+the final entry of `INBOX_SECTION_ORDER`. Because Snoozed is drawn after every fold section, that
+puts Reports immediately before Snoozed and never after it. The two insertions do not depend on
+each other, so either phase may merge first.
+
 ## Cross-phase contracts
 
 Owned by Phase 1:
@@ -137,8 +175,8 @@ Owned by Phase 1:
 - `agentDisplayName(input)` in `src/shared/display-name.ts` returns `{ name, source, spoken }`.
   Input: `callSign`, `resident: { referenceName, name, colorId }`, `taskTitle`, `sessionName`.
   `callSign` and `referenceName` are accepted and unset until voice adds them.
-- `INBOX_SECTION_ORDER` in `src/web/lib/attention.ts`. Phase 5 adds `session_stuck` between
-  `session_blocked` and `parked_finalization`; Phase 2 adds `agent_reports` last.
+- `INBOX_SECTION_ORDER` in `src/web/lib/attention.ts`, holding the fold kinds in the order of
+  the table above. Phases 5 and 2 each insert one kind at the position that table fixes.
 - `InboxActionSpec { id, label, spoken, clickOnly }` and the `INBOX_ACTIONS` registry. An action
   has a `spoken` form, or a `clickOnly` reason: `navigation`, `dismissal`, `disclosure` or
   `section-wide`.

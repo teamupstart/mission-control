@@ -7845,6 +7845,27 @@ a.btn {
   font-size: 14.5px;
   font-weight: 600;
 }
+/* Who asked, by the one naming rule (the inbox flag): a quiet label ahead of the title. */
+.review-agent {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* A resident's name, wherever an agent is named, is drawn in its board colour. */
+.agent-name-resident,
+.review-agent.agent-name-resident {
+  color: var(--resident);
+}
+/* A control's spoken form, beside it in lighter text. Drawn only once voice turns hints on. */
+.spoken-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
 .kind-tag {
   font-size: 10.5px;
   text-transform: uppercase;

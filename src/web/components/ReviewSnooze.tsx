@@ -20,6 +20,8 @@ import { QUESTION_ACTION_COPY, type QuestionWait } from "../lib/async-questions.
 import { AgentDot } from "./session-bits.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { useAgentName } from "../lib/agent-names.ts";
+import { AgentName } from "./AgentName.tsx";
 
 /** An alarm clock: the mark every "Remind me later" surface wears. */
 export function ClockGlyph(): React.JSX.Element {
@@ -283,11 +285,12 @@ function AnswerNowButton({ busy, onClick }: { busy: boolean; onClick: () => void
 /** One snoozed question in the attention inbox's Snoozed section. */
 export function SnoozedInboxRow({ review, session }: { review: ReviewItem; session: Session }): React.JSX.Element {
   const { busy, err, wake } = useWake(review.id);
+  const name = useAgentName(session, session.name || "(unnamed)");
   return (
     <section className="inbox-item inbox-snoozed" aria-label={`Snoozed: ${review.title}`}>
       <div className="inbox-head">
         <AgentDot agent={session.agent} />
-        <strong>{session.name || "(unnamed)"}</strong>
+        <AgentName view={name} />
         <span className="inbox-spacer" />
         {review.snooze && <SnoozeWhen until={review.snooze.until} />}
         <AnswerNowButton busy={busy} onClick={wake} />

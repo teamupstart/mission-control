@@ -1,4 +1,5 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
+import { INBOX_FLAG } from "./inbox.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
@@ -80,6 +81,15 @@ export const FEATURE_FLAGS = [
       "as waiting on your answer.",
     stage: "preview",
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
+  },
+  {
+    id: INBOX_FLAG,
+    label: "Reports and inbox upgrades",
+    description:
+      "Agents post reports to the attention inbox, stuck sessions get their own rows there, and one rule " +
+      "names an agent everywhere: its resident name in its board colour, else its task title, else its session name.",
+    stage: "preview",
+    keywords: ["inbox", "reports", "stuck", "names", "display name", "attention"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

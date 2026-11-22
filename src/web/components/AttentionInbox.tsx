@@ -1,4 +1,8 @@
 import { useContext, useState } from "react";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
+import { AgentName } from "./AgentName.tsx";
 import { ensembleStageWord } from "@shared/ensemble.ts";
 import {
   PIPELINE_HALT_ACTIONS,
@@ -225,7 +229,17 @@ function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefin
 /**
  * What a row is about: the name its header prints, and the name its Dismiss says it removes.
  * One function for both, so the button's accessible name always matches the row it sits in.
+ *
+ * A row about a session names its agent by the one naming rule while the `inbox` flag is on,
+ * in a resident's board colour; off, it prints the session name exactly as before.
  */
+function useInboxSubject(item: AttentionItem): AgentNameView {
+  const enabled = useFeatureFlag(INBOX_FLAG);
+  const runs = useContext(ResidentNamesContext);
+  const legacy = inboxSubject(item);
+  return "session" in item ? agentNameView(item.session, legacy, enabled, runs) : { name: legacy, colorId: null };
+}
+
 function inboxSubject(item: AttentionItem): string {
   switch (item.kind) {
     case "pipeline_commission":
@@ -252,6 +266,7 @@ function inboxSubject(item: AttentionItem): string {
  */
 function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: () => void }): React.JSX.Element {
   const paused = useContext(PausedResidentsContext);
+  const subject = useInboxSubject(item);
   // A row of message-mode questions (`async-input`) never had its agent waiting inside a call: the
   // words follow whether that agent is still working or has stopped, as the cards below say.
   const tip =
@@ -264,7 +279,7 @@ function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: ()
     <Tooltip label={tip}>
       <button
         className="btn btn-ghost"
-        aria-label={`Dismiss ${inboxSubject(item)} from the inbox`}
+        aria-label={`Dismiss ${subject.name} from the inbox`}
         onClick={onDismiss}
       >
         Dismiss
@@ -290,13 +305,14 @@ function InboxItem({
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
+  const subject = <AgentName view={useInboxSubject(item)} />;
   switch (item.kind) {
     case "pipeline_commission":
       return (
         <section className="inbox-item inbox-halt">
           <div className="inbox-head">
             <span className="inbox-glyph" aria-hidden>⇶</span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">{item.attention.title}</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this Pipeline commission">
@@ -316,7 +332,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">
               {item.summary.strategyLabel} · {ensembleStageWord(item.summary)}
             </span>
@@ -340,7 +356,7 @@ function InboxItem({
         <section className="inbox-item inbox-reviews">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="dim"> · {item.reviews.length} pending</span>
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
@@ -370,7 +386,7 @@ function InboxItem({
         <section className="inbox-item inbox-dialog">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - a terminal menu is answered on its card">
@@ -396,7 +412,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⇶
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">
               {PIPELINE_PROVIDER_INFO[item.run.provider].label} ·{" "}
               {PIPELINE_HALT_CLASS_INFO[item.haltClass].label}
@@ -454,7 +470,7 @@ function InboxItem({
         <section className="inbox-item inbox-blocked">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - it reported that it is waiting on you, so the answer goes to the agent directly">
@@ -479,7 +495,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{inboxSubject(item)}</strong>
+            {subject}
             <span className="inbox-meta">{item.summary.strategyLabel} · promoting</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this run - a finalization resumes from the step that failed, never from the start">

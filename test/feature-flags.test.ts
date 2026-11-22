@@ -6,8 +6,9 @@ import * as registry from "../src/shared/feature-flag-registry.ts";
 import {
   applyFeatureFlagIntent, explicitlyDisabledFeatureFlags, FEATURE_FLAGS_DEFAULTS,
   FeatureFlagIntentSchema, FeatureFlagsConfigSchema, resolveFeatureFlag, resolveFeatureFlags,
-  type FeatureFlagDefinition, type FeatureFlagIntent, type FeatureFlagsConfig,
+  type FeatureFlagDefinition, type FeatureFlagId, type FeatureFlagIntent, type FeatureFlagsConfig,
 } from "../src/shared/feature-flags.ts";
+import { INBOX_FLAG } from "../src/shared/inbox.ts";
 
 const definitions = [
   { id: "preview-one", label: "Preview", description: "Try the preview.", stage: "preview", keywords: [] },
@@ -89,6 +90,11 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
   assert.equal(flags.find((flag) => flag.id === "async-input")?.stage, "preview", "ask without stopping ships as a preview");
+  // Reports and inbox upgrades ships as a preview, off until the operator opts in.
+  const inbox = flags.find((flag) => flag.id === INBOX_FLAG);
+  assert.equal(inbox?.stage, "preview", "reports and inbox upgrades ships as a preview");
+  assert.equal(inbox?.label, "Reports and inbox upgrades");
+  assert.equal(resolveFeatureFlag(INBOX_FLAG as FeatureFlagId, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
   assert.equal(new Set(ids).size, ids.length);
   for (const flag of flags) {
     assert.match(flag.id, /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);

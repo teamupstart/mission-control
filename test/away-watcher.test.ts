@@ -20,6 +20,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { setAwayConfig } = await import("../src/server/away/config.ts");
 const { startAwayWatcher } = await import("../src/server/away/watcher.ts");
 const { digestLines, rollupLine } = await import("../src/shared/away-buffer.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
@@ -208,6 +209,28 @@ test("a session finishing while away lands in the buffer", () => {
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "idle");
   w.stop();
+});
+
+test("with the inbox flag on, a resident's digest line is named by the one naming rule", () => {
+  const resident = mkSession({ id: "a", name: "watcher-1", task: { id: "t-resident", title: "Watch lint" } as Session["task"] });
+  const residentRuns = [{ taskId: "t-resident", settings: { identity: { name: "Linter watcher" }, board: { colorId: "teal" } } }];
+  const titleWith = (enabled: boolean): string | undefined => {
+    applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled });
+    let sessions = [{ ...resident, state: "working" as SessionState }];
+    const src = { snapshot: () => ({ sessions, tasks: [], residentRuns }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+    const w = startAwayWatcher(src, () => 1000);
+    setAwayConfig({ away: true }, 500);
+    w.tick(); // baseline
+    sessions = [{ ...resident, state: "idle" as SessionState }];
+    w.tick();
+    const title = w.buffer()?.events[0]?.title;
+    w.stop();
+    setAwayConfig({ away: false }, 2000);
+    return title;
+  };
+  assert.equal(titleWith(false), "Watch lint went idle");
+  assert.equal(titleWith(true), "Linter watcher went idle");
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false });
 });
 
 test("workflow transitions use the same away window and coalesce stable ids", () => {

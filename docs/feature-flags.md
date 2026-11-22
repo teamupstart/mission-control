@@ -5,8 +5,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
-[Fold the drawer's Profiles](residents.md#the-residents-drawer) and
-[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) as previews.
+[Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) and
+[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 **Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
@@ -167,11 +168,16 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards. Agent reports and Stuck rows join it in later releases | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
 `e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
 a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/inbox-flag.spec.ts` checks that the `inbox` row appears off, that a toggle is stored
+and reaches a second window without a reload, and that the panel's filter finds it.
+`e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
+modal header, the question card, an alert's title, and a resident's board colour.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
 

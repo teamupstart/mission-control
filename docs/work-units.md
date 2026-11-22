@@ -77,7 +77,8 @@ Mission Control writes no header into any MCP config.
 
 - **Every launch path.** A dispatch on either runtime (the Claude Agent SDK, `codex app-server`,
   Pi's tool environment, and the terminal wrapper's `export` lines), a managed Pipeline host, an
-  embedded restore after a daemon restart, a managed terminal resume, and a runtime transfer.
+  embedded restore after a daemon restart, a hibernation wake (deciding for the task it wakes),
+  a managed terminal resume, and a runtime transfer.
   The Claude adapter's in-session relaunch reuses its launch's environment. It is set whether or
   not telemetry is on: it identifies the work.
 - **Never inherited.** Every process Mission Control spawns has any `WORK_UNIT_ID` from the
@@ -113,18 +114,17 @@ disagree.
   removes it.
 - **It changes only when a launch's agent actually starts.** Being seen beneath the launch's own
   wrapper is proof that agent is running with that environment, so its record lasts as long as
-  it does, whatever else the launch then failed at. The terminal launcher settles its hand-over:
-  a dispatch confirms it once the task runs on its agent, and a managed resume once its terminal
-  opens. A dispatch that fails keeps its terminal, so its agent may still be running: a record
-  already installed stays while that agent lives - which is what keeps the reuse guard from
-  handing it another work unit's task - and a hand-over not yet taken keeps waiting, so an agent
-  that appears late still gets its record. There is no timer: a hand-over lasts exactly as long
-  as its launch's private home exists, which the wrapper removes only when it exits, after its
-  agent. Only a failed launch whose agent is gone is undone,
-  restoring exactly what the session's keys held before, so a failed resume that left no agent
-  behind leaves the reopened conversation's record as it was. A launch that definitely started
-  nothing (a managed resume the terminal refused) withdraws its hand-over. An embedded launch
-  that fails never reaches registration and changes nothing.
+  it does, whatever else the launch then failed at, and a record once installed is final. A
+  dispatch that fails keeps its terminal, so its agent may still be running: its record is what
+  keeps the reuse guard from handing it another work unit's task. When that agent ends, its
+  record describes a process that has ended, and the next launch of its conversation replaces
+  it. A hand-over not yet taken keeps waiting, so an agent that appears late still gets its
+  record. There is no timer: a hand-over lasts exactly as long as its launch's private home
+  exists, which the wrapper removes only when it exits, after its agent. The terminal launcher
+  settles its hand-over only to withdraw one nothing can take: a launch that definitely started
+  nothing (a managed resume the terminal refused). An embedded launch that fails never reaches
+  registration and changes nothing; if its driver started but registration failed, the driver
+  is stopped.
 - **What it survives.** A `/clear` or an assign starts a new conversation and not a new
   process, so the record follows the session across every note-key rotation, with the standing
   instructions the launch delivered. Rows load at daemon start and are pruned with them.

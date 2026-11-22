@@ -1275,7 +1275,7 @@ export class SdkSupervisor {
    * `hibernated` so the operator can retry. On success the session is registered idle and the
    * row is live again; binding it back to its task is the caller's.
    */
-  async wake(id: string, conversation: string): Promise<Session> {
+  async wake(id: string, conversation: string, ownerTaskId: string | null = null): Promise<Session> {
     if (this.shuttingDown) throw new Error("Mission Control is shutting down");
     if (this.handles.has(id)) throw new Error("its agent is already running");
     if (this.waking.has(id)) throw new Error("it is already resuming");
@@ -1297,7 +1297,7 @@ export class SdkSupervisor {
     this.unboundWakes.add(id);
     try {
       // No continuation turn is owed: only an idle session is hibernated.
-      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false });
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false }, ownerTaskId);
     } catch (error) {
       // Adopted, then something after the adoption threw: the conversation IS open again and
       // its pump owns it from here, so this is a resume, not a failure to report.
@@ -1612,7 +1612,7 @@ export class SdkSupervisor {
    * queue, goal and work episode are all keyed on it, and a fresh id would strand every one
    * of them. A row that never got that far has nothing to continue and is refused here.
    */
-  private async resume(row: SdkSessionRow): Promise<void> {
+  private async resume(row: SdkSessionRow, ownerTaskId: string | null = null): Promise<void> {
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
@@ -1626,10 +1626,11 @@ export class SdkSupervisor {
     // agent started with no work unit may since have been assigned another unit's task, and the
     // restored agent runs that task, so it must carry that task's id. With no current owner,
     // the launch task is what the session last worked for.
-    const ownerId = taskIdForSession(row.id) ?? row.taskId;
-    const owner = ownerId && ownerId !== row.taskId
-      ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null)
-      : task;
+    // A hibernation wake names its task: hibernating cleared the task's session pointer, so the
+    // lookup would otherwise fall back to the launch task.
+    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
+    // The registry first, then SQLite: the registry may already have dropped a finished task.
+    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
     const workUnitId = launchWorkUnitId(owner);
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
@@ -1731,6 +1732,9 @@ export class SdkSupervisor {
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
     let adopted = false;
+    // Held outside the `try` so a failure between launch and adoption can stop the driver it
+    // started: nothing else owns it, and a retried wake would start a second one.
+    let launched: SdkSessionHandle | null = null;
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
@@ -1787,6 +1791,7 @@ export class SdkSupervisor {
         traceContext: sessionTraceContext(row.id),
         workUnitId,
       });
+      launched = handle;
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
       // existing ownership boundary instead of briefly adopting an actionable card.
@@ -1840,6 +1845,9 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      // A driver that started but was never taken by `adopt` (its row or registration write
+      // threw) is stopped before its state home goes, as the shutdown branch does.
+      if (!adopted && launched && this.handles.get(row.id) !== launched) await launched.stop().catch(() => {});
       if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);

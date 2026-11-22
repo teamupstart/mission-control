@@ -3084,8 +3084,7 @@ export class Registry extends EventEmitter {
     // launch's own state home, which discovery read off this agent's wrapper ancestry - so a
     // pane that merely shares the checkout cannot take it. This is the step that puts the
     // session in the map, before anything publishes it, so the record is installed here, under
-    // the key the session holds now, and the rotation moves carry it from there. The launcher
-    // still settles it: a launch that then fails undoes it.
+    // the key the session holds now, and the rotation moves carry it from there.
     if (!prev) {
       takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => this.installHandedLaunchWorkUnit(base, launched, now));
     }
@@ -9172,81 +9171,20 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Install a terminal launch's handed-over decision for the session first seen as `session`,
-   * and return how to undo it if the launch then fails.
+   * Install a terminal launch's handed-over decision for the session first seen as `session`.
+   *
+   * Final once installed. The agent was seen beneath this launch's own wrapper, so it is running
+   * with this environment whatever else the launch then fails at: its record lasts as long as it
+   * does, which is what keeps the reuse guard from handing it another work unit's task and its
+   * spans in step with its MCP calls. When it ends, the record describes a process that has
+   * ended, and the next launch of its conversation replaces it.
    *
    * A reopened conversation will bind to its known key, where the stopped process's record
-   * still sits; this agent replaces that process, so the decision goes there too. The undo
-   * restores every key this touched to what it held, and clears the key the session holds by
-   * then if a rotation carried the record somewhere new - so a failed launch whose agent is gone
-   * leaves the records exactly as they were before it.
-   *
-   * It does nothing while that agent is still live. The agent was seen beneath this launch's own
-   * wrapper, so it is running with this environment whatever else the launch failed at; taking
-   * its record away would let the reuse guard hand it another work unit's task, and would let
-   * its spans disagree with its MCP calls. Its record then lasts as long as it does.
+   * still sits; this agent replaces that process, so the decision goes there too.
    */
-  private installHandedLaunchWorkUnit(
-    session: Session,
-    launched: TerminalLaunchWorkUnit,
-    now: number,
-  ): () => void {
-    const keys = [...new Set([noteKeyFor(session), launched.conversationKey].filter((key): key is string => Boolean(key)))];
-    const before = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
+  private installHandedLaunchWorkUnit(session: Session, launched: TerminalLaunchWorkUnit, now: number): void {
+    const keys = new Set([noteKeyFor(session), launched.conversationKey].filter((key): key is string => Boolean(key)));
     for (const key of keys) this.installLaunchWorkUnit(key, launched.workUnitId, now);
-    // What this launch put under each key, so the undo can tell its own record from a newer one.
-    const installed = new Map(keys.map((key) => [key, this.launchWorkUnits.get(key) ?? null]));
-    const firstKey = noteKeyFor(session);
-    return () => {
-      const live = this.sessions.get(session.id);
-      if (live && live.state !== "exited") return;
-      const current = live ? noteKeyFor(live) : null;
-      // A key is put back only while it still holds what this launch installed and no other live
-      // session holds it: a later launch of the same conversation (a replacement resume) may have
-      // taken it since, and its record describes the agent running now.
-      const heldByAnother = (key: string): boolean =>
-        [...this.sessions.values()].some((s) => s.id !== session.id && s.state !== "exited" && noteKeyFor(s) === key);
-      const stillOurs = (key: string, ours: LaunchWorkUnitRecord | null): boolean =>
-        sameLaunchRecord(this.launchWorkUnits.get(key) ?? null, ours) && !heldByAnother(key);
-      // A rotation (a `/clear`) may have carried this launch's record from the key it was
-      // installed under to the one the session holds now. Then that key is where it is
-      // recognized, and an original key left empty by the move is ours to put back.
-      const movedTo = current && !before.has(current) && stillOurs(current, installed.get(firstKey) ?? null)
-        ? current : null;
-      for (const [key, record] of before) {
-        const ours = installed.get(key) ?? null;
-        const moved = movedTo !== null && ours !== null && !this.launchWorkUnits.has(key) && !heldByAnother(key)
-          && sameLaunchRecord(this.launchWorkUnits.get(movedTo) ?? null, ours);
-        if (stillOurs(key, ours) || moved) this.restoreLaunchWorkUnit(key, record);
-      }
-      if (movedTo) this.restoreLaunchWorkUnit(movedTo, null);
-      if (live) this.refreshLaunchWorkUnit(live.id);
-    };
-  }
-
-  /** Put back exactly what a key held: a record, or none. */
-  private restoreLaunchWorkUnit(noteKey: string, record: LaunchWorkUnitRecord | null): void {
-    if (record) {
-      upsertLaunchWorkUnit(record);
-      this.launchWorkUnits.set(noteKey, record);
-    } else if (this.launchWorkUnits.has(noteKey)) {
-      deleteLaunchWorkUnit(noteKey);
-      this.launchWorkUnits.delete(noteKey);
-    }
-  }
-
-  /** Re-project a live session's launch record and emitted id after the record changed. */
-  private refreshLaunchWorkUnit(sessionId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s) return;
-    const next: Session = {
-      ...s,
-      launchWorkUnitId: this.launchWorkUnitForKey(noteKeyFor(s)),
-      task: this.taskSummaryFor(s.id, s.cwd, s.pipeline, s),
-    };
-    if ((next.launchWorkUnitId ?? null) === (s.launchWorkUnitId ?? null) && JSON.stringify(next.task) === JSON.stringify(s.task)) return;
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
   }
 
   /**
@@ -11261,16 +11199,6 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
-/**
- * Whether two launch records are the same install: both absent, or the same work unit installed
- * at the same moment. A rotation moves a record with its `createdAt`, so the record a launch
- * installed is still recognized under the key the session holds now.
- */
-function sameLaunchRecord(a: LaunchWorkUnitRecord | null, b: LaunchWorkUnitRecord | null): boolean {
-  if (!a || !b) return a === b;
-  return a.workUnitId === b.workUnitId && a.createdAt === b.createdAt;
-}
-
 export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }

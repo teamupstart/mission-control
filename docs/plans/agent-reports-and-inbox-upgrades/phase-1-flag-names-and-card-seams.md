@@ -61,10 +61,11 @@ and Stuck rows.
    make the fold emit in that order. Correct the stale six-section comment.
 6. **Action seam.** In `src/shared/inbox.ts`: `InboxActionSpec { id, label, spoken, clickOnly }`
    and the `INBOX_ACTIONS` registry. An entry has a spoken form, or a `clickOnly` reason
-   (`navigation`, `dismissal`, `section-wide`). Seed it with the question card's two forms from
-   the index table. In the dashboard: `SpokenHint`, which reads a voice-hints context, default
-   off, and renders nothing; and `InboxActionButton`, which draws a control from its registry
-   entry with its hint. Place the question card's hints.
+   (`navigation`, `dismissal`, `disclosure`, `section-wide`). Seed it with the question card's
+   two forms from the index table. In the dashboard: `SpokenHint`, which reads a voice-hints
+   context, default off, and renders nothing; and `InboxActionButton`, which draws a control
+   from its registry entry with its hint. It takes an optional label, so one action can be drawn
+   under two labels without becoming two actions. Place the question card's hints.
 7. **Docs.** `docs/feature-flags.md` (the flag list and the Shipped flags table) and
    `docs/attention-and-alerts.md` (the naming rule).
 
@@ -79,9 +80,10 @@ No storage. With the flag off every name is exactly what it is today, and tests 
 - `test/attention-inbox.test.ts`: the fold follows `INBOX_SECTION_ORDER`.
 - `test/feature-flags.test.ts`: the entry is `preview` and off by default.
 - `test/inbox-actions.test.ts`: every registry entry has a spoken form or a click-only reason and
-  never both; ids are unique; and a source scan of the report and Stuck card files fails on a
+  never both; ids are unique; a relabelled button keeps its action's id and spoken form; and a
+  source scan of the report card, report conversation entry and Stuck card files fails on a
   button that is not an `InboxActionButton`. The scan passes on an empty file list here and
-  starts guarding each card when Phases 2 and 5 add its file to the list.
+  starts guarding each file when Phases 2, 3 and 5 add it to the list.
 - A `renderToStaticMarkup` test for the `ReviewCard` name line.
 - `e2e/specs/inbox-flag.spec.ts`, after `e2e/specs/async-input-flag.spec.ts`: the Settings row
   appears off, and toggling it reaches a second window without a reload.
@@ -114,3 +116,6 @@ shapes. Each adds its actions from the index table and its card file to the scan
 - Plan validation round 1: `clickOnly`, `InboxActionButton` and the scan were added so every
   later card control is declared. The question card predates this work, so only its two spec
   forms are declared and its file is not scanned.
+- Plan validation round 2: the `disclosure` reason and the label override were added, for the
+  report's show and hide control (Phase 2) and the follow-up's Retry label (Phase 3). The scan
+  also covers the report's conversation entry.

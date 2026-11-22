@@ -60,10 +60,12 @@ Mark all read (Phase 7).
    with the same author key; otherwise refuse with that author's open report ids and titles),
    copies an attached `.html` or `.md` file from inside the session's checkout to
    `<state home>/reports/<id>/` under a size cap, inserts, marks the replaced row superseded, and
-   emits. `markOpened` and `markRead` are idempotent. It does not subscribe to `session_remove`.
+   emits. `markOpened` is idempotent. `markRead(id, readBy)` is the one place a report becomes
+   read: it sets `readAt` and `readBy` once and is idempotent after that. It does not subscribe
+   to `session_remove`.
 4. **Routes.** `POST /mcp/reports` (404 with `feature` when the flag is off),
-   `POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `GET /api/sessions/:id/reports`
-   (every version, read or not).
+   `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` (which records `mark-read`),
+   `GET /api/sessions/:id/reports` (every version, read or not).
 5. **Tool.** Register `post_report` in `src/mcp/server.ts` with the fields in R1 and the
    description in R2. Its result is the receipt naming the id and saying not to wait for a
    reply. Update every hand-kept list.
@@ -72,9 +74,10 @@ Mark all read (Phase 7).
    their oldest `rootCreatedAt`. Add `toRead`. Reports never add to `total` or `represented`.
 7. **Inbox.** Section title "Reports". A `ReportCard` collapsed to title, author name and age;
    opening it shows the body, the link, "updated N times" when `version > 1`, and Mark read, and
-   posts opened once. `openReportId` lives in `src/web/App.tsx`. Declare `mark-read` in
-   `INBOX_ACTIONS`, draw it with `InboxActionButton`, and add the card's file to the Phase 1
-   scan. Update the inbox subtitle.
+   posts opened once. `openReportId` lives in `src/web/App.tsx`. Declare two actions in
+   `INBOX_ACTIONS`: `toggle`, the control that shows and hides the body, click-only with the
+   reason `disclosure`; and `mark-read`, with its spoken form. Draw both with
+   `InboxActionButton` and add the card's file to the Phase 1 scan. Update the inbox subtitle.
 8. **Top bar.** A neutral "to read" `PulseStat` that opens the inbox, fitted into the one-row
    ladder.
 9. **Docs.** `docs/sessions.md`, `docs/attention-and-alerts.md`, `docs/event-stream.md`,
@@ -90,29 +93,34 @@ tool.
 
 - `test/reports.test.ts`: post, the chain and its refusal, opened and read, a report surviving
   `session_remove` with its repository and author intact, a null repository for a session that
-  has none, and no change to `pendingReviews` or the completion hold.
+  has none, `markRead` recording its `readBy` once, and no change to `pendingReviews` or the
+  completion hold.
 - `test/reports-http.test.ts`: routes, flag off, a path outside the checkout, an oversized file.
 - A migration test for a version-40 database; `test/mission-mcp.test.ts`; `npm run smoke`.
-- `test/attention-inbox.test.ts`: grouping, order, `toRead`, `total` untouched.
-- `test/inbox-actions.test.ts` now scans the report card.
+- `test/attention-inbox.test.ts`: grouping, order, `toRead`, `total` untouched; opening a report
+  does not change `toRead`.
+- `test/inbox-actions.test.ts` now scans the report card and covers `toggle` and `mark-read`.
 - `e2e/specs/reports-inbox.spec.ts`: post on the tool's own channel (`/mcp/reports` with the
   daemon token, as `e2e/specs/async-input-ask-and-continue.spec.ts` does for questions). Assert
-  "1 to read", the Reports row, the body on open, the state after a reload, Mark read clearing
-  the row and the figure, a replacing report showing one row with "updated 1 time", the session
-  not amber, and nothing shown with the flag off.
+  "1 to read", the Reports row, the body on open with the figure unchanged, the state after a
+  reload, Mark read clearing the row and the figure, a replacing report showing one row with
+  "updated 1 time", the session not amber, and nothing shown with the flag off.
 - Update `e2e/specs/topbar-one-row.spec.ts` for the fifth segment.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and the specs.
 
 ## 8. Merge and exit criteria
 
-A posted report is durable across a daemon restart and a session eviction, is listed and counted
-only as to read, and leaves only through Mark read. Foreman's inputs are unchanged.
+A posted report is durable across a daemon restart and a session eviction and is listed and
+counted only as to read. In this phase it leaves to read through Mark read, or by being replaced;
+opening it does not clear it. Phases 3 and 7 add the other ways R9 lists, each through
+`markRead`. Foreman's inputs are unchanged.
 
 ## 9. Downstream handoff
 
 Phases 3, 4, 6 and 7 rely on the table, `ReportItem`, the author key, the routes, the fold item,
-`toRead`, `openReportId` and the stored document path. They add routes and write their own
-columns; they do not change the id format or how a chain keeps its queue place.
+`toRead`, `openReportId`, `markRead` and the stored document path. They add routes and write
+their own columns; they do not change the id format, how a chain keeps its queue place, or add a
+second way to set `readAt`.
 
 ## 10. Cross-phase audit record
 
@@ -125,3 +133,6 @@ columns; they do not change the id format or how a chain keeps its queue place.
 - Plan validation round 1: `repository` and `followUpTaskId` were added to `ReportItem` and the
   table. Phase 3's follow-up reads the first and writes the second, so neither needs a live
   session or a second migration.
+- Plan validation round 2: this phase's exit criterion no longer says a report leaves only
+  through Mark read; R9 lists every way and `markRead` is the single writer. The card's show and
+  hide control is declared as `toggle`.

@@ -1,7 +1,7 @@
 # Agent reports and inbox upgrades
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation round 1. This task delivers the plan and its phases only. No
+revised after plan validation rounds 1 and 2. This task delivers the plan and its phases only. No
 product code changes here.
 
 ## Goal
@@ -72,9 +72,9 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | R6 | Inbox: a **Reports** section below everything owed and above Snoozed, grouped by agent, oldest first. |
 | R7 | Top bar: a separate **to read** figure beside need you, to answer and snoozed. Clicking it opens the inbox. |
 | R8 | A report never turns a session amber, never puts it in Needs you, and never counts in need you or to answer. |
-| R9 | A report stays in to read until the operator presses **Mark read** or replies. Opening the inbox or the report does not clear it. Mission Control records when each report was first opened, with no visible count. |
+| R9 | A report stays in to read until the operator marks it read or answers it. Marking read is **Mark read**, or **Mark all read** (R30). Answering is a reply, or the follow-up task that stands in for a reply when the agent is gone (R11), once that task has been dispatched. A replaced report gives its place to its successor (R12). Opening the inbox or the report does not clear it. Mission Control records when each report was first opened, with no visible count. |
 | R10 | Each report card has a reply box. The reply is delivered like a typed message and marks the report read. The message names its report ("Reply to your report 'Build failure diagnosed' (r-42), posted 12 minutes ago"), then the report text, then the operator's words. |
-| R11 | Reports outlive their session: an exit or a merged pull request leaves them in to read. A resident that is not running: the reply box says "Steve isn't running" with a relaunch hint. A standard session that is gone: the reply box becomes **Start a follow-up task**, which dispatches a new session with the report as context. Completed sessions are never resumed. |
+| R11 | Reports outlive their session: an exit or a merged pull request leaves them in to read. A resident that is not running: the reply box says "Steve isn't running" with a relaunch hint. A standard session that is gone: the reply box becomes **Start a follow-up task**, which dispatches a new session with the report as context and, like a reply, marks the report read. Completed sessions are never resumed. |
 | R12 | A report posted with `replaces` takes the earlier one's place. The inbox shows only the latest with a note such as "updated 3 times" and keeps the original's place in the queue. Older versions stay in the conversation. Reports without `replaces` stack. |
 | R13 | **Open report** shows the stored copy of the attached document. **Publish as scout** saves it to the scout archive, and only when the operator chooses it. |
 | R14 | Foreman leaves reports alone: it never marks them read, replies, triages them or uses them as completion evidence. |
@@ -108,7 +108,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | Id | Requirement |
 | --- | --- |
 | R24 | Fixed section order: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts, Waiting on you, **Stuck**, Stuck finalizations, **Reports**, Snoozed. |
-| R25 | Every inbox action has a spoken form, shown on the card as an always-visible hint in lighter text. Planned here as a seam: every control on a report or Stuck card, and the question card's two forms, is declared with its spoken form, which stays hidden until voice turns it on. A control that only navigates (Open session, Open run, Open archive), a row's Dismiss, and the section-wide Mark all read, which names no agent, are declared click-only with that reason. |
+| R25 | Every inbox action has a spoken form, shown on the card as an always-visible hint in lighter text. Planned here as a seam: every control on a report or Stuck card, and the question card's two forms, is declared with its spoken form, which stays hidden until voice turns it on. A control that only navigates (Open session, Open run, Open archive), one that only shows or hides a report's body, a row's Dismiss, and the section-wide Mark all read, which names no agent, are declared click-only with that reason. |
 | R26 | Hooks voice needs from reports: the line "When you have finished this, post a report." on spoken messages, the unseen-reports note, and binding speech to the report that is open on screen. Planned here as seams. |
 | R27 | One `inbox` preview flag turns on reports, Stuck rows and the naming rule together. |
 | R28 | **Report guidance** is editable: the operator can change the text that tells agents when to post a report, and reset it. |
@@ -253,7 +253,8 @@ evidence, and neither contains reports.
 - **Agent gone.** The card reads the live session and resident run: a resident that is not
   running shows the relaunch hint; a standard session that is gone offers Start a follow-up task
   in the repository stored on the report. The task it creates is recorded on the report, so a
-  retry after a failed dispatch reuses that task and never creates a second.
+  retry after a failed dispatch reuses that task and never creates a second. The report is
+  marked read once the task has been dispatched, not before.
 
 ### Stuck rows
 

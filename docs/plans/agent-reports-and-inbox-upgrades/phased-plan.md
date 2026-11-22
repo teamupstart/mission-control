@@ -42,6 +42,21 @@ Four findings were accepted and applied across the bundle:
   stored copy; the publish request carries no page, and a request that tries to supply one is
   refused.
 
+## Plan validation round 2
+
+Two findings were accepted and applied:
+
+- **One statement of what clears a report.** R9 said only Mark read or a reply, while Phase 3
+  also clears on a follow-up and Phase 7 on Mark all read. R9 is now the complete rule, and the
+  section "What takes a report out of to read" below gives each way its phase. A follow-up clears
+  the report because it is the reply to an agent that is gone (R11), and only once its task has
+  been dispatched.
+- **Retry is the follow-up action.** The Retry button after a failed dispatch is the declared
+  `follow-up` action drawn with a different label, not a new action. `InboxActionButton` takes a
+  label override for this. The same pass found the report's show and hide control undeclared, so
+  it is now `toggle`, click-only with the reason `disclosure`; and the resident relaunch hint is
+  stated to be text, not a control.
+
 ## Sizing and phase count
 
 Estimated 3,100 to 3,850 non-test implementation lines across shared contracts, the daemon, the
@@ -97,9 +112,11 @@ Owned by Phase 1:
 - `INBOX_SECTION_ORDER` in `src/web/lib/attention.ts`. Phase 5 adds `session_stuck` between
   `session_blocked` and `parked_finalization`; Phase 2 adds `agent_reports` last.
 - `InboxActionSpec { id, label, spoken, clickOnly }` and the `INBOX_ACTIONS` registry. An action
-  has a `spoken` form, or a `clickOnly` reason: `navigation`, `dismissal` or `section-wide`.
+  has a `spoken` form, or a `clickOnly` reason: `navigation`, `dismissal`, `disclosure` or
+  `section-wide`.
 - `InboxActionButton`, which draws a card control from its registry entry with a `SpokenHint`.
-  The hint renders nothing until a voice-hints context says otherwise.
+  A card may pass a different label for the same action; the action id and its spoken form do
+  not change. The hint renders nothing until a voice-hints context says otherwise.
 - `AlertScope.names`, which makes alert titles use the resolver.
 
 Owned by Phase 2:
@@ -109,6 +126,7 @@ Owned by Phase 2:
   `rootId`, `version`, `supersededBy`, `createdAt`, `rootCreatedAt`, `openedAt`, `readAt`,
   `readBy`, `followUpTaskId`, `announcedAs`, `announcedAt`, `publishedArchiveKey`.
 - `repository` is the posting session's repository root at post time, or null when it has none.
+- `readBy` is one of `mark-read`, `reply`, `follow-up`, `mark-all`, or null while unread.
 - Author key: `resident:<profileId>` or `session:<sessionId>`.
 - Routes `POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read`,
   `GET /api/sessions/:id/reports`; event `report_upsert`; snapshot field `reports`.
@@ -130,6 +148,21 @@ Owned by later phases:
 - Phase 7: table `report_mutes`, the `reports` settings entry, `GET /mcp/reports/guidance`,
   `POST /api/reports/read-all`.
 
+## What takes a report out of to read
+
+This is R9 in full. A report is unread until one of the first four rows happens.
+
+| Way | `readBy` | Phase |
+| --- | --- | --- |
+| Mark read | `mark-read` | 2 |
+| A reply that the outbox accepted | `reply` | 3 |
+| A follow-up task that was dispatched | `follow-up` | 3 |
+| Mark all read | `mark-all` | 7 |
+| Replaced by a later report: not read, but its successor takes its place | none | 2 |
+| Hidden, not read: reports unlisted by the setting, or a muted author | none | 6, 7 |
+
+Opening the inbox or a report never clears it.
+
 ## Inbox actions and who declares them
 
 Phase 1 owns R25's rule and its test. Each phase declares the actions it adds. `{name}` is the
@@ -139,10 +172,11 @@ agent's display name.
 | --- | --- | --- | --- |
 | `answer-option` | Question | "{name}, option B" | 1 |
 | `answer` | Question | "{name}, ..." or "reply, ..." while the card is open | 1 |
-| `mark-read` | Report | "{name}, mark read" | 2 |
+| `toggle` | Report, and its conversation entry | click-only: disclosure | 2 |
+| `mark-read` | Report, and its conversation entry | "{name}, mark read" | 2 |
 | `reply` | Report | "{name}, ..." or "reply, ..." while the card is open | 3 |
-| `follow-up` | Report | "{name}, follow up, ..."; "reply, ..." while the card is open | 3 |
-| `open-report` | Report | "{name}, open report" | 4 |
+| `follow-up` | Report; drawn as Start a follow-up task, and as Retry after a failed dispatch | "{name}, follow up, ..."; "reply, ..." while the card is open | 3 |
+| `open-report` | Report, and its conversation entry | "{name}, open report" | 4 |
 | `publish-scout` | Report | "{name}, publish as scout" | 4 |
 | `open-archive` | Report | click-only: navigation | 4 |
 | `nudge`, `continue`, `mark-done`, `resubmit`, `push` | Stuck | "{name}, nudge", "{name}, continue", "{name}, mark done", "{name}, resubmit", "{name}, push" | 5 |

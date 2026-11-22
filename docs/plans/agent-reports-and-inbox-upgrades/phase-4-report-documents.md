@@ -46,7 +46,8 @@ automatic publication, accepting page content from the browser.
    404 the reader can explain.
 2. **Reader.** A `ReportDocumentReader` overlay: an HTML document in a sandboxed frame, a
    Markdown document through the dashboard's Markdown component. **Open report** appears on
-   `ReportCard` and `ReportEntryCard` when the report has a document, and posts opened.
+   `ReportCard` and `ReportEntryCard` when the report has a document, and posts opened. Opening
+   a document does not mark the report read.
 3. **Page builder.** A daemon function builds the page to publish from the stored file and
    nothing else. An HTML document is its stored bytes. A Markdown document is rendered by the
    daemon to a static page, using one shared Markdown configuration that the reader also uses.
@@ -60,7 +61,8 @@ automatic publication, accepting page content from the browser.
    the id in its path; its schema is strict, so a request that supplies a page or a path is
    refused. It runs the capture, stores `publishedArchiveKey` and emits. The card shows
    **Publish as scout**, then "Published" with **Open archive** (`#/scouts/<key>`). A page the
-   checker refuses shows its problems on the card and publishes nothing.
+   checker refuses shows its problems on the card and publishes nothing. Publishing does not
+   mark the report read.
 6. **Actions.** Declare `open-report` and `publish-scout` with the forms in the index table and
    `open-archive` as click-only navigation. Draw all three with `InboxActionButton`.
 7. **Docs.** `docs/archives.md` gains "How a report produces one"; `docs/sessions.md`.
@@ -77,7 +79,8 @@ opens a published report as a scout archive. With the flag off both routes refus
   page's digest equals the digest of the stored file, for HTML, and of the daemon's render of the
   stored file, for Markdown; a request carrying a substitute page is refused and archives
   nothing; changing the checkout file after posting does not change what is published; a page
-  with a script is refused with its problems; nothing is archived without the call.
+  with a script is refused with its problems; nothing is archived without the call; neither
+  opening nor publishing sets `readAt`.
 - `test/inbox-actions.test.ts` covers the three actions.
 - `e2e/specs/reports-document.spec.ts`: post a report with an HTML file, delete the checkout
   file, press Open report and read the document's text in the reader; call
@@ -88,7 +91,8 @@ opens a published report as a scout archive. With the flag off both routes refus
 ## 8. Merge and exit criteria
 
 The stored copy opens without its checkout. Publication happens only on the operator's click,
-once per report, always from the stored copy, and a refused page explains itself.
+once per report, always from the stored copy, and a refused page explains itself. Neither action
+clears the report.
 
 ## 9. Downstream handoff
 
@@ -105,3 +109,5 @@ actions.
 - Plan validation round 1: an earlier draft had the dashboard render Markdown and send the page.
   That left the published content unbound to the stored document, so the daemon now builds the
   page and the route accepts none.
+- Plan validation round 2: stated that Open report and Publish as scout are not among the ways
+  R9 clears a report.

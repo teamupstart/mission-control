@@ -106,3 +106,6 @@ not add a second delivery path. Voice reuses the report alert unchanged.
   entry, so the two can merge in either order.
 - Plan validation round 1: this phase adds no card control. The popover switches are settings,
   not inbox actions, so the action registry is untouched here.
+- Plan validation round 2: hiding reports with `reportsInInbox` unlists them without marking
+  them read, as R9 and the index now state. A notification click opens a report and does not
+  clear it.

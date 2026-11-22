@@ -67,7 +67,8 @@ control, stall settings UI, notifications (Phase 6 adds the switch).
 5. **Actions.** Declare every control on the card in `INBOX_ACTIONS` from the index table:
    `nudge`, `continue`, `mark-done`, `resubmit`, `push`, `stop` and `message` with spoken forms;
    `open-session` and `open-run` as click-only navigation; `dismiss` as click-only dismissal.
-   Draw them with `InboxActionButton` and add the card's file to the Phase 1 scan.
+   The escalation's reply box and the message box both send through `message`. Draw them with
+   `InboxActionButton` and add the card's file to the Phase 1 scan.
 6. **Docs.** The Stuck sessions part of `docs/attention-and-alerts.md`, including that there are
    no Stuck rows while stall detection is off.
 
@@ -112,3 +113,5 @@ the declared actions. `Stall.facts` is additive; do not rename its kinds.
   to a Stuck row.
 - Plan validation round 1: Open session, Open run, Dismiss and the message box are now declared
   too, so the card has no undeclared control.
+- Plan validation round 2: re-checked the card against the action table. The escalation's reply
+  box is the `message` action; no control here was undeclared.

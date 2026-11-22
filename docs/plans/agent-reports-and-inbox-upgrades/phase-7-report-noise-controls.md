@@ -20,7 +20,7 @@ a per-agent Mark all read (the operator declined it), rate limits, deleting repo
 
 ## 4. Repository findings and contracts
 
-- Inherited: the author key, `ReportCard` and `InboxActionButton` (Phases 1 and 2);
+- Inherited: the author key, `ReportCard`, `markRead` and `InboxActionButton` (Phases 1 and 2);
   `shouldDeliver`, the report alert and the watcher's report scope (Phase 6).
 - A Settings category can carry a flag: `task-shaping` does at
   `src/web/lib/settings-registry.ts:189-200`. `test/settings-sidebar-render.test.ts` checks the
@@ -44,13 +44,14 @@ a per-agent Mark all read (the operator declined it), rate limits, deleting repo
    snapshot and through one event, handled exhaustively in `src/web/useEventStream.ts`.
 4. **Filtering.** A muted author's reports are left out of the fold and `toRead`, raise no
    notification in `shouldDeliver`, and are left out of the watcher's report scope so the digest
-   does not count them. Posting is never refused and conversation entries are untouched.
+   does not count them. A mute hides reports and does not mark them read: unmuting brings the
+   unread ones back. Posting is never refused and conversation entries are untouched.
 5. **Mute control.** `ReportCard` offers "Mute <name>'s reports". Declare it as `mute` in
    `INBOX_ACTIONS` with the spoken form "{name}, mute reports" and draw it with
    `InboxActionButton`. Because a muted agent's rows leave the inbox, Unmute lives in Settings.
-6. **Mark all read.** `POST /api/reports/read-all { ids }` marks the listed ids read with
-   `readBy: "mark-all"`. A **Mark all read** button on the Reports section heading sends the ids
-   it is showing, so a report that arrives after the click is not cleared. Declare it as
+6. **Mark all read.** `POST /api/reports/read-all { ids }` calls `markRead(id, "mark-all")` for
+   each listed id. A **Mark all read** button on the Reports section heading sends the ids it is
+   showing, so a report that arrives after the click is not cleared. Declare it as
    `mark-all-read`, click-only with the reason `section-wide`: it names no agent, and the voice
    spec routes speech only by an agent's name or "reply".
 7. **Settings panel.** A "Reports" category gated on the flag: the guidance text box with Save
@@ -65,10 +66,12 @@ keeps the guidance it started with.
 
 ## 7. Tests and verification
 
-- HTTP tests for guidance (default, custom, too long), mutes and read-all.
+- HTTP tests for guidance (default, custom, too long), mutes and read-all, including that
+  read-all records `readBy` `mark-all` and leaves an id it was not sent unread.
 - An MCP test: the built child's `post_report` description contains custom guidance, and the
   default when the daemon does not answer.
-- Fold, `shouldDeliver` and away-buffer tests for a muted author.
+- Fold, `shouldDeliver` and away-buffer tests for a muted author; a muted report keeps a null
+  `readAt`.
 - `test/inbox-actions.test.ts` covers `mute` (a spoken form) and `mark-all-read` (click-only,
   `section-wide`).
 - A migration test; `test/settings-sidebar-render.test.ts`.
@@ -82,12 +85,12 @@ keeps the guidance it started with.
 ## 8. Merge and exit criteria
 
 Guidance edits reach new sessions. A mute silences and unlists one agent without losing its
-reports. Mark all read clears exactly what was listed.
+reports or marking them read. Mark all read clears exactly what was listed.
 
 ## 9. Downstream handoff
 
 Nothing later depends on this phase. Voice's mark read rule is unaffected: a muted agent's
-reports are not unread in the inbox, so they are never a mark read target.
+reports are not listed in the inbox, so they are never a mark read target.
 
 ## 10. Cross-phase audit record
 
@@ -100,3 +103,5 @@ reports are not unread in the inbox, so they are never a mark read target.
 - Plan validation round 1: Mute and Mark all read are now declared in the action registry, the
   first with a spoken form and the second click-only. The Settings panel's controls are
   settings, not inbox actions.
+- Plan validation round 2: Mark all read is one of the four ways R9 clears a report and goes
+  through Phase 2's `markRead`. A mute hides without clearing, as the index table states.

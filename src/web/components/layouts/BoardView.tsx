@@ -313,6 +313,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       onDropError={setDropError}
       onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
       workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowHoldRuns={props.workflowHoldRunsBySession?.get(s.id) ?? null}
       workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}
@@ -399,6 +400,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // reader can land focus back on the selected row here.
       registerEl={props.registerEl}
       workflowRuns={props.workflowRunsBySession?.get(s.id) ?? null}
+      workflowHoldRuns={props.workflowHoldRunsBySession?.get(s.id) ?? null}
       workflowRun={newestSessionRun(props.workflowRunsBySession?.get(s.id))}
       onOpenWorkflowRun={props.onOpenWorkflowRun}
       onOpenSchedule={props.onOpenSchedule}

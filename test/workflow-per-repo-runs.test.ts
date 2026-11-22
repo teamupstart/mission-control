@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
-import type { WorkflowBinding, WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
+import type { WorkflowBinding, WorkflowContextSnapshot, WorkflowInspectorGateState, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { WorkflowInspectorGateStateSchema } from "../src/shared/protocol.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 
@@ -1023,6 +1023,8 @@ test("a sibling evidence-readiness hold is visible until a new submission releas
   await manager.deliverPrepared(secondary.delivery.id, false);
   await manager.deliverPrepared(primary.delivery.id, false);
   assert.equal(f.store.getDelivery(primary.delivery.id)?.state, "prepared");
+  assert.deepEqual(f.store.runSummary(primary.run.id)?.deliveryHold,
+    f.store.runDetail(primary.run.id)?.deliveryHold, "Fleet and run detail share live ownership");
   assert.deepEqual(f.store.runDetail(primary.run.id)?.deliveryHold, {
     runId: secondary.run.id, deliveryId: secondary.delivery.id,
     repoRoot: SECOND_ROOT, kind: "evidence_readiness", state: "delivered",
@@ -1046,10 +1048,12 @@ test("a sibling evidence-readiness hold is visible until a new submission releas
   assert.equal(refined.ok, true, "the worktree-scoped generation wakes the secondary run");
   assert.equal(f.store.listSubmissionCoverage(refine.id).length, 1);
   assert.equal(f.store.getSubmission(refine.id)?.round, secondary.submission.round);
+  assert.equal(f.store.runSummary(primary.run.id)?.deliveryHold, null);
   assert.equal(f.store.runDetail(primary.run.id)?.deliveryHold, null);
   manager.scheduleQueuedDeliveries(f.agentSessionId);
   await f.manager.stop();
   assert.equal(f.store.getDelivery(primary.delivery.id)?.state, "delivered");
+  assert.equal(f.store.runSummary(primary.run.id)?.deliveryHold, null);
   assert.equal(f.store.runDetail(primary.run.id)?.deliveryHold, null);
 });
 
@@ -1232,4 +1236,36 @@ test("the lead takes the capture lock ahead of its siblings", async () => {
   assert.deepEqual(reviewedRepos(f), [PRIMARY_ROOT, SECOND_ROOT, "/third"].sort());
   assert.equal(entered[0], PRIMARY_ROOT, "a sibling entered the critical section before the lead");
   assert.equal(entered.length, 3);
+});
+
+
+test("publishing a queue owner refreshes sibling hold summaries over the fleet stream", async () => {
+  const { f, runs } = await twoLiveRuns();
+  const [owner, queued] = runs;
+  assert.ok(owner && queued);
+  const manager = f.manager as unknown as {
+    deliverPrepared(id: string, retry: boolean): Promise<void>;
+    publishRun(id: string): void;
+  };
+  await manager.deliverPrepared(owner.delivery.id, false);
+  await manager.deliverPrepared(queued.delivery.id, false);
+  const siblingUpdates: WorkflowRunSummary[] = [];
+  // This is the subscription used by /events, not a read of the registry's final map.
+  const unsubscribe = f.registry.subscribe(event => {
+    if (event.type === "workflow_run_upsert" && event.run.id === queued.run.id) siblingUpdates.push(event.run);
+  });
+  try {
+    manager.publishRun(queued.run.id);
+    assert.equal(siblingUpdates.length, 1);
+    assert.equal(siblingUpdates[0]?.deliveryHold?.runId, owner.run.id, "Fleet first receives the stale hold");
+    assert.equal(f.registry.workflowRunSummaries().find(r => r.id === queued.run.id)?.deliveryHold?.runId, owner.run.id);
+    f.store.setRunState(owner.run.id, "completed", "complete", null, Date.now());
+    manager.publishRun(owner.run.id);
+    assert.equal(siblingUpdates.length, 2, "owner release must emit the sibling's update to Fleet");
+    assert.equal(siblingUpdates[1]?.deliveryHold, null, "the emitted update clears the old owner");
+    assert.equal(f.registry.workflowRunSummaries().find(r => r.id === queued.run.id)?.deliveryHold, null);
+  } finally {
+    unsubscribe();
+    await f.manager.stop();
+  }
 });

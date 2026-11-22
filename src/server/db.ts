@@ -30,6 +30,7 @@ import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
+  type RepoTaskSkillRecord,
   type StandingInstructionsMechanism,
   type StandingInstructionsSource,
 } from "@shared/standing-instructions.ts";
@@ -180,6 +181,12 @@ import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
+  parseReviewEnvelope,
+  REVIEW_MESSAGE_TURN_PREFIX,
+  wrapReviewEnvelope,
+  type ReviewEnvelopeKind,
+} from "@shared/review-message-envelope.ts";
+import {
   isRetentionCandidate,
   isRetentionRetryable,
   taskHoldsCleanupResources,
@@ -286,9 +293,11 @@ let db: DatabaseSync | undefined;
 // 40: a task's work unit id (`tasks.work_unit_id`, @shared/work-unit.ts) and its index, nullable
 //     with no backfill: an older task gets its id at its next dispatch or assign, and nothing is
 //     inferred for it. Written once, enforced by `upsertTask`.
-// 41: declared waits on background processes (`session_awaitings`), keyed by note key. A new
+// 41: review-message deliveries (`session_review_deliveries`), a new empty table: no turn was
+//     drawn as a delivered answer card before it existed, so older turns render as they did.
+// 42: declared waits on background processes (`session_awaitings`), keyed by note key. A new
 //     empty table: no session declared a wait before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 41;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 42;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -936,6 +945,44 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON session_other_sends(note_key);
     CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
       ON session_other_sends(sent_at);
+
+    -- WHICH TURN A REVIEW MESSAGE WROTE, one row per delivery of a marked outbox message
+    -- (async-input): an answer, or a snoozed question's "carry on". Reserved before the send and
+    -- bound by the same rule as session_delegated_turns (delivery-binding.ts). Only a turn a
+    -- bound row names is drawn as an answer card; a pasted marker never is. Bound rows are never
+    -- pruned, so an old conversation keeps its cards. Contested rows and rows with no offset are
+    -- never pruned either: they can never bind, and they are the record that a turn with their
+    -- words could be Mission Control's. Only an ordinary unbound row past the delivery window is
+    -- pruned: once a binding walk (the prune tick walks live conversations) has expired it, or
+    -- once no live session holds its conversation and delivered_at is older than the goal table's
+    -- prune age (an old row can go on the first tick after its session exits). No message text,
+    -- only its fingerprint.
+    --
+    -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
+    -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it
+    -- belongs to (echo_turn_generation) completes, or HUMAN_ECHO_TTL_MS after echo_eligible_at.
+    CREATE TABLE IF NOT EXISTS session_review_deliveries (
+      id                   TEXT PRIMARY KEY,
+      note_key             TEXT NOT NULL,   -- the conversation's noteKeyFor(s)
+      fingerprint          TEXT NOT NULL,   -- injectionFingerprint of the delivered text
+      envelope             TEXT NOT NULL,   -- 'answer' | 'remind-later'
+      review_ids           TEXT NOT NULL,   -- JSON array, in delivery order
+      delivered_at         INTEGER NOT NULL,
+      transcript_offset    INTEGER,         -- transcript size at send; NULL if unknown, never binds
+      contested            INTEGER NOT NULL DEFAULT 0,
+      confirmed_at         INTEGER,         -- NULL until the runtime accepted it
+      message_id           TEXT,            -- native id of the bound turn
+      message_ts           INTEGER,
+      echo_owed            INTEGER NOT NULL DEFAULT 1,
+      echo_turn_generation INTEGER NOT NULL DEFAULT 0,
+      echo_eligible_at     INTEGER,
+      steer_echo           TEXT,            -- a steered delivery's plain echo turn: NULL undecided, '' none
+      handed_at            INTEGER          -- when the runtime was handed the text; NULL never handed, owes no echo
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_key
+      ON session_review_deliveries(note_key, fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_age
+      ON session_review_deliveries(delivered_at);
 
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
@@ -3651,6 +3698,8 @@ function outstandingFileCommentIndexSql(): string {
 function migrate(d: DatabaseSync): void {
   migrateHomeDispatch(d);
   migrateTaskWorkUnit(d);
+  // Added within version 41, before it shipped: a database this branch already opened lacks it.
+  addColumn(d, "session_review_deliveries", "handed_at", "INTEGER");
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
@@ -4538,7 +4587,7 @@ function migrate(d: DatabaseSync): void {
   // Each blocker's identity, kept across re-reports. A row written before it existed reads
   // back with an id derived from its key and start (see `rowToSessionBlocker`).
   addColumn(d, "session_blockers", "blocker_id", "TEXT");
-  // Schema 41: a session idle on purpose while a background process finishes. Keyed like
+  // Schema 42: a session idle on purpose while a background process finishes. Keyed like
   // session_blockers, so a daemon restart reloads it; `task_id` is recorded for the
   // terminal-task clear. `settled_at` is when the declaring turn was seen to end, which is what
   // tells the session's NEXT turn (the wake) from the rest of the turn that declared it.
@@ -5771,12 +5820,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
  * neither or both, never a review claiming delivery with no queued turn and never two turns
  * for one review after startup reconciliation retries it.
  */
-export function createReviewContinuationPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createReviewContinuationPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
   // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
   // reading it outside the queueing transaction cannot race a change.
@@ -5784,13 +5828,14 @@ export function createReviewContinuationPendingTurn(input: {
     | { wait_mode: string | null }
     | undefined;
   return queueReviewPendingTurn(input, {
-    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : "review-continuation:"}${input.reviewId}`,
+    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : REVIEW_MESSAGE_TURN_PREFIX}${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
     coalesce: mode?.wait_mode === "message",
+    envelope: "answer",
   });
 }
 
@@ -5802,7 +5847,7 @@ export function createReviewContinuationPendingTurn(input: {
  * It keeps the `review-continuation:` prefix, which resident pacing reads. A call-mode answer
  * that lost its call keeps the bare `review-continuation:<id>` and operator authorship.
  */
-export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
+export const MESSAGE_ANSWER_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}answer:`;
 
 /**
  * Atomically hand a snoozed question's owed "carry on" instruction to the same outbox.
@@ -5811,7 +5856,7 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  * The id keeps the `review-continuation:` prefix on purpose: it is daemon-written news about a
  * review, which every reader of that prefix (a resident's pacing) already treats correctly.
  */
-export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+export const SNOOZE_INSTRUCTION_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}snooze:`;
 
 /** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
 export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
@@ -5821,12 +5866,7 @@ export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | nul
   return row?.note_key ?? null;
 }
 
-export function createSnoozeInstructionPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createSnoozeInstructionPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   return queueReviewPendingTurn(input, {
     turnId: `${SNOOZE_INSTRUCTION_TURN_PREFIX}${input.reviewId}`,
     eligible: `snooze_instruction_owed_at IS NOT NULL
@@ -5834,11 +5874,25 @@ export function createSnoozeInstructionPendingTurn(input: {
             AND continuation_queued_at IS NULL
             AND status IN ('snoozed', 'pending')`,
     stamp: "snooze_instruction_queued_at",
+    envelope: "remind-later",
   });
 }
 
+/** One review message for the outbox. `text` is what the agent receives below any marker line. */
+export interface ReviewPendingTurnInput {
+  reviewId: string;
+  noteKey: string;
+  text: string;
+  now: number;
+  /**
+   * Mark a call-mode question's message too (`async-input` on when it is queued). A
+   * message-mode question's message is always marked: it exists only because the flag was on.
+   */
+  markCallMode?: boolean;
+}
+
 function queueReviewPendingTurn(
-  input: { reviewId: string; noteKey: string; text: string; now: number },
+  input: ReviewPendingTurnInput,
   kind: {
     turnId: string;
     coalesce?: boolean;
@@ -5846,27 +5900,44 @@ function queueReviewPendingTurn(
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
     stamp: "continuation_queued_at" | "snooze_instruction_queued_at";
+    /** The marker line this message carries when it is marked (`review-message-envelope.ts`). */
+    envelope: ReviewEnvelopeKind;
   },
 ): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const eligible = d
-      .prepare(`SELECT 1 AS present FROM reviews WHERE id = ? AND ${kind.eligible}`)
-      .get(input.reviewId) as unknown as { present: number } | undefined;
+      .prepare(`SELECT wait_mode FROM reviews WHERE id = ? AND ${kind.eligible}`)
+      .get(input.reviewId) as unknown as { wait_mode: string | null } | undefined;
     if (!eligible) {
       d.exec("COMMIT");
       return null;
     }
+    // The marker line is composed here, where the row's final text is written, so a fold
+    // below can rewrite it to name every review the row carries. The text under it is exactly
+    // what the agent received before the marker existed.
+    const marked = eligible.wait_mode === "message" || input.markCallMode === true;
+    const text = marked ? wrapReviewEnvelope(kind.envelope, [input.reviewId], input.text) : input.text;
     // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
     // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
     // the conversation's tail: appending to an earlier answer would pass intervening turns.
     if (kind.coalesce) {
       const existing = d.prepare(`SELECT * FROM pending_turns
         WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
-      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+      // A marked row names every answer it carries, in delivery order. One queued before the
+      // marker existed has no line to extend, so a marked answer never folds into it: folding
+      // would drop the new answer's marker, and with it its delivery record and its card. The
+      // legacy row is left exactly as it was, and the new answer is queued as its own row.
+      const prior = existing ? parseReviewEnvelope(existing.text) : null;
+      const carriesMarker = text !== input.text;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null
+        && (prior !== null || !carriesMarker)) {
+        const folded = prior && marked
+          ? wrapReviewEnvelope(prior.kind, [...prior.reviewIds, input.reviewId], `${prior.rest}\n\n---\n\n${input.text}`)
+          : `${existing.text}\n\n---\n\n${input.text}`;
         const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
-          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+          WHERE id = ? RETURNING *`).get(folded, input.now, existing.id) as unknown as PendingTurnRow;
         d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
         d.exec("COMMIT");
         return rowToPendingTurn(row);
@@ -5879,14 +5950,14 @@ function queueReviewPendingTurn(
       `INSERT INTO pending_turns
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
-    ).run(kind.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    ).run(kind.turnId, input.noteKey, sequence.seq, text, input.now, input.now);
     d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
     d.exec("COMMIT");
     return {
       id: kind.turnId,
       noteKey: input.noteKey,
       seq: sequence.seq,
-      text: input.text,
+      text,
       state: "queued",
       revision: 0,
       createdAt: input.now,
@@ -12589,6 +12660,181 @@ export function pruneOtherSends(olderThan: number): number {
   return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
 }
 
+// ---- review-message deliveries (which turn carried an answer to the agent) ----
+
+/** One delivery of a marked review message into a conversation, bound to its turn once seen. */
+export interface ReviewDeliveryRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  envelope: ReviewEnvelopeKind;
+  /** In delivery order, from the row's marker line when it was sent. */
+  reviewIds: string[];
+  deliveredAt: number;
+  transcriptOffset: number | null;
+  contested: boolean;
+  /** When the runtime accepted it; null while only reserved, or when the outcome is uncertain. */
+  confirmedAt: number | null;
+  messageId: string | null;
+  messageTs: number | null;
+  /** Whether the one prompt-hook echo this delivery produces is still owed to the Goal reader. */
+  echoOwed: boolean;
+  /** The work-cycle generation whose completion ends the wait for that echo. */
+  echoTurnGeneration: number;
+  /** When the echo's wait started aging toward `HUMAN_ECHO_TTL_MS`; null until its turn is next. */
+  echoEligibleAt: number | null;
+  /**
+   * The plain record that echoes a steered delivery's mid-turn turn: null until decided, "" when
+   * it has none (including when another send of the same words could have written it).
+   */
+  steerEcho: string | null;
+  /**
+   * When the runtime was handed the text (`stampReviewDeliveryHandoff`), stamped before the write.
+   * Null for a delivery never handed over, which wrote nothing, so it owes no echo to anyone.
+   */
+  handedAt: number | null;
+}
+
+type ReviewDeliverySqlRow = Omit<ReviewDeliveryRow, "contested" | "reviewIds" | "echoOwed" | "envelope"> & {
+  contested: number;
+  reviewIds: string;
+  echoOwed: number;
+  envelope: string;
+};
+
+export function insertReviewDelivery(row: ReviewDeliveryRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_review_deliveries
+         (id, note_key, fingerprint, envelope, review_ids, delivered_at, transcript_offset, contested,
+          confirmed_at, message_id, message_ts, echo_owed, echo_turn_generation, echo_eligible_at, steer_echo, handed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.envelope, JSON.stringify(row.reviewIds), row.deliveredAt,
+      row.transcriptOffset, row.contested ? 1 : 0, row.confirmedAt, row.messageId, row.messageTs,
+      row.echoOwed ? 1 : 0, row.echoTurnGeneration, row.echoEligibleAt, row.steerEcho, row.handedAt);
+}
+
+/** Carry every delivery recorded under one conversation key to another, as one statement. */
+export function moveReviewDeliveries(fromKey: string, toKey: string): number {
+  if (fromKey === toKey) return 0;
+  return Number(openDb().prepare(`UPDATE session_review_deliveries SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey).changes);
+}
+
+/** Drop a delivery that provably did not land. */
+export function deleteReviewDelivery(id: string): void {
+  openDb().prepare(`DELETE FROM session_review_deliveries WHERE id = ?`).run(id);
+}
+
+/** In reservation order. A row whose stored ids or envelope no longer parse is skipped. */
+export function loadReviewDeliveries(noteKey: string): ReviewDeliveryRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, envelope, review_ids AS reviewIds, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, confirmed_at AS confirmedAt,
+              message_id AS messageId, message_ts AS messageTs, echo_owed AS echoOwed,
+              echo_turn_generation AS echoTurnGeneration, echo_eligible_at AS echoEligibleAt,
+              steer_echo AS steerEcho, handed_at AS handedAt
+         FROM session_review_deliveries WHERE note_key = ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey) as unknown as ReviewDeliverySqlRow[];
+  return rows.flatMap((row) => {
+    let ids: unknown;
+    try {
+      ids = JSON.parse(row.reviewIds);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return [];
+    if (row.envelope !== "answer" && row.envelope !== "remind-later") return [];
+    return [{
+      ...row,
+      envelope: row.envelope,
+      reviewIds: ids as string[],
+      contested: row.contested === 1,
+      echoOwed: row.echoOwed === 1,
+    }];
+  });
+}
+
+export function contestReviewDelivery(id: string, contested = true): void {
+  openDb()
+    .prepare(`UPDATE session_review_deliveries SET contested = ? WHERE id = ? AND message_id IS NULL`)
+    .run(contested ? 1 : 0, id);
+}
+
+/** Write-once: a bound delivery is never re-pointed at a later turn with the same words. */
+export function bindReviewDelivery(id: string, messageId: string, messageTs: number): boolean {
+  const r = openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET message_id = ?, message_ts = ?
+         WHERE id = ? AND message_id IS NULL`,
+    )
+    .run(messageId, messageTs, id);
+  return Number(r.changes) > 0;
+}
+
+/** These reviews, whatever their status or age; ids that name no review are skipped. */
+export function loadReviewsByIds(ids: readonly string[]): ReviewItem[] {
+  if (!ids.length) return [];
+  const rows = openDb()
+    .prepare(`SELECT * FROM reviews WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
+/** Write-once: a steered delivery's echo decision, "" for none. */
+export function settleReviewDeliverySteerEcho(id: string, echo: string): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET steer_echo = ? WHERE id = ? AND steer_echo IS NULL`).run(echo, id);
+}
+
+/** The runtime accepted it. */
+export function confirmReviewDelivery(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET confirmed_at = ? WHERE id = ?`).run(at, id);
+}
+
+/** Record, once, that the runtime was handed this delivery's text. */
+export function markReviewDeliveryHanded(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET handed_at = ? WHERE id = ? AND handed_at IS NULL`).run(at, id);
+}
+
+/** Persist a delivery's echo debt as `review-deliveries.ts` settled it. */
+export function updateReviewDeliveryEcho(
+  id: string,
+  echo: { owed: boolean; turnGeneration: number; eligibleAt: number | null },
+): void {
+  openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET echo_owed = ?, echo_turn_generation = ?, echo_eligible_at = ?
+         WHERE id = ?`,
+    )
+    .run(echo.owed ? 1 : 0, echo.turnGeneration, echo.eligibleAt, id);
+}
+
+/**
+ * Ordinary unbound deliveries older than `olderThan`: the only rows that may ever be pruned. A
+ * bound row is never pruned, so an old conversation keeps its answer cards; nor is a contested
+ * or offset-less row, which can never bind and is what keeps a turn with its words from being
+ * read as the operator's (`DeliveryLedger.bound`). Age alone does not make one of these
+ * prunable: the caller deletes only those a binding walk has actually expired.
+ */
+export function loadPrunableReviewDeliveries(olderThan: number): Array<{ id: string; noteKey: string; deliveredAt: number }> {
+  return openDb()
+    .prepare(`SELECT id, note_key AS noteKey, delivered_at AS deliveredAt FROM session_review_deliveries
+       WHERE message_id IS NULL AND contested = 0 AND transcript_offset IS NOT NULL AND delivered_at < ?`)
+    .all(olderThan) as unknown as Array<{ id: string; noteKey: string; deliveredAt: number }>;
+}
+
+/** Delete these deliveries, each only if it is still unbound. */
+export function deleteUnboundReviewDeliveries(ids: readonly string[]): number {
+  if (!ids.length) return 0;
+  return Number(
+    openDb()
+      .prepare(`DELETE FROM session_review_deliveries WHERE message_id IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+      .run(...ids).changes,
+  );
+}
+
 // ---- session standing instructions (what a launch actually delivered) ----
 
 /** One session's launch snapshot: what was delivered, how, and from which stored keys. */
@@ -12600,6 +12846,8 @@ export interface StandingInstructionsSnapshot {
   /** One entry per contributing repository, in the launch manifest's order. */
   sources: StandingInstructionsSource[];
   createdAt: number;
+  /** What repository task skills this launch included or skipped (spec 7.15). Absent when none applied. */
+  repoTaskSkills?: RepoTaskSkillRecord | null;
 }
 
 interface StandingInstructionsRow {
@@ -12608,6 +12856,39 @@ interface StandingInstructionsRow {
   mechanism: string;
   sources: string;
   created_at: number;
+  repo_task_skills: string | null;
+}
+
+/** Parse the stored skill record, tolerating anything a newer build wrote: unreadable is null. */
+function parseRepoTaskSkills(raw: string | null): RepoTaskSkillRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { included, skipped } = parsed as { included?: unknown; skipped?: unknown };
+    if (!Array.isArray(included) || !Array.isArray(skipped)) return null;
+    // Entries are checked by field TYPE, not against today's vocabularies: a newer build may
+    // add a kind or a skip reason, and an entry that is merely unfamiliar must survive. One
+    // that lacks the fields a reader dereferences is dropped rather than surfaced as typed.
+    const isStr = (v: unknown): v is string => typeof v === "string";
+    const keptIncluded = included.filter(
+      (e): e is RepoTaskSkillRecord["included"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) &&
+        typeof (e as { bytes?: unknown }).bytes === "number" &&
+        typeof (e as { truncated?: unknown }).truncated === "boolean",
+    );
+    const keptSkipped = skipped.filter(
+      (e): e is RepoTaskSkillRecord["skipped"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) && isStr((e as { reason?: unknown }).reason),
+    );
+    return { included: keptIncluded, skipped: keptSkipped };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -12644,6 +12925,7 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
     mechanism,
     sources,
     createdAt: r.created_at,
+    repoTaskSkills: parseRepoTaskSkills(r.repo_task_skills),
   };
 }
 
@@ -12658,13 +12940,14 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
 export function insertStandingInstructions(snapshot: StandingInstructionsSnapshot): void {
   openDb()
     .prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
     )
     .run(
       snapshot.noteKey,
@@ -12672,6 +12955,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
       snapshot.mechanism,
       JSON.stringify(snapshot.sources),
       snapshot.createdAt,
+      snapshot.repoTaskSkills ? JSON.stringify(snapshot.repoTaskSkills) : null,
     );
 }
 
@@ -12679,7 +12963,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
 export function getStandingInstructions(noteKey: string): StandingInstructionsSnapshot | undefined {
   const row = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as StandingInstructionsRow | undefined;
@@ -12690,7 +12974,7 @@ export function getStandingInstructions(noteKey: string): StandingInstructionsSn
 export function loadStandingInstructions(): StandingInstructionsSnapshot[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions ORDER BY created_at DESC`,
     )
     .all() as unknown as StandingInstructionsRow[];
@@ -12725,14 +13009,22 @@ export function moveStandingInstructions(fromKey: string, toKey: string): void {
   d.exec("BEGIN IMMEDIATE");
   try {
     d.prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
-    ).run(toKey, row.text, row.mechanism, JSON.stringify(row.sources), row.createdAt);
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
+    ).run(
+      toKey,
+      row.text,
+      row.mechanism,
+      JSON.stringify(row.sources),
+      row.createdAt,
+      row.repoTaskSkills ? JSON.stringify(row.repoTaskSkills) : null,
+    );
     d.prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(fromKey);
     d.exec("COMMIT");
   } catch (err) {

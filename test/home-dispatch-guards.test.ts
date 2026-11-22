@@ -1,6 +1,6 @@
 // Guards 2 and 3 of the headless-mode plan (4.2): headless mode never touches the existing
 // Focus feature. Guard 1 (a home-dispatched task keeps the dashboard's runtime) needs a started
-// task and is added by the phase that first starts one.
+// task, so it lives in `home-dispatch-drafts.test.ts`, where a confirmed draft starts one.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";

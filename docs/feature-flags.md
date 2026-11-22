@@ -172,6 +172,7 @@ gates, not by resolving an unknown id as on.
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+| `workflow-hold-details` | preview | Fleet workflow wait reasons, next actors and owning-run links | [User interface](ui.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |

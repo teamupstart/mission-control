@@ -5,9 +5,17 @@ export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 /** The one owner of the session-awaiting flag id: the daemon gates and the dashboard import it. */
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
+export const WORKFLOW_HOLD_DETAILS_FLAG_ID = "workflow-hold-details" as const;
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 
 export const FEATURE_FLAGS = [
+  {
+    id: WORKFLOW_HOLD_DETAILS_FLAG_ID,
+    label: "Workflow hold details",
+    description: "Show why each workflow holds a Fleet session, who acts next, and a link to its run.",
+    stage: "preview",
+    keywords: ["fleet", "workflow", "held", "waiting"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

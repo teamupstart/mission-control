@@ -152,7 +152,7 @@ import type {
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor } from "./harness/index.ts";
+import { hooksFor, sessionMessages } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -305,6 +305,7 @@ import {
   upsertSessionLaunchTurn,
   deleteSessionLaunchTurn,
   moveSessionLaunchTurn,
+  deleteStandingInstructions,
   insertStandingInstructions,
   moveStandingInstructions,
   pruneStandingInstructions as pruneStandingInstructionsDb,
@@ -345,7 +346,7 @@ import {
   launchTextFingerprint,
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
@@ -357,6 +358,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -3337,6 +3339,8 @@ export class Registry extends EventEmitter {
     // (idle noise, or the hook and the driver both reporting one Stop) changes nothing here.
     if (signal === "turn_completed" && workCycle) {
       expireHumanEchoes(s.id, logicalKey, workCycle.generation, updatedAt);
+      // And the echo each review message delivered into that turn owed (`review-deliveries.ts`).
+      expireReviewDeliveryEchoes(logicalKey, workCycle.generation, updatedAt);
     }
     const projected = workCycle ?? undefined;
     if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
@@ -8997,6 +9001,27 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Drop ordinary review-message deliveries that never bound and are past the delivery window,
+   * once a binding walk has expired them. The tick walks every live conversation that has such a
+   * row, so expiry does not wait for someone to open it; a conversation no live session holds is
+   * given up on after `olderThan`, the goal table's own age. Contested and offset-less rows, and
+   * bound ones, are kept. Bound
+   * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
+   * and offset-less rows, which keep a turn with their words from reading as the operator's.
+   */
+  pruneReviewDeliveries(now: number, olderThan: number): number {
+    if (!this.sweptSessions) return pruneReviewDeliveries(now, { conversation: null });
+    const byKey = new Map([...this.sessions.values()].map((s) => [noteKeyFor(s), s] as const));
+    return pruneReviewDeliveries(now, {
+      conversation: (noteKey) => {
+        const session = byKey.get(noteKey);
+        return session ? { transcript: sessionMessages(session) } : undefined;
+      },
+      abandonedBefore: olderThan,
+    });
+  }
+
+  /**
    * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
    *
    * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
@@ -9029,18 +9054,74 @@ export class Registry extends EventEmitter {
    * rotation move below carries the row to the native key when the binding arrives, and to
    * every key after that.
    */
-  recordStandingInstructions(sessionId: string, delivery: StandingInstructionsDelivery): void {
+  recordStandingInstructions(
+    sessionId: string,
+    delivery: StandingInstructionsDelivery,
+    repoTaskSkills?: RepoTaskSkillRecord | null,
+  ): void {
     const s = this.sessions.get(sessionId);
-    if (!s || !delivery.text) return;
+    if (!s) return;
+    const key = noteKeyFor(s);
+    // `undefined` means the caller does not speak for skills, so a record already stored under
+    // this key is kept. Defaulting to erase would let a later write that only knows the
+    // standing text wipe the launch's recorded skills. With no text either, there is nothing
+    // this call can say and the stored row is left alone.
+    if (repoTaskSkills === undefined) {
+      if (!delivery.text) return;
+      this.writeStandingInstructions(key, delivery, this.standingInstructions.get(key)?.repoTaskSkills ?? null);
+      return;
+    }
+    // An explicit record, or an explicit null ("this launch had none"), speaks for the launch.
+    const skills =
+      repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
+        ? repoTaskSkills
+        : null;
+    if (!delivery.text && !skills) {
+      this.retireStaleRepoTaskSkills(key);
+      return;
+    }
+    this.writeStandingInstructions(key, delivery, skills);
+  }
+
+  /**
+   * Store one launch's row. A launch that included or skipped a repository task skill is
+   * recorded even with no standing text, as a row of empty text on the "none" channel, which
+   * every reader of the mechanism already treats as "nothing to replay".
+   */
+  private writeStandingInstructions(
+    key: string,
+    delivery: StandingInstructionsDelivery,
+    repoTaskSkills: RepoTaskSkillRecord | null,
+  ): void {
     const snapshot: StandingInstructionsSnapshot = {
-      noteKey: noteKeyFor(s),
+      noteKey: key,
       text: delivery.text,
-      mechanism: delivery.mechanism,
+      mechanism: delivery.text ? delivery.mechanism : "none",
       sources: delivery.sources,
       createdAt: Date.now(),
+      repoTaskSkills,
     };
     insertStandingInstructions(snapshot);
     this.standingInstructions.set(snapshot.noteKey, snapshot);
+  }
+
+  /**
+   * A launch that explicitly had no skills (and no standing text) retires a skill record an
+   * earlier launch left under this key: a row that held only skills goes away, and a row that
+   * also holds standing text keeps its text and loses only the stale skills. Nothing stored
+   * means nothing to do.
+   */
+  private retireStaleRepoTaskSkills(key: string): void {
+    const prior = this.standingInstructions.get(key);
+    if (!prior?.repoTaskSkills) return;
+    if (prior.text) {
+      const cleared: StandingInstructionsSnapshot = { ...prior, repoTaskSkills: null };
+      insertStandingInstructions(cleared);
+      this.standingInstructions.set(key, cleared);
+      return;
+    }
+    deleteStandingInstructions(key);
+    this.standingInstructions.delete(key);
   }
 
   /**
@@ -9879,8 +9960,20 @@ export class Registry extends EventEmitter {
     // pending human follow-up, claiming first would hand the daemon's packet the human's
     // revision and leave the human's own echo to be swallowed as the daemon's. Checked first,
     // the packet spends its own owed echo and the human entry waits for its real one.
-    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
+    //
+    // A review message (`async-input`) owes its echo on its durable delivery row as well, so a
+    // restart between the delivery and its echo cannot capture the daemon's text as the Goal.
+    // Both debts describe the same one delivery, so one arrival spends both: evaluated without
+    // short-circuiting, or the in-memory claim would leave the durable one to swallow the
+    // operator's next copy of the same words.
     const noteKey = noteKeyFor(s);
+    const submittedText = spec.submittedPromptText(evt);
+    // An arrival that spends the echo of a delivery the runtime then refuses was never that
+    // delivery's echo: it is the operator's, and is captured once the refusal is known.
+    const reviewEcho = claimReviewDeliveryEcho(noteKey, submittedText === null ? [prompt] : [submittedText, prompt], now,
+      () => { this.captureAcceptedPrompt(s.id, prompt, noteKey); });
+    const daemonEcho = this.isDaemonAuthoredPrompt(s, spec, evt, prompt);
+    if (reviewEcho || daemonEcho) return;
     const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
     if (claim.kind === "skip") return;
     if (claim.kind === "capture") {

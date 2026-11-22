@@ -258,7 +258,8 @@ test("a resident with open questions opens its review queue, not its conversatio
 
 function order(rows: ConversationRow[]): string[] {
   return rows.map((r) =>
-    r.kind === "turn" || r.kind === "tools" ? r.id : `${r.kind}:${r.kind === "episode" ? r.episode.marker : r.review.id}`);
+    r.kind === "turn" || r.kind === "tools" ? r.id
+      : `${r.kind}:${r.kind === "episode" ? r.episode.marker : r.kind === "delivered" ? r.reviewId : r.review.id}`);
 }
 
 function msg(id: string, ts: number): TranscriptMessage {

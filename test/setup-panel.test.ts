@@ -8,6 +8,7 @@ import {
   INDEXED_REPOSITORIES_INFO,
   SETUP_REPOSITORY_ANCHORS,
   homeRelative,
+  setupRowAnchor,
   type SetupChecksSnapshot,
   type SetupRowView,
 } from "../src/shared/setup-catalog.ts";
@@ -352,6 +353,28 @@ test("the opening family is latched once, so a repair cannot move the rail", () 
     null,
     "nothing to change: the operator stays in the family they were reading",
   );
+});
+
+test("a deep link that already resolves is latched before the first snapshot lands, and keeps its family when rows arrive", () => {
+  // The dispatch form's "Fix in Setup" names an environment-check row whose family the catalog
+  // fixes. The page stops passing the jump down as soon as it starts waiting for the row, so a
+  // first read slower than that render must not cost the jump its family.
+  const rows = [CLAUDE, CMUX, GH_CLI];
+  const noJump = { jumpRequestId: null, jumpFamily: null };
+  const jumpFamily = familyForAnchor(setupRowAnchor({ source: "environment-check", id: "mission-hook-events" }), []);
+  assert.equal(jumpFamily, "extensions", "precondition: the anchor resolves from the catalog alone");
+  assert.notEqual(nextSetupSelection({ chosen: null, seenRequest: null }, { rows, ...noJump })?.chosen, "extensions",
+    "precondition: these rows would open some other family by default");
+
+  // No rows yet, a fresh request: selected now, with its request id.
+  const latched = nextSetupSelection({ chosen: null, seenRequest: null }, { rows: [], jumpRequestId: 9, jumpFamily });
+  assert.deepEqual(latched, { chosen: "extensions", seenRequest: 9 });
+
+  // The rows arrive while the page still passes the same request: nothing changes.
+  assert.equal(nextSetupSelection(latched!, { rows, jumpRequestId: 9, jumpFamily }), null);
+  // The rows arrive after the page has stopped passing it: the family stays.
+  const settled = nextSetupSelection(latched!, { rows, ...noJump });
+  assert.equal((settled ?? latched!).chosen, "extensions", "the default does not take the rail back");
 });
 
 test("a deep link outranks the latch, and is not consumed before it can be resolved", () => {

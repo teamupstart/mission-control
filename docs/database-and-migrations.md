@@ -32,7 +32,7 @@ for reaches a terminal status, and prunes a key no session has held for the goal
 `last_held_at` records when a live session was last seen holding the key, so that window counts
 observed absence and a restart does not reset it.
 
-`session_awaitings` (schema 41) holds one [declared wait on a background process](sessions.md#sessions-awaiting-a-background-process-preview)
+`session_awaitings` (schema 42) holds one [declared wait on a background process](sessions.md#sessions-awaiting-a-background-process-preview)
 per note key, with the bound `task_id` recorded for the terminal-task clear. It is created in
 `migrate()`, so an older database gains an empty table on its next open. The Registry loads it at
 construction, moves a row on every note-key rotation as it moves a blocker, and deletes a row on

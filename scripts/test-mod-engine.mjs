@@ -17,12 +17,16 @@ try {
     env: { ...process.env, MISSION_MOD_OUT_DIR: out },
     stdio: "inherit",
   });
-  if (build.status !== 0) process.exit(build.status ?? 1);
-  const pluginDir = join(out, "mission-control");
-  const testsDir = resolve("src/mod/engine-tests");
-  for (const name of readdirSync(testsDir)) cpSync(join(testsDir, name), join(pluginDir, name));
-  const run = spawnSync("claude", ["plugin", "test", pluginDir], { stdio: "inherit" });
-  process.exitCode = run.status ?? 1;
+  if (build.status !== 0) {
+    // Not process.exit: that would skip the finally below and leak the temporary build.
+    process.exitCode = build.status ?? 1;
+  } else {
+    const pluginDir = join(out, "mission-control");
+    const testsDir = resolve("src/mod/engine-tests");
+    for (const name of readdirSync(testsDir)) cpSync(join(testsDir, name), join(pluginDir, name));
+    const run = spawnSync("claude", ["plugin", "test", pluginDir], { stdio: "inherit" });
+    process.exitCode = run.status ?? 1;
+  }
 } finally {
   rmSync(out, { recursive: true, force: true });
 }

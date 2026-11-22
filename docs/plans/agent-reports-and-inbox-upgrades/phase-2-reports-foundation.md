@@ -136,3 +136,6 @@ second way to set `readAt`.
 - Plan validation round 2: this phase's exit criterion no longer says a report leaves only
   through Mark read; R9 lists every way and `markRead` is the single writer. The card's show and
   hide control is declared as `toggle`.
+- Plan validation round 3: the `reports` snapshot field carries every unread, latest report
+  whatever the listed-in-inbox setting says, because that setting is applied in the fold. Phase
+  6's pinned report relies on this and reuses `ReportCard` unchanged.

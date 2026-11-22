@@ -105,3 +105,6 @@ reports are not listed in the inbox, so they are never a mark read target.
   settings, not inbox actions.
 - Plan validation round 2: Mark all read is one of the four ways R9 clears a report and goes
   through Phase 2's `markRead`. A mute hides without clearing, as the index table states.
+- Plan validation round 3: a muted author raises no notification, so Phase 6's pinned report is
+  never reached for one. Mark all read sends only the ids the Reports section lists, so it does
+  not touch a report shown only in that band.

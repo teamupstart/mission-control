@@ -1,7 +1,7 @@
 # Agent reports and inbox upgrades
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 and 2. This task delivers the plan and its phases only. No
+revised after plan validation rounds 1 to 3. This task delivers the plan and its phases only. No
 product code changes here.
 
 ## Goal
@@ -84,7 +84,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | Id | Requirement |
 | --- | --- |
 | R15 | The daemon's four stuck rules also produce rows in a new **Stuck** section right after Waiting on you. Stuck rows count in to answer. A row clears itself when the session moves again and can be dismissed like any other row. |
-| R16 | Every row says why the session is stuck and offers the fix in place. No generic "session is stuck" card. Silent while working: last activity line and how long, with **Nudge** and **Interrupt**. Idle with a task or queue open: the open task or queue, with **Continue** and **Mark done**. Idle with a workflow run parked: the missing step, with **Resubmit** (manual or Preview runs only) or **Tell it to push** when it has unpushed commits. Unanswered Foreman escalation: what Foreman escalated, with a reply box. |
+| R16 | Every row says why the session is stuck and offers the fix in place. No generic "session is stuck" card. Silent while working: last activity line and how long, with **Nudge** and **Interrupt**. Idle with a task or queue open: the open task or queue, with **Continue**, and **Mark done** when a task is open. A queue with no task has no task to complete, so that card offers Continue and says its items are handled in the session. Idle with a workflow run parked: the missing step, with **Resubmit** (manual or Preview runs only) or **Tell it to push** when it has unpushed commits. Unanswered Foreman escalation: what Foreman escalated, with a reply box. |
 | R17 | Every stuck card also has a message box to the agent and **Open session**. Nudge and Continue send fixed messages. There is no Cancel on any inbox card. |
 
 ### One name everywhere
@@ -100,7 +100,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | --- | --- |
 | R20 | A **What notifies you** group under the existing alerts settings, five switches, all on by default: blocking questions notify; questions filed while the agent keeps working notify; agent reports notify; agent reports are listed in the inbox; stuck sessions notify. |
 | R21 | A notify switch only stops the notification; the item still appears in the inbox. Reports alone have the second switch: turned off, reports leave the inbox list and the to read figure and stay in each conversation. Other alerts are unchanged. |
-| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. |
+| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. That holds when the inbox does not list the report, because reports are unlisted (R21) or it was already read: the inbox then draws that one report on its own. |
 | R23 | Away mode: reports do not interrupt and collect in the inbox. The return digest summarises them ("4 reports waiting: Steve, Carol and 2 others"). Stuck sessions still break through. |
 
 ### Order, voice compatibility, rollout and noise controls
@@ -264,8 +264,9 @@ evidence, and neither contains reports.
 - A `session_stuck` fold item with one card per rule, counted in to answer, dismissible, gone
   when the daemon stops reporting the stall.
 - Actions call routes that exist: interrupt (`src/server/routes.ts:6884`), complete
-  (`:10032`), resubmit (`:3326`) and send (`:6205`). Nudge, Continue and Tell it to push send
-  fixed messages marked as daemon-written:
+  (`:10032`), resubmit (`:3326`) and send (`:6205`). Mark done completes the stall's open task
+  and is drawn only when there is one. Nudge, Continue and Tell it to push send fixed messages
+  marked as daemon-written:
   - Nudge: "Status check from your operator: you have gone quiet. Reply with one line on what you
     are doing and whether anything is blocking you, then carry on. If you are waiting on a
     long-running command, say which one."
@@ -287,8 +288,9 @@ evidence, and neither contains reports.
 - Alerts gain a notify class (blocking question, filed question, report, stuck). The notifier
   delivers by class, settings and Away state instead of by severity alone.
 - A `report` alert kind fires on the announce stamp, worded "X's back: title" or "X posted a
-  report: title". Clicking it opens the inbox with that report open. The Away buffer gains a
-  reports kind whose rollup names the agents.
+  report: title". Clicking it opens the inbox with that report open. A report the inbox does not
+  list is drawn on its own above the sections, so the click always lands on its report. The Away
+  buffer gains a reports kind whose rollup names the agents.
 - "Agent reports are listed in the inbox" off removes the Reports section and the to read
   figure; conversations keep their entries.
 

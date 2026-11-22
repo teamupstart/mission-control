@@ -111,3 +111,5 @@ actions.
   page and the route accepts none.
 - Plan validation round 2: stated that Open report and Publish as scout are not among the ways
   R9 clears a report.
+- Plan validation round 3: no change here. The document and publish routes read a report by id,
+  so they work for a report the inbox pins from a notification.

@@ -127,3 +127,5 @@ Phase 4 adds Open report to `ReportCard` and `ReportEntryCard`. Voice calls the 
 - Plan validation round 2: R9 and R11 now say a dispatched follow-up clears the report, which is
   what step 4 does. Retry is the `follow-up` action under another label. The relaunch hint is
   text. The conversation entry's two controls are declared actions and its file is scanned.
+- Plan validation round 3: no change here. Phase 6's pinned report is the same `ReportCard`, so
+  when this phase has merged, a report opened from a notification can be replied to as usual.

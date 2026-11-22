@@ -119,3 +119,5 @@ shapes. Each adds its actions from the index table and its card file to the scan
 - Plan validation round 2: the `disclosure` reason and the label override were added, for the
   report's show and hide control (Phase 2) and the follow-up's Retry label (Phase 3). The scan
   also covers the report's conversation entry.
+- Plan validation round 3: no change here. An action a card does not draw, such as Mark done on
+  a queue-only stall, stays a declared action; the registry does not say when a card shows it.

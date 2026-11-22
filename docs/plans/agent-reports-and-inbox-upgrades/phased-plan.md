@@ -57,6 +57,21 @@ Two findings were accepted and applied:
   it is now `toggle`, click-only with the reason `disclosure`; and the resident relaunch hint is
   stated to be text, not a control.
 
+## Plan validation round 3
+
+A later run raised two feasibility findings. Both were accepted and applied:
+
+- **A report notification always lands on its report.** The notify switch and the listed-in-inbox
+  switch are independent, so a notification can arrive for a report the inbox does not list. R22
+  and Phase 6 now say the click opens the inbox and draws that one report on its own above the
+  sections whenever the fold does not contain it: reports unlisted by the setting, or a report
+  already read. Phase 6 adds `GET /api/reports/:id` for the already-read case and tests the
+  switch combination. The pinned card changes neither the Reports section nor the to read figure.
+- **Mark done needs a task.** A stall for unfinished work can come from a queue with no task
+  (`src/shared/stall.ts:154`), and no route completes a queue. R16 and Phase 5 now draw Mark done
+  only when the stall's facts carry a task, and it completes that task. A queue-only card offers
+  Continue, says its items are handled in the session, and keeps Open session.
+
 ## Sizing and phase count
 
 Estimated 3,100 to 3,850 non-test implementation lines across shared contracts, the daemon, the
@@ -144,7 +159,7 @@ Owned by later phases:
 - Phase 5: `Stall.facts` and `Stall.fingerprint`; fold item `session_stuck`;
   `POST /api/sessions/:id/inbox-message`; turn id prefix `inbox-message:`.
 - Phase 6: `Alert.notify`, alert kind `report`, `ui.alerts.notify` and `ui.alerts.reportsInInbox`;
-  writes `announcedAs` and `announcedAt`.
+  `GET /api/reports/:id`; the inbox's pinned report; writes `announcedAs` and `announcedAt`.
 - Phase 7: table `report_mutes`, the `reports` settings entry, `GET /mcp/reports/guidance`,
   `POST /api/reports/read-all`.
 
@@ -161,7 +176,7 @@ This is R9 in full. A report is unread until one of the first four rows happens.
 | Replaced by a later report: not read, but its successor takes its place | none | 2 |
 | Hidden, not read: reports unlisted by the setting, or a muted author | none | 6, 7 |
 
-Opening the inbox or a report never clears it.
+Opening the inbox or a report never clears it, including a report opened from a notification.
 
 ## Inbox actions and who declares them
 
@@ -179,7 +194,8 @@ agent's display name.
 | `open-report` | Report, and its conversation entry | "{name}, open report" | 4 |
 | `publish-scout` | Report | "{name}, publish as scout" | 4 |
 | `open-archive` | Report | click-only: navigation | 4 |
-| `nudge`, `continue`, `mark-done`, `resubmit`, `push` | Stuck | "{name}, nudge", "{name}, continue", "{name}, mark done", "{name}, resubmit", "{name}, push" | 5 |
+| `nudge`, `continue`, `resubmit`, `push` | Stuck | "{name}, nudge", "{name}, continue", "{name}, resubmit", "{name}, push" | 5 |
+| `mark-done` | Stuck; drawn only when the stall has an open task | "{name}, mark done" | 5 |
 | `stop` | Stuck | "{name}, stop" (interrupt) | 5 |
 | `message` | Stuck | "{name}, ..." or "reply, ..." while the card is open | 5 |
 | `open-session`, `open-run` | Stuck | click-only: navigation | 5 |

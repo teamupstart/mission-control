@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -22,6 +23,7 @@ import {
   recordCompletionDecision,
   type CompletionDecisionRecord,
 } from "../src/server/foreman/decision-log.ts";
+import { openPathUtilityLog } from "../src/main/utility-log.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "mission-foreman-decision-log-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -94,36 +96,39 @@ test("a full log rotates to one previous file before the next line", () => {
   assert.match(readFileSync(rotating, "utf8"), /^\S+ \[foreman\] completion outcome=held /);
 });
 
-test("the supervisor's open append handle still reaches foreman.log after repeated rotations", () => {
-  // The Electron supervisor opens foreman.log once with "a" and keeps that handle for its
-  // whole life. A rename-based rotation carried the handle off to .1 and, on the next
-  // rotation, replaced .1 - so its lifecycle lines reached no path at all.
+test("no supervisor or in-flight line is lost across repeated rotations", () => {
+  // The Electron supervisor writes Foreman's lifecycle lines through a path-only log and the
+  // worker rotates by rename, so nobody holds foreman.log open across a rotation. A line lands
+  // in whichever file was foreman.log when it was opened. The earlier designs each lost lines:
+  // a spawn-time handle followed .1 and then wrote nowhere once .1 was replaced, and an
+  // in-place copy-then-truncate dropped a line written between its two steps.
   mkdirSync(join(dir, "supervised"));
   const path = join(dir, "supervised", FOREMAN_LOG_NAME);
-  const supervisor = openSync(path, "a", 0o600);
-  try {
-    for (const round of [1, 2]) {
-      writeSync(supervisor, "a".repeat(FOREMAN_LOG_MAX_BYTES));
-      recordCompletionDecision({ ...held, generation: round }, path);
-      writeSync(supervisor, `[mission-control] supervisor line ${round}\n`);
+  const supervisor = openPathUtilityLog(path);
 
-      const current = readFileSync(path, "utf8");
-      const lines = current.trim().split("\n");
-      assert.equal(lines.length, 2, `round ${round}: foreman.log was not rotated in place`);
-      assert.match(lines[0]!, new RegExp(`\\[foreman\\] completion outcome=held .* generation=${round} `));
-      // The supervisor's handle still writes to the path an operator opens, with no gap.
-      assert.equal(lines[1], `[mission-control] supervisor line ${round}`);
+  // Round 1: a writer that opened the file just before the rotation finishes after it.
+  writeFileSync(path, "a".repeat(FOREMAN_LOG_MAX_BYTES));
+  const inFlight = openSync(path, "a");
+  recordCompletionDecision({ ...held, generation: 1 }, path);
+  writeSync(inFlight, "[mission-control] in-flight line\n");
+  closeSync(inFlight);
+  supervisor.write("[mission-control] supervisor line 1\n");
+  assert.match(readFileSync(`${path}.1`, "utf8"), /\[mission-control\] in-flight line\n$/, "the in-flight line was kept in .1");
+  const afterFirst = readFileSync(path, "utf8").trim().split("\n");
+  assert.equal(afterFirst.length, 2, afterFirst.join("\n"));
+  assert.match(afterFirst[0]!, /\[foreman\] completion outcome=held .* generation=1 /);
+  assert.equal(afterFirst[1], "[mission-control] supervisor line 1");
 
-      const previous = readFileSync(`${path}.1`, "utf8");
-      assert.ok(previous.endsWith("a".repeat(64)), `round ${round}: .1 holds the full log`);
-      if (round === 2) {
-        // The first rotation's lines moved into .1 with the second one, rather than vanishing.
-        assert.match(previous, /generation=1 [\s\S]*\[mission-control\] supervisor line 1\n/);
-      }
-    }
-  } finally {
-    closeSync(supervisor);
-  }
+  // Round 2: the second rotation replaces .1. Round 1's supervisor line moves with it.
+  appendFileSync(path, "a".repeat(FOREMAN_LOG_MAX_BYTES));
+  recordCompletionDecision({ ...held, generation: 2 }, path);
+  supervisor.end("[mission-control] mission-control-foreman stopped\n");
+  const previous = readFileSync(`${path}.1`, "utf8");
+  const current = readFileSync(path, "utf8");
+  assert.match(previous, /generation=1 [\s\S]*\[mission-control\] supervisor line 1\n/);
+  assert.match(current, /^\S+ \[foreman\] completion outcome=held .* generation=2 /);
+  assert.match(current, /\[mission-control\] mission-control-foreman stopped\n$/);
+  assert.equal(supervisor.writableEnded, true);
 });
 
 test("an unwritable log costs the line, never the decision, and says why", () => {

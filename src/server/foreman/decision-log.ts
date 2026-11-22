@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, statSync, truncateSync } from "node:fs";
+import { appendFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import type { PromptedCompletionOutcome } from "@shared/types.ts";
@@ -88,14 +88,13 @@ export function formatCompletionDecision(record: CompletionDecisionRecord): stri
  * a failed tick that the loop would treat as no progress. The caller reports the returned
  * failure, so an unwritable log is visible rather than silently disabling the history.
  *
- * ROTATION COPIES, THEN TRUNCATES IN PLACE - it never renames. The Electron supervisor holds
- * `foreman.log` open for its whole process life (`openPrivateUtilityLog`, mode `"a"`). A rename
- * would carry that open handle off with the old file: after one rotation its lifecycle lines
- * land in `.1`, and after the next one `.1` is replaced and they reach no path at all.
- * Truncating keeps the same file, and because the supervisor appends with `O_APPEND`, its next
- * write lands at the new end rather than leaving a gap. The cost is a window of microseconds
- * between the copy and the truncate in which a supervisor line could be dropped; the supervisor
- * writes only at worker start and stop, so that is the trade taken.
+ * ROTATION IS ONE ATOMIC RENAME, and no writer of this file holds it open. The worker opens it
+ * by path for each line (`appendFileSync`), and the Electron supervisor writes its Foreman
+ * lifecycle lines the same way (`openPathUtilityLog` in `src/main/utility-log.ts`). So a line
+ * lands in whichever file was `foreman.log` when it was opened - `foreman.log` itself, or the
+ * `.1` it has just become - and none is lost to the rotation. Neither alternative holds: a
+ * supervisor handle kept open across renames loses its lines after the second rotation, and
+ * rotating in place (copy, then truncate) drops any line written between the two steps.
  */
 export function recordCompletionDecision(
   record: CompletionDecisionRecord,
@@ -109,10 +108,7 @@ export function recordCompletionDecision(
       // No file yet is an empty log; any real write problem surfaces from the append below.
       size = 0;
     }
-    if (size >= FOREMAN_LOG_MAX_BYTES) {
-      copyFileSync(path, `${path}.1`);
-      truncateSync(path, 0);
-    }
+    if (size >= FOREMAN_LOG_MAX_BYTES) renameSync(path, `${path}.1`);
     appendFileSync(path, `${formatCompletionDecision(record)}\n`, { mode: 0o600 });
     return null;
   } catch (err) {

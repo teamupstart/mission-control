@@ -14,8 +14,8 @@ sit in the inbox together.
 ## Entry criteria and dependencies
 
 - Phase 1 has merged. This phase consumes its predicates, `openAsks`, `filedPlanReceipt`, the
-  route response and the one write path for the status `withdrawn`, as listed in
-  `phased-plan.md`.
+  route response, the one write path for the status `withdrawn` and the wait-mode rule, as
+  listed in `phased-plan.md`.
 
 ## Scope
 
@@ -26,8 +26,9 @@ tests, an e2e spec and documentation.
 
 Not in scope: inferring a revision the agent did not name; carrying an approval from one form to
 its revision; revising a `request_input` question; revising a form that anyone but its own agent
-closed; a second place that writes the status `withdrawn`; any change to who is held, the counts
-or the flag gate.
+closed; revising a call-mode form, including one converted from filed; recording a row's earlier
+wait mode; a second place that writes the status `withdrawn`; any change to who is held, the
+counts or the flag gate.
 
 ## Repository findings and inherited contracts
 
@@ -46,6 +47,12 @@ or the flag gate.
   `approved`, `rejected`), `dismissed`, `orphaned` (eviction, merge, runtime-transfer settle) and
   `superseded` (a reworded retry). The Phase 1 contract keeps that write path single and lets
   this phase add one more entry to it, the `revises` replacement, and nothing else.
+- **What the stored wait mode says.** A filed form's row carries `wait_mode = 'message'`. A
+  withdrawal does not clear it, so a withdrawn filed form still carries it. The only thing that
+  clears it is `attachCall`, when an older MCP child re-asks an open filed form
+  (`markReviewWaitAttached`, `src/server/db.ts:5643-5651`), and that runs only while the row is
+  pending. No column records an earlier mode. By the Phase 1 contract a converted form is a
+  call-mode form, so the stored mode is the whole answer to "is this a filed form".
 - A settled review stays in the live registry until the daemon restarts; afterwards only pending
   and snoozed rows are restored (`loadPendingReviews`, `src/server/db.ts:5878`). `getReview`
   (`src/server/registry.ts:7408`) is therefore not enough to validate a withdrawn target, and no
@@ -78,9 +85,14 @@ or the flag gate.
 3. **Type.** `ReviewItem.revision?: { number: number; previousId: string }` in
    `src/shared/types.ts`, absent on every row that revises nothing.
 4. **Validation and replacement** in `ReviewManager.create`, behind a new `revises` option.
-   - **The rule.** The target must be a `plan-decisions` review of the same session that was
-     filed (it has, or had, `waitMode: "message"`), and it must be in one of exactly two states:
-     still open, or withdrawn by its own agent. This is the source plan's rule, unchanged.
+   - **The rule.** The target must be a filed plan form of the same session: a `plan-decisions`
+     review whose stored wait mode is `message`, read from the row as it is now. It must also be
+     in one of exactly two states: still open, or withdrawn by its own agent. This is the source
+     plan's rule, unchanged. The stored mode is enough for both states: an open filed form
+     passes `isFiledGate`, and a withdrawn filed form still carries the mode it was withdrawn
+     with, because a form that is no longer pending cannot be converted. A form an older MCP
+     child converted has no stored `message` mode and is a call-mode form here, as the Phase 1
+     contract says. Do not test, store or reconstruct what a row's mode used to be.
    - **One write path.** `create` does not write the status `withdrawn` itself. Take the body of
      `withdrawQuestion` and make it the review manager's one agent-withdrawal writer, in two
      halves like `mergeClosure`: a persist half (the status write, with the reason, plus the
@@ -99,11 +111,13 @@ or the flag gate.
      then, record who withdrew the row and make the predicate read that record, so a form
      withdrawn by anyone else is refused.
    - **Refusals.** Refuse, with a reason the agent can act on and nothing written, when the
-     target: is unknown; belongs to another session; is not a plan form; was a call-mode form
-     (its call returns its answer); was answered, dismissed, orphaned by an eviction or a merge,
-     or superseded; is `withdrawn` but not by its own agent; or is already revised by another
-     form. The last case includes a form this step itself replaced: its agent withdrew it, so
-     the predicate is true for it, and it is refused because it already has a revision.
+     target: is unknown; belongs to another session; is not a plan form; is a call-mode form,
+     whether it was asked that way or an older MCP child converted it from filed (its call
+     returns its answer, so the agent waits for that instead); was answered, dismissed, orphaned
+     by an eviction or a merge, or superseded; is `withdrawn` but not by its own agent; or is
+     already revised by another form. The last case includes a form this step itself replaced:
+     its agent withdrew it, so the predicate is true for it, and it is refused because it
+     already has a revision.
    - **Numbering and replacement.** The new row's number is the target's number plus one, where
      a form that revises nothing is 1. For an open target, run the writer's persist half inside
      the same transaction as the insert, with a reason naming the new revision, and its publish
@@ -132,8 +146,10 @@ or the flag gate.
   downgraded daemon ignores them.
 - `revises` is optional. An agent on an older MCP bundle cannot send it and keeps the Phase 1
   flow: withdraw, then file a new, unlinked form.
-- The new ask may be filed or blocking. The target must have been filed; the link does not
-  depend on how the new form waits.
+- The new ask may be filed or blocking. The target must be a filed form by its stored mode; the
+  link does not depend on how the new form waits.
+- A filed form that an older MCP child converted to call mode cannot be revised. Its agent is
+  waiting in that call, and the call returns the answer.
 - Splitting the withdrawal writer into two halves changes nothing `withdraw_question` does or
   returns.
 - The sibling inbox plan also changes the schema. Whichever merges second rebases and takes the
@@ -148,9 +164,10 @@ or the flag gate.
     validates; an identical re-ask re-attaches;
   - refused targets, each answering 409 with its reason and writing nothing: unknown; another
     session's form, including one that other session's agent withdrew; a `request_input`
-    question; a call-mode form; an answered form; a form the operator dismissed; a form closed by
-    a merge; a form orphaned by an eviction; a superseded form; a form already revised, including
-    one this path replaced;
+    question; a form asked in call mode; a filed form an older MCP child's re-ask converted to
+    call mode; an answered form; a form the operator dismissed; a form closed by a merge; a form
+    orphaned by an eviction; a superseded form; a form already revised, including one this path
+    replaced;
   - who withdrew it: `withdrawnByItsAgent` is true for a form withdrawn through
     `withdraw_question` by its own session and for a form its agent replaced with `revises`, and
     false for every other terminal status; a row that is `withdrawn` but fails the predicate
@@ -185,7 +202,8 @@ Commands: the focused files with
 - Every test above passes, and Phase 1's suites pass unchanged.
 - A revised form never coexists in the inbox with the form it replaces.
 - The only valid targets are an open filed plan form of the same session and one its own agent
-  withdrew. A form closed by anyone or anything else is refused.
+  withdrew, each decided from the mode stored on the row. A form closed by anyone or anything
+  else, and a call-mode form however it came to be one, is refused.
 - The status `withdrawn` is still written in one place. `withdraw_question` and the `revises`
   replacement are that write path's only entries, and `create` contains no status write of its
   own for it.
@@ -223,3 +241,9 @@ withdrew the row, and keeps `withdrawnByItsAgent` false for it.
   `withdraw_question` and the replacement call it, so `create` writes no status of its own. The
   contract in `phased-plan.md` names both entries; the finding, the validation rule, the tests
   ("one write path") and the exit criteria were updated to match.
+- Pull request review: step 4's rule accepted a target that "has, or had" message mode and its
+  refusals listed a call-mode form, so a filed form an older MCP child converted fit both, and
+  nothing stored could tell "had" apart. Reconciled to the contract's rule: a converted form is
+  a call-mode form. The rule now reads the stored mode only, a finding explains why that is
+  enough for a withdrawn target, the converted form is a named refusal, a compatibility note, a
+  test and part of the exit criterion, and recording an earlier mode is out of scope.

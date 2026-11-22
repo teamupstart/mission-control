@@ -44,6 +44,9 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
 - The body of `withdrawQuestion` (`src/server/reviews.ts:385-398`) is today the one place that
   writes the review status `withdrawn`, and `withdraw_question` is its only entry. It admits only
   the calling session's own ask, refuses a call-mode row and records no actor.
+- `attachCall` (`src/server/reviews.ts:406-411`) turns a filed row an older MCP child re-asked
+  into a call-mode row: `markReviewWaitAttached` (`src/server/db.ts:5643-5651`) clears the stored
+  `wait_mode` and `meanwhile`, only while the row is pending. Nothing keeps the original mode.
 - Counts: `countPending` and `countOpenQuestions` (`src/server/registry.ts:7370-7383`);
   `completionHeldByQuestion` (`:7396-7400`). The three completion gates also refuse a `needs-you`
   bucket (`src/server/registry.ts:10589-10594`, `src/server/workflows/manager.ts:5492-5494`,
@@ -82,6 +85,7 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
      `gateFlagOn` holds.
    - `questionHoldsCompletion` also returns true for an outstanding filed gate, with no flag
      condition (it exists only because both flags were on).
+   All of these read the mode stored on the row now. None asks what the mode used to be.
 3. **Text**, in the same module:
    - `filedPlanReceipt(review, { bundleApproved? })`, four points in order: filed and not
      answered, with the review id; this is a gate, so no edits, commits, pushes, task creation or
@@ -150,23 +154,32 @@ the ten-question limit; any cross-session cap; converting a blocking call into a
     `src/server/workflows/builtin-session-actions.generated.ts`; never hand-edit it.
 12. **Documentation.** `docs/sessions.md`: the `request_plan_decisions` entry (line 2676) and a
     "Filed plan decisions" part under "Asking without stopping" (line 3063) covering the gate,
-    what holds, withdraw, the flag pair and what switching a flag off does to open forms.
-    `docs/feature-flags.md`: the intro list and a paragraph. `docs/managed-plans.md`: approval on
-    the filed path (near line 218). `docs/attention-and-alerts.md` (lines 42-64): a filed plan
-    form is amber and counted from filing.
+    what holds, withdraw, the flag pair, what switching a flag off does to open forms, and what
+    an older MCP bundle's re-ask does to one. `docs/feature-flags.md`: the intro list and a
+    paragraph. `docs/managed-plans.md`: approval on the filed path (near line 218).
+    `docs/attention-and-alerts.md` (lines 42-64): a filed plan form is amber and counted from
+    filing.
 
 ## Compatibility
 
 - No migration. `reviews.wait_mode` already stores `message` for any kind.
 - An older MCP bundle never sends `asyncCapable` and blocks. Adding the behavior needs
   `npm run build:mcp`; sessions on an older bundle keep blocking until relaunched.
-- An older child that re-asks a filed form word for word is handed the open row and long-polls
-  it; `attachCall` turns it into a call-mode form. Keep that path working for plan forms.
+- **A filed form an older child converts is a call-mode form.** An older child that re-asks an
+  open filed form word for word is handed the row and long-polls it, and `attachCall` clears the
+  stored mode. Keep that path working for plan forms. From then on the form is a call-mode form
+  for every rule in this phase, as the contract in `phased-plan.md` says: it stays one pending
+  review and its answer is the call's result, never also a message; `isFiledGate` and
+  `isAgentAsk` are false for it, so it is not listed and not withdrawable;
+  `questionHoldsCompletion` does not cover it and a merge does not close it. This is the only
+  change of mode there is, it goes one way, and it cannot happen to a form that is no longer
+  pending.
 - Either flag switched off: new asks block; an open filed form stays filed, answerable and
   withdrawable only while `async-input` is on, since the two question routes stay behind it.
-  Switching a flag off closes nothing: no open form is withdrawn by it.
-- Call-mode plan forms are unchanged in every reader: not held by `questionHoldsCompletion`,
-  not closed by a merge, not withdrawable.
+  Switching a flag off closes nothing and converts nothing: no open form is withdrawn by it.
+- Call-mode plan forms are unchanged in every reader, whether they were asked in call mode or
+  converted to it: not held by `questionHoldsCompletion`, not closed by a merge, not
+  withdrawable.
 
 ## Tests and verification
 
@@ -183,6 +196,11 @@ Extend the existing suites rather than adding parallel ones:
   judged on questions alone); list and withdraw for plan forms, including that another session's
   `withdraw_question` on the form answers 409 and leaves it open; a merge closes a filed gate
   with `merged` and still leaves a call-mode gate alone (rewrite the test at line 324).
+- The same file, for the conversion: an older child's word-for-word re-ask of an open filed plan
+  form turns it into a call-mode form. It is still exactly one pending review; its answer is the
+  call's result and no message is queued; it is then absent from `list_open_questions`, refused
+  by `withdraw_question`, not covered by `questionHoldsCompletion` and left open by a merge; and
+  a form that was already withdrawn is not converted by a later re-ask.
 - `test/async-input-mcp.test.ts`: the tool returns the receipt and makes no `/wait` request; an
   older daemon's response long-polls.
 - `test/async-input-lifecycle.test.ts`: the answer row is daemon-authored, coalesces with a
@@ -221,16 +239,19 @@ Commands: the focused files with
 - The limit code is untouched and no cross-session cap exists.
 - The status `withdrawn` is still written in one place, and `withdraw_question` is that write
   path's only entry when this phase merges.
+- A filed plan form an older MCP child converted behaves as a call-mode form in every reader,
+  and no reader depends on what a row's mode used to be.
 - Documentation matches the behavior. The pull request records any deviation from this file.
 
 ## Downstream handoff
 
 Phase 2 may rely on the contracts listed in `phased-plan.md` under "Cross-phase contracts, owned
 by Phase 1", including the one write path for `withdrawn`, which makes a `withdrawn` review one
-its own agent withdrew. Phase 2 adds one sentence to `filedPlanReceipt`, an option to
-`ReviewManager.create`, and the second entry to that write path (the `revises` replacement). It
-must not add a second place that writes `withdrawn`, a second reader of the flag, a change to
-the counts, or a change to who is held.
+its own agent withdrew, and the wait-mode rule, which makes a converted form a call-mode form.
+Phase 2 adds one sentence to `filedPlanReceipt`, an option to `ReviewManager.create`, and the
+second entry to that write path (the `revises` replacement). It must not add a second place that
+writes `withdrawn`, a second reader of the flag, a change to the counts, a change to who is
+held, or any record of a row's earlier mode.
 
 ## Cross-phase audit record
 
@@ -247,3 +268,9 @@ the counts, or a change to who is held.
   contract's: one write path, whose only entry in this phase is `withdraw_question`, and to
   which Phase 2 adds the `revises` entry. The finding, step 6, the exit criterion and the
   handoff were reworded to say exactly that.
+- Pull request review: the compatibility note said only that `attachCall` turns a re-asked filed
+  form into a call-mode form, and the index called the mode "fixed at insert". The note now
+  states the one rule: a converted form is a call-mode form for listing, withdrawal, the
+  completion hold and merge closure. A finding, a line in step 2, a test group, an exit
+  criterion and the handoff carry it, so Phase 2 can decide a revision target from the stored
+  mode alone.

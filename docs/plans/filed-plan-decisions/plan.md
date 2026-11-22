@@ -1,9 +1,10 @@
 # Filed plan decisions
 
-Revision 5, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
-split into two implementation phases (`phased-plan.md`). Revision 5 applies Plan Validation rounds
-1 and 2, recorded in `phased-plan.md`. This is a plan-only task: it ships no product code. The
-phase tasks scheduled from this plan build the feature.
+Revision 6, 2026-11-22. The operator's decisions of 2026-11-22 are adopted below, and the work is
+split into two implementation phases (`phased-plan.md`). Revision 6 applies Plan Validation rounds
+1 and 2 and the pull request's Inspector review, all recorded in `phased-plan.md`. This is a
+plan-only task: it ships no product code. The phase tasks scheduled from this plan build the
+feature.
 
 ## Summary
 
@@ -197,8 +198,16 @@ daemon-authored turn through the same outbox that carries filed question answers
   terminal session with no writable pane.
 - Both branches of `createMcpReview` decide the wait and say it in the response. Told `message`,
   the child returns the receipt and makes no further request.
-- The wait mode is fixed when the row is written. A form filed while the flags were on stays
-  filed and answerable after either is switched off; new asks block again.
+- The wait mode is decided when the row is written, and a flag switch never changes it: a form
+  filed while the flags were on stays filed and answerable after either is switched off, and new
+  asks block again.
+- One conversion exists, in one direction only. An older MCP child that re-asks an open filed
+  form word for word is handed that row and long-polls it, which turns it into a call-mode form
+  (`attachCall`), exactly as for a filed question. From then on it is a call-mode form in every
+  respect: its answer returns through the call, and it is not listed or withdrawable as an agent
+  ask, not a valid `revises` target, not covered by the widened completion hold and not closed by
+  a merge. Nothing records that it was once filed, and nothing turns a call-mode form into a
+  filed one.
 
 ### One rule for what a filed form is
 
@@ -253,7 +262,8 @@ waits and filed gates), and `openQuestions` counts pending reviews the agent wor
   for a filed plan form of the same session that is still open or was withdrawn by its agent
   with `withdraw_question`. A form closed any other way (answered, dismissed, closed by a merge
   or an eviction, replaced as a reworded retry, or withdrawn by anyone but its agent) is never a
-  valid target. An open one is withdrawn in the same transaction as the new form is written, so
+  valid target, and neither is a form an older MCP child converted to call mode. An open one is
+  withdrawn in the same transaction as the new form is written, so
   the operator never sees both. That withdrawal goes through the same write path as
   `withdraw_question`, so the status `withdrawn` has one write path and is only ever the asking
   agent's own act. A form already replaced this way cannot be revised again; the agent revises

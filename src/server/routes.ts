@@ -71,13 +71,13 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
-  isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
   taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "@shared/plan-publication.ts";
 import {
   dismissLaunchFailures,
   launchFailureGroupFor,
@@ -7467,11 +7467,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const queue = queues.get(session.id);
     const task = registry.getTask(parsed.data.taskId);
+    // The same live publication read the worker made: a plan is claimable only while its
+    // `foreman_complete` workflow still waits on Foreman's completion claim.
+    const planStartsWorkflow = task?.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
     if (
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !heldGapRecoveryApplies(task.kind, planStartsWorkflow)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
@@ -7497,6 +7501,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      planStartsWorkflowOnCompletion: planStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),

@@ -48,7 +48,7 @@ const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function seed(
   suffix = "",
   decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
-  kind: "ship" | "bugfix" | "document" = "ship",
+  kind: "ship" | "bugfix" | "document" | "plan" = "ship",
 ): { sessionId: string; noteKey: string; taskId: string } {
   const sessionId = `ship-recovery-session${suffix}`;
   const noteKey = `ship-recovery-conversation${suffix}`;
@@ -501,4 +501,85 @@ test("a blocked session's ship-recovery claim is refused at the route and at the
     method: "POST", headers, body: JSON.stringify(claim),
   });
   assert.equal(accepted.status, 200, await accepted.clone().text());
+});
+
+/** A published version and an active binding for one conversation, as the bind dialog writes them. */
+function bindPlan(sessionId: string, noteKey: string, triggerMode: "manual" | "foreman_complete"): void {
+  const versionId = `plan-validation-${sessionId}`;
+  const graph = JSON.stringify({ nodes: [
+    { id: "s", kind: "session", position: { x: 0, y: 0 } },
+    { id: "e", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+  ], edges: [{ id: "se", source: "s", sourcePort: "submitted", target: "e", targetPort: "terminal" }] });
+  const defaults = JSON.stringify({ triggerMode, deliveryMode: "live", maxRepairRounds: 1 });
+  const db = openDb();
+  db.prepare(`INSERT INTO workflow_definitions
+    (id,name,normalized_name,description,draft_graph_json,completion_policy_json,binding_defaults_json,
+     draft_revision,current_version_id,created_at,updated_at)
+    VALUES (?,?,?,'',?,'{"kind":"none"}',?,1,?,1,1)`)
+    .run(versionId, versionId, versionId, graph, defaults, versionId);
+  db.prepare(`INSERT INTO workflow_versions
+    (id,workflow_id,version,source_draft_revision,graph_json,completion_policy_json,binding_defaults_json,published_at)
+    VALUES (?,?,1,1,?,'{"kind":"none"}',?,1)`).run(versionId, versionId, graph, defaults);
+  workflows.store.insertBinding({
+    id: `binding-${sessionId}`, workflowVersionId: versionId, noteKey,
+    sessionId, sessionAgent: "claude", sessionName: "plan recovery",
+    sessionCwd: repo, sessionRepoRoot: repo, triggerMode, deliveryMode: "live", maxRepairRounds: 1, now: 10,
+  });
+}
+
+test("a held plan joins the recovery ledger only while its foreman_complete workflow waits on the claim", async () => {
+  // The reported stall: Plan Validation is started only by Foreman's completion claim, and
+  // a held verdict spends the cycle that claim needed, so the plan sat idle with no run.
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "The plan's rendered HTML was not verified.",
+    gaps: [{ id: "html", path: "docs/plans/x/plan.md", detail: "Verify the retained HTML revision." }],
+  };
+  const claimFor = (seeded: { noteKey: string; taskId: string }) => {
+    const identity = {
+      taskId: seeded.taskId,
+      logicalKey: seeded.noteKey,
+      generation: 1,
+      episodeKey: "intent:1:1",
+      decisionGeneration: 1,
+      decisionOutcome: "held" as const,
+      reason: "held_gaps" as const,
+      attempt: 1,
+    };
+    return {
+      ...identity,
+      marker: shipRecoveryMarker(identity),
+      payloadSummary: "Deliver the held plan gaps.",
+      deliveryRoute: "immediate-held" as const,
+    };
+  };
+  const post = (sessionId: string, body: unknown) => app.request(
+    `/api/sessions/${sessionId}/queue/ship-recovery/claim`,
+    { method: "POST", headers, body: JSON.stringify(body) },
+  );
+
+  const unbound = seed("-plan-unbound", heldDecision, "plan");
+  assert.equal(
+    (await post(unbound.sessionId, claimFor(unbound))).status,
+    409,
+    "an unbound plan's skill owns its own pull request",
+  );
+
+  const manual = seed("-plan-manual", heldDecision, "plan");
+  bindPlan(manual.sessionId, manual.noteKey, "manual");
+  assert.equal(
+    (await post(manual.sessionId, claimFor(manual))).status,
+    409,
+    "a Manual binding waits for the operator's submit",
+  );
+
+  const automatic = seed("-plan-automatic", heldDecision, "plan");
+  bindPlan(automatic.sessionId, automatic.noteKey, "foreman_complete");
+  const claimed = await post(automatic.sessionId, claimFor(automatic));
+  assert.equal(claimed.status, 200, await claimed.clone().text());
+  const queue = (await claimed.json()) as {
+    promptedRecovery: { reason: string; attempt: number; lastDelivery: string } | null;
+  };
+  assert.equal(queue.promptedRecovery?.reason, "held_gaps");
+  assert.equal(queue.promptedRecovery?.attempt, 1);
 });

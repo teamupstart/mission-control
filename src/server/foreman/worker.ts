@@ -1,6 +1,9 @@
 import { isActiveTask } from "@shared/task-status.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
-import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import {
+  heldGapRecoveryApplies,
+  planStartsWorkflowOnCompletion,
+  type PlanPublicationContext,
+} from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +22,7 @@ import {
 } from "@shared/protocol.ts";
 import { taskCompletionContract } from "@shared/task-completion.ts";
 import { planPublicationStillCurrent, withPlanPublicationGuard } from "./plan-publication.ts";
+import { recordCompletionDecision } from "./decision-log.ts";
 import type {
   AgentType,
   PromptedCompletionGap,
@@ -306,6 +310,17 @@ async function consumePromptedCycle(
       opts,
     );
     promptedFailures.onConsumed(candidate.logicalKey);
+    recordCompletionDecision({
+      at: Date.now(),
+      sessionId: session.id,
+      sessionName: session.name,
+      taskKind: session.task?.kind ?? null,
+      generation: candidate.generation,
+      episodeKey: candidate.episodeKey,
+      outcome: decision.outcome,
+      summary: decision.summary ?? "",
+      gaps: decision.gaps ?? [],
+    });
     return true;
   } catch (err) {
     const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
@@ -1310,7 +1325,15 @@ async function resolveShipRecoveryCandidate(
   deliveryRoute: ShipRecoveryDeliveryRoute,
 ): Promise<ShipRecoveryCandidate | null> {
   const task = session.task;
-  if (!task || !isShippingTaskKind(task.kind)) return null;
+  if (!task) return null;
+  // A plan qualifies only while its `foreman_complete` workflow is still waiting on Foreman's
+  // claim. The ownership read is live, and a failed read holds: it never becomes permission.
+  let planStartsWorkflow = false;
+  if (task.kind === "plan" && isActiveTask(task.status)) {
+    const publication = await client.planPublicationContext(session.id).catch(() => null);
+    planStartsWorkflow = planStartsWorkflowOnCompletion(task, publication);
+  }
+  if (!heldGapRecoveryApplies(task.kind, planStartsWorkflow)) return null;
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
@@ -1338,6 +1361,7 @@ async function resolveShipRecoveryCandidate(
     workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
     workflowEvidenceEligible: evidence.registrationEligible,
     hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+    planStartsWorkflowOnCompletion: planStartsWorkflow,
     diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
     featureEnabled: cfg.keepShipTasksMoving,
     mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -2517,6 +2541,18 @@ export async function processPromptedWrapup(
       return false;
     }
     if (claim.kind === "claimed") {
+      recordCompletionDecision({
+        at: Date.now(),
+        sessionId: current.session.id,
+        sessionName: current.session.name,
+        taskKind: current.session.task?.kind ?? null,
+        generation: current.candidate.generation,
+        episodeKey: current.candidate.episodeKey,
+        outcome: "workflow_claimed",
+        summary: claimSummary,
+        gaps: [],
+        runId: claim.result.runId,
+      });
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }
@@ -2622,7 +2658,11 @@ export async function processPromptedWrapup(
   if (plan.kind === "hold") {
     if (
       cfg.keepShipTasksMoving
-      && current.session.task && isShippingTaskKind(current.session.task.kind)
+      && current.session.task
+      && heldGapRecoveryApplies(
+        current.session.task.kind,
+        planStartsWorkflowOnCompletion(current.session.task, planPublication),
+      )
       && isActiveTask(current.session.task.status)
     ) {
       const latestSessions = await client.sessions().catch(() => null);

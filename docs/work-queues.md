@@ -184,7 +184,9 @@ Once any task-owned pull request appears, the shepherd stops and the existing Gi
 findings and CI follow-through path owns later idle periods. It never adds a second PR poller.
 
 The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
-quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
+quiet-window shepherd. It covers `ship`, `bugfix` and `document` tasks, and a repository plan
+whose **Foreman Complete** workflow is started only by Foreman's claim. That plan receives held
+gaps only; see [Foreman](foreman.md). The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
 logical key, intent episode, reason, and attempt budget. The current work-cycle generation remains
 in each delivery marker, so the worker must claim that exact per-delivery identity through the
 daemon before injection. A positive non-delivery releases only that identity;

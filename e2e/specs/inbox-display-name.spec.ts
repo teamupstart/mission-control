@@ -201,6 +201,12 @@ test("with the inbox flag on, an alert's title names the agent the way its inbox
   await expect.poll(async () =>
     (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.name).toBe("lint-worker");
 
+  // The page has to have seen the session with nothing pending before the question lands: the
+  // notifier takes its first snapshot as a silent baseline, so a question already in that snapshot
+  // raises no alert at all.
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: "lint-worker" }))
+    .toBeVisible();
+
   // Off: the alert reads the task title, as it always has, while the inbox row reads the session
   // name. The two surfaces name one agent two ways.
   await ask(daemon, session.cwd!);
@@ -211,7 +217,12 @@ test("with the inbox flag on, an alert's title names the agent the way its inbox
 
   // On: a new question's alert and the inbox row name the agent the same way. A different
   // question, because the daemon folds a repeat of an open one into it rather than filing anew.
+  // The page must hold the flag before the second question lands, or its alert is named under the
+  // old rule; the inbox row switching to the task title is the page saying it does.
   await setInbox(daemon, true);
+  inbox = await openInbox(page);
+  await expect(rowHeader(inbox)).toHaveText(title);
+  await closeOverlay(page, inbox);
   await ask(daemon, session.cwd!, "Should CI fail on lint warnings?");
   await expect.poll(async () => (await toasts(page)).length).toBe(2);
   const [alert] = (await toasts(page)).slice(1);

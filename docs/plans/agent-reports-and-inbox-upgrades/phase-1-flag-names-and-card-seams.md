@@ -1,7 +1,7 @@
 # Phase 1: the flag, one name everywhere and the card seams
 
 Part of `docs/plans/agent-reports-and-inbox-upgrades/phased-plan.md`. Source plan: `plan.md`
-beside this file. Owns R18, R19, R24 (the order rule), R25 and R27.
+beside this file. Owns R18, R19, R24 (the order rule), R25 (the rule and its test) and R27.
 
 ## 1. Outcome
 
@@ -39,6 +39,8 @@ and Stuck rows.
 - `detectAlerts` runs in the browser (`src/web/useNotifier.ts:120`) and in the daemon's away
   watcher (`src/server/away/watcher.ts:204`). Both must name alike.
 - The fold's section order is implicit in push order (`src/web/lib/attention.ts:355`).
+- `test/tooltip-coverage.test.ts` is a source scan that fails on a control with no tooltip; the
+  action test below follows it.
 
 ## 5. Implementation steps
 
@@ -57,10 +59,12 @@ and Stuck rows.
    head. A resident's name takes its board colour.
 5. **Section order.** Add `INBOX_SECTION_ORDER` listing today's seven kinds in rendered order and
    make the fold emit in that order. Correct the stale six-section comment.
-6. **Action seam.** In `src/shared/inbox.ts`: `InboxActionSpec { id, label, spoken }` and an
-   `INBOX_ACTIONS` registry, seeded with the question card's forms ("{name}, option B",
-   "reply, ..."). In the dashboard: a `SpokenHint` component that reads a voice-hints context,
-   default off, and renders nothing. Place it on the question card.
+6. **Action seam.** In `src/shared/inbox.ts`: `InboxActionSpec { id, label, spoken, clickOnly }`
+   and the `INBOX_ACTIONS` registry. An entry has a spoken form, or a `clickOnly` reason
+   (`navigation`, `dismissal`, `section-wide`). Seed it with the question card's two forms from
+   the index table. In the dashboard: `SpokenHint`, which reads a voice-hints context, default
+   off, and renders nothing; and `InboxActionButton`, which draws a control from its registry
+   entry with its hint. Place the question card's hints.
 7. **Docs.** `docs/feature-flags.md` (the flag list and the Shipped flags table) and
    `docs/attention-and-alerts.md` (the naming rule).
 
@@ -74,6 +78,10 @@ No storage. With the flag off every name is exactly what it is today, and tests 
 - `test/alerts.test.ts`: titles with and without `names`.
 - `test/attention-inbox.test.ts`: the fold follows `INBOX_SECTION_ORDER`.
 - `test/feature-flags.test.ts`: the entry is `preview` and off by default.
+- `test/inbox-actions.test.ts`: every registry entry has a spoken form or a click-only reason and
+  never both; ids are unique; and a source scan of the report and Stuck card files fails on a
+  button that is not an `InboxActionButton`. The scan passes on an empty file list here and
+  starts guarding each card when Phases 2 and 5 add its file to the list.
 - A `renderToStaticMarkup` test for the `ReviewCard` name line.
 - `e2e/specs/inbox-flag.spec.ts`, after `e2e/specs/async-input-flag.spec.ts`: the Settings row
   appears off, and toggling it reaches a second window without a reload.
@@ -91,7 +99,8 @@ it off nothing changed. No new control is visible for the seam.
 ## 9. Downstream handoff
 
 Later phases rely on `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`,
-`SpokenHint` and `AlertScope.names`, and add to them without changing their shapes. Voice fills
+`InboxActionButton`, `SpokenHint` and `AlertScope.names`, and add to them without changing their
+shapes. Each adds its actions from the index table and its card file to the scan. Voice fills
 `callSign` and `referenceName` and turns the hints on.
 
 ## 10. Cross-phase audit record
@@ -102,3 +111,6 @@ Later phases rely on `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `I
   need a live session. Its input is plain values. Confirmed.
 - After Phase 6: the report alert takes its name from the report, not from `sessionLabel`.
   No change here.
+- Plan validation round 1: `clickOnly`, `InboxActionButton` and the scan were added so every
+  later card control is declared. The question card predates this work, so only its two spec
+  forms are declared and its file is not scanned.

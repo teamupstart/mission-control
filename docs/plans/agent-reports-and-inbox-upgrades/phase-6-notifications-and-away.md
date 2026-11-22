@@ -104,3 +104,5 @@ not add a second delivery path. Voice reuses the report alert unchanged.
   4 is why the browser now reads Away state.
 - This phase's spec reads report history through the Phase 2 route, not the Phase 3 conversation
   entry, so the two can merge in either order.
+- Plan validation round 1: this phase adds no card control. The popover switches are settings,
+  not inbox actions, so the action registry is untouched here.

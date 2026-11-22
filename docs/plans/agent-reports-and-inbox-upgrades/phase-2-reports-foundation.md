@@ -23,7 +23,8 @@ Mark all read (Phase 7).
 
 ## 4. Repository findings and contracts
 
-- Inherited: `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`.
+- Inherited: `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`,
+  `InboxActionButton`.
 - Schema version 40 (`src/server/db.ts:287`). New empty tables are created beside their upgrade
   path: `session_blockers` (`db.ts:4507`), `attention_dismissals` (`db.ts:4906`). The version is
   pinned by `test/managed-plans.test.ts` and `test/telemetry-migration.test.ts`.
@@ -52,14 +53,14 @@ Mark all read (Phase 7).
    the tool's "when to report" paragraph. Request schemas in `src/shared/protocol.ts`. The
    `report_upsert` event and the optional `reports` snapshot field in `src/shared/types.ts`.
 2. **Storage.** Create `reports` beside its upgrade path and bump the schema version. Columns
-   cover every `ReportItem` field, including `announced_as`, `announced_at` and
-   `published_archive_key`, which this phase leaves null.
-3. **Manager.** `src/server/reports.ts`: `post` resolves the author (key and display name),
-   validates `replaces` (it must be an unread, unsuperseded report with the same author key;
-   otherwise refuse with that author's open report ids and titles), copies an attached `.html`
-   or `.md` file from inside the session's checkout to `<state home>/reports/<id>/` under a size
-   cap, inserts, marks the replaced row superseded, and emits. `markOpened` and `markRead` are
-   idempotent. It does not subscribe to `session_remove`.
+   cover every `ReportItem` field, including `repository`, and `follow_up_task_id`,
+   `announced_as`, `announced_at` and `published_archive_key`, which this phase leaves null.
+3. **Manager.** `src/server/reports.ts`: `post` resolves the author (key and display name) and
+   the session's repository root, validates `replaces` (it must be an unread, unsuperseded report
+   with the same author key; otherwise refuse with that author's open report ids and titles),
+   copies an attached `.html` or `.md` file from inside the session's checkout to
+   `<state home>/reports/<id>/` under a size cap, inserts, marks the replaced row superseded, and
+   emits. `markOpened` and `markRead` are idempotent. It does not subscribe to `session_remove`.
 4. **Routes.** `POST /mcp/reports` (404 with `feature` when the flag is off),
    `POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `GET /api/sessions/:id/reports`
    (every version, read or not).
@@ -71,8 +72,9 @@ Mark all read (Phase 7).
    their oldest `rootCreatedAt`. Add `toRead`. Reports never add to `total` or `represented`.
 7. **Inbox.** Section title "Reports". A `ReportCard` collapsed to title, author name and age;
    opening it shows the body, the link, "updated N times" when `version > 1`, and Mark read, and
-   posts opened once. `openReportId` lives in `src/web/App.tsx`. Declare the `mark-read` action
-   and place its `SpokenHint`. Update the inbox subtitle.
+   posts opened once. `openReportId` lives in `src/web/App.tsx`. Declare `mark-read` in
+   `INBOX_ACTIONS`, draw it with `InboxActionButton`, and add the card's file to the Phase 1
+   scan. Update the inbox subtitle.
 8. **Top bar.** A neutral "to read" `PulseStat` that opens the inbox, fitted into the one-row
    ladder.
 9. **Docs.** `docs/sessions.md`, `docs/attention-and-alerts.md`, `docs/event-stream.md`,
@@ -87,10 +89,12 @@ tool.
 ## 7. Tests and verification
 
 - `test/reports.test.ts`: post, the chain and its refusal, opened and read, a report surviving
-  `session_remove`, and no change to `pendingReviews` or the completion hold.
+  `session_remove` with its repository and author intact, a null repository for a session that
+  has none, and no change to `pendingReviews` or the completion hold.
 - `test/reports-http.test.ts`: routes, flag off, a path outside the checkout, an oversized file.
 - A migration test for a version-40 database; `test/mission-mcp.test.ts`; `npm run smoke`.
 - `test/attention-inbox.test.ts`: grouping, order, `toRead`, `total` untouched.
+- `test/inbox-actions.test.ts` now scans the report card.
 - `e2e/specs/reports-inbox.spec.ts`: post on the tool's own channel (`/mcp/reports` with the
   daemon token, as `e2e/specs/async-input-ask-and-continue.spec.ts` does for questions). Assert
   "1 to read", the Reports row, the body on open, the state after a reload, Mark read clearing
@@ -118,3 +122,6 @@ columns; they do not change the id format or how a chain keeps its queue place.
 - After Phase 4: `document.kind` is `html` or `markdown`; the reader needs nothing else stored.
 - After Phase 6: the announce columns exist here and stay null until Phase 6 writes them.
 - After Phase 7: mutes are a separate table keyed by the author key defined here.
+- Plan validation round 1: `repository` and `followUpTaskId` were added to `ReportItem` and the
+  table. Phase 3's follow-up reads the first and writes the second, so neither needs a live
+  session or a second migration.

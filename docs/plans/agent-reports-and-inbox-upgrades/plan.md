@@ -1,7 +1,8 @@
 # Agent reports and inbox upgrades
 
-Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`.
-This task delivers the plan and its phases only. No product code changes here.
+Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
+revised after plan validation round 1. This task delivers the plan and its phases only. No
+product code changes here.
 
 ## Goal
 
@@ -107,7 +108,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | Id | Requirement |
 | --- | --- |
 | R24 | Fixed section order: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts, Waiting on you, **Stuck**, Stuck finalizations, **Reports**, Snoozed. |
-| R25 | Every inbox action has a spoken form, shown on the card as an always-visible hint in lighter text. Planned here as a seam: the forms are declared with the actions and stay hidden until voice turns them on. |
+| R25 | Every inbox action has a spoken form, shown on the card as an always-visible hint in lighter text. Planned here as a seam: every control on a report or Stuck card, and the question card's two forms, is declared with its spoken form, which stays hidden until voice turns it on. A control that only navigates (Open session, Open run, Open archive), a row's Dismiss, and the section-wide Mark all read, which names no agent, are declared click-only with that reason. |
 | R26 | Hooks voice needs from reports: the line "When you have finished this, post a report." on spoken messages, the unseen-reports note, and binding speech to the report that is open on screen. Planned here as seams. |
 | R27 | One `inbox` preview flag turns on reports, Stuck rows and the naming rule together. |
 | R28 | **Report guidance** is editable: the operator can change the text that tells agents when to post a report, and reset it. |
@@ -168,8 +169,9 @@ one actually says.
 6. **The scout archive only accepts scout submissions and plan captures.** Both arrive through a
    task's work episode (`src/server/archives/manager.ts:254`). Publish as scout needs a third,
    operator-initiated capture path. An archive page must be static HTML that passes the archive's
-   checker, so a Markdown document is rendered to a static page first and a page the checker
-   refuses is reported on the card.
+   checker. The daemon builds the published page from the stored copy alone: an HTML document as
+   stored, a Markdown document rendered by the daemon. The publish request carries no page, and a
+   page the checker refuses is reported on the card.
 7. **No call sign or reference name exists yet.** Rank 1 of the naming rule is a seam: the
    resolver accepts both and voice adds the fields.
 8. **Nothing records whether a title was typed.** `explicitTitle` is a local in
@@ -221,10 +223,10 @@ evidence, and neither contains reports.
 ### Reports: storage, tool and wire
 
 - A `reports` table, created beside its upgrade path with a schema version bump. One row per
-  posted report: a short public id (`r-<n>`), the posting session and task, the author's display
-  name and resident profile at post time, title, body, optional url, the stored document's name
-  and kind, the chain it belongs to (`replaces`), when it was first opened, when and how it was
-  read, and how it was announced (finding 3).
+  posted report: a short public id (`r-<n>`), the posting session, task and repository, the
+  author's display name and resident profile at post time, title, body, optional url, the stored
+  document's name and kind, the chain it belongs to (`replaces`), when it was first opened, when
+  and how it was read, any follow-up task started from it, and how it was announced (finding 3).
 - The document is copied to `<state home>/reports/<id>/` when posted. The daemon accepts only a
   path inside the posting session's checkout, an `.html` or `.md` file, within a size cap.
 - The tool posts to a new `/mcp/reports` route with the same token and session resolution as
@@ -249,7 +251,9 @@ evidence, and neither contains reports.
   the report, the report text, then the operator's words. It is echoed and captured exactly as a
   typed message is.
 - **Agent gone.** The card reads the live session and resident run: a resident that is not
-  running shows the relaunch hint; a standard session that is gone offers Start a follow-up task.
+  running shows the relaunch hint; a standard session that is gone offers Start a follow-up task
+  in the repository stored on the report. The task it creates is recorded on the report, so a
+  retry after a failed dispatch reuses that task and never creates a second.
 
 ### Stuck rows
 
@@ -297,14 +301,15 @@ evidence, and neither contains reports.
   agent can still post; its reports raise no notification and stay out of the inbox list and the
   to read figure, and remain in its conversation. Mute is offered on the report card. The Reports
   panel in Settings lists muted agents with Unmute.
-- **Mark all read.** A button on the Reports section heading marks every listed report read.
+- **Mark all read.** A button on the Reports section heading marks every listed report read. It
+  is click-only, because it names no agent.
 
 ### Seams for voice
 
 | Seam | What this plan provides | What voice adds |
 | --- | --- | --- |
 | Flag | The `inbox` flag id as a shared constant | The requirement and the "turn both on" offer |
-| Spoken forms | Every card action is declared once with its label and spoken form ("Steve, mark read", "Steve, nudge", "reply, ..."). Cards render a hint slot that shows nothing | Turning the hints on |
+| Spoken forms | Every control on a report or Stuck card is declared once with its label and either a spoken form ("Steve, mark read", "Steve, nudge", "reply, ...") or a click-only reason. Cards render a hint slot that shows nothing | Turning the hints on |
 | One action path | A click and any other caller run the same action function | Calling it from a spoken command, with its cancel window |
 | Mark read target | A pure rule: the report open on screen; else the agent's only unread report; else none | Saying "Steve, mark read" and showing the hint when the rule returns none |
 | Open report | First-opened time on the report, and which report is open on screen | Binding "Steve, ..." and "reply, ..." to it |

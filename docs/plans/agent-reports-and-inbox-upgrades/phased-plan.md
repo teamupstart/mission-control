@@ -16,14 +16,31 @@ This task writes the plan and schedules the phases. It ships no product code.
 - Reports and Stuck rows share only the flag, the resolver and the section order. Stuck rows fold
   the daemon's stall list (`src/web/lib/stalls.ts:33`) and touch no report code.
 - The reports table is the one migration every report phase reads. Phase 2 creates every column,
-  including the announce and publication columns that Phases 6 and 4 write, so the table is
-  migrated once.
+  including the follow-up, announce and publication columns that Phases 3, 6 and 4 write, so the
+  table is migrated once.
 - The conversation entry, the reply and the gone-agent states all hang off the report card and
   the outbox (`src/server/pending-turns.ts:303`); they are one slice.
 - Open report and Publish as scout need a reader and a new archive capture path (plan findings 5
   and 6). That is the least certain work, so it is its own phase and cannot hold up replies.
 - Notification classes replace one filter shared by the browser and the daemon
   (`src/shared/alerts.ts:116`). Mutes filter the same path, so noise controls follow it.
+
+## Plan validation round 1
+
+Four findings were accepted and applied across the bundle:
+
+- **Every card action has an owner and a test.** R25 now says which controls carry a spoken form
+  and which are click-only, the table below assigns each action to a phase, and Phase 1 owns a
+  test that fails on an undeclared control. Open report, Publish as scout, Start a follow-up task
+  and Mute gained spoken forms. Mark all read is click-only: it names no agent, and the voice spec
+  routes speech only by an agent's name or "reply".
+- **The report stores its repository.** `ReportItem.repository` is persisted by Phase 2 and read
+  by Phase 3's follow-up after the session is gone.
+- **A failed follow-up dispatch cannot create a second task.** `ReportItem.followUpTaskId` is
+  written when the task is created; a retry dispatches that task.
+- **Publication is bound to the stored document.** The daemon builds the published page from the
+  stored copy; the publish request carries no page, and a request that tries to supply one is
+  refused.
 
 ## Sizing and phase count
 
@@ -64,9 +81,10 @@ graph LR
 - After 2: phases 3 and 6 may run together, and with 5.
 - Phases 4 and 7 may run together.
 - Phases that run together both edit `src/web/lib/attention.ts`,
-  `src/web/components/AttentionInbox.tsx`, `src/web/App.tsx`, `src/server/routes.ts` and
-  `docs/attention-and-alerts.md` in different places; the later one rebases. Two phases that add a
-  migration (2 and 7, and the sibling plan) take the next schema number at merge time.
+  `src/web/components/AttentionInbox.tsx`, `src/web/App.tsx`, `src/server/routes.ts`,
+  `src/shared/inbox.ts` and `docs/attention-and-alerts.md` in different places; the later one
+  rebases. Two phases that add a migration (2 and 7, and the sibling plan) take the next schema
+  number at merge time.
 
 ## Cross-phase contracts
 
@@ -78,16 +96,19 @@ Owned by Phase 1:
   `callSign` and `referenceName` are accepted and unset until voice adds them.
 - `INBOX_SECTION_ORDER` in `src/web/lib/attention.ts`. Phase 5 adds `session_stuck` between
   `session_blocked` and `parked_finalization`; Phase 2 adds `agent_reports` last.
-- `InboxActionSpec { id, label, spoken }`, the `INBOX_ACTIONS` registry and the `SpokenHint`
-  component, which renders nothing until a voice-hints context says otherwise.
+- `InboxActionSpec { id, label, spoken, clickOnly }` and the `INBOX_ACTIONS` registry. An action
+  has a `spoken` form, or a `clickOnly` reason: `navigation`, `dismissal` or `section-wide`.
+- `InboxActionButton`, which draws a card control from its registry entry with a `SpokenHint`.
+  The hint renders nothing until a voice-hints context says otherwise.
 - `AlertScope.names`, which makes alert titles use the resolver.
 
 Owned by Phase 2:
 
-- Table `reports` and `ReportItem`: `id` (`r-<n>`), `sessionId`, `taskId`,
+- Table `reports` and `ReportItem`: `id` (`r-<n>`), `sessionId`, `taskId`, `repository`,
   `author { key, name, residentProfileId }`, `title`, `body`, `url`, `document { name, kind }`,
   `rootId`, `version`, `supersededBy`, `createdAt`, `rootCreatedAt`, `openedAt`, `readAt`,
-  `readBy`, `announcedAs`, `announcedAt`, `publishedArchiveKey`.
+  `readBy`, `followUpTaskId`, `announcedAs`, `announcedAt`, `publishedArchiveKey`.
+- `repository` is the posting session's repository root at post time, or null when it has none.
 - Author key: `resident:<profileId>` or `session:<sessionId>`.
 - Routes `POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read`,
   `GET /api/sessions/:id/reports`; event `report_upsert`; snapshot field `reports`.
@@ -99,7 +120,7 @@ Owned by later phases:
 
 - Phase 3: `reportReplyText`, `unseenReportsNote`, `POST_REPORT_LINE` and
   `resolveMarkReadTarget` in `src/shared/reports.ts`; routes `POST /api/reports/:id/reply` and
-  `POST /api/reports/:id/follow-up`.
+  `POST /api/reports/:id/follow-up`; writes `followUpTaskId`.
 - Phase 4: `GET /api/reports/:id/document`, `POST /api/reports/:id/publish`; writes
   `publishedArchiveKey`.
 - Phase 5: `Stall.facts` and `Stall.fingerprint`; fold item `session_stuck`;
@@ -109,11 +130,34 @@ Owned by later phases:
 - Phase 7: table `report_mutes`, the `reports` settings entry, `GET /mcp/reports/guidance`,
   `POST /api/reports/read-all`.
 
+## Inbox actions and who declares them
+
+Phase 1 owns R25's rule and its test. Each phase declares the actions it adds. `{name}` is the
+agent's display name.
+
+| Action | Card | Spoken form, or click-only reason | Phase |
+| --- | --- | --- | --- |
+| `answer-option` | Question | "{name}, option B" | 1 |
+| `answer` | Question | "{name}, ..." or "reply, ..." while the card is open | 1 |
+| `mark-read` | Report | "{name}, mark read" | 2 |
+| `reply` | Report | "{name}, ..." or "reply, ..." while the card is open | 3 |
+| `follow-up` | Report | "{name}, follow up, ..."; "reply, ..." while the card is open | 3 |
+| `open-report` | Report | "{name}, open report" | 4 |
+| `publish-scout` | Report | "{name}, publish as scout" | 4 |
+| `open-archive` | Report | click-only: navigation | 4 |
+| `nudge`, `continue`, `mark-done`, `resubmit`, `push` | Stuck | "{name}, nudge", "{name}, continue", "{name}, mark done", "{name}, resubmit", "{name}, push" | 5 |
+| `stop` | Stuck | "{name}, stop" (interrupt) | 5 |
+| `message` | Stuck | "{name}, ..." or "reply, ..." while the card is open | 5 |
+| `open-session`, `open-run` | Stuck | click-only: navigation | 5 |
+| `dismiss` | Stuck | click-only: dismissal | 5 |
+| `mute` | Report | "{name}, mute reports" | 7 |
+| `mark-all-read` | Reports heading | click-only: section-wide | 7 |
+
 ## Requirement ownership
 
 | Phase | Requirements |
 | --- | --- |
-| 1 | R18, R19, R24 (the order rule), R25, R27 |
+| 1 | R18, R19, R24 (the order rule), R25 (the rule and its test), R27 |
 | 2 | R1, R2, R3, R4, R6, R7, R8, R9, R12, R14 |
 | 3 | R5, R10, R11, R26 |
 | 4 | R13 |

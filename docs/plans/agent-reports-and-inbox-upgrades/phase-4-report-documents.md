@@ -18,12 +18,12 @@ Phase 3 is merged. May run concurrently with Phases 5 and 7.
 In scope: the document route, the reader, the Open report control on the inbox card and the
 conversation entry, the archive capture path, the publish route and control, docs and specs. Not
 in scope: publishing a report that has no document, editing or deleting stored documents, any
-automatic publication.
+automatic publication, accepting page content from the browser.
 
 ## 4. Repository findings and contracts
 
 - Inherited: the stored copy at `<state home>/reports/<id>/`, `ReportItem.document`,
-  `publishedArchiveKey`, `ReportCard`, `ReportEntryCard`.
+  `publishedArchiveKey`, `ReportCard`, `ReportEntryCard`, `InboxActionButton`.
 - The Files viewer reads only a session's checkout (`src/server/routes.ts:3596`, `:3614`).
   State-home files are served by the managed-plan routes (`routes.ts:5787`), read in
   `src/web/components/ManagedPlanReader.tsx`, and by the archive artifact route
@@ -34,7 +34,9 @@ automatic publication.
   (`src/server/archives/manager.ts:254`); a plan bundle by the capture in
   `src/server/archives/plan.ts`. The page must pass the static checker in
   `src/server/archives/html.ts`. `docs/archives.md` describes a bundle.
-- The daemon has no Markdown renderer. The dashboard renders Markdown with `react-markdown`.
+- The daemon has no Markdown renderer today. `react-markdown` and `remark-gfm` are runtime
+  dependencies in `package.json`, and the test suite already renders React to static markup in
+  Node.
 - A new modal follows the inset rule in `AGENTS.md`.
 
 ## 5. Implementation steps
@@ -45,18 +47,23 @@ automatic publication.
 2. **Reader.** A `ReportDocumentReader` overlay: an HTML document in a sandboxed frame, a
    Markdown document through the dashboard's Markdown component. **Open report** appears on
    `ReportCard` and `ReportEntryCard` when the report has a document, and posts opened.
-3. **Capture path.** Add an operator-initiated capture to the archive manager that writes a
-   `scout` bundle whose `report/report.html` is the report's document. Its title is the report's
-   title; it has no prompt trail and no `artifacts/` half. It is keyed by the report id, so a
-   repeated publish returns the same archive.
-4. **Markdown documents.** The dashboard renders the Markdown to a static page and sends it with
-   the publish request. The daemon treats it as untrusted and runs the same checker. If the
-   implementer finds a safe daemon-side renderer, prefer it and record why in the pull request.
-5. **Publish route and control.** `POST /api/reports/:id/publish` runs the capture, stores
-   `publishedArchiveKey` and emits. The card shows **Publish as scout**, then "Published" with
-   **Open archive** (`#/scouts/<key>`). A page the checker refuses shows its problems on the
-   card and publishes nothing.
-6. **Docs.** `docs/archives.md` gains "How a report produces one"; `docs/sessions.md`.
+3. **Page builder.** A daemon function builds the page to publish from the stored file and
+   nothing else. An HTML document is its stored bytes. A Markdown document is rendered by the
+   daemon to a static page, using one shared Markdown configuration that the reader also uses.
+   If the daemon bundle cannot carry that renderer, the daemon instead wraps the escaped Markdown
+   text in a static page; either way the daemon, not the browser, produces the page.
+4. **Capture path.** Add an operator-initiated capture to the archive manager that writes a
+   `scout` bundle whose `report/report.html` is the built page, after the checker passes it. Its
+   title is the report's title; it has no prompt trail and no `artifacts/` half. It is keyed by
+   the report id, so a repeated publish returns the same archive.
+5. **Publish route and control.** `POST /api/reports/:id/publish` takes no body fields beyond
+   the id in its path; its schema is strict, so a request that supplies a page or a path is
+   refused. It runs the capture, stores `publishedArchiveKey` and emits. The card shows
+   **Publish as scout**, then "Published" with **Open archive** (`#/scouts/<key>`). A page the
+   checker refuses shows its problems on the card and publishes nothing.
+6. **Actions.** Declare `open-report` and `publish-scout` with the forms in the index table and
+   `open-archive` as click-only navigation. Draw all three with `InboxActionButton`.
+7. **Docs.** `docs/archives.md` gains "How a report produces one"; `docs/sessions.md`.
 
 ## 6. Data and compatibility
 
@@ -66,9 +73,12 @@ opens a published report as a scout archive. With the flag off both routes refus
 ## 7. Tests and verification
 
 - `test/reports-document-http.test.ts`: headers, a missing file, flag off.
-- `test/reports-publish.test.ts`: an HTML document publishes once and is idempotent; a page with
-  a script is refused with its problems; a Markdown document publishes as a static page; nothing
-  is archived without the call.
+- `test/reports-publish.test.ts`: an HTML document publishes once and is idempotent; the archived
+  page's digest equals the digest of the stored file, for HTML, and of the daemon's render of the
+  stored file, for Markdown; a request carrying a substitute page is refused and archives
+  nothing; changing the checkout file after posting does not change what is published; a page
+  with a script is refused with its problems; nothing is archived without the call.
+- `test/inbox-actions.test.ts` covers the three actions.
 - `e2e/specs/reports-document.spec.ts`: post a report with an HTML file, delete the checkout
   file, press Open report and read the document's text in the reader; call
   `expectContentClearsBorder` on the reader; press Publish as scout and find the report on the
@@ -78,11 +88,12 @@ opens a published report as a scout archive. With the flag off both routes refus
 ## 8. Merge and exit criteria
 
 The stored copy opens without its checkout. Publication happens only on the operator's click,
-once per report, and a refused page explains itself.
+once per report, always from the stored copy, and a refused page explains itself.
 
 ## 9. Downstream handoff
 
-Nothing later depends on this phase. Voice does not publish.
+Nothing later depends on this phase. Voice does not publish by itself; it calls the declared
+actions.
 
 ## 10. Cross-phase audit record
 
@@ -91,3 +102,6 @@ Nothing later depends on this phase. Voice does not publish.
 - Phase 2 already validates the file's extension and size at post time, so the reader and the
   capture path trust only the two kinds it stores.
 - Phase 7's Mark all read and mute do not touch documents; a published archive stays published.
+- Plan validation round 1: an earlier draft had the dashboard render Markdown and send the page.
+  That left the published content unbound to the stored document, so the daemon now builds the
+  page and the route accepts none.

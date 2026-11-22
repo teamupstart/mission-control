@@ -22,8 +22,8 @@ session.
 
 ## 4. Repository findings and contracts
 
-- Inherited from Phase 2: `ReportItem`, `GET /api/sessions/:id/reports`, `ReportCard`,
-  `openReportId`, the read route.
+- Inherited from Phase 2: `ReportItem` with `repository` and a null `followUpTaskId`,
+  `GET /api/sessions/:id/reports`, `ReportCard`, `openReportId`, the read route.
 - Conversation rows are merged in `mergeConversation` (`src/web/lib/episodes.ts:83`); review rows
   come from `useTimelineReviews` (`src/web/lib/timelineReviews.ts:33`) and render in
   `src/web/components/TranscriptPanel.tsx:1365`. History is read per session, as
@@ -33,7 +33,8 @@ session.
   cannot receive messages and queues behind a busy one.
 - The model for a self-contained message is `asyncInputAnswer` (`src/shared/async-input.ts:142`).
 - There is no follow-up path. A task is created with `POST /api/tasks` (`routes.ts:9230`) and
-  dispatched with `POST /api/tasks/:id/dispatch` (`routes.ts:9864`).
+  dispatched with `POST /api/tasks/:id/dispatch` (`routes.ts:9864`). They are two steps, so the
+  second can fail after the first succeeded.
 - A resident that is running has an entry in `residentRuns`; one with no open run is not running.
 
 ## 5. Implementation steps
@@ -48,30 +49,43 @@ session.
    `pendingTurns.submit` as an operator message and, when the submit succeeds, marks the report
    read with `readBy: "reply"`. A refused submit leaves it unread and returns the reason.
 3. **Reply target.** A pure `replyTarget(report, sessions, residentRuns)` returns `live`,
-   `resident-not-running` or `gone`. The card draws a reply box; or "<name> isn't running" with a
-   hint to launch the resident from the Residents drawer; or a text box with **Start a follow-up
-   task**.
-4. **Follow-up.** `POST /api/reports/:id/follow-up { text }` creates a task in the report's
-   repository whose intent is the operator's words followed by the report, dispatches it, and
-   marks the report read with `readBy: "follow-up"`. It never resumes the old session.
+   `resident-not-running`, `gone` or `gone-no-repository`. The card draws a reply box; or
+   "<name> isn't running" with a hint to launch the resident from the Residents drawer; or a text
+   box with **Start a follow-up task**; or, when the report stored no repository, a line saying a
+   follow-up cannot be started from here.
+4. **Follow-up.** `POST /api/reports/:id/follow-up { text }` works in two recorded steps and
+   never resumes the old session:
+   - If `followUpTaskId` is null, create a task in `report.repository` whose intent is the
+     operator's words followed by the report, and store its id on the report in the same
+     transaction as the task row. If it is set, reuse that task and create nothing.
+   - Dispatch that task if it has not been dispatched. On success mark the report read with
+     `readBy: "follow-up"`. On failure return the error and the task id, and leave the report
+     unread.
+   The card then reads "Follow-up task created but not started" with **Retry**, which calls the
+   same route. A retry therefore dispatches the one existing task.
 5. **Conversation entry.** A `ReportEntryCard` at the report's `createdAt`: a "Report" tag, the
    title, the body behind a disclosure, its version when it replaced one, whether it was read or
    replied to, and Mark read. Every version is an entry. Live entries come from the stream and
    older ones from the history route.
-6. **Actions.** Declare `reply` in `INBOX_ACTIONS` ("{name}, ..." and "reply, ...") and place its
-   hint on the card.
+6. **Actions.** Declare `reply` and `follow-up` in `INBOX_ACTIONS` with the forms in the index
+   table, and draw both with `InboxActionButton`.
 7. **Docs.** `docs/sessions.md` and `docs/attention-and-alerts.md`.
 
 ## 6. Data and compatibility
 
-No new storage. A reply is an ordinary operator turn, so it is echoed and captured as one. With
-the flag off the routes refuse and no entry renders.
+No migration: `follow_up_task_id` exists from Phase 2. A reply is an ordinary operator turn, so
+it is echoed and captured as one. With the flag off the routes refuse and no entry renders.
 
 ## 7. Tests and verification
 
-- Unit tests for the four builders and `replyTarget`.
+- Unit tests for the four builders and `replyTarget`, including the no-repository case.
 - `test/reports-reply-http.test.ts`: a live session, a busy session (queued, still marked read),
-  an exited session (refused, still unread), follow-up creating and dispatching one task.
+  an exited session (refused, still unread).
+- `test/reports-follow-up-http.test.ts`: a follow-up after the session was evicted uses the
+  stored repository; a dispatch that fails leaves one task, the report unread and
+  `followUpTaskId` set; a retry dispatches that same task, creates no second one and marks the
+  report read; two concurrent calls create one task; a report with no repository is refused.
+- `test/inbox-actions.test.ts` covers `reply` and `follow-up`.
 - `e2e/specs/reports-reply.spec.ts`: reply from the inbox; the fake agent's conversation shows a
   message starting "Reply to your report"; the report leaves to read and its entry reads as
   replied. End the session: the card offers Start a follow-up task and pressing it produces a
@@ -81,7 +95,8 @@ the flag off the routes refuse and no entry renders.
 ## 8. Merge and exit criteria
 
 A reply reaches the agent with its report named and restated, and clears the report. No path
-resumes a completed session. The conversation shows every version of every report.
+resumes a completed session. A report has at most one follow-up task however often the route is
+called. The conversation shows every version of every report.
 
 ## 9. Downstream handoff
 
@@ -94,3 +109,6 @@ Phase 4 adds Open report to `ReportCard` and `ReportEntryCard`. Voice calls the 
   toward the agent's Goal like any typed message. The source plan's design section says the same.
 - After Phase 4: the entry card keeps a slot for Open report; no route here changes.
 - After Phase 7: a muted author's entries still render here, as R29 requires.
+- Plan validation round 1: the follow-up now reads `repository` from the report, not from a live
+  session, and records `followUpTaskId` before dispatching, so a failed dispatch is retried on
+  the same task. Both fields are owned by Phase 2.

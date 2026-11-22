@@ -21,7 +21,8 @@ control, stall settings UI, notifications (Phase 6 adds the switch).
 
 ## 4. Repository findings and contracts
 
-- Inherited: `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`.
+- Inherited: `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`,
+  `InboxActionButton`.
 - The rules are `detectStall` (`src/shared/stall.ts:226`): `escalated`, `silent-working`,
   `unfinished-work`, `workflow-parked`. A `Stall` carries only `sessionId`, `kind`, `forMs`,
   `reason` and `workflowRunId` (`stall.ts:80`). The parked sentence is built in `parkedReason`
@@ -63,8 +64,10 @@ control, stall settings UI, notifications (Phase 6 adds the switch).
    `unpushedCommits > 0`, and Open run. Escalation: the note and a reply box that sends a normal
    operator message. Every card has a message box and Open session. A failed action shows its
    error under the row. There is no Cancel.
-5. **Actions.** Declare `nudge`, `continue`, `mark-done`, `resubmit`, `push` and `stop` in
-   `INBOX_ACTIONS` with their spoken forms, and place the hints.
+5. **Actions.** Declare every control on the card in `INBOX_ACTIONS` from the index table:
+   `nudge`, `continue`, `mark-done`, `resubmit`, `push`, `stop` and `message` with spoken forms;
+   `open-session` and `open-run` as click-only navigation; `dismiss` as click-only dismissal.
+   Draw them with `InboxActionButton` and add the card's file to the Phase 1 scan.
 6. **Docs.** The Stuck sessions part of `docs/attention-and-alerts.md`, including that there are
    no Stuck rows while stall detection is off.
 
@@ -80,6 +83,7 @@ fold ignores stalls and alerts are unchanged.
 - `test/attention-inbox.test.ts`: the item, its place, its count, no duplicate under Waiting on
   you, the dismissal rule.
 - An HTTP test for the message route: the text, daemon authorship, the flag gate.
+- `test/inbox-actions.test.ts` now scans the Stuck card and covers its ten actions.
 - `e2e/specs/inbox-stuck.spec.ts`: age a fake session's clocks in the fixture database (the
   README allows setting conditions there; see `e2e/fixtures/daemon-db.ts`) so the idle rule
   fires. Assert the Stuck section and its reason, that to answer counts it, that Continue puts
@@ -101,7 +105,10 @@ the declared actions. `Stall.facts` is additive; do not rename its kinds.
 
 - The source spec keyed dismissal on the sentence; plan finding 2 replaced that with the
   fingerprint. Recorded here so a reviewer does not restore the sentence.
-- This phase and Phase 2 both add a kind to `INBOX_SECTION_ORDER` and a case to the inbox row
-  switch. They do not share an item kind, so either may merge first.
+- This phase and Phase 2 both add a kind to `INBOX_SECTION_ORDER`, a case to the inbox row
+  switch and entries to `INBOX_ACTIONS`. They share no item kind or action id, so either may
+  merge first.
 - A session with questions open keeps its question row; only the Waiting on you backstop yields
   to a Stuck row.
+- Plan validation round 1: Open session, Open run, Dismiss and the message box are now declared
+  too, so the card has no undeclared control.

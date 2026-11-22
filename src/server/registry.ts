@@ -10085,8 +10085,10 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const record = this.awaitings.get(key);
     if (!record) return;
-    // The recent-sends window is the Registry's own in-memory bookkeeping; the claims on the
-    // stored wait are `recordPersonDelivery`'s.
+    // The claims on the stored wait are `recordPersonDelivery`'s, written first. The recent-sends
+    // window is the Registry's own in-memory bookkeeping and follows that write, so a send
+    // refused because the wait could not be written leaves no contest behind either.
+    this.storeAwaiting(key, record, recordPersonDelivery(record, delivery));
     if (delivery.released) {
       const sends = (this.awaitingPersonSends.get(key) ?? []).filter((send) => send.id !== delivery.id);
       if (sends.length > 0) this.awaitingPersonSends.set(key, sends);
@@ -10097,7 +10099,6 @@ export class Registry extends EventEmitter {
         [...this.recentPersonSends(key, delivery.at), { id: delivery.id, at: delivery.at, key: delivery.key }].slice(-32),
       );
     }
-    this.storeAwaiting(key, record, recordPersonDelivery(record, delivery));
   }
 
   /** The person deliveries into this wait's session still inside the contest window at `now`. */

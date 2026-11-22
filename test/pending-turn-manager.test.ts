@@ -2957,6 +2957,24 @@ test("a daemon-written row whose attribution cannot be stored is refused before 
   clearPendingTurns(f.key);
 });
 
+test("an operator's row whose attribution cannot be stored is refused before the driver sees it, and goes back to the queue", async (t) => {
+  const f = sdkFixture("person-attribution-refused", async () => "started");
+  // A declared wait that cannot record these words as the operator's (its store failed).
+  t.after(onPersonDelivery(() => { throw new Error("store down"); }));
+  const text = "Check the release notes before you merge.";
+  createPendingTurn({ id: "operator-refused", noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued"
+    && f.registry.getSession(f.id)?.pendingTurns[0]?.lastError != null);
+
+  assert.deepEqual(f.calls, [], "the driver was handed words whose attribution was not stored");
+  assert.match(f.registry.getSession(f.id)?.pendingTurns[0]?.lastError ?? "", /could not record these words as a person's/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
 // ---- async-input: answers to filed questions are the daemon's words ----------------------
 
 /** A settled `request_input` question, as the review manager leaves it before handing it on. */

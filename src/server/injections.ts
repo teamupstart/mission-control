@@ -246,18 +246,34 @@ export function onPersonDelivery(listener: PersonDeliveryListener): () => void {
   return () => personListeners.delete(listener);
 }
 
-function announcePerson(delivery: PersonDelivery): void {
+/**
+ * A person's send refused before anything was written, because a listener could not store that
+ * these words are a person's (`onPersonDelivery`). Thrown by `notePersonDelivery`; every door
+ * treats it as positive evidence that nothing was delivered.
+ */
+export class PersonAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record these words as a person's, so they were not sent", { cause });
+    this.name = "PersonAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announcePerson(delivery: PersonDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
   for (const listener of personListeners) {
     try {
       listener(delivery);
     } catch (err) {
-      // Logged and passed over, for `announceAutomated`'s reason.
+      // Logged for `announceAutomated`'s reason.
       console.error(
         `[injections] person delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
         err,
       );
+      failure ??= { error: err };
     }
   }
+  return failure;
 }
 
 /**
@@ -265,13 +281,22 @@ function announcePerson(delivery: PersonDelivery): void {
  * door Mission Control carries them through, before the write, like `reserveInjection`: the
  * prompt hook can report the text back while the send is still in flight. Nothing is stored
  * here; the listeners decide what it means. The returned delivery is what
- * `withdrawPersonDelivery` takes back.
+ * `withdrawPersonDelivery` takes back. Throws `PersonAttributionError` when a listener could not
+ * store it; the door then writes nothing.
  */
 export function notePersonDelivery(sessionId: string, text: string): PersonDelivery {
   const delivery: PersonDelivery = {
     sessionId, id: randomUUID(), at: Date.now(), key: injectionFingerprint(text), released: false,
   };
-  announcePerson(delivery);
+  // Not yet written, so a send whose attribution could not be stored is refused, as an
+  // automated delivery's is: written anyway, a person's turn in the words of a pending nudge
+  // would be used up as Mission Control's and leave the wait standing. Every listener that did
+  // hear it is told it is taken back.
+  const failure = announcePerson(delivery);
+  if (failure) {
+    announcePerson({ ...delivery, released: true });
+    throw new PersonAttributionError(sessionId, failure.error);
+  }
   return delivery;
 }
 

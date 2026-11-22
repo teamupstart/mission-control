@@ -35,7 +35,7 @@ const { detectStall, NO_UNPUSHED } = await import("../src/shared/stall.ts");
 const {
   reserveInjection, releaseInjection, recordInjection, confirmReservedInjection, onAutomatedDelivery, forgetInjections,
   onPersonDelivery, notePersonDelivery, withdrawPersonDelivery, injectionFingerprint,
-  AutomatedAttributionError, originOf, outstandingAutomatedClaims,
+  AutomatedAttributionError, PersonAttributionError, originOf, outstandingAutomatedClaims,
 } = await import("../src/server/injections.ts");
 
 type ReviewManagerT = import("../src/server/reviews.ts").ReviewManager;
@@ -1026,6 +1026,52 @@ test("an automated delivery whose attribution cannot be stored on the wait is re
   // With the wait writable again, the same delivery is claimed and stored on it.
   reserveInjection(d.syntheticId, WRAP, "foreman");
   assert.equal(stored().pendingNudges.length, 1);
+  releaseInjection(d.syntheticId, WRAP);
+  assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
+});
+
+test("a person's send whose attribution cannot be stored on the wait is refused before it is written, and contests nothing", async (t) => {
+  // An operator's words repeating a pending nudge must contest it, or their turn is used up as
+  // Mission Control's and the wait stands. The wait cannot be written, so the send is refused:
+  // the nudge is left uncontested, no recent send is remembered, and both doors answer that
+  // nothing reached the session.
+  const WRAP = "Please wrap up and open the pull request.";
+  const registry = new Registry();
+  t.after(wireNudges(registry));
+  const app = mkApp(registry);
+  const d = working(registry);
+  assert.equal(registry.reportAwaiting(d.syntheticId, body()).ok, true);
+  hook(registry, d, "Stop");
+  reserveInjection(d.syntheticId, WRAP, "foreman");
+  const key = noteKeyFor(registry.getSession(d.syntheticId)!);
+  const stored = () => loadSessionAwaitings().find((row) => row.noteKey === key)!;
+  assert.equal(stored().pendingNudges.length, 1);
+  const post = (path: string, payload: unknown) => app.request(path, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  openDb().exec(`CREATE TEMP TRIGGER awaiting_store_down BEFORE UPDATE ON session_awaitings
+    BEGIN SELECT RAISE(ABORT, 'store down'); END`);
+  try {
+    assert.throws(() => notePersonDelivery(d.syntheticId, WRAP), PersonAttributionError);
+    for (const door of ["send", "inject"]) {
+      const res = await post(`/api/sessions/${d.syntheticId}/${door}`, { text: WRAP, origin: "human" });
+      const sent = await res.json() as { ok: boolean; error?: string; pasted?: boolean };
+      assert.equal(sent.ok, false, `${door} reported a refused send as delivered`);
+      assert.equal(sent.pasted, false, `${door} did not read the refusal as nothing reaching the session`);
+      assert.match(sent.error ?? "", /could not record these words as a person's/, `${door} reached the transport after all`);
+    }
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS awaiting_store_down");
+  }
+  assert.equal(stored().pendingNudges[0]!.contestedBy, undefined, "a refused send contested the nudge");
+  // With the wait writable again, a second automated delivery of the same words is not
+  // contested by a send that never happened.
+  reserveInjection(d.syntheticId, WRAP, "workflow");
+  assert.deepEqual(stored().pendingNudges.map((n) => n.contestedBy), [undefined, undefined],
+    "a refused send was remembered and contested a later delivery");
+  releaseInjection(d.syntheticId, WRAP);
   releaseInjection(d.syntheticId, WRAP);
   assert.equal(registry.clearAwaiting(d.syntheticId, "operator"), true);
 });

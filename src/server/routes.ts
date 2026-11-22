@@ -368,6 +368,8 @@ import {
   releaseInjection,
   reserveInjection,
   AutomatedAttributionError,
+  PersonAttributionError,
+  type PersonDelivery,
   withdrawPersonDelivery,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
@@ -6293,7 +6295,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // wake, even when they repeat an automated delivery still on its way, so say so first.
     // Taken back only on positive evidence that nothing landed, below; an unknown outcome keeps
     // it, since the person's turn may still start.
-    const personSend = origin === "human" || origin === "session" ? notePersonDelivery(session.id, parsed.data.text) : null;
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, parsed.data.text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        // Refused before anything is written: what these words are could not be stored on the
+        // waiting session's wait. Nothing landed, so it races nothing either.
+        if (otherSend) withdrawOtherSend(otherSend);
+        return c.json({ ok: false, error: error.message, pasted: false }, 500);
+      }
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -6697,8 +6710,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    // Refused when its attribution could not be stored on a waiting session's wait: nothing is
-    // typed, and the delivery settles below as one that never reached the pane.
+    // Refused when its attribution could not be stored on a waiting session's wait, an automated
+    // delivery's or a person's: nothing is typed, and the delivery settles below as one that
+    // never reached the pane.
     let attributionRefused: string | null = null;
     if (daemonOrigin) {
       try {
@@ -6710,7 +6724,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     // A person's words, the operator's or a controller's, announced as such before the write,
     // for the reason `/send` gives.
-    const personSend = origin === "human" || origin === "session" ? notePersonDelivery(session.id, text) : null;
+    let personSend: PersonDelivery | null = null;
+    if (origin === "human" || origin === "session") {
+      try {
+        personSend = notePersonDelivery(session.id, text);
+      } catch (error) {
+        if (!(error instanceof PersonAttributionError)) throw error;
+        attributionRefused = error.message;
+      }
+    }
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.

@@ -444,6 +444,29 @@ test("a restore whose adoption fails stops the driver it started", async (t) => 
   assert.equal(stopped, 1, "nothing else owns that driver, so a retried wake would start a second one");
 });
 
+test("an SDK registration that throws before publishing puts back the record it replaced", () => {
+  const registry = new Registry();
+  const register = (id: string, conversation: string, workUnitId: string | null) => registry.registerSdkSession({
+    id, agent: "claude", name: id, cwd: "/wt/register-fails", agentSessionId: conversation, launchWorkUnitId: workUnitId,
+  });
+  // The conversation's previous process left its record.
+  register("sdk:wu-before", "register-fails-conversation", WU_A);
+  assert.equal(storedRecord("register-fails-conversation"), WU_A);
+
+  const internals = registry as unknown as { workspaceFor: (...args: unknown[]) => unknown };
+  const workspaceFor = internals.workspaceFor;
+  internals.workspaceFor = () => { throw new Error("scripted: publishing failed"); };
+  try {
+    assert.throws(() => register("sdk:wu-replacing", "register-fails-conversation", WU_B), /publishing failed/);
+    assert.throws(() => register("sdk:wu-fresh", "register-fails-fresh", WU_B), /publishing failed/);
+  } finally {
+    internals.workspaceFor = workspaceFor;
+  }
+  assert.equal(storedRecord("register-fails-conversation"), WU_A, "the stopped driver's value is not left behind");
+  assert.equal(storedRecord("register-fails-fresh"), null);
+  assert.equal(registry.getSession("sdk:wu-replacing"), undefined);
+});
+
 // ---- the launch record: terminal launches ----
 
 let paneN = 0;

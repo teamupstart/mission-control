@@ -3224,13 +3224,23 @@ export class Registry extends EventEmitter {
     // this session's first event below. Only a registration that IS a launch says what the
     // agent carries; one that only surfaces a row (an unresumable session shown and evicted)
     // leaves the record alone.
-    if (input.launchWorkUnitId !== undefined) {
-      this.installLaunchWorkUnit(
-        noteKeyFor({ id: input.id, agentSessionId: input.agentSessionId ?? null }),
-        input.launchWorkUnitId,
-        now,
-      );
+    //
+    // A registration that throws before its session is published puts back the record it
+    // replaced: its caller stops the driver it launched, so nothing runs with that value.
+    if (input.launchWorkUnitId === undefined) return this.publishSdkSession(input, now);
+    const launchKey = noteKeyFor({ id: input.id, agentSessionId: input.agentSessionId ?? null });
+    const replaced = this.launchWorkUnits.get(launchKey) ?? null;
+    this.installLaunchWorkUnit(launchKey, input.launchWorkUnitId, now);
+    try {
+      return this.publishSdkSession(input, now);
+    } catch (error) {
+      if (!this.sessions.has(input.id)) this.putBackLaunchWorkUnit(launchKey, replaced);
+      throw error;
     }
+  }
+
+  /** The rest of `registerSdkSession`, once the launch record is in place. */
+  private publishSdkSession(input: SdkSessionRegistration, now: number): Session {
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -9420,6 +9430,24 @@ export class Registry extends EventEmitter {
    * first event finds it without its record. A launch that fails never reaches either step, so
    * it changes nothing.
    */
+  /**
+   * Put back the launch record a failed SDK registration replaced, exactly as it was. Never
+   * throws: the registration's own error is the one its caller acts on.
+   */
+  private putBackLaunchWorkUnit(noteKey: string, replaced: LaunchWorkUnitRecord | null): void {
+    try {
+      if (replaced) {
+        upsertLaunchWorkUnit(replaced);
+        this.launchWorkUnits.set(noteKey, replaced);
+      } else if (this.launchWorkUnits.has(noteKey)) {
+        deleteLaunchWorkUnit(noteKey);
+        this.launchWorkUnits.delete(noteKey);
+      }
+    } catch (error) {
+      console.error(`[work-unit] could not put back the launch record for ${noteKey}:`, error);
+    }
+  }
+
   private installLaunchWorkUnit(noteKey: string, workUnitId: string | null, now = Date.now()): void {
     if (workUnitId && isWorkUnitId(workUnitId)) {
       const record: LaunchWorkUnitRecord = { noteKey, workUnitId, createdAt: now };

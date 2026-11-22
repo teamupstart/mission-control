@@ -534,6 +534,28 @@ test("undoing a failed launch leaves a newer launch's record for the same conver
   assert.equal(registry.getSession(replacement.id)?.launchWorkUnitId ?? null, null);
 });
 
+test("undoing a failed launch whose record a /clear carried to a new key restores the conversation it reopened", () => {
+  const registry = new Registry();
+  const first = launchHome();
+  handOver.settleTerminalLaunchWorkUnit(handOver.expectTerminalLaunchWorkUnit(first, WU_A), "succeeded");
+  idleAgent(registry, discovered("/wt/cleared", { missionLaunched: true, missionLaunchHome: first }), "cleared-conversation");
+  assert.equal(storedRecord("cleared-conversation"), WU_A);
+  // A resume of that conversation, carrying WU_B: seen, bound to the conversation, then cleared
+  // (its key rotates to a new conversation, and the record goes with it), then gone.
+  const home = launchHome();
+  const failing = handOver.expectTerminalLaunchWorkUnit(home, WU_B, "cleared-conversation");
+  const pane = discovered("/wt/cleared", { missionLaunched: true, missionLaunchHome: home });
+  idleAgent(registry, pane, "cleared-conversation");
+  registry.applyHook({ agent: "claude", event: "SessionStart", source: "clear", sessionId: "after-clear", cwd: pane.cwd, transcriptPath: null, env: {} });
+  assert.equal(registry.getSession(pane.syntheticId)?.agentSessionId, "after-clear");
+  assert.equal(storedRecord("after-clear"), WU_B, "the record followed the /clear");
+  assert.equal(storedRecord("cleared-conversation"), null);
+  registry.applyDiscovery([]);
+  handOver.settleTerminalLaunchWorkUnit(failing, "failed");
+  assert.equal(storedRecord("cleared-conversation"), WU_A, "the reopened conversation gets its record back");
+  assert.equal(storedRecord("after-clear"), null, "and the moved record is undone");
+});
+
 test("an unclaimed decision waits as long as its launch home exists, with no timer, and is taken once", async (t) => {
   // A late agent: its dispatch failed long ago, other launches have come and gone since, and
   // its terminal still produces it. The decision is there to install before it is published,

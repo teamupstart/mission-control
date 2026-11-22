@@ -9147,15 +9147,22 @@ export class Registry extends EventEmitter {
       // A key is put back only while it still holds what this launch installed and no other live
       // session holds it: a later launch of the same conversation (a replacement resume) may have
       // taken it since, and its record describes the agent running now.
+      const heldByAnother = (key: string): boolean =>
+        [...this.sessions.values()].some((s) => s.id !== session.id && s.state !== "exited" && noteKeyFor(s) === key);
       const stillOurs = (key: string, ours: LaunchWorkUnitRecord | null): boolean =>
-        sameLaunchRecord(this.launchWorkUnits.get(key) ?? null, ours)
-        && ![...this.sessions.values()].some((s) => s.id !== session.id && s.state !== "exited" && noteKeyFor(s) === key);
+        sameLaunchRecord(this.launchWorkUnits.get(key) ?? null, ours) && !heldByAnother(key);
+      // A rotation (a `/clear`) may have carried this launch's record from the key it was
+      // installed under to the one the session holds now. Then that key is where it is
+      // recognized, and an original key left empty by the move is ours to put back.
+      const movedTo = current && !before.has(current) && stillOurs(current, installed.get(firstKey) ?? null)
+        ? current : null;
       for (const [key, record] of before) {
-        if (stillOurs(key, installed.get(key) ?? null)) this.restoreLaunchWorkUnit(key, record);
+        const ours = installed.get(key) ?? null;
+        const moved = movedTo !== null && ours !== null && !this.launchWorkUnits.has(key) && !heldByAnother(key)
+          && sameLaunchRecord(this.launchWorkUnits.get(movedTo) ?? null, ours);
+        if (stillOurs(key, ours) || moved) this.restoreLaunchWorkUnit(key, record);
       }
-      if (current && !before.has(current) && stillOurs(current, installed.get(firstKey) ?? null)) {
-        this.restoreLaunchWorkUnit(current, null);
-      }
+      if (movedTo) this.restoreLaunchWorkUnit(movedTo, null);
       if (live) this.refreshLaunchWorkUnit(live.id);
     };
   }

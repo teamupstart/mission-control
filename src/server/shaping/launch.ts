@@ -246,7 +246,6 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
   }
 }
 
-/** Note on the record that this launch's path, not the configured total, set the section's room. */
 /**
  * A record for a launch whose section did not reach turn one after all. Nothing is counted as
  * delivered: each shaper keeps its outcome, and an answer that had entries reads as truncated,
@@ -310,6 +309,7 @@ export function launchUnconfirmed(shaping: LaunchShaping): LaunchShaping {
   return { summary: withoutDeliveredSection(shaping.summary, TURN_ONE_UNCONFIRMED_REASON, "degraded"), section: "" };
 }
 
+/** Note on the record that this launch's path, not the configured total, set the section's room. */
 function recordLimit(run: ShapingRun, allowance: ReturnType<typeof turnOneAllowance>, totalBytes: number): LaunchShaping {
   if (!run.summary || !allowance || allowance.maxSectionBytes >= totalBytes) return { summary: run.summary, section: run.section };
   return {

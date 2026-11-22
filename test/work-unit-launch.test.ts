@@ -678,6 +678,17 @@ test("an unclaimed decision waits as long as its launch home exists, with no tim
   assert.equal(handOver.takeTerminalLaunchWorkUnit(live, install)?.workUnitId, WU_B);
 });
 
+test("hand-overs left behind past the sanity threshold are logged once, and none is dropped", (t) => {
+  handOver.resetTerminalLaunchWorkUnits();
+  const warned = t.mock.method(console, "warn", () => {});
+  const homes = Array.from({ length: handOver.TERMINAL_LAUNCH_WORK_UNITS_WARN_AT + 2 }, () => launchHome());
+  for (const leftBehind of homes) handOver.expectTerminalLaunchWorkUnit(leftBehind, WU_A);
+  const lines = warned.mock.calls.map((call) => call.arguments.map(String).join(" ")).filter((line) => line.includes("hand-overs are waiting"));
+  assert.equal(lines.length, 1);
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), homes.length);
+  handOver.resetTerminalLaunchWorkUnits();
+});
+
 test("a /clear no daemon saw still carries the launch record to the conversation the process is in now", () => {
   const home = launchHome();
   handOver.expectTerminalLaunchWorkUnit(home, WU_A);

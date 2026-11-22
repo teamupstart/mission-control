@@ -59,6 +59,27 @@ export type TerminalLaunchOutcome = "succeeded" | "failed" | "not-started";
 
 const pending: TerminalLaunchWorkUnit[] = [];
 
+/**
+ * More waiting decisions than any sane number of launches in flight. The list is bounded by
+ * homes that still exist, and a wrapper killed before its cleanup (a SIGKILL) leaves its home
+ * behind, so its entry stays until the daemon restarts. Not dropped by age - a slow terminal's
+ * agent may still appear - but crossing this is logged, once per crossing, so such a leak shows.
+ */
+export const TERMINAL_LAUNCH_WORK_UNITS_WARN_AT = 64;
+let warned = false;
+
+function noteSize(): void {
+  if (pending.length < TERMINAL_LAUNCH_WORK_UNITS_WARN_AT) {
+    warned = false;
+    return;
+  }
+  if (warned) return;
+  warned = true;
+  console.warn(
+    `[work-unit] ${pending.length} terminal launch hand-overs are waiting; each lasts while its launch home exists, so homes a killed wrapper left behind may be accumulating`,
+  );
+}
+
 /** Forget the decisions whose launch is over: its home is gone, so its wrapper has exited. */
 function sweep(): void {
   for (let i = pending.length - 1; i >= 0; i -= 1) {
@@ -79,6 +100,7 @@ export function expectTerminalLaunchWorkUnit(
   sweep();
   const decision: TerminalLaunchWorkUnit = { launchHome, workUnitId, conversationKey, expectedAt: Date.now() };
   pending.push(decision);
+  noteSize();
   return decision;
 }
 
@@ -128,4 +150,5 @@ export function terminalLaunchWorkUnitsWaiting(): number {
 /** For tests: forget every decision. */
 export function resetTerminalLaunchWorkUnits(): void {
   pending.length = 0;
+  warned = false;
 }

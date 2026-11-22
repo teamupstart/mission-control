@@ -546,7 +546,9 @@ test("undoing a failed launch whose record a /clear carried to a new key restore
   const failing = handOver.expectTerminalLaunchWorkUnit(home, WU_B, "cleared-conversation");
   const pane = discovered("/wt/cleared", { missionLaunched: true, missionLaunchHome: home });
   idleAgent(registry, pane, "cleared-conversation");
-  registry.applyHook({ agent: "claude", event: "SessionStart", source: "clear", sessionId: "after-clear", cwd: pane.cwd, transcriptPath: null, env: {} });
+  // The pane now holds a new conversation: discovery reads its new identity, the same key
+  // rotation a `/clear` produces.
+  registry.applyDiscovery([{ ...pane, agentSessionId: "after-clear" }]);
   assert.equal(registry.getSession(pane.syntheticId)?.agentSessionId, "after-clear");
   assert.equal(storedRecord("after-clear"), WU_B, "the record followed the /clear");
   assert.equal(storedRecord("cleared-conversation"), null);

@@ -52,7 +52,7 @@ import {
   type HumanEchoTicket,
 } from "../injections.ts";
 import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
@@ -533,6 +533,8 @@ export class SdkSupervisor {
        * working launch and deliver the operator's rules nowhere.
        */
       fallbackPrompt: string;
+      /** What repository task skills this launch included or skipped; recorded with the snapshot. */
+      repoTaskSkills?: RepoTaskSkillRecord | null;
     };
     taskId: string | null;
     /**
@@ -651,12 +653,17 @@ export class SdkSupervisor {
     // channel would later tell an assignment the rule was still installed on the process
     // when it was only ever turn-one prose.
     try {
-      if (input.standingInstructions?.delivery.text) {
-        this.registry.recordStandingInstructions(started.id, {
-          ...input.standingInstructions.delivery,
-          mechanism:
-            handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
-        });
+      if (input.standingInstructions) {
+        this.registry.recordStandingInstructions(
+          started.id,
+          {
+            ...input.standingInstructions.delivery,
+            mechanism:
+              handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+          },
+          // A start is a launch: no record on the input means this launch had none.
+          input.standingInstructions.repoTaskSkills ?? null,
+        );
       }
       return started;
     } finally {

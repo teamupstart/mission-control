@@ -46,6 +46,9 @@ const { isolatedAgentEnvironment } = await import("../src/server/agent-subproces
 const { sessionTraceContext } = await import("../src/server/telemetry/index.ts");
 const { shapeTask } = await import("../src/server/shaping/engine.ts");
 const { MEMORY_INDEX_PATH } = await import("../src/shared/memory.ts");
+const { loadLaunchWorkUnits } = await import("../src/server/db.ts");
+const { WORK_UNIT_ID_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
+const { WORK_UNIT_ENV_VAR } = await import("../src/shared/work-unit.ts");
 
 type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
 type ShapeTaskInput = Parameters<ShapeTask>[0];
@@ -149,6 +152,11 @@ interface DispatchOptions {
   workflowName?: (workflowId: string) => string | null;
   /** Turn repository task skills on (the `headless-mode` flag's seam). */
   headlessMode?: boolean;
+  /**
+   * Discover the agent beneath this launch's own wrapper, as a real terminal launch is, so the
+   * registry installs the work unit decision it was handed as the session's launch record.
+   */
+  beneathWrapper?: boolean;
 }
 
 /** One terminal dispatch through the real dispatcher, faking only the home and the pane. */
@@ -179,7 +187,10 @@ async function terminalDispatch(options: DispatchOptions): Promise<Run> {
       extraEnv = { ...env };
       // As the real wrapper does for a launch with a fallback: it ran these arguments, and says so.
       if (fallback && home) writeFileSync(`${home}.turn-one`, "shaped");
-      const discovered = mkDiscovered({ agent: options.agent, cwd, syntheticId: `sid-${options.taskId}-${seq}` });
+      const discovered = mkDiscovered({
+        agent: options.agent, cwd, syntheticId: `sid-${options.taskId}-${seq}`,
+        ...(options.beneathWrapper ? { missionLaunched: true, missionLaunchHome: home } : {}),
+      });
       registry.applyDiscovery([discovered]);
       sessionId = discovered.syntheticId;
       registry.applyHook({
@@ -689,6 +700,78 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
   }
 });
 
+test("Pi's launch argument: the budget counts the WORK_UNIT_ID the launch exports, and the cut launch fits that environment", async (t) => {
+  registerLargeShaper();
+  const repo = seedRepo("pi-argmax-work-unit");
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // Fill the environment to leave the terminal reserve plus about 24 KiB, as above, measured from
+  // a launch that carries the work unit, so a 64 KiB section has to be cut.
+  setFlag(false);
+  setWorkUnitPreview(true);
+  t.after(() => setWorkUnitPreview(false));
+  const probeRegistry = new Registry();
+  seedTask(probeRegistry, "pi-wu-probe", repo, "pi", WU_A);
+  const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-wu-probe", intent: "short request", registry: probeRegistry });
+  assertRunning(baseline.task);
+  assert.equal(baseline.extraEnv[WORK_UNIT_ENV_VAR], WU_A);
+  setFlag(true);
+  const env = () => ({ ...process.env, ...isolatedAgentEnvironment({ cwd: baseline.task.worktreePath!, stateHome: baseline.stateHome, extraEnv: baseline.extraEnv }) });
+  const used = execBytes(["/bin/echo", ...baseline.argv], env());
+  const padNames: string[] = [];
+  let room = argMax - used - (TERMINAL_ENV_RESERVE + 24 * 1024);
+  for (let n = 0; room > 64; n++) {
+    const name = `MISSION_SHAPING_WU_PAD_${n}`;
+    const value = "p".repeat(Math.min(4000, room - name.length - 1 - 1 - 8));
+    if (value.length <= 0) break;
+    process.env[name] = value;
+    padNames.push(name);
+    room -= name.length + 1 + value.length + 1 + 8;
+  }
+  const large: ShapeTask = (input) => shapeTask(input, {
+    config: shapingStore.getShapingConfig(), discovered: [], enabled: true,
+    transports: Object.fromEntries(["command", "mcp", "http", "builtin"].map((id) => [id, async () => ({
+      kind: "data" as const,
+      data: JSON.stringify({ guidance: [1, 2, 3, 4].map((n) => ({ id: `big/${n}`, title: `Big ${n}`, body: `${"line of guidance\n".repeat(900)}` })) }),
+    })])) as never,
+  });
+  try {
+    // The same launch twice under the same environment, its ids the same length, once with the
+    // work unit and once without: the only difference the budget may see is that one variable.
+    const launch = async (taskId: string, preview: boolean) => {
+      setWorkUnitPreview(preview);
+      const registry = new Registry();
+      seedTask(registry, taskId, repo, "pi", WU_A);
+      const run = await terminalDispatch({ agent: "pi", repo, taskId, intent: "short request", registry, argMax: async () => argMax, shapeTask: large });
+      assertRunning(run.task);
+      return run;
+    };
+    const withUnit = await launch("pi-wu-on", true);
+    const without = await launch("pi-wu-no", false);
+    assert.equal(withUnit.extraEnv[WORK_UNIT_ENV_VAR], WU_A, "the launch exports the work unit");
+    assert.equal(without.extraEnv[WORK_UNIT_ENV_VAR], undefined);
+    const roomOf = (run: Run) => {
+      const record = currentShaping(run.task);
+      assert.match(record?.limit?.reason ?? "", /arguments and environment/, JSON.stringify(record));
+      // Cut at the boundary: some of the four entries, within the room the budget measured.
+      assert.ok((record?.entries ?? 0) >= 1 && (record?.entries ?? 0) < 4, `some of the four entries (${record?.entries})`);
+      assert.ok((record?.bytes ?? 0) <= record!.limit!.bytes, "within the measured room");
+      return record!.limit!.bytes;
+    };
+    // What exec charges for `WORK_UNIT_ID=<id>`: its bytes, the terminating NUL and its pointer.
+    const variableBytes = Buffer.byteLength(`${WORK_UNIT_ENV_VAR}=${WU_A}`) + 1 + 8;
+    assert.equal(roomOf(without) - roomOf(withUnit), variableBytes, "the budget measured the variable the launch exports");
+    // And the cut launch fits the environment it was actually handed, the work unit included.
+    const launchEnv = { ...process.env, ...isolatedAgentEnvironment({ cwd: withUnit.task.worktreePath!, stateHome: withUnit.stateHome, extraEnv: withUnit.extraEnv }) };
+    assert.equal(launchEnv[WORK_UNIT_ENV_VAR], WU_A);
+    assert.ok(withUnit.prompt.includes("## Task context"), "part of the section was delivered");
+    assert.ok(execBytes(["/bin/echo", ...withUnit.argv], launchEnv) <= argMax - TERMINAL_ENV_RESERVE, "within the limit, the reserve left");
+    const ran = spawnSync("/bin/echo", withUnit.argv, { env: launchEnv, stdio: "ignore" });
+    assert.equal(ran.error, undefined, `the launch executes (${ran.error?.message})`);
+  } finally {
+    for (const name of padNames) delete process.env[name];
+  }
+});
+
 test("Pi's launch argument: when ARG_MAX cannot be measured near the limit, the worker still starts, with no section", async () => {
   registerLargeShaper();
   const repo = seedRepo("pi-argmax-unmeasured");
@@ -873,7 +956,7 @@ test("a launch measurement or a final check that never settles cannot hold the l
   assert.equal(shapingStore.applyShapingIntent({ kind: "settings", limits: { deadlineMs: 200 } }).ok, true);
   const never = new Promise<never>(() => {});
   const base = {
-    workflowName: () => null, trace: null, turnOnes: ["do it"], stillDispatching: () => true, onShaping: () => {},
+    workflowName: () => null, trace: null, workUnitId: null, turnOnes: ["do it"], stillDispatching: () => true, onShaping: () => {},
   };
   // The measurement of a Pi launch argument hangs: the launch goes ahead with no section.
   const pi = mkTask({ id: "stall-measure", status: "dispatching", repoRoot: seedRepo("stall-measure"), title: "Shaping", intent: "do it", agent: "pi" });
@@ -913,7 +996,7 @@ test("a dispatch that ended while its launch was being measured starts no shaper
   const probe = standIn(SECTION);
   const marks: boolean[] = [];
   const shaped = await shapeLaunch({
-    task, runtime: "terminal", workflowName: () => null, trace: null, delivery: launchArgumentTurnOne("darwin"),
+    task, runtime: "terminal", workflowName: () => null, trace: null, workUnitId: null, delivery: launchArgumentTurnOne("darwin"),
     turnOnes: ["do it"],
     // The cancel lands while the launch is being measured.
     launch: async () => { dispatching = false; return { otherArgs: ["/p"], env: {}, argMax: 1_048_576 }; },
@@ -1232,7 +1315,7 @@ test("a section the final check drops counts nothing as delivered, and keeps eac
   const { shapeLaunch } = await import("../src/server/shaping/launch.ts");
   const task = mkTask({ id: "final-check", status: "dispatching", repoRoot: seedRepo("final-check"), title: "Shaping", intent: "do it", agent: "claude" });
   const shaped = await shapeLaunch({
-    task, runtime: "terminal", workflowName: () => null, trace: null, delivery: HARNESSES.claude.turnOne.terminal,
+    task, runtime: "terminal", workflowName: () => null, trace: null, workUnitId: null, delivery: HARNESSES.claude.turnOne.terminal,
     turnOnes: ["do it"], launch: null, stillDispatching: () => true, onShaping: () => {},
     finalCheck: async () => "the pane paste would not fit",
   }, { shapeTask: standIn(SECTION).shapeTask, enabled: true });
@@ -1319,4 +1402,107 @@ test("Pi's launch message uses the memory pointer its budget measured, even if a
   assertRunning(run.task);
   assert.ok(worktree, "the shaper saw the worktree");
   assert.equal(run.prompt, await unshapedExpectation(run.task, "THE REQUEST"), "no pointer the budget did not count");
+});
+
+// ---- the work unit (work unit id, Phase 4) ----
+//
+// Every shaper call of a launch carries the launch's one work unit decision, the value its agent
+// is started with. The oracles are the engine input the stand-in records, the environment the
+// spawn is handed (or the supervisor's start input), and the launch record the registry installs.
+
+const WU_A = "wu_01JD00000000000000000000AA";
+const WU_B = "wu_01JD00000000000000000000BB";
+const WU_C = "wu_01JD00000000000000000000CC";
+
+function setWorkUnitPreview(enabled: boolean): void {
+  assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: WORK_UNIT_ID_FLAG_ID, enabled }).ok, true);
+}
+
+/** A task of work unit `workUnitId`, which the dispatch helpers then launch as it is. */
+function seedTask(registry: InstanceType<typeof Registry>, id: string, repo: string, agent: "claude" | "codex" | "pi", workUnitId: string | null): void {
+  registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent, workUnitId }));
+}
+
+test("a new agent's shapers carry its launch's one work unit decision, and none with the preview off or no id", async (t) => {
+  t.after(() => setWorkUnitPreview(false));
+  const repo = seedRepo("work-unit-new-agent");
+  const cases = [
+    { name: "on", preview: true, workUnitId: WU_A, expected: WU_A },
+    { name: "off", preview: false, workUnitId: WU_B, expected: null },
+    { name: "no-id", preview: true, workUnitId: null, expected: null },
+  ] as const;
+  for (const c of cases) {
+    setWorkUnitPreview(c.preview);
+    // A pane launch.
+    const terminalRegistry = new Registry();
+    seedTask(terminalRegistry, `wu-term-${c.name}`, repo, "claude", c.workUnitId);
+    const probe = standIn(SECTION);
+    const run = await terminalDispatch({
+      agent: "claude", repo, taskId: `wu-term-${c.name}`, intent: "do it", registry: terminalRegistry, shapeTask: probe.shapeTask,
+      beneathWrapper: true,
+    });
+    assertRunning(run.task);
+    assert.equal(probe.calls.length, 1);
+    assert.equal(probe.calls[0]!.workUnitId, c.expected, `${c.name}: the shaper is handed the decision`);
+    assert.equal(run.extraEnv[WORK_UNIT_ENV_VAR] ?? null, c.expected, `${c.name}: the agent is started with the same value`);
+    assert.equal(run.registry.getSession(run.sessionId)?.launchWorkUnitId ?? null, c.expected, `${c.name}: and its record holds it`);
+    // An embedded launch.
+    const sdkRegistry = new Registry();
+    seedTask(sdkRegistry, `wu-sdk-${c.name}`, repo, "codex", c.workUnitId);
+    const sdkProbe = standIn(SECTION);
+    try {
+      const sdk = await sdkDispatch({ agent: "codex", repo, taskId: `wu-sdk-${c.name}`, intent: "do it", registry: sdkRegistry, shapeTask: sdkProbe.shapeTask });
+      assertRunning(sdk.task);
+      assert.equal(sdkProbe.calls[0]!.workUnitId, c.expected, `${c.name}: an embedded launch's shaper too`);
+      assert.equal(sdk.start!.workUnitId ?? null, c.expected, `${c.name}: and its supervisor start`);
+    } finally {
+      setHarnessesConfig({ sessionRuntime: { claude: "terminal", codex: "terminal", pi: "terminal" } });
+    }
+  }
+});
+
+test("a preview switch while shapers run changes neither half: the shaper and the agent hold the same value", async (t) => {
+  t.after(() => setWorkUnitPreview(false));
+  const repo = seedRepo("work-unit-switch-in-flight");
+  for (const [name, before, expected] of [["on-to-off", true, WU_A], ["off-to-on", false, null]] as const) {
+    setWorkUnitPreview(before);
+    const registry = new Registry();
+    seedTask(registry, `wu-switch-${name}`, repo, "claude", WU_A);
+    // The switch lands after the dispatch decided and before the agent starts.
+    const inner = standIn(SECTION);
+    const switching: ShapeTask = async (input) => { setWorkUnitPreview(!before); return inner.shapeTask(input); };
+    const run = await terminalDispatch({
+      agent: "claude", repo, taskId: `wu-switch-${name}`, intent: "do it", registry, shapeTask: switching, beneathWrapper: true,
+    });
+    assertRunning(run.task);
+    assert.equal(inner.calls[0]!.workUnitId, expected, `${name}: the shaper got the decision made before the switch`);
+    assert.equal(run.extraEnv[WORK_UNIT_ENV_VAR] ?? null, expected, `${name}: the agent got that same value`);
+    assert.equal(run.registry.getSession(run.sessionId)?.launchWorkUnitId ?? null, expected, `${name}: and so did its record`);
+  }
+});
+
+test("shaping that succeeds before the launch fails keeps the task's id, writes no record, and a retry decides again", async (t) => {
+  t.after(() => setWorkUnitPreview(false));
+  const repo = seedRepo("work-unit-launch-fails");
+  setWorkUnitPreview(true);
+  const registry = new Registry();
+  seedTask(registry, "wu-fails", repo, "claude", WU_C);
+  const failed = standIn(SECTION);
+  const first = await terminalDispatch({
+    agent: "claude", repo, taskId: "wu-fails", intent: "do it", registry, shapeTask: failed.shapeTask, failSpawn: true, beneathWrapper: true,
+  });
+  assert.notEqual(first.task.status, "running", "the launch failed");
+  assert.equal(failed.calls[0]!.workUnitId, WU_C, "the call made for this task's work stays tagged with the task's id");
+  assert.equal(loadLaunchWorkUnits().some((row) => row.workUnitId === WU_C), false, "no launch record was written");
+  assert.equal(registry.snapshot().sessions.some((session) => session.launchWorkUnitId === WU_C), false);
+  // The retry is a new launch, so it decides again: the preview is off now, and nothing carries the id.
+  setWorkUnitPreview(false);
+  const retried = standIn(SECTION);
+  const second = await terminalDispatch({
+    agent: "claude", repo, taskId: "wu-fails", intent: "do it", registry, shapeTask: retried.shapeTask, beneathWrapper: true,
+  });
+  assertRunning(second.task);
+  assert.equal(retried.calls[0]!.workUnitId, null);
+  assert.equal(second.extraEnv[WORK_UNIT_ENV_VAR], undefined);
+  assert.equal(second.registry.getSession(second.sessionId)?.launchWorkUnitId ?? null, null);
 });

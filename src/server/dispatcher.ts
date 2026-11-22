@@ -949,7 +949,7 @@ export class Dispatcher {
       // byte-identical to one from before shaping. It never throws and never blocks the launch.
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
         agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
-        currentAttempt,
+        currentAttempt, workUnitId,
       });
       // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
       // a later attempt that owns it now: this one launches nothing and tears nothing down.
@@ -2529,6 +2529,11 @@ export class Dispatcher {
       terminalBackend: string | null;
       /** Whether this dispatch is still the task's current attempt. */
       currentAttempt: () => boolean;
+      /**
+       * This launch's one work unit decision, made where `dispatch` began. The shapers are handed
+       * it, and the agent is launched with it, so neither can see the preview differently.
+       */
+      workUnitId: string | null;
     },
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
@@ -2545,6 +2550,10 @@ export class Dispatcher {
       // Exactly what the agent is launched under: an embedded session's derived context, and
       // none for a terminal launch, which carries none.
       trace: launch.sdkSessionId ? sessionTraceContext(launch.sdkSessionId) : null,
+      // The decision itself, never a second reading of the preview: the work unit every shaper
+      // call carries is the one this launch's agent is started with, and it stays the task's own
+      // when the agent then fails to start.
+      workUnitId: launch.workUnitId,
       delivery,
       turnOnes: carried,
       launch: launchArgument
@@ -2561,7 +2570,8 @@ export class Dispatcher {
               ...isolatedAgentEnvironment({
                 cwd: provisioned.worktreePath ?? provisioned.repoRoot,
                 stateHome: launch.terminal!.stateHome,
-                extraEnv: launch.terminal!.advisorEnv,
+                // As the terminal arm spawns it, the work unit included.
+                extraEnv: { ...launch.terminal!.advisorEnv, ...workUnitEnv(launch.workUnitId) },
               }),
             },
             argMax: await (this.deps.argMax ?? platformArgMax)(),

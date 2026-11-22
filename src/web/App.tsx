@@ -121,7 +121,7 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { HeldSessionsContext, heldSessionIds, ownBindingBySession, fleetRunsBySession, fleetHoldRunsBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -2534,9 +2534,38 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  // Existing chips keep the newest run per repo. Only preview explanations retain every open run.
-  const workflowRunsBySession = useMemo(() => fleetRunsBySession(workflowRuns), [workflowRuns]);
-  const workflowHoldRunsBySession = useMemo(() => fleetHoldRunsBySession(workflowRuns), [workflowRuns]);
+  /**
+   * The runs each conversation is carrying, in a stable order, keyed by session.
+   *
+   * A session running a multi-repo task has ONE RUN PER REPOSITORY it changed, and a surface
+   * that showed only the newest would silently hide a review. So the fold keeps them all, and
+   * `workflowRunsFor` below picks the newest per REPOSITORY rather than per session: a
+   * repository whose review finished and was run again should show its current run, not two.
+   *
+   * Ordered by repository so a card's chips do not reshuffle every time one run updates. The
+   * session's own repository sorts first because its `repoRoot` is resolved to the session's
+   * root and the sort is stable within a repository - and for the fleet's single-repo
+   * sessions, which have exactly one run, order is not a question.
+   */
+  const workflowRunsBySession = useMemo(() => {
+    const bySession = new Map<string, Map<string, (typeof workflowRuns)[number]>>();
+    for (const run of workflowRuns) {
+      if (!run.sessionId) continue;
+      const byRepo = bySession.get(run.sessionId) ?? new Map();
+      const key = run.repoRoot ?? "";
+      const current = byRepo.get(key);
+      if (!current || run.updatedAt > current.updatedAt) byRepo.set(key, run);
+      bySession.set(run.sessionId, byRepo);
+    }
+    const out = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const [sessionId, byRepo] of bySession) {
+      out.set(
+        sessionId,
+        [...byRepo.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, run]) => run),
+      );
+    }
+    return out;
+  }, [workflowRuns]);
 
   /**
    * The workflow each live conversation is armed with, keyed by session.
@@ -2568,7 +2597,7 @@ export function App(): React.JSX.Element {
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   //
   // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
-  // run per repository for display: an older run of the same repository that is still open holds
+  // per repository for display: an older run of the same repository that is still open holds
   // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
   const heldIds = useMemo(() => {
     const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
@@ -3462,7 +3491,6 @@ export function App(): React.JSX.Element {
     reviews,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
-    workflowHoldRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
     workflowBindingBySession,
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
@@ -3886,8 +3914,7 @@ export function App(): React.JSX.Element {
       // The gate is where DOM focus ACTUALLY is (`.cdetail` ancestry), never the
       // `consoleZone` React state, which lags and once desynced let a bare Tab fall through
       // to native browser tabbing (it walked to the next rail row). Reading focus is self-
-      // correcting: outside the reader Tab enters after any preview hold links, inside it
-      // Shift+Tab always steps.
+      // correcting: outside the reader Tab always enters, inside it Shift+Tab always steps.
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
@@ -3899,23 +3926,6 @@ export function App(): React.JSX.Element {
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
-        // Preview hold links follow their rail row in the DOM. Visit those links before
-        // entering the reader, and let Shift+Tab return through them to their own row.
-        if (!inReader && (chord === "Tab" || chord === "shift+Tab")) {
-          const holds = target?.closest(".workflow-holds") ?? target?.closest(".rail-row")?.nextElementSibling;
-          const row = holds?.previousElementSibling;
-          if (holds?.matches(".workflow-holds") && row instanceof HTMLElement && row.matches(".rail-row")) {
-            const links = Array.from(holds.querySelectorAll<HTMLAnchorElement>("a[href]"));
-            const index = links.findIndex(link => link === target?.closest("a"));
-            const next = chord === "Tab" ? links[index + 1] : index >= 0 ? links[index - 1] ?? row : null;
-            if (next) {
-              e.preventDefault();
-              setConsoleZone("rail");
-              next.focus();
-              return;
-            }
-          }
-        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {

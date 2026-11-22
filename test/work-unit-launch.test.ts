@@ -708,6 +708,20 @@ test("a /clear no daemon saw still carries the launch record to the conversation
   restarted.applyDiscovery([reopened, { ...original, agentSessionId: "original-after-clear" }]);
   assert.equal(storedRecord("held-conversation"), WU_B);
   assert.equal(storedRecord("original-after-clear"), null);
+
+  // Nor when the session holding it comes later in the same sweep: after a restart both are
+  // first sights, and the moving process may be merged first.
+  const sweepHome = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(sweepHome, WU_B);
+  const mover = discovered("/repo", { missionLaunched: true, missionLaunchHome: sweepHome });
+  idleAgent(new Registry(), mover, "held-in-sweep");
+  const holder = discovered("/repo", { agentSessionId: "held-in-sweep" });
+  const oneSweep = new Registry();
+  const published = firstPublished(oneSweep);
+  oneSweep.applyDiscovery([{ ...mover, agentSessionId: "mover-after-clear" }, holder]);
+  assert.equal(storedRecord("held-in-sweep"), WU_B);
+  assert.equal(storedRecord("mover-after-clear"), null);
+  assert.equal(published.get(holder.syntheticId)?.launchWorkUnitId, WU_B, "the holder publishes with its record");
 });
 
 test("discovery names the exact launch an agent runs beneath", () => {

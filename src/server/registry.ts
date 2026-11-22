@@ -2821,7 +2821,7 @@ export class Registry extends EventEmitter {
         // Refresh only the teardown target. A sighting must neither cancel the eviction
         // timer nor publish this retired process as a usable session, even after restart.
         const previous = this.retiredMissionTargets.get(d.syntheticId) ?? this.sessions.get(d.syntheticId);
-        this.retiredMissionTargets.set(d.syntheticId, this.mergeDiscovered(previous, d, now));
+        this.retiredMissionTargets.set(d.syntheticId, this.mergeDiscovered(previous, d, now, discovered));
         const live = this.sessions.get(d.syntheticId);
         if (live) this.beginEviction(live);
         continue;
@@ -2833,7 +2833,7 @@ export class Registry extends EventEmitter {
         this.exitTimers.delete(d.syntheticId);
       }
       const prev = this.sessions.get(d.syntheticId);
-      const next = this.mergeDiscovered(prev, d, now);
+      const next = this.mergeDiscovered(prev, d, now, discovered);
       this.sessions.set(d.syntheticId, next);
       // Passive reads can observe a whole turn between sweeps: idle stays idle,
       // but its lifecycle timestamp moved. Delivery subscribers need that edge
@@ -2938,6 +2938,8 @@ export class Registry extends EventEmitter {
     prev: Session | undefined,
     d: DiscoveredSession,
     now: number,
+    /** The whole sweep `d` came in, for the questions one session cannot answer alone. */
+    batch: readonly DiscoveredSession[] = [d],
   ): Session {
     // First sight of this pane-backed session in this process, which is the one moment the
     // durable review half is worth a query - see `seedRetroFromReviews`. Before `base.retro`
@@ -3135,10 +3137,10 @@ export class Registry extends EventEmitter {
     // the key the session holds now, and the rotation moves carry it from there.
     //
     // A rotation no daemon saw still moves the launch record: the record describes the process,
-    // and it is the same process under a new key. Not when a live session holds the old key -
+    // and it is the same process under a new key. Not when another session holds the old key -
     // that conversation was reopened elsewhere, and its record is that agent's.
     if (!prev && boundBeforeSight && boundBeforeSight !== noteKeyFor(base)
-      && ![...this.sessions.values()].some((s) => noteKeyFor(s) === boundBeforeSight)) {
+      && !this.noteKeyHeldElsewhere(boundBeforeSight, d.syntheticId, batch)) {
       this.moveLaunchWorkUnitKey(boundBeforeSight, noteKeyFor(base));
     }
     if (!prev) {
@@ -9430,6 +9432,23 @@ export class Registry extends EventEmitter {
   /** The work unit the agent holding `noteKey` was started with, or null. */
   private launchWorkUnitForKey(noteKey: string): string | null {
     return this.launchWorkUnits.get(noteKey)?.workUnitId ?? null;
+  }
+
+  /**
+   * Whether a session other than `selfId` holds `noteKey`: a live one, or one later in this
+   * same sweep that has not been merged yet. The sweep merges its sessions one at a time, so
+   * after a restart the session holding a key can still be ahead in the batch. Its key is the
+   * one its first sight will settle on: the discovered conversation, or else its stored
+   * binding. Asked only on the rare first sight that finds a rotation no daemon saw.
+   */
+  private noteKeyHeldElsewhere(noteKey: string, selfId: string, batch: readonly DiscoveredSession[]): boolean {
+    for (const s of this.sessions.values()) {
+      if (s.id !== selfId && noteKeyFor(s) === noteKey) return true;
+    }
+    return batch.some((other) => {
+      if (other.syntheticId === selfId || this.sessions.has(other.syntheticId)) return false;
+      return (other.agentSessionId ?? lastAgentBinding(other.syntheticId) ?? other.syntheticId) === noteKey;
+    });
   }
 
   /**

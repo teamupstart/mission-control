@@ -9,7 +9,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
-| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, disposable Git worktrees, and the [shapers folder](#the-shapers-folder) the operator fills) |
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for the **Repositories** family in **Settings → Setup**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
@@ -348,6 +348,16 @@ The window that confirmed the restore hydrates its browser cache from the daemon
 daemon-backed settings and first-paint preferences restart from one source. Other open windows do
 not reload automatically. They keep unsaved drafts and show a persistent **Reload now** notice so
 the operator chooses when to adopt the restored state.
+
+## The shapers folder
+
+With the `task-shaping` preview on, the daemon discovers task shapers in
+`$MISSION_HOME/shapers/` (`~/.mission-control/shapers/` by default): one folder per shaper,
+each holding a `shaper.json`. The daemon reads the folder at start, when Settings > Task
+shaping opens and at every shaping run, and never creates or writes it. An isolated
+`MISSION_HOME` therefore has its own folder and never sees the default one. Settings snapshots
+carry only the on or off choice stored for a folder shaper's id, never the folder's files.
+Which folder shapers run, and when, is in [the shaper folder](task-shaping.md#the-shaper-folder).
 
 ## Commands
 

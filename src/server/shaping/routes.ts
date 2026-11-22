@@ -3,16 +3,18 @@ import { basename } from "node:path";
 import type { Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
-import { DEFAULT_TASK_KIND } from "@shared/types.ts";
-import { registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
+import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
+import { currentShaping, registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
+import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
-import { discoverShapers } from "./discovery.ts";
+import { discoverShapers, scanShaperFolder } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
+import { taskShapingForReads } from "./reads.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
   dropShapingWriteRecords,
@@ -35,10 +37,14 @@ import { referenceStatus } from "./references.ts";
  * Task shaping's API, all behind the `task-shaping` flag: with it off every route answers 404
  * before its handler runs, so nothing reads the stored config.
  *
- * - `GET /api/shaping` returns `{ config, discovered, references }`.
+ * - `GET /api/shaping` returns `{ config, discovered, folder, references }`, reading the shapers
+ *   folder afresh: `folder` names where it looked and how many entries past the bound it left.
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
+ * - `GET /api/tasks/:id/shaping` returns what the task's current session received: the summary
+ *   and the delivered text, `text` null when nothing was kept. 404 when `currentShaping` shows
+ *   nothing, including a record that names an earlier session.
  */
 /**
  * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
@@ -91,7 +97,10 @@ export async function checkoutFor(
   return { ok: true, repoRoot };
 }
 
-export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: CheckoutProbes } = {}): void {
+export function registerShapingRoutes(
+  app: Hono,
+  options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined } = {},
+): void {
   const gate = requireFeature("task-shaping");
   // Both writes are refused unless they come from the dashboard, as a dry run executes a shaper.
   // Before the body limit, so a forged request is refused as forbidden whatever its size.
@@ -100,12 +109,23 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     await next();
   };
 
+  app.get("/api/tasks/:id/shaping", gate, (c) => {
+    const task = options.taskById?.(c.req.param("id"));
+    if (!task) return c.json({ error: "no such task" }, 404);
+    // Through the same projection as every other task read, so a record a failed commit superseded
+    // (its clean-up still pending) is not served as this session's, whether the task came from memory
+    // or from its durable row.
+    const summary = currentShaping(taskShapingForReads(task));
+    if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
+    return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null });
+  });
+
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
-    const discovered = await discoverShapers();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
+    const { shapers: discovered, folder } = await scanShaperFolder({ config });
     // `references` says whether each environment name a shaper uses is set, never a value.
-    return c.json({ config: daemonShapingView(config), discovered, references: referenceStatus(config, discovered) });
+    return c.json({ config: daemonShapingView(config), discovered, folder, references: referenceStatus(config, discovered) });
   });
 
   app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {

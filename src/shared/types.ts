@@ -14,6 +14,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskShaping } from "./shaping.ts";
 import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
@@ -2778,6 +2779,19 @@ export interface Task {
    * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * What task shaping added to the latest launch of this task that reached a worker, naming
+   * the session it was delivered to. Absent or null when no shaper applied to that launch, the
+   * `task-shaping` flag was off, or the task has never launched. Read it only through
+   * `currentShaping`, which shows it while it names the task's current session.
+   */
+  shaping?: TaskShaping | null;
+  /**
+   * Set while this task's dispatch or handover is shaping context, never persisted: the pending
+   * tile reads "Shaping context", and `shapingView` reports `shaping`. A projection like
+   * `provisioning`, derived on every publish and carried on `task_upsert`.
+   */
+  shapingContext?: { startedAt: number } | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2889,6 +2903,12 @@ export interface TaskSummary {
    * Optional so an older snapshot parses.
    */
   workUnitId?: string | null;
+  /**
+   * `Task.shaping`, carried to the session card only while `currentShaping` shows it. Absent
+   * otherwise, so every unshaped card's payload is what it was before shaping existed. Readers
+   * still compare its `sessionId` with the session they draw.
+   */
+  shaping?: TaskShaping;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -4283,11 +4303,20 @@ export interface TranscriptAdvisor {
  * what the conversation window draws in place of the whole payload. `null` means this
  * launch had no distinct human-authored request, and the turn is omitted from the visible
  * log rather than drawn as platform instructions or invented prose.
+ *
+ * `review-message` is a message the daemon wrote into the outbox about a review
+ * (`async-input`): one or more answers, or a snoozed question's "carry on" instruction. It is
+ * set on every turn bound to a delivery the daemon recorded, and only on such a turn, whatever
+ * has since become of the reviews it names. `reviewIds` come from that record, in delivery
+ * order, never from the turn's text. The dashboard draws each as the answer card (or the snoozed
+ * line) at this turn. A review it cannot find is still a card, never the raw text: loading while
+ * the review history is in flight, "Couldn't load the question" when its reads were refused or
+ * failed through every retry, and "no longer available" only once a read answered without it. Every form keeps
+ * the native text for "What the agent received".
  */
-export type TranscriptPresentation = {
-  kind: "launch" | "resident";
-  displayText: string | null;
-};
+export type TranscriptPresentation =
+  | { kind: "launch" | "resident"; displayText: string | null }
+  | { kind: "review-message"; envelope: "answer" | "remind-later"; reviewIds: string[] };
 
 /**
  * The non-human authors of a "user" turn.

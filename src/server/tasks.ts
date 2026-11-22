@@ -61,7 +61,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage, canRename } from "@shared/pane.ts";
+import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
@@ -98,6 +98,8 @@ import {
   type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
+  headBranch,
+  headCommit,
   releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
@@ -171,6 +173,16 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import {
+  CHECKOUT_UNVERIFIED_REASON,
+  PANE_UNVERIFIED_REASON,
+  deliveredWithoutContext,
+  launchUnconfirmed,
+  shapeLaunch,
+  withTaskContext,
+} from "./shaping/launch.ts";
+import type { shapeTask } from "./shaping/engine.ts";
+import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
@@ -238,7 +250,7 @@ import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
-import { noteTaskDeparture } from "./telemetry/index.ts";
+import { noteTaskDeparture, sessionTraceContext } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { getWorkflowPolicy, resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
@@ -890,6 +902,11 @@ export interface AssignOptions {
   confirmReset?: boolean;
   /** Deliver the task's intent to the agent. The one call that types. */
   inject?: typeof injectPrompt;
+  /**
+   * Task shaping's engine, for a test that stands in a run. Production takes `shapeTask`, and
+   * calls it only while the `task-shaping` flag is on.
+   */
+  shapeTask?: typeof shapeTask;
   /** Ask whether the pane could take a prompt, before anything is done to the agent. */
   paneReady?: (session: Session) => Promise<ActionResult>;
   /** Hand the agent's checkout back in the shape a fresh one starts in. */
@@ -1260,6 +1277,7 @@ export class TaskManager {
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      workflowName: (workflowId) => this.workflowNameFor(workflowId),
       worktrees: this.worktrees,
       legacy: this.legacyWorktrees,
       // The launch no longer waits for a model to name it, so the name can arrive on either
@@ -1740,6 +1758,13 @@ export class TaskManager {
     if (refusal) return refusal;
     const resolved = resolveTaskPersona(this.personaLookup, personaId);
     return resolved.ok ? null : resolved.error;
+  }
+
+  private workflowNameFor: (workflowId: string) => string | null = () => null;
+
+  /** Install the workflow name reader task shaping describes the after-work step with. */
+  registerWorkflowNames(resolve: (workflowId: string) => string | null): void {
+    this.workflowNameFor = resolve;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -5581,89 +5606,229 @@ export class TaskManager {
     // this path. It matters more on an assignment than on a dispatch - the session already
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
-    const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
-    // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
-    // a refusal does - the task stays in the backlog, so a surviving row would claim an
-    // episode saw a task nobody has been given. `inject` is injectable here and the guard
-    // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
-    // reject; the dispatcher's seam guards the same risk the same way.
-    let r: InjectResult;
-    try {
-      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
-      // refuses a multi-repo task and stands in the session's own checkout - so the only
-      // thing that could have is the configuration, and a live process's system prompt
-      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
-      // one mid-session semantic and the pairs without one another, for the same feature.
-      // One boundary instead: a session keeps the standing instructions it launched with.
-      //
-      // So this replays the session's own launch snapshot, and only for a session whose
-      // pair had no out-of-band channel. On the three pairs that do, the block is still
-      // installed on that process - that is what "durable" means - and prefixing it again
-      // would have the agent read the same rule twice. A session with no snapshot acquires
-      // nothing mid-life.
-      const launched = this.registry.standingInstructionsFor(s.id);
-      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
-      r = await inject(
-        this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
-          fallbackRoot: s.cwd,
-          planDiscovery,
-          planSkills: planSkills?.ok ? planSkills.commands : null,
-          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
-          workflowEvidence,
-        }),
-        undefined,
-        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
-      );
-    } catch (err) {
-      discardScoutPromptBoundary(boundary);
-      throw err;
-    }
-    // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
-    // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
-    // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
-    // of unreadable captures - and both mean the Enter went out while the text may still be
-    // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
-    // has: reversing that would change what assignment MEANS, which is not archive
-    // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
-    // prompt, and an unconfirmed paste cannot support that claim.
+    // The turn this handover types, before any task context: composed once, so the shaping
+    // step's last check and the inject below see the same text.
     //
-    // The cost of being wrong this way is a scout that loses its frozen title and anchor and
-    // falls back to the legacy task title with an honestly truncated trail. The cost of being
-    // wrong the other way is an archive anchored into a conversation that never started.
-    if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
-    if (!r.ok) {
-      // Nothing was typed, and the task stays droppable. A boundary left behind would claim
-      // an episode saw a task that is still sitting in the backlog.
-      return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
-    }
-
-    // Merge onto the LATEST snapshot, not the one read before the injection, for the
-    // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
-    // for a retriage to land, and priority/labels stay editable in every status - so a
-    // stale spread here writes yesterday's priority back over one just set on the card,
-    // silently, on a gesture that was only meant to hand the task to an agent.
-    const cur = this.registry.getTask(t.id) ?? t;
-    const now = Date.now();
-    this.registry.upsertTask({
-      ...cur,
-      status: "running",
-      sessionId: s.id,
-      dispatchedAt: now,
-      updatedAt: now,
+    // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+    // refuses a multi-repo task and stands in the session's own checkout - so the only
+    // thing that could have is the configuration, and a live process's system prompt
+    // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+    // one mid-session semantic and the pairs without one another, for the same feature.
+    // One boundary instead: a session keeps the standing instructions it launched with.
+    //
+    // So this replays the session's own launch snapshot, and only for a session whose
+    // pair had no out-of-band channel. On the three pairs that do, the block is still
+    // installed on that process - that is what "durable" means - and prefixing it again
+    // would have the agent read the same rule twice. A session with no snapshot acquires
+    // nothing mid-life.
+    const launched = this.registry.standingInstructionsFor(s.id);
+    const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
+    const unshapedTurn = withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
+      fallbackRoot: s.cwd,
+      planDiscovery,
+      planSkills: planSkills?.ok ? planSkills.commands : null,
+      grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
+      workflowEvidence,
     });
-    this.registry.bindTaskToWorkEpisode(t.id, s.id);
-    // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
-    // Last, and after the claim: it is the one step here that changes nothing about
-    // whether the task is running, so it must not sit in front of anything that does.
-    await this.renameForTask(
-      // Re-read for the same reason the task is: the reset detached the checkout and the
-      // injection took a round trip, and `rename` targets the terminal home BY NAME.
-      this.registry.getSession(s.id) ?? s,
-      this.registry.getTask(t.id) ?? cur,
-      doRename,
-    );
-    return { ok: true };
+    // Task shaping on the handover, the second call site beside `Dispatcher.dispatch`: the same
+    // input builder and section helper, awaited before the turn is typed. The repository is the
+    // session's own checkout, which is the one slot `assign` allows, on the branch and commit the
+    // reset above left it on. Its trace context is the one the session's agent was launched
+    // with - an embedded session's own, none for a pane. A message to a live session has no byte
+    // ceiling unless its pane pastes through AppleScript, which is checked. The step itself never
+    // throws; the handover stops only if the task was edited while shapers ran.
+    const live = this.registry.getSession(s.id) ?? s;
+    const shapingOn = featureEnabled("task-shaping");
+    // What the shapers are told is what the agent is handed: these fields of the task, read now.
+    const inputs = (task: Task) => JSON.stringify([task.intent, task.title, task.kind, task.labels, task.priority,
+      task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
+    const shapedFrom = inputs(ready);
+    const writePane = innermostPane(live);
+    // The pane the paste budget was checked for; a section is only sent into that same pane.
+    const shapedPane = paneToken(live);
+    // The baseline is read before the step's own clock starts, so it gets a short bound of its
+    // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
+    // A turn the operator starts and finishes while shapers run leaves the session idle again, so
+    // its state alone cannot tell; any departure from idle after the reset is recorded here, until
+    // the delivery's own guard has had its say.
+    let leftIdle = false;
+    const watchTurns = (event: { type: string; session?: { id: string; state: string } }) => {
+      if (event.type === "session_upsert" && event.session?.id === s.id && event.session.state !== "idle") leftIdle = true;
+    };
+    if (shapingOn) this.registry.on("event", watchTurns);
+    const stopWatching = () => { this.registry.off("event", watchTurns); };
+    // Released however the handover ends: a refusal, a probe or delivery that throws, or success.
+    try {
+      // Branch and commit read from the same post-reset checkout, not the registry's cached branch,
+      // which a reset that detached HEAD leaves on the previous one until discovery catches up.
+      const checkout = shapingOn && live.cwd
+        ? await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS)
+        : { baseSha: null, branch: live.gitBranch ?? null };
+      let shaping = await shapeLaunch({
+        // The baseline is the commit the reset left the checkout on, read only when shaping runs.
+        task: { ...ready, worktreePath: live.cwd, branch: checkout.branch, baseSha: checkout.baseSha },
+        runtime: live.runtime,
+        workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
+        trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
+        delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
+        turnOnes: [],
+        launch: null,
+        stillDispatching: () => this.registry.getTask(t.id)?.status === "backlog",
+        onShaping: (active) => this.registry.setTaskShapingContext(t.id, active),
+        // The session's own pane decides how the paste travels, as `Dispatcher` checks a launch.
+        ...(live.runtime !== "sdk" && writePane?.kind === "emulator" && pasteTravelsAsArgument(writePane.backend)
+          ? { finalCheck: async (section: string) => appleScriptPasteFits(withTaskContext(unshapedTurn, section), process.env, await platformArgMax())
+            ? null
+            : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
+          : {}),
+      }, { shapeTask: opts.shapeTask, enabled: shapingOn });
+      // Whether the turn carries context. The session and task checks below are cheap and run whenever
+      // the handover waited on shaping at all; the extra pane probe and checkout comparison guard the
+      // context itself, so they run only when there is a section to deliver. A run that added nothing
+      // - no shaper applied, or one failed or timed out - goes on with the original prompt, and its
+      // record is still settled after the inject.
+      const carriesContext = shapingOn && shaping.section.length > 0;
+      const after = this.registry.getTask(t.id);
+      if (after?.status !== "backlog") {
+        return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
+      }
+      // An edit made while shapers ran would be handed over as the older text with context chosen
+      // for it, while the card shows the newer one. The task stays in the backlog to be handed
+      // over again, as it is for every other refusal after the reset.
+      if (inputs(after) !== shapedFrom) {
+        return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
+      }
+      // The session was checked before the reset, and shapers can take seconds: an operator who
+      // started a turn in the meantime, or a review that arrived, makes it no longer a session to
+      // type into. Asked again only when shaping ran, so a handover with the flag off is unchanged.
+      // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
+      // probe below is itself an await a turn could start during.
+      const sessionChanged = (): string | null => {
+        if (!shapingOn) return null;
+        // The task too: still in the backlog, with the inputs its context was chosen for.
+        const current = this.registry.getTask(t.id);
+        if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
+        if (inputs(current) !== shapedFrom) return "the task was edited while its context was being shaped, so it was not typed - hand it over again";
+        const receiving = this.registry.getSession(s.id);
+        const changed = !receiving ? "went away"
+          // The context, its baseline and the checkout checks were all taken for this directory.
+          : receiving.cwd !== live.cwd ? "moved to another checkout"
+          // A section sized for one pane is not pasted into another (an AppleScript pane has its own limit).
+          : shaping.section && paneToken(receiving) !== shapedPane ? "moved to another pane"
+          : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
+          : leftIdle ? "took a turn"
+          : receiving.pendingReviews > 0 ? "got a review waiting on you"
+          : null;
+        return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
+      };
+      if (shapingOn) {
+        const changed = sessionChanged();
+        if (changed) return { ok: false, error: changed, scope: "session" };
+      }
+      if (carriesContext) {
+        const receiving = this.registry.getSession(s.id);
+        if (!receiving) {
+          return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+        // A probe that throws is inconclusive rather than a "no": the session is already reset, so
+        // the original prompt goes ahead without the context, through the delivery's own guard.
+        const stillReady = await paneReady(receiving).catch(() => null);
+        if (stillReady === null) {
+          shaping = deliveredWithoutContext(shaping, PANE_UNVERIFIED_REASON);
+        } else if (!stillReady.ok) {
+          return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
+        }
+      }
+      // The context was chosen for this branch and commit; another terminal in the same checkout
+      // could have moved it while shapers ran or the pane was probed. Read last, as the final await
+      // before delivery: the session and task are then rechecked by the guard `inject` runs at the
+      // write itself, which cannot run Git.
+      // Asked of the section as it now stands: one the probe above dropped has nothing left to verify.
+      if (carriesContext && shaping.section && live.cwd) {
+        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
+        if (now.baseSha === null || checkout.baseSha === null) {
+          // Unreadable is not changed: with either read unknown nothing can be compared, and the agent
+          // is already reset, so the original prompt goes ahead without context that could not be
+          // confirmed to fit this checkout. Only two known states that differ refuse.
+          shaping = deliveredWithoutContext(shaping, CHECKOUT_UNVERIFIED_REASON);
+        } else if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+      }
+      const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
+      // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
+      // a refusal does - the task stays in the backlog, so a surviving row would claim an
+      // episode saw a task nobody has been given. `inject` is injectable here and the guard
+      // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
+      // reject; the dispatcher's seam guards the same risk the same way.
+      let r: InjectResult;
+      try {
+        r = await inject(
+          this.registry.getSession(s.id) ?? s,
+          withTaskContext(unshapedTurn, shaping.section),
+          undefined,
+          () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id) ?? sessionChanged(),
+        );
+      } catch (err) {
+        discardScoutPromptBoundary(boundary);
+        throw err;
+      }
+      // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
+      // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
+      // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
+      // of unreadable captures - and both mean the Enter went out while the text may still be
+      // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
+      // has: reversing that would change what assignment MEANS, which is not archive
+      // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
+      // prompt, and an unconfirmed paste cannot support that claim.
+      //
+      // The cost of being wrong this way is a scout that loses its frozen title and anchor and
+      // falls back to the legacy task title with an honestly truncated trail. The cost of being
+      // wrong the other way is an archive anchored into a conversation that never started.
+      if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
+      if (!r.ok) {
+        // Nothing was typed, and the task stays droppable. A boundary left behind would claim
+        // an episode saw a task that is still sitting in the backlog.
+        return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
+      }
+
+      // Merge onto the LATEST snapshot, not the one read before the injection, for the
+      // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
+      // for a retriage to land, and priority/labels stay editable in every status - so a
+      // stale spread here writes yesterday's priority back over one just set on the card,
+      // silently, on a gesture that was only meant to hand the task to an agent.
+      // The turn reached the session: only now does this handover's shaping record replace the
+      // task's last one, stamped with the session it was delivered to. Settled whether or not
+      // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
+      // A paste whose submit was not seen may still be sitting in the composer: the assignment
+      // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
+      // Only a turn that carried a section has anything to confirm; an empty run keeps its outcome.
+      const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
+      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section);
+      const cur = this.registry.getTask(t.id) ?? t;
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...cur,
+        status: "running",
+        sessionId: s.id,
+        dispatchedAt: now,
+        updatedAt: now,
+      });
+      this.registry.bindTaskToWorkEpisode(t.id, s.id);
+      // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
+      // Last, and after the claim: it is the one step here that changes nothing about
+      // whether the task is running, so it must not sit in front of anything that does.
+      await this.renameForTask(
+        // Re-read for the same reason the task is: the reset detached the checkout and the
+        // injection took a round trip, and `rename` targets the terminal home BY NAME.
+        this.registry.getSession(s.id) ?? s,
+        this.registry.getTask(t.id) ?? cur,
+        doRename,
+      );
+      return { ok: true };
+    } finally {
+      stopWatching();
+    }
   }
 
   /**
@@ -7526,5 +7691,30 @@ export class TaskManager {
       sessionId: null,
       updatedAt: Date.now(),
     });
+  }
+}
+
+
+/** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
+const HANDOVER_BASELINE_TIMEOUT_MS = 2000;
+
+/**
+ * The checkout's commit and branch (null when detached), read together; both unknown once `ms`
+ * pass first or either read fails. The timer never outlives the race.
+ */
+async function boundedCheckoutState(dir: string, ms: number): Promise<{ baseSha: string | null; branch: string | null }> {
+  const unknown = { baseSha: null, branch: null };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      // A branch that could not be read makes the whole state unknown, as an unreadable commit does,
+      // so it takes the original-prompt fallback rather than passing for "detached" on both reads.
+      Promise.all([headCommit(dir), headBranch(dir)])
+        .then(([baseSha, branch]) => (baseSha === null || branch === undefined ? unknown : { baseSha, branch }))
+        .catch(() => unknown),
+      new Promise<typeof unknown>((resolve) => { timer = setTimeout(() => resolve(unknown), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

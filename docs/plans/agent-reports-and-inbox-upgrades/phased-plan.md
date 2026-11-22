@@ -4,8 +4,8 @@ Source: `docs/plans/agent-reports-and-inbox-upgrades/plan.md`. Its adopted decis
 requirements here: the tool is `post_report`; `replaces` takes a report id and a bad id is refused
 with the agent's open reports; Nudge and Continue use the specific wording; Mark read needs an
 open report unless the agent has exactly one unread; the unseen-reports note is for spoken
-messages only; no title source is recorded; a report notification opens the inbox at its report;
-all three noise controls ship.
+messages only; no title source is recorded; a report notification opens the inbox at its report,
+or at the report that replaced it; all three noise controls ship.
 
 This task writes the plan and schedules the phases. It ships no product code.
 
@@ -61,16 +61,29 @@ Two findings were accepted and applied:
 
 A later run raised two feasibility findings. Both were accepted and applied:
 
-- **A report notification always lands on its report.** The notify switch and the listed-in-inbox
-  switch are independent, so a notification can arrive for a report the inbox does not list. R22
-  and Phase 6 now say the click opens the inbox and draws that one report on its own above the
-  sections whenever the fold does not contain it: reports unlisted by the setting, or a report
-  already read. Phase 6 adds `GET /api/reports/:id` for the already-read case and tests the
-  switch combination. The pinned card changes neither the Reports section nor the to read figure.
+- **A report notification's click always has a report to show.** The notify switch and the
+  listed-in-inbox switch are independent, so a notification can arrive for a report the inbox
+  does not list. R22 and Phase 6 now say the click opens the inbox and draws one report on its
+  own above the sections whenever the fold does not contain it: reports unlisted by the setting,
+  or a report already read. Phase 6 adds `GET /api/reports/:id` for the already-read case and
+  tests the switch combination. The pinned card changes neither the Reports section nor the to
+  read figure.
 - **Mark done needs a task.** A stall for unfinished work can come from a queue with no task
   (`src/shared/stall.ts:154`), and no route completes a queue. R16 and Phase 5 now draw Mark done
   only when the stall's facts carry a task, and it completes that task. A queue-only card offers
   Continue, says its items are handled in the session, and keeps Open session.
+
+## Plan validation round 4
+
+One consistency finding was accepted and applied:
+
+- **One rule for a notification whose report was replaced.** The adopted decision and R22 said
+  the click opens "that report", while Phase 6 opened the latest report of its chain. The rule
+  chosen is the second, and it is now stated the same way in the adopted decision, R22, the
+  design section, Phase 6 and its tests: the click opens the notified report, unless it has been
+  replaced, in which case it opens the report that replaced it. That follows R12, under which a
+  replacing report takes the earlier one's place and the inbox shows only the latest of a chain.
+  The older version is not shown in the inbox; it stays in the conversation.
 
 ## Sizing and phase count
 

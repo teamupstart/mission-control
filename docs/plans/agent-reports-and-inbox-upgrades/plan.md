@@ -1,7 +1,7 @@
 # Agent reports and inbox upgrades
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 to 3. This task delivers the plan and its phases only. No
+revised after plan validation rounds 1 to 4. This task delivers the plan and its phases only. No
 product code changes here.
 
 ## Goal
@@ -30,7 +30,7 @@ The operator answered the spec's open items on 2026-11-22.
 | Which report "Steve, mark read" clears when Steve has several and none is open | None. Mark read needs a report that is open on screen. With exactly one unread report it still works from anywhere, as the spec says. No per-agent Mark all read button. | All of the agent's reports, the oldest, or the newest. |
 | The unseen-reports note on typed messages | Spoken messages only. This plan ships the note's text builder and voice appends it. | Adding it to typed messages. |
 | Recording that a title was typed | Not recorded. Ranks 3 and 4 of the naming rule read "the task title". | A title-source column. |
-| Clicking a report notification | Focuses the window and opens the inbox with that report open. | Opening the agent's conversation; focus only. |
+| Clicking a report notification | Focuses the window and opens the inbox with that report open. If that report has since been replaced, the report that replaced it is opened, because a replacing report takes the earlier one's place (R12). | Opening the agent's conversation; focus only. |
 | Noise controls | All three: editable report guidance, a per-agent mute, and Mark all read. | None; a section-wide Mark all read only. |
 | After this plan | Create a phased implementation plan and schedule its tasks. | Stop after the plan. |
 
@@ -100,7 +100,7 @@ Each requirement has an id so a phase can own it. R28 to R30 come from the adopt
 | --- | --- |
 | R20 | A **What notifies you** group under the existing alerts settings, five switches, all on by default: blocking questions notify; questions filed while the agent keeps working notify; agent reports notify; agent reports are listed in the inbox; stuck sessions notify. |
 | R21 | A notify switch only stops the notification; the item still appears in the inbox. Reports alone have the second switch: turned off, reports leave the inbox list and the to read figure and stay in each conversation. Other alerts are unchanged. |
-| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. That holds when the inbox does not list the report, because reports are unlisted (R21) or it was already read: the inbox then draws that one report on its own. |
+| R22 | A report notification uses the display name and is worded by the agent's state. Stopped: "Steve's back: Build failure diagnosed". Still working: "Steve posted a report: Build failure diagnosed". A session that goes idle or finishes without a report stays silent. Clicking it opens the inbox with that report open. If that report has since been replaced, the click opens the report that replaced it, since the inbox shows only the latest of a chain (R12). The click works even when the inbox does not list the report to open, because reports are unlisted (R21) or it was already read: the inbox then draws that one report on its own. |
 | R23 | Away mode: reports do not interrupt and collect in the inbox. The return digest summarises them ("4 reports waiting: Steve, Carol and 2 others"). Stuck sessions still break through. |
 
 ### Order, voice compatibility, rollout and noise controls
@@ -288,9 +288,10 @@ evidence, and neither contains reports.
 - Alerts gain a notify class (blocking question, filed question, report, stuck). The notifier
   delivers by class, settings and Away state instead of by severity alone.
 - A `report` alert kind fires on the announce stamp, worded "X's back: title" or "X posted a
-  report: title". Clicking it opens the inbox with that report open. A report the inbox does not
-  list is drawn on its own above the sections, so the click always lands on its report. The Away
-  buffer gains a reports kind whose rollup names the agents.
+  report: title". Clicking it opens the inbox with that report open, or with the report that has
+  replaced it. A report the inbox does not list is drawn on its own above the sections, so the
+  click always has a report to show. The Away buffer gains a reports kind whose rollup names the
+  agents.
 - "Agent reports are listed in the inbox" off removes the Reports section and the to read
   figure; conversations keep their entries.
 

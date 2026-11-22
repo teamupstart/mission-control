@@ -139,3 +139,5 @@ second way to set `readAt`.
 - Plan validation round 3: the `reports` snapshot field carries every unread, latest report
   whatever the listed-in-inbox setting says, because that setting is applied in the fold. Phase
   6's pinned report relies on this and reuses `ReportCard` unchanged.
+- Plan validation round 4: `supersededBy` is what Phase 6 follows to find the report that
+  replaced a notified one. No change here.

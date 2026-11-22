@@ -129,3 +129,5 @@ Phase 4 adds Open report to `ReportCard` and `ReportEntryCard`. Voice calls the 
   text. The conversation entry's two controls are declared actions and its file is scanned.
 - Plan validation round 3: no change here. Phase 6's pinned report is the same `ReportCard`, so
   when this phase has merged, a report opened from a notification can be replied to as usual.
+- Plan validation round 4: a replaced report's older versions are shown here, in the
+  conversation, and nowhere in the inbox. Phase 6 opens the replacement, not the older version.

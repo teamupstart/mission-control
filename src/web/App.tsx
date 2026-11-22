@@ -2,6 +2,8 @@ import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -432,7 +434,7 @@ export function App(): React.JSX.Element {
   const llm = useLlm();
   // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
-  const setup = useSetupChecks(true);
+  const setup = useSetupChecks(true, resolveFeatureFlag(MACOS_TERMINAL_FLAG_ID, featureFlags));
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.

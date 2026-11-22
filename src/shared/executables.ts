@@ -32,6 +32,7 @@ export const EXECUTABLE_IDS = [
   "profiles",
   "coderabbit",
   "acli",
+  "macos-terminal",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

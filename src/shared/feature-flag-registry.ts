@@ -5,6 +5,8 @@ export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 
+export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -80,6 +82,13 @@ export const FEATURE_FLAGS = [
       "as waiting on your answer.",
     stage: "preview",
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
+  },
+  {
+    id: MACOS_TERMINAL_FLAG_ID,
+    label: "macOS Terminal",
+    description: "Open agent sessions and show multiplexer sessions in the Terminal app built into macOS.",
+    stage: "preview",
+    keywords: ["terminal", "apple", "macos", "dispatch"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

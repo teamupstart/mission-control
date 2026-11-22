@@ -503,6 +503,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-skills": skillStatus,
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
+  "macos-terminal": (deps) => terminalStatus("macos-terminal", deps),
   "node-runtime": nodeRuntimeStatus,
   // Installed, answered from the filesystem alone. No `--version` run: every acli subprocess
   // is one an operator's audit of "what did it ask Jira" has to account for, and the sign-in
@@ -672,11 +673,13 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
-  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
-  const [probed, targets, environment, repositories] = await Promise.all([
+  const targets = deps.terminalTargets();
+  const showMacosTerminal = targets.some(({ id }) => id === "macos-terminal");
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
+    .filter((id) => id !== "macos-terminal" || showMacosTerminal);
+  const [probed, environment, repositories] = await Promise.all([
     // A fresh object per check: per-check readings shared between rows key on it.
     Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
-    Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),
   ]);

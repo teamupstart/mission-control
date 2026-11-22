@@ -61,7 +61,10 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     }),
     skills: () => ({ enabled: true, readable: true, configured: 2, directories: ["/home/operator/.claude/skills"], problems: [] }),
     conductorProbe: async () => conductor(),
-    terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    terminalTargets: () => [
+      { id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null },
+      { id: "macos-terminal", label: "macOS Terminal", glyph: "", blurb: "New window.", detail: null, unavailable: null },
+    ],
     repositoryIndex: async () => ({ repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] }),
     environmentChecks: async () => [],
     readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),

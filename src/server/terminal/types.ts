@@ -531,6 +531,8 @@ export interface TerminalEmulator {
  * all.
  */
 interface BinHostSupport {
+  /** Live preview gate where the backend is opt-in. */
+  enabled?: () => boolean;
   /**
    * An actionable reason this adapter cannot run on the current host, or null when its
    * transport and launch mechanics have been validated there.

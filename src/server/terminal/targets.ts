@@ -210,7 +210,7 @@ export function terminalTargetViews(
   }
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator) views.push({ id, ...emulatorView(emulator, deps) });
+    if (emulator && emulator.bin.enabled?.() !== false) views.push({ id, ...emulatorView(emulator, deps) });
   }
   return views;
 }

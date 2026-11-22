@@ -108,6 +108,13 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: appCandidates("Ghostty.app", "Contents/MacOS/ghostty"),
     searchPath: false,
   }),
+  "macos-terminal": spec("macos-terminal", "macOS Terminal", "Terminal", "MACOS_TERMINAL_BIN", {
+    candidates: ({ platform }) => platform === "darwin" ? [
+      "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+      "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+    ] : [],
+    searchPath: false,
+  }),
   iterm: spec("iterm", "iTerm2", "iTerm2", "ITERM_BIN", {
     legacyEnv: ["ITERM_BIN"],
     candidates: appCandidates("iTerm.app", "Contents/MacOS/iTerm2"),

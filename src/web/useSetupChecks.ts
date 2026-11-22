@@ -31,7 +31,7 @@ export async function readSetupChecks(
 }
 
 /** Mount-time and operator-requested reads only. Machine setup has no polling side effects. */
-export function useSetupChecks(enabled: boolean): SetupChecksState {
+export function useSetupChecks(enabled: boolean, macosTerminalPreview: boolean): SetupChecksState {
   const [view, setView] = useState<SetupChecksSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +66,6 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     }
     return null;
   }, []);
-  useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
+  useEffect(() => { if (enabled) void refresh(); }, [enabled, macosTerminalPreview, refresh]);
   return { view, loading, error, refresh, dismissBanner };
 }

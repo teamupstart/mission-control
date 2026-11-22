@@ -38,6 +38,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "acli-cli",
   "acli-auth",
   "coderabbit-auth",
+  "macos-terminal",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -578,6 +579,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       purpose: "sign-in",
       argv: ["coderabbit", "auth", "login"],
       note: "Sign the CodeRabbit CLI in through your browser, then press Re-check.",
+    },
+  },
+  "macos-terminal": {
+    id: "macos-terminal",
+    label: "macOS Terminal",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Opens agent sessions and shows detached sessions in the Terminal app built into macOS.",
+    remedy: {
+      kind: "link",
+      url: "https://support.apple.com/guide/terminal/trml1003/mac",
+      label: "Terminal automation guide",
     },
   },
 };

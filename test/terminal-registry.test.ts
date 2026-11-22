@@ -133,7 +133,7 @@ test("an emulator-only session binds to its emulator", () => {
     const bound = bindPane([{ ...EMU_HANDLE, backend: emulator }]);
     assert.equal(bound?.kind, "emulator");
     assert.equal(bound?.token, `${emulator}:5`);
-    assert.ok(bound?.write, `${emulator} supports interrupt keystrokes`);
+    assert.equal(Boolean(bound?.write), Boolean(EMULATORS[emulator].write));
     // No multiplexer mode probe exists for a standalone emulator.
     assert.equal(bound?.mode, null);
   }

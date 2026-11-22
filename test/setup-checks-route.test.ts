@@ -54,7 +54,10 @@ function deps(
     installedPlugins: async () => ({ ok: true, plugins: [], recordPath: "/fake/record" }),
     skills: () => ({ enabled: false, readable: true, configured: 0, directories: ["/fake/skills"], problems: [] }),
     conductorProbe: async () => { throw new Error("isolated failure"); },
-    terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    terminalTargets: () => [
+      { id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null },
+      { id: "macos-terminal", label: "macOS Terminal", glyph: "", blurb: "New window.", detail: null, unavailable: null },
+    ],
     repositoryIndex: async () => ({ repoCount: 1, directories: [{ path: "~/workspace", status: "ok", repoCount: 1 }] }),
     environmentChecks: async () => [{
       id: "upstartclaw-core-setup",

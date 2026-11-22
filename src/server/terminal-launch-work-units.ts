@@ -28,7 +28,10 @@
  *
  * No timer. An entry lasts exactly as long as its launch home exists: the wrapper removes that
  * home only when it exits, which is after its agent has, so once it is gone no agent can still
- * appear beneath it, however slow the terminal was.
+ * appear beneath it, however slow the terminal was. Every call here sweeps the ended entries -
+ * a new launch, a launcher's verdict, and each new session discovery sees - so the list holds
+ * only launches whose home still exists, even when nothing else is ever launched. No size cap:
+ * a launch still running would lose the decision its agent has yet to be seen with.
  *
  * Module state rather than a registry field because a managed resume reaches it from
  * `launchPreparedResume`, which has no registry.
@@ -88,6 +91,7 @@ export function settleTerminalLaunchWorkUnit(
   decision: TerminalLaunchWorkUnit | null | undefined,
   outcome: TerminalLaunchOutcome,
 ): void {
+  sweep();
   if (!decision || outcome !== "not-started") return;
   const index = pending.indexOf(decision);
   if (index >= 0) pending.splice(index, 1);
@@ -102,13 +106,20 @@ export function takeTerminalLaunchWorkUnit(
   launchHome: string | null | undefined,
   install: (decision: TerminalLaunchWorkUnit) => void,
 ): TerminalLaunchWorkUnit | null {
-  // Not swept first: the agent being taken for is proof its launch is still running.
+  // Swept first. An agent seen beneath a live launch finds its home still there, so its entry
+  // survives; one whose home is already gone had exited before this sighting was published.
+  sweep();
   if (!launchHome) return null;
   const index = pending.findIndex((decision) => decision.launchHome === launchHome);
   if (index < 0) return null;
   const [decision] = pending.splice(index, 1);
   install(decision!);
   return decision!;
+}
+
+/** For tests: how many decisions are waiting. */
+export function terminalLaunchWorkUnitsWaiting(): number {
+  return pending.length;
 }
 
 /** For tests: forget every decision. */

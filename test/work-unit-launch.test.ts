@@ -596,12 +596,28 @@ test("an unclaimed decision waits as long as its launch home exists, with no tim
   assert.equal(handOver.takeTerminalLaunchWorkUnit(slow, install), null);
   assert.equal(handOver.takeTerminalLaunchWorkUnit(null, install), null);
   // A launch whose home is gone is over - its wrapper, and any agent beneath it, has exited -
-  // so its decision is forgotten at the next sweep.
+  // so its decision is forgotten at the next sweep, with no further launch needed.
   const ended = launchHome();
   handOver.expectTerminalLaunchWorkUnit(ended, WU_A);
   rmSync(ended, { recursive: true, force: true });
-  handOver.expectTerminalLaunchWorkUnit(launchHome(), null);
   assert.equal(handOver.takeTerminalLaunchWorkUnit(ended, install), null);
+
+  // A verdict sweeps too, and so does a sighting of a pane beneath no launch: once their homes
+  // are gone, nothing waits, while a launch whose home still exists keeps its decision.
+  handOver.resetTerminalLaunchWorkUnits();
+  const live = launchHome();
+  const finished = launchHome();
+  const failed = handOver.expectTerminalLaunchWorkUnit(finished, WU_A);
+  handOver.expectTerminalLaunchWorkUnit(live, WU_B);
+  rmSync(finished, { recursive: true, force: true });
+  handOver.settleTerminalLaunchWorkUnit(failed, "failed");
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), 1);
+  const abandoned = launchHome();
+  handOver.expectTerminalLaunchWorkUnit(abandoned, WU_A);
+  rmSync(abandoned, { recursive: true, force: true });
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(null, install), null);
+  assert.equal(handOver.terminalLaunchWorkUnitsWaiting(), 1);
+  assert.equal(handOver.takeTerminalLaunchWorkUnit(live, install)?.workUnitId, WU_B);
 });
 
 test("discovery names the exact launch an agent runs beneath", () => {

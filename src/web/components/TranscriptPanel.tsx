@@ -56,6 +56,9 @@ import {
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation, type ConversationRow, type ReviewHistory, type ReviewRowDelivery } from "../lib/episodes.ts";
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import { ReportEntryCard } from "./ReportEntryCard.tsx";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -322,6 +325,8 @@ export function TranscriptPanel({
   episodes = [],
   reviews = [],
   reviewHistory,
+  reports = [],
+  reportControls,
   onAnswerQuestion,
   onReplyBox,
   onOpenFile,
@@ -381,6 +386,13 @@ export function TranscriptPanel({
    * history is loading, an answer whose review is not in hand is drawn as loading, not as gone.
    */
   reviewHistory?: ReviewHistory;
+  /**
+   * Every report this session posted, every version (`inbox` flag; empty while it is off), each
+   * drawn where it was posted (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening an entry and marking it read. Without them report entries are not drawn. */
+  reportControls?: ReportEntryControls;
   /**
    * Open the card that answers this session's open questions, from an Asked entry
    * (`async-input`). Without it an open Asked entry has no Answer button.
@@ -633,7 +645,17 @@ export function TranscriptPanel({
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(visible), episodes, reviews, session.pendingTurns, reviewHistory);
+  const rows = mergeConversation(
+    transcriptRows(visible),
+    episodes,
+    reviews,
+    session.pendingTurns,
+    reviewHistory,
+    reportControls ? reports : [],
+  );
+  // Report rows exist only when the controls do (above), so the entries below are always drawn
+  // with real callbacks: a missing one is a wiring error to surface, never a card that does nothing.
+  const entryControls = reportControls as ReportEntryControls;
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -1372,6 +1394,14 @@ export function TranscriptPanel({
                 <AskedQuestionCard key={`ask-${row.review.id}`} review={row.review} session={session} onAnswer={onAnswerQuestion} />
               ) : row.kind === "closed" ? (
                 <ClosedQuestionCard key={`closed-${row.review.id}`} review={row.review} />
+              ) : row.kind === "report" ? (
+                <ReportEntryCard
+                  key={`report-${row.report.id}`}
+                  report={row.report}
+                  open={entryControls.openReportId === row.report.id}
+                  onToggle={() => entryControls.onToggle(row.report)}
+                  onMarkRead={() => entryControls.onMarkRead(row.report)}
+                />
               ) : row.kind === "review" ? (
                 (row.delivery ? row.delivery.envelope === "remind-later" : row.review.status === "snoozed") ? (
                   <SnoozedReviewCard

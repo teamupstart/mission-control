@@ -1,3 +1,5 @@
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../../lib/sessionReports.ts";
 import type {
   BacklogPlan,
   FileCommentReview,
@@ -227,6 +229,13 @@ export interface SessionViewProps {
    * arrive, which is the whole point of taking the live list rather than refetching.
    */
   reviews: ReviewItem[];
+  /**
+   * The agent reports this window has been told about (`inbox` flag; empty while it is off), the
+   * live half of a conversation's report entries (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening a report entry and marking it read: App's, shared with the inbox. */
+  reportControls?: ReportEntryControls;
   /**
    * App-owned join from compact run SSE summaries to each live session: EVERY run the session
    * carries, one per repository a multi-repo task changed.

@@ -1947,10 +1947,14 @@ export class SdkSupervisor {
       if (pid !== observedPid) recordSdkSessionProcess(id, null);
       observedPid = pid;
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
+      // The driver held this pid when the scan was asked for, so its process started by then.
+      // A scan that answers after the driver exited can find the pid reused by a process that
+      // started later, and that one must never become this session's lifetime.
+      const requestedAt = Date.now();
       lifetime = lifetime.then(async () => {
         try {
           const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-          const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+          const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0 && p.startMs <= requestedAt);
           if (!snapshot.unknownReason && child && this.lifetimeOwners.get(id) === handle && handle.recoveryProcessId === pid) {
             // Capture while this driver is owned. Fingerprinting a later lookup would
             // bless a replacement PID; retaining raw argv could disclose credentials.

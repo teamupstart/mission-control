@@ -407,6 +407,31 @@ test("a slow process scan never holds the agent's identity back from the registr
   assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41101, startMs: 4110100 });
 });
 
+test("a late scan never records a process that took the driver's pid after the scan was asked for", async (t) => {
+  const handle = fakeHandle();
+  let pid: number | null = null;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  let releaseScan!: () => void;
+  const scanHeld = new Promise<void>((resolve) => { releaseScan = resolve; });
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    await scanHeld;
+    return { processes: [{ pid: 41501, ppid: 1, tty: null, startRaw: "fixture", startMs: Date.now() + 60_000,
+      command: "unrelated", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  pid = 41501;
+  handle.push({ kind: "bound", agentSessionId: "agent-reused-pid", transcriptPath: null, modelId: null, pid });
+  await drain();
+  handle.end();
+  await drain();
+  releaseScan();
+  await drain();
+  assert.equal(getSdkSessionProcess(session.id), null, "a reused pid's process is not this driver's lifetime");
+});
+
 test("a session adopted under the same id never inherits its predecessor's late scan", async (t) => {
   // Teardown no longer waits on a scan, so once the old card's linger evicts it, a new handle
   // can be adopted under that id while the old driver's scan is still outstanding.

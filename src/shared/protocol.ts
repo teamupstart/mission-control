@@ -156,6 +156,8 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  CODERABBIT_COMMAND_HELP,
+  isCodeRabbitCommand,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -7727,6 +7729,10 @@ export const WorkflowCommandArgvSchema = z
     { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
   );
 
+export const CodeRabbitCommandSchema = WorkflowCommandArgvSchema.refine(isCodeRabbitCommand, {
+  message: CODERABBIT_COMMAND_HELP,
+});
+
 /** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
@@ -7739,6 +7745,7 @@ export const CodeRabbitTuningSchema = z.object({
   kind: z.literal("coderabbit"),
   baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
   severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+  command: CodeRabbitCommandSchema.optional(),
 }).strict();
 
 export const WorkflowCommandOverrideSchema = z.object({
@@ -7946,6 +7953,7 @@ export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
   baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
   empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  command: CodeRabbitCommandSchema.optional(),
   timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
 });
 export const CodeRabbitReviewSummarySchema = z.object({

@@ -3008,10 +3008,35 @@ export interface WorkflowCommandOverride {
 
 export const CODERABBIT_SEVERITIES = ["critical", "major", "minor", "trivial", "info"] as const;
 export type CodeRabbitSeverity = (typeof CODERABBIT_SEVERITIES)[number];
+export const CODERABBIT_REVIEW_COMMAND = ["coderabbit", "review"] as const;
+export const DEFAULT_CODERABBIT_COMMAND = [...CODERABBIT_REVIEW_COMMAND, "--deep"] as const;
+export const CODERABBIT_COMMAND_HELP = 'Use coderabbit review with optional --deep, --deep "focus text", or --fresh. Mission Control adds the workflow review flags.';
+
+export function isCodeRabbitCommand(argv: readonly string[]): boolean {
+  if (argv[0] !== "coderabbit" || argv[1] !== "review") return false;
+  const flags = new Set<string>();
+  for (let index = 2; index < argv.length; index++) {
+    const flag = argv[index]!;
+    if ((flag !== "--deep" && flag !== "--fresh") || flags.has(flag)) return false;
+    flags.add(flag);
+    const focus = argv[index + 1];
+    if (flag === "--deep" && focus && !focus.startsWith("-")) {
+      if (!focus.trim() || focus.includes("\0") || focus.includes("\r") || focus.includes("\n")) return false;
+      index++;
+    }
+  }
+  return true;
+}
+
+export function codeRabbitReviewArgv(command: readonly string[], severity: CodeRabbitSeverity, mergeBase: string): string[] {
+  return [...command, "--agent", "--gate", severity, "--committed", "--base-commit", mergeBase];
+}
+
 export interface CodeRabbitTuning {
   kind: "coderabbit";
   baseRef: string | null;
   severity: CodeRabbitSeverity;
+  command?: string[];
 }
 export interface CodeRabbitConfigSnapshot {
   source: ".coderabbit.yaml" | ".coderabbit.config.ts";
@@ -3030,6 +3055,8 @@ export interface CodeRabbitComparison {
   head: string | null;
   empty: boolean;
   severity: CodeRabbitSeverity;
+  /** Frozen with the comparison. Earlier submissions used the original command without options. */
+  command?: string[];
   ruleRevision: number;
   timeoutMs: number;
   maxRuns: number;

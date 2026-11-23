@@ -40,6 +40,10 @@
  * so (2) above still holds. And each submission other than the clear is reported through the
  * hook bridge as Claude reports a turn: `UserPromptSubmit` when it is taken, then `Stop`, which
  * is the evidence the outbox waits for before it counts a delivery and goes on to the next row.
+ * A composer holding a multi-line paste is drawn as Claude draws it, `[Pasted text #N +M lines]`,
+ * because that placeholder appearing and then leaving the composer is the only evidence
+ * `injectPrompt` accepts that its Enter submitted the paste (`submitVerified`). Without it every
+ * handover would read as unconfirmed, and its shaping record as degraded with no text kept.
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -67,15 +71,26 @@ let pendingMarker = "";
 const history = [];
 /** Inside a bracketed paste, which only whole-turn mode distinguishes. */
 let pasting = false;
+/** Pastes into the composer since the last submission, which numbers the placeholder. */
+let pastes = 0;
 /** The agent session the last clear announced, which the turn hooks name. */
 let agentSession = null;
 let agentTranscript = null;
+
+/**
+ * The composer as it is drawn. In whole-turn mode a composer holding a newline holds a paste, and
+ * Claude collapses that into one placeholder rather than echoing it (`harness/claude/control.ts`).
+ */
+function composerView() {
+  if (!TURNS || !composer.includes("\n")) return composer;
+  return `[Pasted text #${Math.max(pastes, 1)} +${composer.split("\n").length - 1} lines]`;
+}
 
 /** Redraw the whole screen: the transcript, then the composer, exactly like a TUI. */
 function draw() {
   process.stdout.write(`${ESC}[2J${ESC}[H`);
   for (const line of history.slice(-SCROLLBACK)) process.stdout.write(`${line}\r\n`);
-  process.stdout.write(`\r\n> ${composer}`);
+  process.stdout.write(`\r\n> ${composerView()}`);
 }
 
 /** Report to the daemon the way the installed Claude hook bridge does. */
@@ -98,6 +113,7 @@ async function submit(text) {
   const body = text.trim();
   history.push(`[took ${body.length} chars]`);
   composer = "";
+  pastes = 0;
   draw();
   if (TURNS) appendFileSync(TURNS, `${JSON.stringify({ text: body })}\n`);
   if (body !== CLEAR) {
@@ -150,6 +166,7 @@ process.stdin.on("data", (chunk) => {
       }
       if (next === -1) break;
       pasting = rest.startsWith(PASTE_START, next);
+      if (pasting) pastes += 1;
       rest = rest.slice(next + PASTE_START.length);
     }
     draw();

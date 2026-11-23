@@ -200,8 +200,10 @@ Personal sessions retain their ordinary completion boundary. See
 
 **A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
 phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
-review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
-part of planning when needed to make scheduled task paths durable. An unbound plan retains the
+review follow-through, CI waiting, merge, and the bound workflow's own validation or review
+result belong to the workflow. That last one is deferred because Foreman's completion claim is
+what starts the workflow, so a plan can never be held for a result only that run produces.
+Commit and push remain part of planning when needed to make scheduled task paths durable. An unbound plan retains the
 skill's direct PR path. Foreman reads live publication ownership independently of Persona
 evidence eligibility and discards the verdict if binding identity, version, or trigger mode
 changes during verification or before the completion check. The completion claim carries that
@@ -264,17 +266,34 @@ decision without episode metadata remains readable but feeds no verifier history
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
+Because the queue row keeps only the latest decision, the worker also appends one line per
+decision to `foreman.log` in the state directory, beside the app's Foreman lifecycle lines.
+Each line carries the time, session, task kind, generation, intent episode, outcome, blocking gap
+ids with their kind, a claimed run id, and the verifier's summary clamped to one line. Gap
+details, transcripts and diffs are never written. At 5 MiB the worker renames it to `foreman.log.1`.
+The app writes its Foreman lifecycle lines to the path rather than through a handle it keeps open,
+so every line lands in `foreman.log` or `foreman.log.1` and none is lost to a rotation.
+A hold that later turns out to have stalled a workflow can therefore still be read after the
+next completion has replaced it.
+
 Two of those outcomes - `empty` and `retired` - can also *conclude a task*, and only ever a
 [recurring mission's](recurring-missions.md#when-a-run-finishes-but-its-task-does-not) whose
 own completion policy asked for it. Both mean the run is over with nothing to ship, which is
 exactly the case no merge will ever settle. Nothing else changes: every other outcome, and
 every task that did not come from a mission, still completes the way it always has.
 
-**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship`, `bugfix` and `document`
+sessions, and to a plan that waits on Foreman to start its workflow.** That plan is a
+repository-stored `plan` task whose publication a **Foreman Complete** workflow owns. Its
+workflow starts only from Foreman's completion claim, so a held verdict would otherwise leave
+it idle with no run, no message and no next turn. A plan receives only its held gaps, or an
+escalation when the verifier keeps failing. The relay keeps the planning handoff's
+commit-and-push rule and tells the session that the workflow's own result is not its gap to
+close. An unbound plan, a Manual binding and a local-storage plan are not relayed. The popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
-ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
-settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
+task of one of those kinds, an explicit Foreman invite, a drivable hook-instrumented session,
+and a completed settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
@@ -285,7 +304,7 @@ question, pending or snoozed, under the `async-input` preview flag's
 the question is answered or dismissed. Foreman's answer to a question filed without stopping
 reaches the agent as a message, like yours.
 
-When prompted completion records a real held verdict for an eligible managed ship task, Foreman
+When prompted completion records a real held verdict for an eligible managed task, Foreman
 does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
 and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the
 existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery, live-mode, and

@@ -1,6 +1,14 @@
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
+import {
+  SHAPING_WRITE_ORDER_HEADER,
+  type ShapingConfigView,
+  type ShapingIntent,
+  type ShapingReply,
+  type ShapingRun,
+  type ShapingTestRequest,
+  type TaskShaping,
+} from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -258,6 +266,24 @@ export interface CompleteTaskResult extends ActionResult {
   sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
+}
+
+/**
+ * How a GET that may be retried came out: its value, or a failure that is `definite` when the
+ * server answered with a 4xx (asking again will not change it) and transient otherwise (a network
+ * error or a 5xx).
+ */
+export type JsonRead<T> = { ok: true; value: T } | { ok: false; definite: boolean };
+
+/** GET a JSON endpoint, saying whether a failure is worth retrying. */
+async function readJson<T>(path: string): Promise<JsonRead<T>> {
+  try {
+    const res = await actionFetch(path);
+    if (!res.ok) return { ok: false, definite: res.status >= 400 && res.status < 500 };
+    return { ok: true, value: (await res.json()) as T };
+  } catch {
+    return { ok: false, definite: false };
+  }
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -604,6 +630,17 @@ export const fetchResolvedStandingInstructions = (
   if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
+
+/** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
+export interface TaskShapingView {
+  summary: TaskShaping;
+  /** The section delivered in turn one, or null when nothing was kept. */
+  text: string | null;
+}
+
+/** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
+export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
 
 /** What THIS session was actually sent at launch. `null` covers the route's 404. */
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
@@ -2524,7 +2561,13 @@ export const api = {
    * top of these for immediacy (see `useTimelineReviews`).
    */
   resolvedReviews: (id: string) =>
-    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+  /**
+   * The same history for the sessions this conversation was runtime-transferred from. Read only
+   * to draw an answer delivered here whose question a predecessor asked.
+   */
+  lineageReviews: (id: string) =>
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews?lineage=1`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

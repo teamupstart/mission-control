@@ -1,4 +1,4 @@
-import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -20,6 +20,15 @@ import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
+import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
+import {
+  forgetSupersededShaping,
+  hasSupersededShaping,
+  noteSupersededShaping,
+  sessionShapingForReads,
+  supersededShapingFor,
+  taskShapingForReads,
+} from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -149,7 +158,7 @@ import type {
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor } from "./harness/index.ts";
+import { hooksFor, sessionMessages } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -313,6 +322,11 @@ import {
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  commitTaskShaping as dbCommitTaskShaping,
+  rekeyTaskShaping as dbRekeyTaskShaping,
+  clearTaskShapingFor as dbClearTaskShapingFor,
+  openDb,
+  taskShapingRecord as dbTaskShapingRecord,
   storedTaskWorkUnitId,
   inTransaction,
   upsertUsageCell,
@@ -348,6 +362,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -1356,10 +1371,12 @@ export class Registry extends EventEmitter {
   } {
     return {
       sessionTransfers: sessionTransferPage(),
-      sessions: [...this.sessions.values()],
+      sessions: [...this.sessions.values()].map(sessionShapingForReads),
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
-      tasks: [...this.tasks.values()],
+      // Memory keeps an earlier launch's record so a later publish can carry it forward; what
+      // leaves the daemon carries only the record of the session the task is on now.
+      tasks: [...this.tasks.values()].map(taskShapingForReads),
       personas: [...this.personas.values()],
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
@@ -1491,8 +1508,25 @@ export class Registry extends EventEmitter {
   /** Publish the full bounded config, suppressing identical writes. */
   emitFeatureFlags(config: FeatureFlagsConfig): void {
     if (this.lastFeatureFlags && sameFeatureFlagsConfig(this.lastFeatureFlags, config)) return;
+    const shapingWasOn = this.lastFeatureFlags ? resolveFeatureFlag("task-shaping", this.lastFeatureFlags) : null;
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
+    if (shapingWasOn === false && resolveFeatureFlag("task-shaping", config)) this.republishShaping();
+  }
+
+  /**
+   * Task shaping was just turned back on: a window that connected while it was off holds tasks
+   * and session cards with their records and progress marks stripped (`taskShapingForReads`), and nothing else
+   * would send them again until each one changed. Publish every task and card that has one.
+   */
+  private republishShaping(): void {
+    for (const task of this.tasks.values()) {
+      // A record to show, or a step still running whose "Shaping context" mark was stripped too.
+      if (currentShaping(task) || task.shapingContext) this.emitEvent({ type: "task_upsert", task });
+    }
+    for (const session of this.sessions.values()) {
+      if (session.task?.shaping !== undefined) this.emitEvent({ type: "session_upsert", session });
+    }
   }
 
   /**
@@ -2160,7 +2194,16 @@ export class Registry extends EventEmitter {
     }
   }
 
-  private deliverEvent(e: ServerEvent): void {
+  private deliverEvent(event: ServerEvent): void {
+    // A task leaves the daemon as every task read returns it: with only its current session's
+    // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
+    // (see `withShaping`).
+    // A session's task card is gated the same way.
+    const e: ServerEvent = event.type === "task_upsert" && (event.task.shaping !== undefined || event.task.shapingContext !== undefined)
+      ? { ...event, task: taskShapingForReads(event.task) }
+      : event.type === "session_upsert" && event.session.task?.shaping !== undefined
+        ? { ...event, session: sessionShapingForReads(event.session) }
+        : event;
     this.emit("event", e);
     // The Line's one hook into the stores it folds over.
     //
@@ -3277,6 +3320,8 @@ export class Registry extends EventEmitter {
     // (idle noise, or the hook and the driver both reporting one Stop) changes nothing here.
     if (signal === "turn_completed" && workCycle) {
       expireHumanEchoes(s.id, logicalKey, workCycle.generation, updatedAt);
+      // And the echo each review message delivered into that turn owed (`review-deliveries.ts`).
+      expireReviewDeliveryEchoes(logicalKey, workCycle.generation, updatedAt);
     }
     const projected = workCycle ?? undefined;
     if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
@@ -5325,7 +5370,10 @@ export class Registry extends EventEmitter {
     const episode = sessionWorkEpisodeFor(session.id);
     if (!episode || episode.awaitingAgentRebind) throw new Error("Successor work episode is not ready");
     const at = Date.now();
-    const next = { ...task, ...homeRecord(home), sessionId: session.id,
+    // The conversation moves runtimes and keeps what it was given at launch.
+    const shaping = this.carryShapingToSuccessor(task.id, session.id, episode.episodeId);
+    const next = { ...task, ...(shaping ? { shaping } : {}),
+      ...homeRecord(home), sessionId: session.id,
       terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
         ? { resourceId: home.terminalResourceId, sessionId: session.id } : null, updatedAt: at };
     const displaced = dbUpsertTask(next);
@@ -5347,6 +5395,9 @@ export class Registry extends EventEmitter {
     const displaced = dbUpsertTask(task);
     const episode = sessionWorkEpisodeFor(sessionId);
     if (episode && !episode.awaitingAgentRebind) {
+      // The resumed conversation keeps what it was given at launch. Read before the binding
+      // below moves, because the outgoing binding is what names the session being replaced.
+      this.carryShapingToSuccessor(task.id, sessionId, episode.episodeId);
       dbBindTaskWorkEpisode({ taskId: task.id, sessionId, episodeId: episode.episodeId,
         agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
         prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
@@ -5372,6 +5423,7 @@ export class Registry extends EventEmitter {
     at = Date.now(),
   ): boolean {
     if (!episode || episode.awaitingAgentRebind) return false;
+    const prior = taskWorkEpisodeForTask(taskId);
     const binding: TaskWorkEpisodeBinding = {
       taskId,
       episodeId: episode.episodeId,
@@ -5385,6 +5437,11 @@ export class Registry extends EventEmitter {
       updatedAt: at,
     };
     dbBindTaskWorkEpisode(binding);
+    // The same conversation continuing in another session: the record of what it was given
+    // at launch follows it. A new episode is a new launch, whose own commit settles its record.
+    if (prior && prior.episodeId === binding.episodeId && prior.sessionId !== sessionId) {
+      this.followShapingSession(taskId, prior.sessionId, sessionId);
+    }
     this.bindPendingTaskDependencies(taskId, binding, at);
     this.cleanupDependencyProvenance();
     return true;
@@ -7617,6 +7674,9 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
+    // The row just persisted, so the database is taking writes again: settle a superseded
+    // shaping record a failed clean-up left on disk (see `hideSupersededShaping`).
+    if (hasSupersededShaping()) this.retryShapingClear(task.id);
   }
 
   /**
@@ -7690,6 +7750,180 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Tasks whose shaping record a transaction re-keyed to a successor session. Memory catches up
+   * from the database at the task's next publish, which callers make only after their commit; a
+   * rollback leaves the database, and therefore that publish, on the original session.
+   */
+  private readonly carriedShaping = new Set<string>();
+
+  /** Dispatches shaping context right now, by task id, with when each started. */
+  private readonly shapingStartedAt = new Map<string, number>();
+
+  /**
+   * A task with its shaping record and "Shaping context" mark applied.
+   *
+   * The record is owned by `commitTaskShaping`, never by the caller: a writer that built its
+   * row from a snapshot taken before the latest commit would otherwise publish the superseded
+   * record, and `upsertTask` does not write the column, so memory and disk would disagree. The
+   * in-memory value carries forward; a task not in memory reads the stored one. Both keys are
+   * absent when there is nothing to show, so an unshaped task's payload is unchanged.
+   */
+  private withShaping(task: Task, previous: Task | undefined): Task {
+    // A record re-keyed inside a caller's transaction is read back from the database here, at
+    // the first publish after that commit: memory is never told about a write that could still
+    // roll back (see `carryShapingToSuccessor`).
+    const carried = this.carriedShaping.delete(task.id);
+    const shaping = previous && !carried ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
+    // Set by a dispatch or a handover for exactly as long as its step runs, and cleared in that
+    // step's `finally`, so it needs no status of its own: a handed-over task is still `backlog`.
+    const startedAt = this.shapingStartedAt.get(task.id) ?? null;
+    if (!shaping && startedAt === null && task.shaping === undefined && task.shapingContext === undefined) return task;
+    const { shaping: _record, shapingContext: _mark, ...rest } = task;
+    return {
+      ...rest,
+      ...(shaping ? { shaping } : {}),
+      ...(startedAt !== null ? { shapingContext: { startedAt } } : {}),
+    };
+  }
+
+  /**
+   * Mark a task as shaping context, for a dispatch or a handover, or clear the mark. Never
+   * persisted: a restart drops it with the step, whose own recovery reports the outcome.
+   */
+  setTaskShapingContext(taskId: string, active: boolean): void {
+    if (active) this.shapingStartedAt.set(taskId, Date.now());
+    else if (!this.shapingStartedAt.delete(taskId)) return;
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withShaping(current, current);
+    if (JSON.stringify(next.shapingContext ?? null) === JSON.stringify(current.shapingContext ?? null)) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
+   * Settle a launch's shaping record once its turn one reached the worker: the summary,
+   * stamped here with `sessionId`, the session it was delivered to, and the delivered text, in
+   * one transaction. A null summary clears both. A commit that fails is logged and keeps a
+   * record naming an earlier session, which `currentShaping` then shows nowhere; one naming
+   * `sessionId` itself is hidden (`hideSupersededShaping`), whether or not this launch was
+   * shaped. It never throws: a launch that reached its worker is not failed by its own bookkeeping.
+   */
+  commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
+    const summary = unstamped ? { ...unstamped, sessionId } : null;
+    try {
+      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
+      // This commit settled the row, so no earlier clean-up may touch it now.
+      forgetSupersededShaping(taskId);
+    } catch (error) {
+      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
+      this.hideSupersededShaping(taskId, sessionId);
+      return false;
+    }
+    const current = this.tasks.get(taskId);
+    if (!current) return true;
+    if (JSON.stringify(current.shaping ?? null) === JSON.stringify(summary)) return true;
+    const { shaping: _previous, ...rest } = current;
+    const next: Task = summary ? { ...rest, shaping: summary } : rest;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+    return true;
+  }
+
+  /**
+   * Inside a caller's transaction that is about to bind `taskId` to `toSessionId` in
+   * `episodeId`: when the task's current binding is the same episode under another session -
+   * the same conversation continuing - re-key the shaping record that named that session in the
+   * database, and return it. Null when nothing moves.
+   *
+   * Only the database is written here. The caller's transaction may still roll back, so memory
+   * is left alone and the task is marked: its next publish, after the commit, reads the record
+   * back from the database (see `withShaping`).
+   */
+  private carryShapingToSuccessor(taskId: string, toSessionId: string, episodeId: string): TaskShaping | null {
+    const prior = taskWorkEpisodeForTask(taskId);
+    if (!prior || prior.episodeId !== episodeId || prior.sessionId === toSessionId) return null;
+    const live = this.tasks.get(taskId);
+    const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
+    if (!record || record.sessionId !== prior.sessionId) return null;
+    try {
+      if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+    } catch (error) {
+      // The successor still binds: the record keeps naming the prior session, so
+      // `currentShaping` hides it rather than show it for a conversation it no longer describes.
+      console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its successor session:`, error);
+      return null;
+    }
+    this.carriedShaping.add(taskId);
+    return { ...record, sessionId: toSessionId };
+  }
+
+  /**
+   * After a failed commit: a record left by an earlier delivery to the SAME session (a handover
+   * back to the session it already ran on) would read as this delivery's context. Drop it from
+   * what readers see now, and try once more to clear it on disk; a reader never shows context
+   * this delivery did not receive.
+   */
+  private hideSupersededShaping(taskId: string, sessionId: string): void {
+    const current = this.tasks.get(taskId);
+    if (current?.shaping?.sessionId !== sessionId) return;
+    // Memory drops it now. On disk it is cleared only while it still names this session, and a
+    // clear that fails too is retried after the task's next persisted write - the handover's
+    // own, a moment later - so a restart does not read the earlier delivery back as this one's.
+    noteSupersededShaping(taskId, sessionId);
+    this.retryShapingClear(taskId);
+    const { shaping: _stale, ...rest } = current;
+    this.tasks.set(taskId, rest);
+    this.emitEvent({ type: "task_upsert", task: rest });
+    this.resyncSessionTask(sessionId);
+  }
+
+  /** Try once more to clear a superseded record whose on-disk clear is still pending. */
+  private retryShapingClear(taskId: string): void {
+    const sessionId = supersededShapingFor(taskId);
+    if (sessionId === undefined) return;
+    try {
+      (this.shapingClearer ?? dbClearTaskShapingFor)(taskId, sessionId);
+      forgetSupersededShaping(taskId);
+    } catch (error) {
+      console.warn(`[shaping] could not clear task ${taskId}'s superseded shaping record yet:`, error);
+    }
+  }
+
+  /** Test seams for a commit, or a clean-up, that fails. Production always takes the database functions. */
+  shapingCommitter: typeof dbCommitTaskShaping | null = null;
+  shapingClearer: typeof dbClearTaskShapingFor | null = null;
+
+  /**
+   * Carry a task's shaping record to the session that continues its conversation. Called where
+   * a task is bound to a successor session of the SAME work episode - a resume or a runtime
+   * transfer - so the record follows the conversation it describes and never a new launch.
+   */
+  private followShapingSession(taskId: string, fromSessionId: string, toSessionId: string): void {
+    const current = this.tasks.get(taskId);
+    const record = current ? current.shaping ?? null : dbTaskShapingRecord(taskId);
+    if (!record || record.sessionId !== fromSessionId || fromSessionId === toSessionId) return;
+    try {
+      if (!dbRekeyTaskShaping(taskId, fromSessionId, toSessionId)) return;
+    } catch (error) {
+      console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its resumed session:`, error);
+      return;
+    }
+    // Inside a caller's transaction the write is not settled yet: defer memory to the next
+    // publish, as `carryShapingToSuccessor` does, rather than broadcast a record that may roll back.
+    if (openDb().isTransaction) {
+      this.carriedShaping.add(taskId);
+      return;
+    }
+    if (!current) return;
+    const next: Task = { ...current, shaping: { ...record, sessionId: toSessionId } };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+  }
+
+  /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
    * Called by the retention service after it moves the ledger, and it re-reads rather than
@@ -7738,9 +7972,10 @@ export class Registry extends EventEmitter {
     const previous = this.tasks.get(published.id);
     const workUnitId = this.publishedWorkUnitId(published, previous);
     // Copied only when it differs, so a caller that wrote a task still holds the object the
-    // board shows.
-    const task = this.withProvisioning(
-      workUnitId === published.workUnitId ? published : { ...published, workUnitId },
+    // board shows. The shaping overlay then carries the in-memory record (see `withShaping`).
+    const task = this.withShaping(
+      this.withProvisioning(workUnitId === published.workUnitId ? published : { ...published, workUnitId }),
+      previous,
     );
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7822,6 +8057,8 @@ export class Registry extends EventEmitter {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
     dbDeleteTask(id);
+    // Its row and record are gone, so a clean-up still pending for it has nothing left to clear.
+    forgetSupersededShaping(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
@@ -7977,6 +8214,9 @@ export class Registry extends EventEmitter {
     session: Session | undefined = this.sessions.get(sessionId),
   ): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
+    // Only the record of the launch this session received: one left by an earlier launch of
+    // the task describes a different session and is never carried to this card.
+    const shaping = t && t.sessionId === sessionId ? currentShaping(t) : null;
     const primaryPr = t && t.extraRepos.length > 0 ? primaryRepoPrForTask(t.id) : null;
     // Bindings retain merge outcomes; the matching live observation also knows closure.
     if (
@@ -8018,6 +8258,7 @@ export class Registry extends EventEmitter {
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
           ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
+          ...(shaping ? { shaping } : {}),
         }
       : null;
   }
@@ -8894,6 +9135,27 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Drop ordinary review-message deliveries that never bound and are past the delivery window,
+   * once a binding walk has expired them. The tick walks every live conversation that has such a
+   * row, so expiry does not wait for someone to open it; a conversation no live session holds is
+   * given up on after `olderThan`, the goal table's own age. Contested and offset-less rows, and
+   * bound ones, are kept. Bound
+   * rows are kept for good, so an old conversation keeps its answer cards, and so are contested
+   * and offset-less rows, which keep a turn with their words from reading as the operator's.
+   */
+  pruneReviewDeliveries(now: number, olderThan: number): number {
+    if (!this.sweptSessions) return pruneReviewDeliveries(now, { conversation: null });
+    const byKey = new Map([...this.sessions.values()].map((s) => [noteKeyFor(s), s] as const));
+    return pruneReviewDeliveries(now, {
+      conversation: (noteKey) => {
+        const session = byKey.get(noteKey);
+        return session ? { transcript: sessionMessages(session) } : undefined;
+      },
+      abandonedBefore: olderThan,
+    });
+  }
+
+  /**
    * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
    *
    * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
@@ -9342,8 +9604,20 @@ export class Registry extends EventEmitter {
     // pending human follow-up, claiming first would hand the daemon's packet the human's
     // revision and leave the human's own echo to be swallowed as the daemon's. Checked first,
     // the packet spends its own owed echo and the human entry waits for its real one.
-    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
+    //
+    // A review message (`async-input`) owes its echo on its durable delivery row as well, so a
+    // restart between the delivery and its echo cannot capture the daemon's text as the Goal.
+    // Both debts describe the same one delivery, so one arrival spends both: evaluated without
+    // short-circuiting, or the in-memory claim would leave the durable one to swallow the
+    // operator's next copy of the same words.
     const noteKey = noteKeyFor(s);
+    const submittedText = spec.submittedPromptText(evt);
+    // An arrival that spends the echo of a delivery the runtime then refuses was never that
+    // delivery's echo: it is the operator's, and is captured once the refusal is known.
+    const reviewEcho = claimReviewDeliveryEcho(noteKey, submittedText === null ? [prompt] : [submittedText, prompt], now,
+      () => { this.captureAcceptedPrompt(s.id, prompt, noteKey); });
+    const daemonEcho = this.isDaemonAuthoredPrompt(s, spec, evt, prompt);
+    if (reviewEcho || daemonEcho) return;
     const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
     if (claim.kind === "skip") return;
     if (claim.kind === "capture") {

@@ -47,9 +47,17 @@ eleven further findings. These are the ones that decide phase boundaries:
   today a `withdrawn` review was withdrawn by its own agent. The source plan's revision rule
   ("withdrawn by its agent") rests on that, and the contract below keeps it true once `revises`
   exists.
-- **The prompt and four skills tell agents the tool blocks** (`src/server/plans/prompt.ts:123-125`,
-  `skills/html-plans/SKILL.md:129`, `skills/grill/SKILL.md:53`, `skills/retro/SKILL.md:132`), and
-  the Grill session action is generated from its skill (`npm run session-actions`).
+- **A filed row can become a call-mode row, and nothing remembers that it was filed.** When an
+  older MCP child re-asks an open filed ask, `ReviewManager.attachCall`
+  (`src/server/reviews.ts:406-411`) calls `markReviewWaitAttached`
+  (`src/server/db.ts:5644-5652`), which sets `wait_mode`, `meanwhile` and the detach stamp to
+  null. It does so only while the row is `pending` and its answer has not been queued. No column
+  keeps the original mode.
+- **The prompt and three skills tell agents the tool blocks** (`src/server/plans/prompt.ts:123-125`,
+  `skills/html-plans/SKILL.md:129`, `skills/grill/SKILL.md:53`, `skills/retro/SKILL.md:132`). A
+  fourth skill, `skills/phased-plan/SKILL.md:192`, tells the agent to obtain final approval
+  through the tool and needs the same two-outcome wording. The Grill session action is generated
+  from its skill (`npm run session-actions`).
 
 ## Plan validation round 1
 
@@ -77,6 +85,46 @@ One finding was accepted and applied:
   half and a publish half so the withdrawal commits in the new form's transaction. This is now
   said by the contract below, by Phase 1's step 6, exit criterion and handoff, by Phase 2's
   finding, step 4, tests, exit criteria and handoff, and by the source plan's revision sentence.
+
+## Pull request review
+
+Findings from the pull request's Inspector review. All were accepted and applied.
+
+Round 1, one finding:
+
+- **What a form is after `attachCall` converts it.** The contract said the wait mode is "fixed
+  at insert" and, in the same bullet, that an older MCP child turns a filed form back into a
+  call. So the mode can change after the row is written, in one direction. Phase 2 accepted a
+  target that "has, or had" message mode and also refused a call-mode form, and a converted form
+  fit both. The reviewer offered two rules; the one chosen is: **a converted form counts as a
+  call-mode form for every rule in this plan**, and no original mode is recorded. Recording the
+  original mode would add a column to answer a question nothing else asks, for a path only older
+  MCP bundles reach. The contract below now says "decided at insert, with one conversion in one
+  direction" and lists what a converted form is and is not. The source plan ("How an ask waits",
+  "Withdraw, list and revise"), Phase 1's compatibility note, tests, exit criterion and handoff,
+  and Phase 2's rule, refusals, compatibility note and tests say the same. Phase 2's "or had" is
+  gone: every reader decides from the mode stored on the row now.
+
+Round 2, two findings:
+
+- **The source plan's receipt mentioned `revises`.** "What the agent is told" in the source plan
+  described a receipt that tells the agent to file the revised plan with `revises`. Phase 1's
+  step 3 and audit record say the Phase 1 receipt must not mention it, because the argument does
+  not exist until Phase 2, whose step 1 adds that sentence. Someone building Phase 1 from the
+  source plan would have shipped a receipt pointing at an argument the tool does not have. The
+  source plan now describes the Phase 1 receipt (withdraw, then file the new plan as a new form)
+  and says Phase 2 adds the `revises` sentence. Phase 1's step 3 uses the same words, and the
+  Text contract below states it.
+- **The Text contract's signatures.** The contract listed `filedPlanReceipt(review, options)` and
+  `filedPlanAnswer(review)`, while Phase 1's step 3 defines
+  `filedPlanReceipt(review, { bundleApproved? })` and `filedPlanAnswer(review, now)`. The
+  contract now uses step 3's signatures and says Phase 2 changes neither.
+
+Applied in the same revision, found while re-reading for the round: the citation for
+`markReviewWaitAttached` was one line off and is now `src/server/db.ts:5644-5652`; the skills
+finding above now names which three skills say the tool blocks and why the fourth changes too;
+and Phase 1's flag-off note no longer reads as though an open filed form stops being answerable
+when `async-input` is switched off.
 
 ## Sizing and phase count
 
@@ -128,9 +176,10 @@ adds, that addition is the whole of what Phase 2 may do to it.
   including filed gates. `Session.openQuestions` counts pending reviews with `agentKeepsWorking`.
 - **Scope of the two completion rules.** `questionHoldsCompletion` covers every outstanding
   filed gate, with no flag condition.
-- **Text.** `filedPlanReceipt(review, options)` and `filedPlanAnswer(review)` are the only
-  writers of the receipt and the answer. Phase 2 adds one sentence to the receipt and nothing
-  to the answer.
+- **Text.** `filedPlanReceipt(review, { bundleApproved? })` and `filedPlanAnswer(review, now)`
+  are the only writers of the receipt and the answer, with the signatures Phase 1's step 3 gives
+  them. The Phase 1 receipt does not mention `revises`. Phase 2 adds one sentence to the receipt,
+  about `revises`, and nothing to the answer, and it changes neither signature.
 - **Route response.** A filed form answers `{ id, sessionId, wait: "message", receipt }` from
   both `/mcp/reviews` and `/mcp/v2/reviews`.
 - **Lifecycle helper.** `ReviewManager.openAsks(sessionId)` is what listing and withdraw read;
@@ -148,8 +197,20 @@ adds, that addition is the whole of what Phase 2 may do to it.
   operator, Foreman or the daemon acting on its own produce it. Every other closure keeps its
   own status: an answer, `dismissed`, `orphaned` (eviction or merge) and `superseded`. A
   `withdrawn` review was therefore withdrawn by its own agent.
-- **Wait mode is fixed at insert.** No path turns a call-mode form into a filed one. An older
-  MCP child that re-asks a filed form turns it back into a call (`attachCall`), as for questions.
+- **Wait mode: decided at insert, with one conversion in one direction.** The mode is written
+  with the row. No flag change alters it, and no path turns a call-mode form into a filed one.
+  The one conversion is the one filed questions already have: an older MCP child that re-asks an
+  open filed form is handed the row and long-polls it, and `attachCall` clears the stored mode,
+  only while the form is still pending. **A converted form is a call-mode form for every rule in
+  this plan**, because nothing stored says it was ever filed:
+  - it stays one pending review, and its answer is the call's result, never also a message;
+  - `isFiledGate` and `isAgentAsk` are false for it, so it is not listed by
+    `list_open_questions`, not withdrawable, and not a valid `revises` target;
+  - `questionHoldsCompletion` does not cover it and a merge does not close it, exactly as for a
+    plan form that was asked in call mode.
+  Every reader decides from the mode stored on the row now; none asks what the mode used to be.
+  A withdrawn form is no longer pending and so can never convert: it keeps the `message` mode it
+  was withdrawn with.
 
 ## Coordination with sibling plans
 
@@ -177,7 +238,8 @@ confirm `publish_plan` or the bound workflow accepts that approval.
   managed approval in Phase 1; the revised card and its tag in Phase 2. "Changing scope without
   the form" works after Phase 1 (withdraw, then file a new form) and gains the link in Phase 2.
 - Phase 1's receipt does not mention `revises`, because the argument does not exist until Phase
-  2. Phase 2 adds that sentence. Found while writing Phase 2 and corrected in Phase 1.
+  2. Phase 2 adds that sentence. Found while writing Phase 2 and corrected in Phase 1; the source
+  plan's own description of the receipt was brought into line in pull request review round 2.
 - Phase 2 consumes only contracts Phase 1 owns and adds no reader of the flag.
 - After Plan validation round 1, the revision-target rule reads the same in the source plan
   ("Withdraw, list and revise"), in the contract above and in Phase 2's step 4, refusal cases,
@@ -186,3 +248,11 @@ confirm `publish_plan` or the bound workflow accepts that approval.
   thing: one write path, entered by `withdraw_question` from Phase 1 and also by the `revises`
   replacement from Phase 2. No file describes a second writer, and Phase 2's replacement step
   no longer settles the status in `create`.
+- After pull request review round 1, every statement about a form's wait mode names the same
+  thing: decided at insert, never changed by a flag, and convertible only from filed to call
+  mode by an older MCP child's re-ask. A converted form is a call-mode form in the source plan,
+  in the contract above, in Phase 1 and in Phase 2. No file says the mode is fixed, and no rule
+  depends on what a row's mode used to be.
+- After pull request review round 2, the receipt and the answer are described the same way in
+  the source plan, the Text contract and Phase 1's step 3: the same two signatures, a Phase 1
+  receipt without `revises`, and one sentence added by Phase 2's step 1.

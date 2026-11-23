@@ -41,6 +41,7 @@ import {
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
+import { taskShapingRead, type TaskShapingRead } from "@shared/shaping.ts";
 import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
@@ -773,7 +774,15 @@ function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
     updatedAt: task.updatedAt,
     dispatchedAt: task.dispatchedAt,
     completedAt: task.completedAt,
+    // What task shaping added to the launch this session received, as one line. Absent when
+    // nothing was added, or when the record describes an earlier launch's session.
+    ...withTaskShapingRead(task),
   };
+}
+
+function withTaskShapingRead(task: McpTaskSnapshot): { shaping?: TaskShapingRead } {
+  const shaping = taskShapingRead(task);
+  return shaping ? { shaping } : {};
 }
 
 server.registerTool(
@@ -784,7 +793,8 @@ server.registerTool(
       "Uses the same daemon-token access as create_task and update_task; no Control other sessions opt-in is required. " +
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
-      "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
+      "Each task includes saved configuration, its workUnitId, plan inputs, linked sessionId, prUrl and per-repository repoPrs, " +
+      "and shaping {state, sessionId, summary} when task shaping added context to the launch that session received. " +
       "Pass workUnitId to list the tasks of one work unit. " +
       "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
       TASK_REFERENCE_RULE,
@@ -811,7 +821,8 @@ server.registerTool(
   {
     title: "Read a saved task (read-only)",
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
-      "Includes linked sessionId, prUrl and per-repository repoPrs. " +
+      "Includes linked sessionId, prUrl, per-repository repoPrs, and shaping {state, sessionId, summary} " +
+      "when task shaping added context to the launch that session received. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
       "Never launches, modifies or reorders work and does not read session-private state. " +
       TASK_REFERENCE_RULE,

@@ -113,6 +113,7 @@ function shipInput(over: Partial<Parameters<typeof decideShipShepherd>[0]> = {})
     workflowOwnsSession: false,
     workflowEvidenceEligible: false,
     hasTaskOwnedOpenPr: false,
+    planStartsWorkflowOnCompletion: false,
     diffHasChanges: false,
     featureEnabled: true,
     mayActLive: true,

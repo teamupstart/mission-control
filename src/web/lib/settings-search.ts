@@ -533,10 +533,10 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "task-shaping-shapers",
     label: "Shapers",
-    description: "The registered shapers in run order: switch one on or off, move it, dry-run it, or remove it.",
+    description: "Registered shapers and those found on disk in the shapers folder, in run order: switch one on or off, move it, dry-run it, or remove it.",
     category: "task-shaping",
     anchor: "task-shaping/shapers",
-    keywords: ["shaper", "gatherer", "selector", "enable", "order", "dry run", "test", "remove", "context", "guidance"],
+    keywords: ["shaper", "gatherer", "selector", "enable", "order", "dry run", "test", "remove", "context", "guidance", "folder", "found on disk", "discovered", "shaper.json"],
     kind: "jump",
     backup: backupDomains("shaping"),
   },

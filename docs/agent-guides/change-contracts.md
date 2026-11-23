@@ -884,14 +884,17 @@ A SessionAction is a durable side effect, not an evaluator:
   continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
   This completion releases the existing conversation hold without creating a PR, including for
   actions already waiting when the daemon restarts.
+  A sealed no-change continuation also completes an Inspector-policy run at End when there
+  is no candidate PR for that repository. A candidate PR still enters the normal Inspector gate.
   Missing accepted-tree proof for a clean checkout, unavailable local reads (including timeouts, moving HEAD, and
   an unresolved base), and clean-checkout mismatches with accepted or captured content all
   retry for one minute after a settled turn with no adopted PR before a recoverable
   `expectation_unmet` block with a precise diagnostic. A checkout returned to the default branch
   after publication gets the same adoption grace period.
   The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
-  sweeps and restart; a recovered read or a new active turn resets it. Adoption can still
-  complete the action during that window. Both completion and blocking re-offer
+  sweeps and restart; a recovered read or a new active turn resets it. The lifecycle observer
+  records even a short turn between sweeps without replacing the delivery anchor or first
+  pickup timestamp. Adoption can still complete the action during that window. Both completion and blocking re-offer
   queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
   A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
   Known changed work, including commits on a detached HEAD, waits for PR adoption even when

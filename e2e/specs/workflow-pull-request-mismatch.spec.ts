@@ -178,7 +178,7 @@ async function queueSiblingFeedback(daemon: DaemonHandle, runId: string): Promis
   return peer.id;
 }
 
-for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead", "tree_retry_adoption", "returned_to_base", "changed_missing_tree"]) test(scenario === "changed_missing_tree" ? "known changed work without accepted-tree proof waits for PR adoption" : scenario === "returned_to_base" ? "a clean checkout returned to base waits for late PR adoption" : scenario === "tree_retry_adoption" ? "missing accepted-tree proof allows a late PR adoption before recovery" : scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
+for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead", "tree_retry_adoption", "returned_to_base", "changed_missing_tree", "no_change_inspector"]) test(scenario === "no_change_inspector" ? "an unchanged repository completes an Inspector-policy run without a PR" : scenario === "changed_missing_tree" ? "known changed work without accepted-tree proof waits for PR adoption" : scenario === "returned_to_base" ? "a clean checkout returned to base waits for late PR adoption" : scenario === "tree_retry_adoption" ? "missing accepted-tree proof allows a late PR adoption before recovery" : scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
   ? "an earlier merged PR completes the action and names the publication in Runs"
   : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
   : "a durably adopted pull request completes before provider metadata arrives", async ({
@@ -187,9 +187,10 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
 }) => {
   test.setTimeout(360_000);
   const alreadyMerged = scenario === "merged";
+  const noChange = scenario === "no_change" || scenario === "no_change_inspector";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const detached = scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base" || scenario === "changed_missing_tree";
+  const detached = noChange || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base" || scenario === "changed_missing_tree";
   const sessionId = await dispatch(dashboard, daemon, detached);
   if (scenario === "returned_to_base") {
     const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
@@ -215,6 +216,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E pull request run",
+    ...(scenario === "no_change_inspector" ? { completionPolicy: { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" } } : {}),
     draft: {
       nodes: [
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
@@ -303,7 +305,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
     try {
       await expect.poll(async () =>
         (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-    { timeout: scenario.startsWith("missing_") ? 90_000 : 45_000 }).toBe(scenario === "no_change" ? "completed" : "blocked");
+    { timeout: scenario.startsWith("missing_") ? 90_000 : 45_000 }).toBe(noChange ? "completed" : "blocked");
     } catch (error) {
       const holder = await api(daemon, `/api/workflow-runs/${runId}`);
       const sibling = await api(daemon, `/api/workflow-runs/${siblingId}`);
@@ -323,7 +325,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
     await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
       `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
     const card = dashboard.locator("article.wf-run-action");
-    if (scenario !== "no_change") {
+    if (!noChange) {
       await expect(card).toContainText(scenario === "missing_base" ? "default base" : "accepted content tree");
       await expect(card).toContainText("resubmit with fresh evidence");
       await expect(dashboard.getByRole("button", { name: "Start repair round 2", exact: true })).toBeEnabled();
@@ -335,7 +337,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
     await expect(card).toContainText("No pull request was needed");
     await expect(card).not.toContainText("PR opened");
     expect(await api<unknown[]>(daemon, "/api/inspector/prs")).toEqual([]);
-    await shoot(dashboard, "16-no-change");
+    await shoot(dashboard, scenario === "no_change_inspector" ? "26-no-change-inspector" : "16-no-change");
     return;
   }
   if (alreadyMerged) {

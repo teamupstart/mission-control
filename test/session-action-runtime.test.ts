@@ -2762,3 +2762,59 @@ test("clean checkout returned to base completes when adoption arrives on a later
     assert.equal(h.injected.length, 1);
   } finally { await h.stop(); }
 });
+
+test("a short active turn between sweeps resets proof retry without replacing pickup", async (t) => {
+  const h = await harness("short-proof-retry", { pullRequest: true, resumptionSettleMs: 0,
+    unchangedRepositoryProblem: "Git timed out" });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    let clock = Date.now() + 1_000;
+    t.mock.method(Date, "now", () => clock++);
+    h.runActionTurn();
+    const first = clock;
+    await h.manager.sweepSessionActions(first);
+    const attemptId = waitingAttempt(h, runId)!.id;
+    const initial = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(initial.wait, "awaiting_proof");
+    clock = first + 60_001;
+    h.runActionTurn(); // Both lifecycle events occur before the next sweep.
+    const afterActivity = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(afterActivity.wait, "working");
+    assert.equal(afterActivity.settledAt, null);
+    assert.deepEqual(afterActivity.anchor, initial.anchor);
+    assert.equal(afterActivity.pickedUpAt, initial.pickedUpAt);
+    const restarted = clock;
+    await h.manager.sweepSessionActions(restarted);
+    await h.manager.sweepSessionActions(restarted + 59_999);
+    const retried = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(retried.wait, "awaiting_proof");
+    assert.equal(retried.settledAt, restarted, "idle sweeps retain the new deadline");
+    assert.equal(h.store.listEvents(runId).filter(e => e.kind === "session_action_picked_up").length, 1);
+    await h.manager.sweepSessionActions(restarted + 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked", "a new turn must not remove the retry bound");
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});
+
+for (const publication of ["none", "adopted", "candidate"]) test(`Inspector completion policy handles no-change continuation with PR=${publication}`, async () => {
+  const h = await harness(`no-change-inspector-${publication}`, { pullRequest: true, unchangedRepository: true, inspector: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    if (publication === "adopted") h.adoptPr();
+    if (publication === "candidate") {
+      h.registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: `agent-${h.sessionId}`,
+        cwd: "/repo", transcriptPath: null, env: { tmuxPane: `%${h.sessionId.length}` },
+        prUrl: "https://github.com/owner/repo/pull/8", prCreated: true });
+      h.reportIdle();
+      assert.equal(h.registry.getSession(h.sessionId)?.prUrl, "https://github.com/owner/repo/pull/8");
+    }
+    await h.manager.sweepSessionActions(SETTLED());
+    await h.settle();
+    assert.equal(h.store.getRun(runId)?.status, publication === "none" ? "completed" : "waiting_for_pr");
+    assert.equal(h.store.listEvents(runId).some(e => e.kind === "inspector_gate_entered"), publication !== "none");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+  } finally { await h.stop(); }
+});

@@ -124,6 +124,7 @@ import {
 } from "@shared/workflow-lifecycle.ts";
 import {
   PersonaVerdictSchema,
+  SessionActionCompletedOutputSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
 } from "@shared/protocol.ts";
@@ -3054,6 +3055,16 @@ export class WorkflowManager {
     }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const candidateUrl = this.gateCandidateUrl(binding, session);
+    // A sealed no-change continuation has no publication for Inspector to review. Its
+    // completed action already verified this exact child's clean HEAD and content tree.
+    const sourceAction = submission.continuationNodeAttemptId
+      ? this.store.getAttempt(submission.continuationNodeAttemptId) : null;
+    const completedAction = SessionActionCompletedOutputSchema.safeParse(sourceAction?.output);
+    if (!candidateUrl && sourceAction?.state === "completed"
+      && sourceAction.sessionAction?.completion.kind === "pull_request"
+      && sourceAction.submissionId === submission.parentSubmissionId
+      && completedAction.success && completedAction.data.continuationSubmissionId === submission.id
+      && completedAction.data.expectation?.kind === "no_change") return false;
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
     const adopted = candidate ? getInspectorPr(candidate.key) : null;
     const cfg = getInspectorConfig();
@@ -6517,7 +6528,7 @@ export class WorkflowManager {
   }
 
   /**
-   * Record pickup the moment the bound session goes ACTIVE after a confirmed send.
+   * Record pickup and restart a proof retry when the bound session goes ACTIVE.
    *
    * Driven by the registry's own session stream - the existing lifecycle source, not a second
    * poller - because a turn can start and finish between two sweeps. A sampled observer would
@@ -6532,10 +6543,18 @@ export class WorkflowManager {
     if (!agentActive(session)) return;
     for (const attempt of this.store.waitingActionAttemptsForSession(session.id)) {
       const state = this.store.sessionActionState(attempt);
-      if (!state?.anchor || state.pickedUpAt !== null) continue;
+      if (!state?.anchor) continue;
       if (noteKeyFor(session) !== state.anchor.noteKey) continue;
       const activity = session.lastActivity ?? null;
       if (activity === null || activity <= state.anchor.deliveredAt) continue;
+      if (state.pickedUpAt !== null) {
+        // A short turn can begin and end between sweeps. Preserve the original pickup
+        // and delivery anchor, but let its next settled sweep start a fresh retry window.
+        if (state.wait === "awaiting_proof" && activity > (state.settledAt ?? state.pickedUpAt)) {
+          this.store.updateSessionActionState(attempt.id, { ...state, wait: "working", settledAt: null });
+        }
+        continue;
+      }
       this.store.updateSessionActionState(attempt.id, {
         ...state,
         wait: "working",

@@ -56,6 +56,7 @@ async function fixture(t: TestContext) {
       stops.push(id);
       const task = registry.listTasks().find((candidate) => candidate.sessionId === id);
       stopsWithTask.push({ id, taskStatus: task?.status ?? null });
+      t.diagnostic(`driver: stop requested for ${id}; its task ${task?.id ?? "(none)"} was ${task?.status ?? "absent"} at that moment`);
       return true;
     },
   } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
@@ -95,10 +96,23 @@ async function fixture(t: TestContext) {
       method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ enabled, requestId }),
     });
     assert.equal(res.status, 200, await res.text());
+    t.diagnostic(`operator: Control other sessions turned ${enabled ? "on" : "off"} for ${caller.id}`);
   };
+  /** The target's task as the real TaskManager holds it, for the trace. */
+  const taskState = () => {
+    const task = registry.listTasks().find((candidate) => candidate.sessionId === target.id);
+    return task ? `${task.id} status=${task.status} outcome=${JSON.stringify(task.outcome ?? null)}` : "(none)";
+  };
+  // A readable trace of each call across the MCP boundary and the state on either side of it,
+  // printed with the run so the flow is inspectable without a debugger.
   const control = async (command: Record<string, unknown>) => {
-    const result = await client.callTool({ name: "control_session", arguments: { sessionId: target.id, command } });
+    const args = { sessionId: target.id, command };
+    t.diagnostic(`before: target task ${taskState()}; stops so far ${JSON.stringify(stops)}`);
+    t.diagnostic(`mcp request: control_session ${JSON.stringify(args)} (caller ${caller.id}, grant ${registry.sessionControlEnabled(caller.id) ? "on" : "off"})`);
+    const result = await client.callTool({ name: "control_session", arguments: args });
     const text = (result.content as Array<{ type: string; text: string }>).map((item) => item.text).join("\n");
+    t.diagnostic(`mcp response: isError=${Boolean(result.isError)} ${text}`);
+    t.diagnostic(`after: target task ${taskState()}; stops so far ${JSON.stringify(stops)}`);
     return { isError: Boolean(result.isError), text };
   };
   return { registry, caller, target, stops, stopsWithTask, grant, control };

@@ -544,7 +544,7 @@ that attribute returns the session spans of a plan and all its phases.
     horizon, and outlive Phase 2's own record of an ended session, which is pruned after 7.
 - **When it is absent.** A session with no launch record: one Mission Control did not launch
   (discovered in a pane), a resident's session (it has no work unit), and a session whose agent
-  was started with the **Work unit id** preview off. Absence follows the record, not the
+  was started with the **MCP call attribution** preview (`work-unit-id`) off. Absence follows the record, not the
   session's reported origin: a runtime transfer target is reported as `discovered` and still
   carries its record's id. Also absent: a span with no session or task, and a task outcome past
   the two limits above. Such payloads are exactly what

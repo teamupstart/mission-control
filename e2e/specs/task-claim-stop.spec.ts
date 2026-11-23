@@ -124,6 +124,22 @@ test("the task card shows Installing dependencies with Stop, and Stop lets the d
   await expect(warnings.getByLabel(/^Failed command: /)).toContainText(`${process.execPath} -e`);
   await shoot(dashboard, warnings, "02-session-claim-warning");
 
+  // The warnings live in the detail band, so they keep it open on their own. With the path and
+  // branch cells hidden, the task chip silent (the session is named after its task) and no pull
+  // requests, the warning is the band's only content - and still shows.
+  const hidden = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hiddenDisplayItems: ["detailPath", "detailBranch"] }),
+  });
+  expect(hidden.ok).toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: title }).click();
+  const band = dashboard.locator(".console-detail dl.detail-sub");
+  await expect(band.getByRole("term").filter({ hasText: /^path$/ })).toHaveCount(0);
+  await expect(band.getByRole("group", { name: "Dependency install warnings" }))
+    .toContainText("Dependency install failed in demo-repo: step 1 of 1 was stopped.");
+
   // And the slot keeps its own record of the same Stop, in the worktree inventory.
   const inventory = await (await fetch(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
   const slots = inventory.repositories.find((repository) => repository.name === "demo-repo")?.slots ?? [];

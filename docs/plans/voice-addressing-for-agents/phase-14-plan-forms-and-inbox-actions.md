@@ -46,14 +46,21 @@ form for a control the inbox plan declares click-only.
 3. **Submit.** "<name>, submit" or "reply, submit", while the agent has a pending plan form. It
    acts only when that form is the agent's voice target at that moment, which means a dashboard
    has it open (contract J). The daemon then asks that dashboard to submit its draft, so clicks
-   made meanwhile are included. When a decision is unanswered the submit is refused: the card
-   marks that decision and the voice card says which one and how to say it.
+   made meanwhile are included. The request carries a `submitId` the daemon issued, and the
+   dashboard sends it back as `voiceSubmitId` on the resolve route. When a decision is
+   unanswered the submit is refused: the card marks that decision and the voice card says which
+   one and how to say it.
    When no dashboard has the form open, the submit is refused with the reason `form-not-open`:
    the review is not resolved, the words are not delivered to the agent as a message, the fill
    state is kept, and the voice card reads "Open <name>'s plan form to submit it". The same
    refusal applies when the dashboard that was asked does not resolve or refuse within 5
-   seconds, for example because it closed in that moment. With no plan form pending for that
-   agent, "<name>, submit" is plain speech and is delivered as a message.
+   seconds, for example because it closed in that moment. At that point the daemon revokes the
+   `submitId`, and the resolve route refuses a resolve that carries a revoked or unknown
+   `voiceSubmitId`: the review stays pending and the dashboard keeps its draft. A dashboard
+   that was only slow therefore cannot submit after the card has said nothing was sent. An id
+   is used once, and the timeout and the resolve are decided in the daemon in the order they
+   arrive. A resolve with no `voiceSubmitId` is a click and is unaffected. With no plan form
+   pending for that agent, "<name>, submit" is plain speech and is delivered as a message.
 4. **Badges.** While the voice flag is on and the setting is on, each decision of a plan form
    wears an ordinal badge (1st, 2nd, 3rd) beside its question, blue once voice fills it and amber
    while a refused submit waits on it.
@@ -75,14 +82,18 @@ form for a control the inbox plan declares click-only.
 ## 6. Data and compatibility
 
 No storage. Fill state is in memory and is dropped on restart and by step 2's rules; the draft in
-the browser keeps what was mirrored.
+the browser keeps what was mirrored. `ResolveReviewSchema` gains an optional `voiceSubmitId`;
+live ids are in memory, so after a restart a pending voice submit is refused as unknown.
 
 ## 7. Tests and verification
 
 - `test/voice-plan-form.test.ts`: ordinals with and without the approval decision, a refused
   submit, the setting off. A submit with the form filled and no dashboard showing it is refused
   as `form-not-open`, resolves nothing, queues no message and keeps the fill state; so is a
-  submit whose dashboard never answers. "<name>, submit" with no plan form pending is a
+  submit whose dashboard never answers. A slow dashboard: the request times out and is refused,
+  then the dashboard resolves with that `voiceSubmitId`; the resolve is refused, the review is
+  still pending and the agent receives nothing. A resolve inside the 5 seconds succeeds once
+  and its id cannot be used again. "<name>, submit" with no plan form pending is a
   message. The fill state is cleared when the review settles, when the setting is turned off
   and 10 minutes after the form was last reported open.
 - `test/voice-inbox-actions.test.ts`: a phrase for each spoken action in the registry, no phrase
@@ -117,3 +128,7 @@ None inside this plan.
   open, and nothing said when a fill state ends. A submit with the form not open is now refused
   and says to open it, the daemon never submits its own fill state, and step 2 lists what
   clears the fill state.
+- Pull request review, fourth round: after the 5-second refusal a slow dashboard could still
+  resolve the review, so the card would say nothing was sent while the agent got the answers.
+  Each submit request now carries an id that the daemon revokes at the timeout and the resolve
+  route refuses.

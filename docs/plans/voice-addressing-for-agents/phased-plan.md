@@ -97,6 +97,19 @@ A third review raised three more, all accepted.
   card opened, while a held message can wait longer. The hold now lasts until the message is
   delivered, survives a restart, and the 10 minutes count from delivery.
 
+A fourth review raised two more, both accepted.
+
+- **An environment key used without anyone choosing a provider.** Phase 4 used
+  `OPENAI_API_KEY` or `TYPESAFE_API_KEY` whenever one was present, which would send ambiguous
+  sentences and roster names to a provider for anyone who has that key set for other tools.
+  A provider must now be selected, in Voice settings or by `MISSION_VOICE_DECISION_PROVIDER`,
+  and an environment key is credentials for that provider only. An organization still enables
+  it for each machine through the environment, with two variables.
+- **A late submit after a refusal.** Phase 14 refused a spoken submit when the dashboard did
+  not answer in 5 seconds, but a slow dashboard could still resolve the form afterwards. Each
+  submit request now carries an id that is revoked at the timeout and refused by the resolve
+  route.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -196,8 +209,8 @@ phase file decides behaviour.
 **A. Flag and settings (Phase 1).** `VOICE_FLAG = "voice"` and `VOICE_REQUIRED_FLAGS` (the
 `async-input`, `inbox` and `filed-plan-decisions` ids) in `src/shared/voice.ts`. `VoiceConfig`, the
 `voice` app-config entry: `muted`, `hotkey`, `autoMuteDuringCalls`, `cancelWindow { enabled,
-seconds }`, `whenUnsure` (`show` or `ask`), `planFormsByVoice`, `inputDevice`, `decisionProvider`,
-`backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
+seconds }`, `whenUnsure` (`show` or `ask`), `planFormsByVoice`, `inputDevice`, `decisionProvider`
+(null, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
 (`pill`, `toast` or `popover`) and `indicators` (a list of indicator ids). Later phases read and
 write these fields and add none.
 
@@ -242,10 +255,13 @@ pending voice answer, together with its companion card when it has one, as one e
 own entry, not the newest.
 
 **E. Model step (Phase 4).** `VoiceDecider.ask(questions)` with question kinds `who`, `split` and
-`option`, each answered with a choice and a confidence. Rungs in order: the configured decision
-provider, the `voice-routing` background job, none. Key routes `GET`, `PUT` and `DELETE
-/api/voice/decision-key`; `GET` reports the source (`settings`, `environment` or none) and does
-not return the key.
+`option`, each answered with a choice and a confidence. Rungs in order: the selected decision
+provider, the `voice-routing` background job, none. `effectiveDecisionProvider(config, env)`
+names the provider: the one chosen in Voice settings, else the one named by
+`MISSION_VOICE_DECISION_PROVIDER`, else none. A key in the environment selects no provider and
+is read for the selected one only. Key routes `GET`, `PUT` and `DELETE
+/api/voice/decision-key`; `GET` reports the effective provider, where it was selected and the
+key's source (`settings`, `environment` or none), and does not return the key.
 
 **F. Spoken turns (Phase 5).** `VOICE_TURN_PREFIX`, `spokenMessageText(words, notes)` and
 `openQuestionsNote(asks)` in `src/shared/voice-delivery.ts`;

@@ -21,8 +21,9 @@ const {
   isAnnotationOnlyUpdate,
 } = await import("../src/shared/protocol.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager, RESIDENT_LAUNCH_TASK_CREATE, TaskKindBacklogError } = await import("../src/server/tasks.ts");
 const { getTask } = await import("../src/server/db.ts");
+const { RESIDENT_CALL_SIGN_REFUSAL } = await import("../src/shared/voice-names.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -87,4 +88,37 @@ test("an edit that does not name the call sign leaves it alone", async () => {
   const result = await tasks.update("t-keep", { priority: "high" });
   assert.equal(result.ok, true, result.error);
   assert.equal(result.task?.callSign, "Alice");
+});
+
+test("a resident's task takes no call sign: it is addressed by its profile's names", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(mkTask({ id: "t-resident", kind: "resident", status: "running", dispatchedAt: 5 }));
+  const named = await tasks.update("t-resident", { callSign: "Will" });
+  assert.equal(named.ok, false, "the roster would leave it out while the card printed it");
+  assert.equal(named.error, RESIDENT_CALL_SIGN_REFUSAL);
+  assert.equal(getTask("t-resident")?.callSign ?? null, null, "nothing was stored");
+  assert.equal((await tasks.update("t-resident", { callSign: "Will", priority: "high" })).ok, false, "not even beside other annotation");
+  const cleared = await tasks.update("t-resident", { callSign: null });
+  assert.equal(cleared.ok, true, cleared.error);
+  const priority = await tasks.update("t-resident", { priority: "high" });
+  assert.equal(priority.ok, true, priority.error);
+});
+
+test("nor can a resident's task be created with one, by any creator", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const input = {
+    repoRoot: "/repo", intent: "watch the release", title: "Release Captain", kind: "resident" as const,
+    agent: "claude" as const, workflowId: null, backlog: false, callSign: "Will",
+  };
+  assert.throws(
+    () => tasks.create(input, { id: "t-resident-new", resident: { runId: "run-1" } }, RESIDENT_LAUNCH_TASK_CREATE),
+    (error) => error instanceof TaskKindBacklogError && error.message === RESIDENT_CALL_SIGN_REFUSAL,
+    "the resident launch is the one creator of a resident's task, and it is refused one",
+  );
+  assert.equal(registry.getTask("t-resident-new"), undefined, "nothing was stored");
+  // The dispatch route's and MCP's schemas refuse a resident kind before create is reached.
+  assert.deepEqual(dispatch({ kind: "resident", callSign: "Will" }).error?.issues.map((issue) => issue.path), [["kind"]]);
+  assert.deepEqual(McpTaskConfigurationSchema.safeParse({ kind: "resident", callSign: "Will" }).error?.issues.map((issue) => issue.path), [["kind"]]);
 });

@@ -5,6 +5,7 @@ import { canonicalVoiceRoster } from "@shared/voice.ts";
 import {
   normalizeSpokenName,
   residentSpokenNameKey,
+  taskKindTakesCallSign,
   taskSpokenNameKey,
   type SpokenName,
   type SpokenNameState,
@@ -74,10 +75,14 @@ function oneLine(text: string): string {
 /**
  * Whether a task is an agent that answers to its call sign: it has one, it has been launched at
  * least once, and it is not a resident's task, which answers to its profile's name instead.
+ *
+ * Launched means `dispatchedAt`, which the dispatcher stamps as a launch attempt starts, whatever
+ * the status: a task created to launch now sits in `dispatching` with none until the dispatcher
+ * reaches it, and listing it then would start its 24 hours before it ever ran.
  */
 export function taskHasSpokenName(task: Task): boolean {
-  if (!task.callSign || task.kind === "resident" || task.status === "backlog") return false;
-  return !isTerminalTask(task.status) || task.dispatchedAt !== null;
+  if (!task.callSign || !taskKindTakesCallSign(task.kind) || task.status === "backlog") return false;
+  return task.dispatchedAt !== null;
 }
 
 function taskState(task: Task, sessionId: string | null): SpokenNameState {

@@ -231,6 +231,11 @@ annotation, like priority: nothing is provisioned from it, so an update may set 
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
 
+A resident's task takes no call sign: the resident answers to its profile's names, and the roster
+would leave a call sign out while its card printed it. Creating or updating one with a call sign
+is refused (`taskKindTakesCallSign` in `src/shared/voice-names.ts`), and the display name never
+calls a resident by one.
+
 ### Reference names
 
 A resident profile's **Identity** card has a **Reference name** field under **Description**:
@@ -277,7 +282,8 @@ taskId, sessionId, role, colorId, agent, state }`:
   `not-running`. It stays while the profile is live.
 - one per task with a call sign that has launched, keyed `task:<taskId>`: its call sign; its title
   as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
-  else `not-running`. A task in the backlog is not listed until it launches.
+  else `not-running`. A task is not listed until its first launch starts (`Task.dispatchedAt`), so
+  one in the backlog, or created to launch now and still waiting for the dispatcher, is not.
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
@@ -392,11 +398,13 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 - `test/voice-names.test.ts`: each warning, Steve against Stevie and Steven, control words, the
   meter, the stored name's bounds, and a cleared reference name staying cleared.
 - `test/voice-registry.test.ts`: a resident launched and stopped, a call sign set by update, a
-  session exiting, a hibernated task, the 24-hour and name-reuse removals, an evicted task, and the
-  `voice_roster` frames from the real Registry.
-- `test/voice-call-sign.test.ts`: the schemas, and a call sign set and cleared on a running task.
+  task still waiting for its first launch, a session exiting, a hibernated task, the 24-hour and
+  name-reuse removals, an evicted task, and the `voice_roster` frames from the real Registry.
+- `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
+  one refused on a resident's task, created or updated.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
-- `test/display-name.test.ts`: a call sign and a reference name as the first rank.
+- `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
+  resident never named by its task's call sign.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
   enabled; dispatched as "Alice", the roster lists Alice running and the question card names the
   session Alice; a shelved task's call sign survives a restart and clears.

@@ -48,7 +48,7 @@ const runs: ResidentNameSource[] = [
 ];
 
 test("a session joins its resident run through its task, and takes the resident's colour", () => {
-  const input = sessionDisplayNameInput({ name: "watcher-1", task: { id: "t-resident", title: "Watch lint" } }, runs);
+  const input = sessionDisplayNameInput({ name: "watcher-1", task: { id: "t-resident", title: "Watch lint", kind: "resident" as const } }, runs);
   assert.deepEqual(input, {
     callSign: null,
     resident: { referenceName: null, name: "Linter watcher", colorId: "teal" },
@@ -58,11 +58,11 @@ test("a session joins its resident run through its task, and takes the resident'
   const display = agentDisplayName(input);
   assert.equal(display.name, "Linter watcher");
   assert.equal(agentNameColor(input, display), "teal");
-  assert.equal(sessionDisplayNameInput({ name: "o", task: { id: "t-odd", title: "x" } }, runs).resident?.colorId, "cyan");
+  assert.equal(sessionDisplayNameInput({ name: "o", task: { id: "t-odd", title: "x", kind: "resident" as const } }, runs).resident?.colorId, "cyan");
 });
 
 test("a session with no resident run is named by its task title, with no colour", () => {
-  const input = sessionDisplayNameInput({ name: "fix-parser", task: { id: "t-plain", title: "Fix the parser" } }, runs);
+  const input = sessionDisplayNameInput({ name: "fix-parser", task: { id: "t-plain", title: "Fix the parser", kind: "ship" as const } }, runs);
   assert.equal(input.resident, null);
   const display = agentDisplayName(input);
   assert.equal(display.name, "Fix the parser");
@@ -71,16 +71,16 @@ test("a session with no resident run is named by its task title, with no colour"
 });
 
 test("with the flag off a surface prints exactly what it printed before", () => {
-  const session = { name: "watcher-1", task: { id: "t-resident", title: "Watch lint" } };
+  const session = { name: "watcher-1", task: { id: "t-resident", title: "Watch lint", kind: "resident" as const } };
   assert.deepEqual(agentNameView(session, "watcher-1", false, runs), { name: "watcher-1", colorId: null });
   assert.deepEqual(agentNameView({ name: "", task: null }, "(unnamed)", false, runs), { name: "(unnamed)", colorId: null });
   assert.deepEqual(agentNameView(session, "watcher-1", true, runs), { name: "Linter watcher", colorId: "teal" });
-  assert.deepEqual(agentNameView({ name: "fix", task: { id: "t", title: "Fix it" } }, "fix", true, runs),
+  assert.deepEqual(agentNameView({ name: "fix", task: { id: "t", title: "Fix it", kind: "ship" as const } }, "fix", true, runs),
     { name: "Fix it", colorId: null });
 });
 
 test("with voice on, a session's call sign is its name, above its task title", () => {
-  const session = { name: "s-9", task: { id: "t-plain", title: "Fix the parser", callSign: "Alice" } };
+  const session = { name: "s-9", task: { id: "t-plain", title: "Fix the parser", kind: "ship" as const, callSign: "Alice" } };
   const input = sessionDisplayNameInput(session, runs, true);
   assert.equal(input.callSign, "Alice");
   assert.deepEqual(agentDisplayName(input), { name: "Alice", source: "call-sign", spoken: true });
@@ -90,7 +90,7 @@ test("with voice on, a session's call sign is its name, above its task title", (
 });
 
 test("with voice off, a saved call sign or reference name names nothing, and the ranks below answer", () => {
-  const session = { name: "s-9", task: { id: "t-plain", title: "Fix the parser", callSign: "Alice" } };
+  const session = { name: "s-9", task: { id: "t-plain", title: "Fix the parser", kind: "ship" as const, callSign: "Alice" } };
   assert.equal(sessionDisplayNameInput(session, runs).callSign, null, "off unless the caller says voice is on");
   assert.equal(sessionDisplayNameInput(session, runs, false).callSign, null);
   assert.deepEqual(agentNameView(session, "s-9", true, runs), { name: "Fix the parser", colorId: null });
@@ -98,7 +98,7 @@ test("with voice off, a saved call sign or reference name names nothing, and the
   const named: ResidentNameSource[] = [
     { taskId: "t-resident", settings: { identity: { name: "Release Captain", referenceName: "Sage" }, board: { colorId: "teal" } } },
   ];
-  const resident = { name: "w", task: { id: "t-resident", title: "Cut releases" } };
+  const resident = { name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const } };
   assert.equal(sessionDisplayNameInput(resident, named).resident?.referenceName, null);
   assert.deepEqual(agentNameView(resident, "w", true, named, false), { name: "Release Captain", colorId: "teal" });
   assert.deepEqual(agentNameView(resident, "w", true, named, true), { name: "Sage", colorId: "teal" });
@@ -124,10 +124,25 @@ test("with voice on, a resident's reference name wins over its profile name, in 
   const named: ResidentNameSource[] = [
     { taskId: "t-resident", settings: { identity: { name: "Release Captain", referenceName: "Sage" }, board: { colorId: "teal" } } },
   ];
-  const input = sessionDisplayNameInput({ name: "w", task: { id: "t-resident", title: "Cut releases" } }, named, true);
+  const input = sessionDisplayNameInput({ name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const } }, named, true);
   const display = agentDisplayName(input);
   assert.deepEqual(display, { name: "Sage", source: "reference-name", spoken: true });
   assert.equal(agentNameColor(input, display), "teal");
+});
+
+test("a resident's task never names it by a call sign, the rule the voice roster applies", () => {
+  const named: ResidentNameSource[] = [
+    { taskId: "t-resident", settings: { identity: { name: "Release Captain", referenceName: "Sage" }, board: { colorId: "teal" } } },
+  ];
+  const resident = { name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const, callSign: "Will" } };
+  assert.equal(sessionDisplayNameInput(resident, named, true).callSign, null);
+  assert.deepEqual(agentNameView(resident, "w", true, named, true), { name: "Sage", colorId: "teal" }, "its reference name answers");
+  const plain: ResidentNameSource[] = [
+    { taskId: "t-resident", settings: { identity: { name: "Release Captain" }, board: { colorId: "teal" } } },
+  ];
+  assert.deepEqual(agentNameView(resident, "w", true, plain, true), { name: "Release Captain", colorId: "teal" }, "or, with none, its profile name");
+  assert.deepEqual(agentNameView(resident, "w", true, [], true), { name: "Cut releases", colorId: null },
+    "and with its run not listed yet, its task title rather than the call sign");
 });
 
 test("the naming rule reads a running resident's reference name from its profile as it stands now", () => {
@@ -140,7 +155,7 @@ test("the naming rule reads a running resident's reference name from its profile
     { id: "p-a", settings: { identity: {} } },
     { id: "p-b", settings: { identity: { referenceName: "Steve" } } },
   ]);
-  const nameOf = (taskId: string) => agentDisplayName(sessionDisplayNameInput({ name: "s", task: { id: taskId, title: "t" } }, current, true)).name;
+  const nameOf = (taskId: string) => agentDisplayName(sessionDisplayNameInput({ name: "s", task: { id: taskId, title: "t", kind: "resident" as const } }, current, true)).name;
   assert.equal(nameOf("t-a"), "Release Captain", "a reference name taken off the profile is gone at once");
   assert.equal(nameOf("t-b"), "Steve", "a reference name added to the profile names the running resident at once");
   assert.equal(nameOf("t-c"), "Kept", "a run whose profile is not listed keeps its pinned reference name");

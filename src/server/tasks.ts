@@ -245,6 +245,7 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
 import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
+import { RESIDENT_CALL_SIGN_REFUSAL, taskKindTakesCallSign } from "@shared/voice-names.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -3393,6 +3394,11 @@ export class TaskManager {
     ) {
       throw new TaskKindBacklogError(refusal);
     }
+    // The rule `update` holds, held here too, where every creator arrives, the resident launch
+    // included: the dispatch and MCP schemas refuse a resident kind before it gets this far.
+    if (input.callSign && !taskKindTakesCallSign(input.kind)) {
+      throw new TaskKindBacklogError(RESIDENT_CALL_SIGN_REFUSAL);
+    }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     // The ONE place an omitted agent becomes a real one, so every creator - the dispatch
@@ -4569,6 +4575,10 @@ export class TaskManager {
     }
     if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
+    }
+    // Checked here because only the stored row knows its kind. Taking one off stays allowed.
+    if (patch.callSign && !taskKindTakesCallSign(patch.kind ?? t.kind)) {
+      return { ok: false, error: RESIDENT_CALL_SIGN_REFUSAL };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();

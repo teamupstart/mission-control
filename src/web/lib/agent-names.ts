@@ -24,7 +24,7 @@ export interface AgentNameView {
 }
 
 export type NamedSession = Pick<Session, "name"> & {
-  task?: Pick<NonNullable<Session["task"]>, "id" | "title" | "callSign"> | null;
+  task?: Pick<NonNullable<Session["task"]>, "id" | "title" | "kind" | "callSign"> | null;
 };
 
 /**

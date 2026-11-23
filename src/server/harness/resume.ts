@@ -8,6 +8,7 @@ import { missionToolsAvailability } from "../mission-tools.ts";
 import { MISSION_MCP_TOOLS, missionMcpDescriptor, resolveMissionMcpRuntime, verifyMissionMcpTools,
   type MissionMcpDescriptor, type MissionMcpTool } from "../mission-mcp.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { shellCommand } from "../terminal/shell.ts";
 import { run } from "../util/exec.ts";
 import { LAUNCH_SCRIPT_FILE } from "../terminal/launch-process.ts";
@@ -17,7 +18,7 @@ import { harnessFor, resumeArgvFor } from "./index.ts";
 
 export interface ResumeContext {
   managed: boolean;
-  resident?: boolean;
+  resolveNamedEnvironment?: () => Promise<NamedAgentEnvironment | undefined>;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
   /**
@@ -41,12 +42,10 @@ export interface ResumeContext {
 export type ResumeSource = Pick<Session, "id" | "agent" | "agentSessionId" | "cwd" | "permissionMode" | "runtime">
   & { meta?: { modelId?: string | null } | null };
 
-export interface PreparedResume {
+export interface PreparedResume extends Pick<ResumeContext, "resolveNamedEnvironment"> {
   cwd: string;
   argv: string[];
   wrappedArgv: string[];
-  managed: boolean;
-  resident?: boolean;
   stateHome: string;
   lease: ResumeLease;
   requiredTools: readonly MissionMcpTool[];
@@ -153,7 +152,7 @@ export async function prepareTerminalResume(session: ResumeSource, context: Resu
     const command = resumeGuardArgv(runtime.command, guard, lease);
     writeFileSync(wrapper, `#!/bin/sh\n${runtime.env.ELECTRON_RUN_AS_NODE ? "export ELECTRON_RUN_AS_NODE=1\n" : ""}exec ${shellCommand(command)}\n`, { mode: 0o700 });
     return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper],
-      managed: context.managed, resident: context.resident, stateHome: lease.home,
+      resolveNamedEnvironment: context.resolveNamedEnvironment, stateHome: lease.home,
       lease, descriptor, requiredTools, instrumented, workUnitId, conversationKey: session.agentSessionId, dispose,
       beginLaunch: () => { beginResumeLaunch(lease); preparing.delete(lease.id); } };
   } catch (error) {

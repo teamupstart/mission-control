@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { Task } from "../src/shared/types.ts";
 import { managedResumeFixture, writeResumeProcessInventory } from "./helpers/managed-resume-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-env-resume-"));
 const cwd = join(home, "checkout");
@@ -28,6 +30,7 @@ const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { piSdkSpec } = await import("../src/server/harness/pi/sdk.ts");
 const { createRuntime, defaultPiSdkDeps } = await import("../src/server/harness/pi/sdk-deps.ts");
 const { prepareTerminalResume } = await import("../src/server/harness/resume.ts");
+const { resumeContext } = await import("../src/server/resume-context.ts");
 const { launchPreparedResume } = await import("../src/server/terminal/resume-launch.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { saveAgentEnvironment } = await import("../src/server/agent-environment.ts");
@@ -126,14 +129,18 @@ function discoverTerminalResume(id: string, stateHome: string) {
   return session;
 }
 
-test("launchPreparedResume reads the rotated shell at launch and publishes the newly missing name", async () => {
+test("launchPreparedResume invokes the caller's resolver once at launch and publishes the newly missing name", async (t) => {
   writeProfile(false);
   writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\n" + probe, { mode: 0o700 });
   const paneEnv = { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) };
   const source = { id: "terminal-source", agentSessionId: "native-env", agent: "claude", cwd,
     runtime: "terminal", permissionMode: null } as const;
   for (const phase of ["initial", "rotated"] as const) {
-    const prepared = await prepareTerminalResume(source, { managed: true, requiredTools: [], extraDirs: [] });
+    const context = resumeContext(source, mkTask(), false, false);
+    assert.ok(context.resolveNamedEnvironment);
+    const resolveNamedEnvironment = t.mock.fn(context.resolveNamedEnvironment);
+    const prepared = await prepareTerminalResume(source, { ...context, resolveNamedEnvironment });
+    assert.equal(resolveNamedEnvironment.mock.callCount(), 0);
     if (phase === "rotated") writeProfile(true);
     const result = await launchPreparedResume({ name: "env-resume", prepared }, async ({ argv, stateHome }) => {
       const session = discoverTerminalResume("proc:env-resume-" + phase, stateHome);
@@ -141,11 +148,12 @@ test("launchPreparedResume reads the rotated shell at launch and publishes the n
       const { stdout } = await promisify(execFile)(argv[0]!, argv.slice(1), { cwd, env: paneEnv, timeout: 30_000 });
       return { outcome: "launched", value: stdout.trim() };
     });
+    assert.equal(resolveNamedEnvironment.mock.callCount(), 1);
     assert.equal(result.value, phase);
   }
 });
 
-async function checkExcludedResume(id: string, ownership: { managed: boolean; resident: boolean }) {
+async function checkExcludedResume(id: string, task: Task | null) {
   const source = { id, agentSessionId: id + "-native", agent: "claude", cwd,
     runtime: "terminal", permissionMode: null } as const;
   const marker = join(home, id + "-shell-probed");
@@ -155,9 +163,9 @@ async function checkExcludedResume(id: string, ownership: { managed: boolean; re
     "#!/bin/sh", `case "$2" in *${token}*|*${removable}*) touch "${marker}" ;; esac`,
     `export ${token}=profile-example`, `unset ${removable}`, 'exec /bin/sh -c "$2"',
   ].join("\n"), { mode: 0o700 });
-  const prepared = await prepareTerminalResume(source, { ...ownership, requiredTools: [], extraDirs: [] });
-  assert.equal(prepared.managed, ownership.managed);
-  assert.equal(prepared.resident, ownership.resident);
+  const context = resumeContext(source, task, false, false);
+  assert.equal(context.managed, task !== null);
+  const prepared = await prepareTerminalResume(source, context);
   const result = await launchPreparedResume({ name: id, prepared }, async ({ argv, stateHome }) => {
     const session = discoverTerminalResume("proc:" + id, stateHome);
     const { stdout } = await promisify(execFile)(argv[0]!, argv.slice(1), {
@@ -173,7 +181,7 @@ async function checkExcludedResume(id: string, ownership: { managed: boolean; re
 }
 
 test("an unmanaged terminal resume skips the configured environment lookup and launches without its credentials",
-  () => checkExcludedResume("external-resume", { managed: false, resident: false }));
+  () => checkExcludedResume("external-resume", null));
 
 test("a managed resident terminal resume skips the named shell lookup, credential injection and missing-name warning",
-  () => checkExcludedResume("resident-resume", { managed: true, resident: true }));
+  () => checkExcludedResume("resident-resume", mkTask({ kind: "resident" })));

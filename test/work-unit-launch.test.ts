@@ -762,7 +762,7 @@ test("a managed resume decides once in resumeContext and hands its decision over
   const prepared = (cwd: string) => {
     const lease = createResumeLease(managedResumeRoot(), `claude:${cwd}`, new Set(), source.id);
     return {
-      cwd, argv: [], wrappedArgv: ["/bin/true"], managed: true, stateHome: lease.home, lease, descriptor: null, requiredTools: [],
+      cwd, argv: [], wrappedArgv: ["/bin/true"], stateHome: lease.home, lease, descriptor: null, requiredTools: [],
       instrumented: false, workUnitId: WU_A, conversationKey: "resume-conversation",
       beginLaunch: () => {}, dispose: () => revokeResumeLease(lease),
     };

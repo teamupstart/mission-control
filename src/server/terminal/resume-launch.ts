@@ -44,10 +44,7 @@ export async function launchPreparedResume<T>(
   let expected: TerminalLaunchWorkUnit | null = null;
   try {
     prepared.beginLaunch();
-    // Terminal target discovery and unmanaged resumes never need the settings database.
-    const named = prepared.managed
-      ? await (await import("../agent-environment.ts")).launchAgentEnvironment(prepared.resident)
-      : undefined;
+    const named = await prepared.resolveNamedEnvironment?.();
     handoff = await terminalEnvironmentArgv(prepared.wrappedArgv, prepared, named);
     attempted = true;
     expected = expectTerminalLaunchWorkUnit(prepared.stateHome, prepared.workUnitId, prepared.conversationKey, named?.missing);

@@ -556,6 +556,9 @@ test("a report held while away and counted by the digest stays quiet on return, 
   // Stamped while away, live in this window: its notification is held, and the report stays unread.
   const report = await postAndStop(daemon, session, { title: "Missing index on runs.task_id", body: "Add it." });
   await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  // The daemon's away window has the report, so the return digest will count it.
+  await expect.poll(async () => (await api<{ rollup: string }>(daemon, "/api/away/buffer")).rollup, { timeout: 30_000 })
+    .toContain(`1 report waiting: ${name}`);
   await page.waitForTimeout(2000);
   expect((await toasts(page)).some((t) => t.tag === `report:${report.id}`)).toBe(false);
 

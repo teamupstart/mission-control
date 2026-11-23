@@ -3107,6 +3107,13 @@ export function App(): React.JSX.Element {
     const report = pinnedToShow(pinnedReport.report, reportsById, attention);
     return report ? { status: "ready", report } : null;
   }, [pinnedReport, reportsById, attention]);
+  // The pin follows what the band draws: once it draws a replacement (or a newer copy), that is
+  // what it falls back to when the report later leaves the waiting reports, never the version it
+  // replaced.
+  useEffect(() => {
+    if (pinnedReport?.status !== "ready" || pinnedBand?.status !== "ready") return;
+    if (pinnedBand.report !== pinnedReport.report) setPinnedReport({ status: "ready", report: pinnedBand.report });
+  }, [pinnedBand, pinnedReport]);
   // Read when a report notification is clicked, which may be long after it was raised: the flag,
   // the reports and the fold are taken as they are at the click.
   const notificationReads = useRef({ inboxOn: inboxNames, reportsById, attention });

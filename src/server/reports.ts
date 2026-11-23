@@ -357,10 +357,12 @@ export class ReportManager {
     const confirmed = event.session.stateConfirmed;
     for (const [id, watch] of this.watches) {
       if (watch.sessionId !== event.session.id) continue;
-      // Found at startup and first seen with an unconfirmed state (uninstrumented, or re-adopted
-      // before a hook confirmed it): idle then says nothing about stopping, so it is the same
-      // no-evidence case as a post whose session was never seen working.
-      if (watch.working === null && !confirmed) {
+      // Found at startup and first seen idle with an unconfirmed state (uninstrumented, or
+      // re-adopted before a hook confirmed it): that says nothing about stopping, so it is the
+      // same no-evidence case as a post whose session was never seen working. A session blocked
+      // on you (a visible menu, an open question) has stopped whatever its hooks say, and reads
+      // as back below.
+      if (watch.working === null && !confirmed && reportBucket(event.session) === "idle") {
         if (watch.deadlinePassed) this.announce(id, "working");
         else watch.working = false;
         continue;
@@ -391,7 +393,10 @@ export class ReportManager {
     // its post kept going through the whole grace period.
     if (gone) this.announce(id, "back");
     // An unconfirmed state is no evidence the session stopped.
-    else if (watch.working === null) this.announce(id, isWorking(session) || !session.stateConfirmed ? "working" : "back");
+    else if (watch.working === null) {
+      const noEvidence = !session.stateConfirmed && reportBucket(session) === "idle";
+      this.announce(id, isWorking(session) || noEvidence ? "working" : "back");
+    }
     else this.announce(id, "working");
   }
 

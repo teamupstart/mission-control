@@ -627,6 +627,27 @@ test("a restart recovers only reports it interrupted: an older unstamped report 
   assert.equal(after.reports.get(old.id)?.announcedAs, null);
 });
 
+test("after a restart an unconfirmed session blocked on you is evidence it stopped: back", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const asking = working("s-restart-blocked");
+  const late = working("s-restart-blocked-late");
+  before.set(asking);
+  before.set(late);
+  const askingReport = await before.reports.post(asking, { title: "Asking", body: "b" });
+  const lateReport = await before.reports.post(late, { title: "Late", body: "b" });
+  before.reports.stop();
+
+  clock.now = 2_000;
+  const after = announcer(clock);
+  // Re-adopted unconfirmed, but with a question open: blocked on you, so stopped.
+  after.set({ ...asking, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(askingReport.id)?.announcedAs, "back");
+  // The same for a second session first seen blocked on you.
+  after.set({ ...late, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(lateReport.id)?.announcedAs, "back");
+});
+
 test("after a restart the grace period keeps its original deadline: still working at it is working", async () => {
   // The reviewer's sequence: posted while working, the daemon restarts 19 s later, the agent is
   // still working when the original 20 s deadline passes, and stops 6 s after that.

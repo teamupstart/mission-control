@@ -159,10 +159,12 @@ export function useAwayMode(): {
       if (!res.ok) {
         // The optimistic state above is now wrong: read the daemon's, so the notifier's Away gate
         // matches the window the daemon still holds rather than waiting for the next poll.
+        // A request that failed after the daemon committed it is still a return: claimed through
+        // `claimIfReturned`, so its digest is fetched like any other.
         const cfg = await fetchAwayConfig();
         if (cfg) {
           setAwayState(cfg);
-          wasAway.current = cfg.away;
+          claimIfReturned(cfg);
         }
         return;
       }

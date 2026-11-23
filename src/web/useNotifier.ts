@@ -154,6 +154,8 @@ export function useNotifier(
   settingsRef.current = settings;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
 
   // Known not to be away: deliver each held report alert the return digest did not cover. One
   // read or counted meanwhile is dropped; the digest, or the operator, already has it.
@@ -164,29 +166,31 @@ export function useNotifier(
   // answer. So by the time this window knows it is back the daemon's copy already says whether
   // the digest counted the report, and this window's copy may not yet. A report the daemon
   // cannot be asked about is judged by this window's copy instead.
+  // The window's copy is only trusted while its event stream is connected: a stale copy lacks the
+  // digest's mark, so a report the daemon cannot be asked about while the stream is down waits for
+  // the reconnect snapshot, which re-runs this.
   const awayOff = delivery.away === false;
   useEffect(() => {
     if (!awayOff || heldRef.current.length === 0) return;
     const held = heldRef.current;
     heldRef.current = [];
-    void Promise.all(held.map(async (a) => {
+    void Promise.all(held.map(async (a): Promise<"deliver" | "drop" | "hold"> => {
       const answer = a.reportId ? await fetchReport(a.reportId) : null;
-      const owed = answer ? reportStillOwed(answer.report) : heldReportStillDue(a, scopeRef.current.reports);
-      return owed ? a : null;
-    })).then((owed) => {
+      if (answer) return reportStillOwed(answer.report) ? "deliver" : "drop";
+      if (!readyRef.current) return "hold";
+      return heldReportStillDue(a, scopeRef.current.reports) ? "deliver" : "drop";
+    })).then((verdicts) => {
       const { notify: switches, away, onOpenReport } = deliveryRef.current;
+      const owed = held.filter((_, i) => verdicts[i] === "deliver");
+      heldRef.current.push(...held.filter((_, i) => verdicts[i] === "hold"));
       // Away again by the time the reads land: hold them once more.
       if (away !== false) {
-        heldRef.current.push(...owed.filter((a): a is Alert => a !== null));
+        heldRef.current.push(...owed);
         return;
       }
-      raiseBatch(
-        owed.filter((a): a is Alert => a !== null && shouldDeliver(a, switches, false)),
-        settingsRef.current,
-        onOpenReport,
-      );
+      raiseBatch(owed.filter((a) => shouldDeliver(a, switches, false)), settingsRef.current, onOpenReport);
     });
-  }, [awayOff]);
+  }, [awayOff, ready]);
 
   useEffect(() => {
     // A report alert raised while this window is away, or does not know yet, is held (see

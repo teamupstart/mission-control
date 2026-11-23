@@ -8059,6 +8059,72 @@ a.btn {
   font-size: 13px;
 }
 
+/* Agent reports (`inbox` flag). A neutral rule, like the rows answered elsewhere: a report is
+   something to read, never something owed, so it never borrows the "needs you" accent. */
+.inbox-reports {
+  border-left: 3px solid var(--border);
+}
+.agent-report-card {
+  padding: 8px 0 2px;
+}
+.agent-report-card + .agent-report-card {
+  border-top: 1px solid var(--border-soft);
+}
+.agent-report-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+/* The title IS the show-and-hide control, so a collapsed list reads as a list of headings. */
+.agent-report-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-report-toggle:hover {
+  text-decoration: underline;
+}
+.agent-report-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.agent-report-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-report-body {
+  margin-top: 6px;
+  font-size: 13px;
+}
+/* The body sits inside the row's own inset, so the plan reader's side padding would indent it
+   a second time past the title above it. */
+.agent-report-body .markdown {
+  padding: 0;
+  font-size: 13px;
+}
+.agent-report-body .markdown > :first-child {
+  margin-top: 0;
+}
+.agent-report-link {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-report-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* ---- plan decisions ---- */
 .decisions {
   display: flex;

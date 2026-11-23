@@ -37,6 +37,8 @@ import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
+import { registerReportRoutes } from "./report-routes.ts";
+import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
@@ -1408,6 +1410,11 @@ export interface RouteDeps {
   fileComments?: FileCommentManager;
   /** The walkthrough. Absent for the same reason `fileComments` is; its routes answer 503. */
   fileCommentWalkthrough?: FileCommentWalkthrough;
+  /**
+   * The owner of the `reports` table. Absent means the report routes answer 503 rather than
+   * constructing a second writer of the table and a second emitter of `report_upsert`.
+   */
+  reports?: ReportManager;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
   /** The daemon's full-database backup owner. Its routes return 503 without it. */
@@ -1478,6 +1485,7 @@ export const ROUTE_DEP_NAMES = [
   "productIssues",
   "fileComments",
   "fileCommentWalkthrough",
+  "reports",
   "settingsBackups",
   "databaseBackups",
   "storageHealth",
@@ -1814,6 +1822,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     productIssues,
     fileComments,
     fileCommentWalkthrough,
+    reports,
     settingsBackups,
     databaseBackups,
     storageHealth,
@@ -2239,6 +2248,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerSessionControlRoutes(app, registry, authorizeSessionControl, (sessionId) => {
     residents?.sessionControlRevoked(sessionId);
   });
+  // Agent reports (`inbox` flag): the tool's post, the operator's opened and read, and a
+  // session's history.
+  registerReportRoutes(app, registry, reports);
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 

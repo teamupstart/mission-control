@@ -296,7 +296,10 @@ let db: DatabaseSync | undefined;
 // 42: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
 //     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
 //     table, with no backfill: no launch was shaped before they existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 42;
+// 43: agent reports (`reports`, @shared/reports.ts), a new empty table: no agent posted a report
+//     before it existed. Its follow-up, announce and publication columns stay NULL until the
+//     later phases that write them.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 43;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4976,6 +4979,44 @@ function migrate(d: DatabaseSync): void {
       occurrence   TEXT NOT NULL,
       dismissed_at INTEGER NOT NULL
     );
+  `);
+
+  // Agent reports (schema 43, `src/server/reports.ts`). One row per posted report, never deleted:
+  // a report outlives the session that posted it, so nothing here is keyed to a live session and
+  // nothing prunes on eviction. `seq` is the number in the public id `r-<seq>`; AUTOINCREMENT so a
+  // number is never handed out twice. A replacing report points at the first report of its chain
+  // (`root_id`) and marks the one it replaced `superseded_by`; `read_at` is written once, by
+  // `ReportManager.markRead`. A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS reports (
+      seq                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      id                         TEXT NOT NULL UNIQUE,
+      session_id                 TEXT NOT NULL,
+      task_id                    TEXT,
+      repository                 TEXT,
+      author_key                 TEXT NOT NULL,
+      author_name                TEXT NOT NULL,
+      author_resident_profile_id TEXT,
+      title                      TEXT NOT NULL,
+      body                       TEXT NOT NULL,
+      url                        TEXT,
+      document_name              TEXT,
+      document_kind              TEXT,
+      root_id                    TEXT NOT NULL,
+      version                    INTEGER NOT NULL,
+      superseded_by              TEXT,
+      created_at                 INTEGER NOT NULL,
+      root_created_at            INTEGER NOT NULL,
+      opened_at                  INTEGER,
+      read_at                    INTEGER,
+      read_by                    TEXT,
+      follow_up_task_id          TEXT,
+      announced_as               TEXT,
+      announced_at               INTEGER,
+      published_archive_key      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
   `);
 
   rebuildInFlightIndexIfStale(d);

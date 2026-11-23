@@ -118,6 +118,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { ReportManager } from "./reports.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
@@ -815,6 +816,10 @@ fileComments.start();
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
+// Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
+// read to the registry now, so the first snapshot after a restart carries them. It subscribes to
+// no session event: a report outlives the session that posted it.
+const reports = new ReportManager(registry);
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -850,6 +855,7 @@ const app = buildApp({
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  reports,
   settingsBackups,
   databaseBackups,
   storageHealth,
@@ -1104,6 +1110,7 @@ async function shutdown(): Promise<void> {
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  reports.stop();
   // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
   // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
   await pauses.stop();

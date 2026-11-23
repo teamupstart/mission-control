@@ -252,6 +252,7 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `list_open_questions` | Read-only outstanding-question query, explicitly excluded |
 | `withdraw_question` | Review owner, `attention.withdraw` |
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
+| `post_report` | Report owner (`ReportManager.post`), `/mcp/reports`; never a review |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |
 | `report_blocker` | Session blocker owner, `session.blocker_report` |

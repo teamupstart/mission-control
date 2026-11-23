@@ -2148,6 +2148,10 @@ export const api = {
    * which cannot say which options went untaken. The route attributes this to the human;
    * only the Foreman worker declares otherwise.
    */
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",

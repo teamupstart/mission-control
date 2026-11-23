@@ -3804,6 +3804,13 @@ export type ServerEvent =
        */
       restoringSessions: RestoringSession[];
       reviews: ReviewItem[];
+      /**
+       * Agent reports waiting to be read: unread, and the latest of each chain
+       * (`@shared/reports.ts`). Present only while the `inbox` flag is on. Bounded by what the
+       * operator has not read yet: a report leaves it when it is read or replaced, and a
+       * session's whole history is read per session from `GET /api/sessions/:id/reports`.
+       */
+      reports?: import("./reports.ts").ReportItem[];
       tasks: Task[];
       personas: PersonaView[];
       /**
@@ -3965,6 +3972,11 @@ export type ServerEvent =
   | { type: "restoring_session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
   | { type: "review_remove"; id: string }
+  /**
+   * An agent report was posted, opened, read or replaced. No remove twin: a report outlives its
+   * session and is never deleted, so a read or replaced one is upserted with its new state.
+   */
+  | { type: "report_upsert"; report: import("./reports.ts").ReportItem }
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }

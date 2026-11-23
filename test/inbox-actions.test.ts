@@ -7,15 +7,16 @@
  * never both, and ids are unique. The control that draws an entry: a relabelled button keeps its
  * action's id and spoken form, and its hint stays hidden until voice turns hints on.
  *
- * No card in this phase draws its controls through `InboxActionButton`, so there is no card file
- * to scan for raw buttons yet. The phase that adds the first such card (the report card) adds
- * that scan with it, over a file that exists.
+ * Every card file that draws its controls through `InboxActionButton` is scanned for a control
+ * drawn any other way: a raw `<button>` or an `onClick` on anything else would be a control voice
+ * could never reach. The report card is the first such file; later cards join `CARD_FILES`.
  *
  * The question card predates the registry, so only its two spoken forms are declared. Its name
  * line and hints are pinned below by rendering.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -142,4 +143,43 @@ test("a question card's spoken hints address the agent, and stay hidden until vo
   assert.match(open, /data-spoken-action="answer">&quot;Linter watcher, \.\.\.&quot; or &quot;reply, \.\.\.&quot;</);
   const options = card(withOptions, { inbox: true, voice: true, resident: true });
   assert.match(options, /data-spoken-action="answer-option">&quot;Linter watcher, option B&quot;</);
+});
+
+// ---- card files: every control is a declared action ----
+
+/** Cards whose controls are all drawn through `InboxActionButton`. */
+const CARD_FILES = ["src/web/components/ReportCard.tsx"];
+
+test("a card file draws no control except through InboxActionButton, and names only declared actions", () => {
+  const declared = new Set(actions.map((action) => action.id));
+  for (const file of CARD_FILES) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /<button\b/, `${file} draws a raw <button>`);
+    assert.doesNotMatch(source, /<(?!InboxActionButton\b)[A-Za-z][\w.]*[^>]*\sonClick=/, `${file} puts onClick on something other than InboxActionButton`);
+    const used = [...source.matchAll(/<InboxActionButton[\s\S]*?action="([^"]+)"/g)].map((m) => m[1]!);
+    assert.ok(used.length > 0, `${file} draws no InboxActionButton`);
+    for (const id of used) assert.ok(declared.has(id), `${file} draws undeclared action ${id}`);
+  }
+});
+
+test("the report card's two controls: toggle is click-only disclosure, Mark read has its spoken form", () => {
+  assert.deepEqual(inboxAction("toggle").spoken, null);
+  assert.equal(inboxAction("toggle").clickOnly, "disclosure");
+  assert.deepEqual(inboxAction("mark-read").spoken, { named: "{name}, mark read", whileOpen: null });
+  assert.equal(inboxAction("mark-read").clickOnly, null);
+  assert.equal(spokenHintText(inboxAction("mark-read"), "Steve", true), '"Steve, mark read"');
+  assert.equal(spokenHintText(inboxAction("toggle"), "Steve"), null);
+});
+
+test("the report card's Mark read shows its hint once voice turns hints on; the toggle never does", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-1", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } });
+  const draw = (on: boolean) => renderToStaticMarkup(voice(on, createElement(ReportCard, {
+    report, open: true, onToggle: () => undefined, onMarkRead: () => undefined, now: 1,
+  })));
+  assert.doesNotMatch(draw(false), /spoken-hint/);
+  const on = draw(true);
+  assert.match(on, /data-spoken-action="mark-read">&quot;Steve, mark read&quot;</);
+  assert.doesNotMatch(on, /data-spoken-action="toggle"/);
 });

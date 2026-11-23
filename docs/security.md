@@ -284,6 +284,18 @@ Like every review, the answer arrives on the dashboard's loopback route. That is
 single-user local trust boundary described above: it keeps Mission Control's own agents and
 delegated sessions from approving a change, not arbitrary shell code running as the operator.
 
+## Agent reports
+
+An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
+session; it never names another session. Taking a report out of **to read** is the operator's:
+`POST /api/reports/:id/opened` and `POST /api/reports/:id/read` refuse the machine token, a signed
+agent credential, and a request attributed to an agent or to Foreman. That is the same single-user
+local trust boundary that review answers rely on. It keeps Mission Control's own agents, Foreman
+and delegated sessions from marking a report read; it does not verify that a header-less loopback
+request came from the dashboard, so shell code running as the operator can still call these
+routes. An attached document is accepted only from inside the posting session's checkout, using
+the same containment rules as the Files viewer.
+
 ## Resident MCP secrets
 
 A custom MCP server's secret values - environment variables and headers marked **Secret**, and

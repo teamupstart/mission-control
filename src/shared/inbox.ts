@@ -62,6 +62,19 @@ export const INBOX_ACTIONS = [
     spoken: { named: "{name}, ...", whileOpen: "reply, ..." },
     clickOnly: null,
   },
+  // The report card's show-and-hide control. It only discloses the body, so it is never spoken.
+  {
+    id: "toggle",
+    label: "Show report",
+    spoken: null,
+    clickOnly: "disclosure",
+  },
+  {
+    id: "mark-read",
+    label: "Mark read",
+    spoken: { named: "{name}, mark read", whileOpen: null },
+    clickOnly: null,
+  },
 ] as const satisfies readonly InboxActionSpec[];
 
 export type InboxActionId = (typeof INBOX_ACTIONS)[number]["id"];

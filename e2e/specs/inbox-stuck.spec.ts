@@ -8,6 +8,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
+import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 /**
  * What is at stake: with the `inbox` preview flag on, a session the daemon's stall rules flag
@@ -84,6 +85,48 @@ async function openInbox(page: Page): Promise<Locator> {
 
 const toAnswer = (page: Page) => page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n");
 const stuckRow = (inbox: Locator, name: string) => inbox.getByRole("region", { name: `${name} is stuck` });
+
+test("an idle resident between turns stays out of Stuck while an unfinished task still appears", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(240_000);
+  await setInbox(daemon, true);
+  await api(daemon, "/api/away", { detectStalls: true, stallUnfinishedMinutes: 1 }, "PUT");
+  const profile = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Between-turn inspector" },
+    instructions: { markdown: "Wait for your next scheduled inspection." },
+    workspace: { defaultRepoRoot: daemon.repo },
+    execution: { model: "claude-fable-5" },
+    loop: { prompt: "Inspect again.", delaySeconds: 3600, minDelaySeconds: 1 },
+  } });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, {
+    repoRoot: daemon.repo, requestId: "inbox-resident-idle",
+  });
+  let resident!: Session;
+  await expect.poll(async () => {
+    resident = (await api<Session[]>(daemon, "/api/sessions")).find(s => s.task?.kind === "resident")!;
+    return resident?.state;
+  }, { timeout: 60_000 }).toBe("idle");
+  expect(resident.task?.status).toBe("running");
+
+  // Launch the control afterward: once it stalls, the resident's quiet clock has also
+  // crossed the same threshold. Neither the detector nor its HTTP response is mocked.
+  const ordinary = await dispatch(daemon, "Unfinished parser repair");
+  await expect.poll(async () => {
+    const stalls = await api<Array<{ sessionId: string }>>(daemon, "/api/away/stalls");
+    return stalls.some(s => s.sessionId === ordinary.session.id);
+  }, { timeout: 180_000, intervals: [2_000] }).toBe(true);
+
+  const inbox = await openInbox(page);
+  await expect(stuckRow(inbox, ordinary.task.title)).toBeVisible();
+  await expect(stuckRow(inbox, resident.name)).toHaveCount(0);
+  await expect(toAnswer(page)).toHaveText("1");
+  const stalls = await api<Array<{ sessionId: string }>>(daemon, "/api/away/stalls");
+  expect(stalls.map(s => s.sessionId)).toEqual([ordinary.session.id]);
+  const current = (await api<Session[]>(daemon, "/api/sessions")).find(s => s.id === resident.id)!;
+  expect(current.state).toBe("idle");
+  expect(current.task?.status).toBe("running");
+  expect(current.lastActivity).toBe(resident.lastActivity);
+  await capture(inbox, "resident-between-turns", page);
+});
 
 test("a stalled session gets a Stuck row with the fix in place, and the row leaves when the fix lands", async ({ dashboard: page, daemon }) => {
   test.setTimeout(330_000);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, openedResource } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 
 // Hiding launch instructions from conversations
@@ -738,7 +738,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (_session, text) => {
       delivered = text;

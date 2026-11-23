@@ -145,7 +145,7 @@ import type { DiscoveredSession, DiscoveryAdmission, DiscoveryAdmit } from "./di
 import { getTerminalsConfig } from "./terminals-config.ts";
 import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
-import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
+import { launchedSessionMatcher, spawnHasLaunchIdentity, verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
   RuntimeMetaRead,
   SdkEvent,
@@ -601,6 +601,13 @@ const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+
+/**
+ * How often a launch's discovery wait re-checks the sessions in its checkout (ms), for a check
+ * that came back undecided on a session no later sweep will change. See
+ * `waitForLaunchedSessionAtCwd`.
+ */
+const LAUNCH_RECHECK_MS = 500;
 /**
  * How long a FINISHED, session-less queue is kept before it's pruned.
  *
@@ -8353,6 +8360,88 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Resolve the session at `cwd` that THIS spawn started, once discovery has bound it, or null
+   * on timeout. `waitForSessionAtCwd` answers "some agent is here", which is the wrong question
+   * whenever two launches share a checkout: a cancelled launch and its replacement can both be
+   * live in one worktree, and the replacement would take whichever process the map yields first
+   * - typing its turn one into a worker the old attempt is about to retire.
+   *
+   * A session qualifies only by carrying the identity the spawn returned
+   * (`launchedSessionMatcher`): the terminal resource it opened, or the launch wrapper it
+   * descends from. When the spawn returned no identity at all this resolves null at once. When
+   * a worker appeared is no evidence of whose it is - a cancelled launch's agent can be
+   * discovered late - so a home that cannot name its worker never binds one.
+   *
+   * Every live session at `cwd` is checked on each sighting and again every
+   * `LAUNCH_RECHECK_MS`. A check can come back undecided - the wrapper's record or the process
+   * table could not be read - and an unchanged session produces no further sighting to retry
+   * on. One session is never checked twice at once. A session is resolved only if, re-read once
+   * its check settles, it is still live and still at `cwd`.
+   *
+   * A check that throws (an unreadable state home, a failed `ps`) leaves that session undecided
+   * and is retried like any other. `onCheckSettled` hears how each check of each session ended:
+   * the error it threw, or null when it completed. A caller that times out can then name a
+   * failure that is still current, rather than one a later check of the same session got past.
+   *
+   * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
+   * `matches` defaults to `launchedSessionMatcher(home)`.
+   */
+  waitForLaunchedSessionAtCwd(
+    cwd: string,
+    home: SpawnedHome,
+    timeoutMs: number,
+    {
+      matches = launchedSessionMatcher(home),
+      onCheckSettled,
+    }: {
+      matches?: (session: Session) => Promise<boolean>;
+      onCheckSettled?: (sessionId: string, error: unknown) => void;
+    } = {},
+  ): Promise<Session | null> {
+    if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
+    return new Promise<Session | null>((resolve) => {
+      let settled = false;
+      const checking = new Set<string>();
+      const finish = (session: Session | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(recheck);
+        unsub();
+        resolve(session);
+      };
+      const consider = (s: Session): void => {
+        if (settled || s.cwd !== cwd || s.state === "exited" || checking.has(s.id)) return;
+        checking.add(s.id);
+        void matches(s).then(
+          (ok) => {
+            if (settled) return;
+            onCheckSettled?.(s.id, null);
+            if (!ok) return;
+            const current = this.sessions.get(s.id);
+            // It may have exited, or moved to another checkout, while its identity was read;
+            // a later sighting at `cwd` can still qualify.
+            if (current && current.state !== "exited" && current.cwd === cwd) finish(current);
+          },
+          (error: unknown) => {
+            if (!settled) onCheckSettled?.(s.id, error ?? new Error("the identity check failed"));
+          },
+        ).finally(() => checking.delete(s.id));
+      };
+      const scan = (): void => {
+        for (const s of this.sessions.values()) consider(s);
+      };
+      const timer = unref(setTimeout(() => finish(null), timeoutMs));
+      const recheck = unref(setInterval(scan, LAUNCH_RECHECK_MS));
+      // Subscribed before the scan, so a sighting between the two is not lost.
+      const unsub = this.subscribe((e) => {
+        if (e.type === "session_upsert") consider(e.session);
+      });
+      scan();
+    });
+  }
+
+  /**
    * Resolve the named session at `cwd` once it has proven it can read input. Returns
    * null if that session is missing, exits while watched, or reaches the timeout.
    *
@@ -8385,11 +8474,16 @@ export class Registry extends EventEmitter {
    *
    * Subscribe BEFORE typing, then await this after: the hook can beat the caller's next
    * line, and a check-after-the-fact would miss it and re-type over a live prompt.
+   *
+   * With `sessionId`, only that session's transition counts. Another worker in the same
+   * checkout - a cancelled launch still finishing its own turn - is no evidence that the
+   * prompt typed into this one landed.
    */
   waitForPromptAcceptedAtCwd(
     cwd: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    sessionId?: string,
   ): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
@@ -8408,7 +8502,8 @@ export class Registry extends EventEmitter {
 
       timer = unref(setTimeout(() => finish(false), timeoutMs));
       unsub = this.subscribe((e) => {
-        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working") {
+        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working" &&
+          (sessionId === undefined || e.session.id === sessionId)) {
           finish(true);
         }
       });

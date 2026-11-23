@@ -261,6 +261,17 @@ After provisioning, dispatch branches once:
 - Terminal: home, discovery wait, readiness wait, and intent delivery.
 - SDK: no terminal home, no discovery wait, no terminal readiness wait, and the initial prompt is turn one.
 
+The terminal discovery wait binds only the worker the launch's own spawn started, never the
+first agent in the checkout. A cancelled launch and its replacement can share a worktree while
+the old worker waits to be retired, so `Registry.waitForLaunchedSessionAtCwd` accepts a session
+only through the identity the spawn returned: its terminal resource, or the launch wrapper
+(`launchProcess`, else the one recorded in `launchStateHome`) the agent descends from. The real
+spawner returns `launchStateHome` on every backend, because the wrapper always runs from it. A
+spawn that returns no identity at all fails the dispatch before discovery and leaves its
+terminal standing: when a worker appeared is not evidence of whose it is, since a cancelled
+launch's agent can be discovered late. Prompt acceptance is read from the delivered session
+alone, for the same reason.
+
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
 A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. An MCP-client dispatch declaring no tools never spawns that probe and is unaffected.

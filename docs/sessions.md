@@ -3450,11 +3450,12 @@ anything urgent or needing your decision is a `request_input` question.
   inbox: there is one open report on screen.
 - **Replying and following up.** From the report's inbox card you reply to a running agent, or
   start a follow-up task for a session that has ended; see
-  [Answering a report](attention-and-alerts.md#answering-a-report). Both routes,
-  `POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`, are the operator's: the
-  machine token, an agent and Foreman are refused. A reply is delivered as an ordinary operator
-  message, but its text is built from the report: a line naming it, the report restated, then
-  your words (see the format in [Answering a report](attention-and-alerts.md#answering-a-report)).
+  [Answering a report](attention-and-alerts.md#answering-a-report). Who may call
+  `POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up` is set out in
+  [Agent reports](security.md#agent-reports) in the security guide. A reply is delivered as an
+  ordinary operator message, but its text is built from the report: a line naming it, the report
+  restated, then your words (see the format in
+  [Answering a report](attention-and-alerts.md#answering-a-report)).
   Messages you type in the composer are unchanged: nothing is added to them.
 - **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply
   and follow-up routes refuse, and no conversation entry is drawn. A session on an MCP bundle

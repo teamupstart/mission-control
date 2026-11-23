@@ -675,3 +675,39 @@ test("a description update that outlasts the session does not clear a replacemen
   assert.equal(await fake.host.paneState.get("draftId"), "replacement-draft");
   assert.ok(daemon.requests.length > 0);
 });
+
+test("a blank command while a draft waits reminds first and drops the draft on the second blank, never silently", async () => {
+  const { daemon, fake, filed } = world();
+  const waiting = await runDispatchCommand(fake.host, SESSION, "");
+  assert.equal(waiting.outcome, "waiting");
+  const draftId = (await fake.host.paneState.get("draftId"))!;
+  assert.ok(draftId);
+  const dialogsBefore = fake.dialogs.length;
+  const draftsBefore = createdDrafts(daemon).length;
+
+  // First blank: the same draft is still waiting, the prompt is filled again, and nothing starts over.
+  const again = await runDispatchCommand(fake.host, SESSION, "");
+  assert.equal(again.outcome, "waiting");
+  assert.equal(await fake.host.paneState.get("draftId"), draftId);
+  assert.equal(fake.dialogs.length, dialogsBefore);
+  assert.equal(createdDrafts(daemon).length, draftsBefore);
+  assert.match(fake.notices.at(-1)!, /Press Enter again with nothing typed to drop this draft/);
+  assert.equal(fake.prompts.at(-1), "/mission-dispatch ");
+
+  // The description then still reaches that draft.
+  await runDispatchCommand(fake.host, SESSION, "the real description");
+  assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+  assert.equal(filed[0]!.draftId, draftId);
+});
+
+test("a second blank command drops the waiting draft at the daemon, says so, and starts over", async () => {
+  const { fake, filed } = world();
+  await runDispatchCommand(fake.host, SESSION, "");
+  const draftId = (await fake.host.paneState.get("draftId"))!;
+  await runDispatchCommand(fake.host, SESSION, "");
+  await runDispatchCommand(fake.host, SESSION, "");
+  assert.ok(fake.notices.includes("Dropped the draft that was waiting for its description."));
+  assert.deepEqual(filed.filter((f) => f.draftId === draftId).map((f) => f.choice), ["cancel"]);
+  // A new draft is waiting now, not the dropped one.
+  assert.notEqual(await fake.host.paneState.get("draftId"), draftId);
+});

@@ -24,6 +24,8 @@ export interface FlowResult {
 export const FLOW_OFF_NOTICE = "Mission Control headless mode is turned off.";
 export const EXPIRED_NOTICE = "That dispatch has expired or is unknown. Run /mission-dispatch again.";
 export const DESCRIBE_NOTICE = "Type what this task should do, then press Enter.";
+export const DROP_HINT = "Press Enter again with nothing typed to drop this draft and start over.";
+export const DROPPED_NOTICE = "Dropped the draft that was waiting for its description.";
 export const CANCELLED_LINE = "cancelled";
 export const CANCELLED_NOTICE = "Cancelled. Nothing was created.";
 export const NEEDS_REPO_QUESTION = "Which repo is this for? Type a folder name or a path under Other.";
@@ -141,6 +143,7 @@ function stop(host: FlowHost): FlowResult {
  * the draft is gone (expired, replaced, confirmed), and the caller treats the text as a new brief.
  */
 export async function describeDraft(host: FlowHost, session: FlowSession, draftId: string, words: string): Promise<FlowResult | null> {
+  reminded.delete(draftId);
   const updated = await updateDraft(host, session, draftId, { words });
   // Only this session's own marker is cleared: a replacement session may have its own by now.
   if (!session.live || session.live()) await host.paneState.set("draftId", null);
@@ -329,4 +332,30 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   if (!created.ok) return created.kind === "cancelled" ? stop(host) : fail(host, created);
 
   return completeDraft(host, session, created.value, input.intent);
+}
+
+/** Drafts a blank command has already reminded the person about: the second blank drops the draft. */
+const reminded = new Set<string>();
+
+/**
+ * A blank `/mission-dispatch` while a draft waits for its description. The first time it asks
+ * again for the description (and fills the prompt box again); the second drops the draft, so a
+ * person who changed their mind is not stuck. Returns null when the flow should start over.
+ */
+export async function remindOrDropWaitingDraft(host: FlowHost, session: FlowSession, draftId: string): Promise<FlowResult | null> {
+  if (!reminded.has(draftId)) {
+    reminded.add(draftId);
+    try {
+      await host.fillPrompt("/mission-dispatch ");
+    } catch {
+      // The notice below says what to type.
+    }
+    host.notice(`${DESCRIBE_NOTICE} ${DROP_HINT}`);
+    return { outcome: "waiting", line: DESCRIBE_NOTICE };
+  }
+  reminded.delete(draftId);
+  await confirmDraft(host, session, draftId, "cancel");
+  await host.paneState.set("draftId", null);
+  host.notice(DROPPED_NOTICE);
+  return null;
 }

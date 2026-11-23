@@ -2,7 +2,7 @@ import { HOME_DISPATCH_OFFERED_KINDS } from "@shared/dispatch-options.ts";
 import type { TaskKind } from "@shared/types.ts";
 import { LAUNCHER_ENABLED } from "../constants.ts";
 import type { ModHost, ModPaneOpen } from "../host.ts";
-import { describeDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
+import { describeDraft, remindOrDropWaitingDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
 import type { FlowSession } from "./routes.ts";
 
 /**
@@ -51,7 +51,15 @@ async function openPane(host: CommandHost, session: FlowSession, open: ModPaneOp
 
 export async function runDispatchCommand(host: CommandHost, session: FlowSession, args: string): Promise<FlowResult> {
   const text = args.trim();
-  if (text === "") return runDispatchFlow(host, session, { entry: "first-message" });
+  if (text === "") {
+    // A blank command while a draft waits for its description does not silently abandon it.
+    const waitingDraft = await host.paneState.get("draftId");
+    if (waitingDraft) {
+      const reminded = await remindOrDropWaitingDraft(host, session, waitingDraft);
+      if (reminded) return reminded;
+    }
+    return runDispatchFlow(host, session, { entry: "first-message" });
+  }
 
   // A draft waiting for its description takes the text word for word, even when it reads like a
   // pane argument or a task id: the person is describing a task, not asking for the pane.

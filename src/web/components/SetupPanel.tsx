@@ -849,7 +849,9 @@ function PackageRecommendations({ packages, home }: { packages: RecommendedPacka
             <p className="setup-impact">{description}</p>
             {status && "why" in status && <p className="setup-why">{status.why}</p>}
             {status && "evidence" in status && status.evidence && <Evidence evidence={status.evidence} home={home} />}
-            <a className="setup-link" href={guide} target="_blank" rel="noreferrer">Installation guide for {label}</a>
+            <Tooltip label={`Open the installation guide for ${label} in a new tab`}>
+              <a className="setup-link" href={guide} target="_blank" rel="noreferrer">Installation guide for {label}</a>
+            </Tooltip>
           </div>
         </article>
       ))}

@@ -35,6 +35,8 @@ export function typecheckWithPatch(patch: ((dir: string) => void) | null): strin
   const dir = mkdtempSync(path.join(tmpdir(), "session-contract-probe-"));
   try {
     cpSync(path.join(REPO, "src"), path.join(dir, "src"), { recursive: true });
+    // The Setup reader imports the bundled enterprise package catalog.
+    cpSync(path.join(REPO, "config"), path.join(dir, "config"), { recursive: true });
     // Setup reuses the standalone installer's durable-checkout preflight.
     cpSync(path.join(REPO, "hooks"), path.join(dir, "hooks"), { recursive: true });
     // App code also imports plain-Node installer policy from scripts/.

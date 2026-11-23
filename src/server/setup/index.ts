@@ -500,8 +500,6 @@ function listSentence(parts: readonly string[]): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
-const NUMBER_WORDS = ["none", "one", "two", "three", "four", "five"] as const;
-
 /**
  * Whether the flags voice depends on are on. Unsatisfied, the row names which are on and which
  * are off, and its Fix turns on exactly the ones that are off.
@@ -517,11 +515,12 @@ export function voicePreviewsStatus(flagEnabled: (id: FeatureFlagId) => boolean)
   const why = on.length > 0
     ? `${names(on)} ${verb(on)} on. ${names(off)} ${verb(off)} off.`
     : `${names(off)} ${verb(off)} off.`;
+  // Voice needs three flags, so one, two or all three can be off here.
   const label = off.length === 1
     ? `Turn on ${flagLabel(off[0]!)}`
     : off.length === VOICE_REQUIRED_FLAGS.length
-      ? `Turn on all ${NUMBER_WORDS[off.length] ?? off.length}`
-      : `Turn on the ${NUMBER_WORDS[off.length] ?? off.length} that are off`;
+      ? "Turn on all three"
+      : "Turn on the two that are off";
   return {
     status: { state: "needs-setup", why, evidence: null },
     remedy: {

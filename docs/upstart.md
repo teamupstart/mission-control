@@ -196,7 +196,10 @@ Mission Control's own activity metrics and traces that is declared for every aud
 cost-bounded `datadog-lean` export shape, with delta temporality and
 `deployment.environment.name=corp`. Records never include prompts, code, file paths,
 branches, repository or pull request URLs, terminal output, names, hostnames or user names. See
-[What travels, and what never does](observability.md#what-travels-and-what-never-does). The
+[What travels, and what never does](observability.md#what-travels-and-what-never-does). Every
+other id is a per-destination hash, except a session's work unit id, which is sent as it is in
+the `work_unit_id` span attribute so one query finds a plan's work across services
+([Work unit id](observability.md#work-unit-id)). The
 gateway also copies metrics to a second metrics destination run by the gateway's owners. That is
 the gateway owners' policy, not something Mission Control controls.
 

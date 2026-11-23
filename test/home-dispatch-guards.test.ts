@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 439 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 444 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -40,9 +40,10 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // which stay open so a wait can always end), the four flag-gated agent report routes
   // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
   // `GET /api/sessions/:id/reports`), the two flag-gated report answer routes
-  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), and the Stuck row's
-  // flag-gated `POST /api/sessions/:id/inbox-message`, and the report lookup `GET /api/reports/:id`,
-  // hashed key-sorted. Any added, removed
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), the two flag-gated
+  // report document routes (`GET /api/reports/:id/document` and `POST /api/reports/:id/publish`),
+  // the Stuck row's flag-gated `POST /api/sessions/:id/inbox-message`, and the report lookup
+  // `GET /api/reports/:id`, hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
@@ -51,17 +52,20 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
   // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
   // reply and follow-up routes, which answer 404 with it off too, then for
-  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, and then for the Stuck
-  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and then
-  // for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you" switches in
-  // `alerts`, all on, and then for report noise controls' seven flag-gated routes
-  // (`GET /mcp/reports/guidance`, `GET` and `PUT /api/reports/guidance`, `GET` and
-  // `POST /api/reports/mutes`, `DELETE /api/reports/mutes/:authorKey` and
-  // `POST /api/reports/read-all`), which answer 404 with the `inbox` flag off.
+  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
+  // then for the report document and Publish as scout routes, which answer 404 with it off, and
+  // then for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you"
+  // switches in `alerts`, all on. The recurring-mission MCP routes add GET/POST /mcp/schedules
+  // and POST /mcp/schedules/preview, all answering 401 without a daemon token. Then report noise
+  // controls' seven flag-gated routes (`GET /mcp/reports/guidance`, `GET` and `PUT
+  // /api/reports/guidance`, `GET` and `POST /api/reports/mutes`, `DELETE
+  // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
+  // `inbox` flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 446);
+  assert.equal(others.length, 451);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "ffd5f39db141fdbd6a9594a7cf9852e968273759c18bbce62d91a710730fe27b");
+    "8868fedc0f97daa812838a201d44bb9c3b1b2d5860062cb9780b4928ee807516");
 });
 
 function sourceFiles(dir: string): string[] {

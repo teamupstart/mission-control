@@ -137,7 +137,7 @@ test("opened and read are the operator's alone, and idempotent", async () => {
     ] as Record<string, string>[]) {
       const refused = await call(path, {}, headers);
       assert.equal(refused.status, 403, `${path} refuses ${JSON.stringify(headers)}`);
-      assert.equal(refused.body.error, "Only the operator can open, mark read, reply to, follow up or mute reports, or change their guidance");
+      assert.equal(refused.body.error, "Only the operator can open, mark read, reply to, follow up, publish or mute reports, or change their guidance");
     }
   }
   // None of those refusals opened or read it.
@@ -211,8 +211,10 @@ test("GET /api/reports/:id answers a read report, and a replaced one with the la
   assert.equal((chained.body.report as ReportItem).id, v1.id);
   assert.equal((chained.body.latest as ReportItem).id, v3.id);
   assert.equal((await call("/api/reports/r-424242")).status, 404);
-  // Reading a report is not acting on it, so an agent's token may read it too.
-  assert.equal((await call(`/api/reports/${v1.id}`, undefined, agent)).status, 200);
+  // Any report on any session, whole: the operator's to read, never an agent's.
+  const agentRead = await call(`/api/reports/${v1.id}`, undefined, agent);
+  assert.equal(agentRead.status, 403);
+  assert.equal(agentRead.body.report, undefined);
   setInbox(false);
   try {
     const refused = await call(`/api/reports/${v1.id}`);

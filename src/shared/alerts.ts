@@ -166,7 +166,9 @@ export interface AlertScope {
    * two of the Away watcher's timed reads, or inside one batch of the dashboard's events when an
    * agent stops right after posting - so a report the previous scope did not hold, stamped after
    * that scope was read, is news. Unset, such a report never is. Both clocks are this machine's:
-   * the daemon writes `announcedAt`, and the dashboard it serves reads the same clock.
+   * the daemon writes `announcedAt`, and the dashboard it serves reads the same clock, because
+   * the daemon listens on 127.0.0.1 only and refuses a non-loopback Host on `/api/*` and
+   * `/events` (`requireLoopback`), so no dashboard runs on another machine.
    */
   takenAt?: number;
 }
@@ -238,13 +240,29 @@ function unheldReportIsNews(report: ReportItem, prev: AlertScope): boolean {
 }
 
 /**
- * Whether an alert must wait for Away mode to be known before `shouldDeliver` can decide it: a
- * report alert, with the `inbox` flag on, raised before the daemon's first answer about Away mode
- * (`away` null, as during a page load). Delivered or held once that answer lands. Every other
- * alert never waits.
+ * Whether a report alert is held until this window knows it is not away (`inbox` flag on, the
+ * reports switch on): while Away mode is unknown (`away` null, as during a page load) or reads as
+ * on. A window's Away state comes from polling, so "on" can be stale - the window may already
+ * have been closed from another tab or device - and a report alert is raised once, so dropping it
+ * would lose it for good. Every other alert is never held.
  */
-export function awaitsAwayState(a: Alert, notify: NotifySwitches | null, away: boolean | null): boolean {
-  return away === null && notify !== null && a.notify === "report";
+export function heldForAway(a: Alert, notify: NotifySwitches | null, away: boolean | null): boolean {
+  return away !== false && notify !== null && notify.reports && a.notify === "report";
+}
+
+/**
+ * Whether a held report's notification is still owed once this window knows it is not away: the
+ * report is still waiting to be read and no return digest counted it (that digest already told
+ * you). Read it from the daemon's own copy where possible (see `useNotifier`).
+ */
+export function reportStillOwed(report: ReportItem): boolean {
+  return reportToRead(report) && report.countedInDigestAt === null;
+}
+
+/** `reportStillOwed` against the reports this window holds, for when the daemon cannot be read. */
+export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | undefined): boolean {
+  const report = reports?.find((r) => r.id === a.reportId);
+  return report !== undefined && reportStillOwed(report);
 }
 
 /**
@@ -367,12 +385,17 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     const dialog = activePaneDialog(s);
     const beforeDialog = before ? activePaneDialog(before) : null;
     if (blocked(s.state) && !(before && blocked(before.state))) {
+      // A session entering awaiting_review because a question it waits on just arrived is the
+      // same blocking question the review alert below announces, so it answers to the same
+      // switch. Any other way of becoming blocked has no switch.
+      const forBlockingQuestion = s.state === "awaiting_review" && s.pendingReviews > (before?.pendingReviews ?? 0);
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
         title: `${label} needs you`,
         body: s.state === "awaiting_review" ? "needs review" : "needs input",
         sessionId: s.id,
+        ...(forBlockingQuestion ? { notify: "blocking-question" as const } : {}),
         severity: "attention",
       });
     } else if (dialog && (!beforeDialog || dialogIdentity(beforeDialog) !== dialogIdentity(dialog))) {

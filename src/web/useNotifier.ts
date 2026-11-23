@@ -1,14 +1,17 @@
 import { useEffect, useRef } from "react";
 import type { Alert, AlertScope, NotifySwitches } from "@shared/alerts.ts";
 import {
-  awaitsAwayState,
   batchSeverity,
   detectAlerts,
+  heldForAway,
+  heldReportStillDue,
+  reportStillOwed,
   shouldDeliver,
   summarizeAlerts,
   withKnownStalls,
 } from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
+import { fetchReport } from "./lib/api.ts";
 import { playChime, recordFallbackSound, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
@@ -150,29 +153,57 @@ export function useNotifier(
     };
   }, []);
 
-  // Report alerts raised before Away mode was known, waiting for the daemon's first answer.
-  const awaitingAwayRef = useRef<Alert[]>([]);
+  // Report alerts held while this window was away, or did not know yet (`heldForAway`).
+  const heldRef = useRef<Alert[]>([]);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
 
-  // Away mode is now known: deliver what waited for it, unless you are away, where the digest
-  // has it instead.
-  const awayKnown = delivery.away !== null;
+  // Known not to be away: deliver each held report alert the return digest did not cover. One
+  // read or counted meanwhile is dropped; the digest, or the operator, already has it.
+  //
+  // Read from the daemon rather than this window's state. The daemon marks the reports a digest
+  // counted while it closes the window, before it answers the request that ends Away mode, but
+  // the mark reaches this window over the event stream, which is not ordered against that
+  // answer. So by the time this window knows it is back the daemon's copy already says whether
+  // the digest counted the report, and this window's copy may not yet. A report the daemon
+  // cannot be asked about is judged by this window's copy instead.
+  // The window's copy is only trusted while its event stream is connected: a stale copy lacks the
+  // digest's mark, so a report the daemon cannot be asked about while the stream is down waits for
+  // the reconnect snapshot, which re-runs this.
+  const awayOff = delivery.away === false;
   useEffect(() => {
-    if (!awayKnown || awaitingAwayRef.current.length === 0) return;
-    const waited = awaitingAwayRef.current;
-    awaitingAwayRef.current = [];
-    const { notify: switches, away, onOpenReport, muted } = deliveryRef.current;
-    raiseBatch(waited.filter((a) => shouldDeliver(a, switches, away ?? false, muted)), settingsRef.current, onOpenReport);
-  }, [awayKnown]);
+    if (!awayOff || heldRef.current.length === 0) return;
+    const held = heldRef.current;
+    heldRef.current = [];
+    void Promise.all(held.map(async (a): Promise<"deliver" | "drop" | "hold"> => {
+      const answer = a.reportId ? await fetchReport(a.reportId) : null;
+      if (answer) return reportStillOwed(answer.report) ? "deliver" : "drop";
+      if (!readyRef.current) return "hold";
+      return heldReportStillDue(a, scopeRef.current.reports) ? "deliver" : "drop";
+    })).then((verdicts) => {
+      const { notify: switches, away, onOpenReport, muted } = deliveryRef.current;
+      const owed = held.filter((_, i) => verdicts[i] === "deliver");
+      heldRef.current.push(...held.filter((_, i) => verdicts[i] === "hold"));
+      // Away again by the time the reads land: hold them once more.
+      if (away !== false) {
+        heldRef.current.push(...owed);
+        return;
+      }
+      raiseBatch(owed.filter((a) => shouldDeliver(a, switches, false, muted)), settingsRef.current, onOpenReport);
+    });
+  }, [awayOff, ready]);
 
   useEffect(() => {
-    // A report alert raised while Away mode is unknown waits for it (see above); everything else
-    // is decided now, exactly as before.
+    // A report alert raised while this window is away, or does not know yet, is held (see
+    // above); everything else is decided now, exactly as before.
     const deliver = (a: Alert) => {
       const { notify: switches, away, muted } = deliveryRef.current;
-      if (awaitsAwayState(a, switches, away)) {
-        awaitingAwayRef.current.push(a);
+      if (heldForAway(a, switches, away)) {
+        heldRef.current.push(a);
         return false;
       }
       return shouldDeliver(a, switches, away ?? false, muted);

@@ -579,6 +579,30 @@ test("a session that leaves after posting is back; one never seen working is ann
   assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
 });
 
+test("a report posted while its session's state says it is not working, but says something, is read as a restart is", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Blocked on you when it posts (a question open, confirmed), then still not working: it stopped.
+  const asking = working("s-post-blocked", { state: "awaiting_review", pendingReviews: 1 });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Blocked", body: "b" });
+  a.set({ ...asking, state: "idle", pendingReviews: 0 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Confirmed idle when it posts (a hook already said the turn ended), then idle again: back.
+  const done = working("s-post-confirmed-idle", { state: "idle" });
+  a.set(done);
+  const posted = await a.reports.post(done, { title: "Done", body: "b" });
+  a.set({ ...done, activity: "idle" });
+  assert.equal(a.reports.get(posted.id)?.announcedAs, "back");
+  // Confirmed idle at the post, then working: it kept going, and the grace period decides.
+  const busy = working("s-post-idle-then-busy", { state: "idle" });
+  a.set(busy);
+  const kept = await a.reports.post(busy, { title: "Kept going", body: "b" });
+  a.set({ ...busy, state: "working" });
+  a.fireAll();
+  assert.equal(a.reports.get(kept.id)?.announcedAs, "working");
+});
+
 test("a report read or replaced before its stamp is never stamped", async () => {
   const clock = { now: 1_000 };
   const a = announcer(clock);
@@ -608,7 +632,7 @@ test("a report the daemon stopped before stamping is stamped from its session's 
   before.reports.stop();
 
   // The restarted daemon re-adopts sessions after the manager starts.
-  clock.now = 50_000;
+  clock.now = 30_000;
   const after = announcer(clock);
   for (const r of [idleReport, busyReport, unseenReport]) assert.equal(after.reports.get(r.id)?.announcedAs, null);
   after.set({ ...idle, state: "idle" });
@@ -618,6 +642,104 @@ test("a report the daemon stopped before stamping is stamped from its session's 
   after.fireAll();
   assert.equal(after.reports.get(busyReport.id)?.announcedAs, "working", "still working when the grace ended");
   assert.equal(after.reports.get(unseenReport.id)?.announcedAs, "back", "its session never came back");
+});
+
+test("after a restart an unconfirmed session's idle state is no evidence it stopped: posted a report, unless it leaves", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const quiet = working("s-restart-unconfirmed");
+  const late = working("s-restart-unconfirmed-late");
+  const gone = working("s-restart-unconfirmed-gone");
+  for (const session of [quiet, late, gone]) before.set(session);
+  const quietReport = await before.reports.post(quiet, { title: "Quiet", body: "b" });
+  const goneReport = await before.reports.post(gone, { title: "Gone", body: "b" });
+  clock.now = 2_000;
+  before.reports.stop();
+
+  // Restarted within the grace period: re-adopted idle, before any hook confirms its state.
+  const after = announcer(clock);
+  after.set({ ...quiet, state: "idle", stateConfirmed: false });
+  after.set({ ...gone, state: "idle", stateConfirmed: false });
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, null, "an unconfirmed idle sighting stamps nothing");
+  after.remove(gone.id);
+  assert.equal(after.reports.get(goneReport.id)?.announcedAs, "back", "leaving is evidence");
+  after.fireSetSoFar();
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, "working");
+  after.reports.stop();
+
+  // Restarted after the deadline, first sighting unconfirmed: announced as still working at once.
+  const lateReport = await after.reports.post(late, { title: "Late", body: "b" });
+  after.reports.stop();
+  clock.now = 30_000;
+  const later = announcer(clock);
+  later.fireSetSoFar(); // the deadline passed with the session not yet re-adopted
+  later.set({ ...late, state: "idle", stateConfirmed: false });
+  assert.equal(later.reports.get(lateReport.id)?.announcedAs, "working");
+});
+
+test("a restart recovers only reports it interrupted: an older unstamped report is never stamped, and raises nothing", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-backlog");
+  before.set(session);
+  const old = await before.reports.post(session, { title: "From before stamping existed", body: "b" });
+  before.reports.stop();
+
+  // Long after its deadline: a backlog report, as every report from before this build is.
+  clock.now = 1_000 + 3 * 20_000;
+  const after = announcer(clock);
+  after.set({ ...session, state: "idle" }); // re-adopted idle and confirmed
+  after.fireAll();
+  assert.equal(after.reports.get(old.id)?.announcedAs, null, "left unstamped");
+  assert.ok(after.upserted.filter((r) => r.id === old.id).every((r) => r.announcedAs === null), "no stamp event, so no notification");
+  after.remove(session.id);
+  assert.equal(after.reports.get(old.id)?.announcedAs, null);
+});
+
+test("a report posted with an unconfirmed state reads back once its session says it stopped", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Uninstrumented at the post, then blocked on you (a question open): it stopped.
+  const asking = working("s-unconfirmed-then-blocked", { state: "idle", stateConfirmed: false });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Asking", body: "b" });
+  a.set({ ...asking, pendingReviews: 1 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Unconfirmed at the post, then a hook confirms the turn ended: it stopped.
+  const ended = working("s-unconfirmed-then-confirmed", { state: "idle", stateConfirmed: false });
+  a.set(ended);
+  const done = await a.reports.post(ended, { title: "Done", body: "b" });
+  a.set({ ...ended, stateConfirmed: true });
+  assert.equal(a.reports.get(done.id)?.announcedAs, "back");
+  // Still saying nothing: no stamp until the grace ends, and then still working.
+  const quiet = working("s-unconfirmed-still-quiet", { state: "idle", stateConfirmed: false });
+  a.set(quiet);
+  const unproven = await a.reports.post(quiet, { title: "Hm", body: "b" });
+  a.set({ ...quiet, activity: "still typing" });
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, null);
+  a.fireAll();
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
+});
+
+test("after a restart an unconfirmed session blocked on you is evidence it stopped: back", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const asking = working("s-restart-blocked");
+  const late = working("s-restart-blocked-late");
+  before.set(asking);
+  before.set(late);
+  const askingReport = await before.reports.post(asking, { title: "Asking", body: "b" });
+  const lateReport = await before.reports.post(late, { title: "Late", body: "b" });
+  before.reports.stop();
+
+  clock.now = 2_000;
+  const after = announcer(clock);
+  // Re-adopted unconfirmed, but with a question open: blocked on you, so stopped.
+  after.set({ ...asking, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(askingReport.id)?.announcedAs, "back");
+  // The same for a second session first seen blocked on you.
+  after.set({ ...late, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(lateReport.id)?.announcedAs, "back");
 });
 
 test("after a restart the grace period keeps its original deadline: still working at it is working", async () => {
@@ -653,9 +775,9 @@ test("after a restart past the deadline, the session's first sighting decides, a
   const lostReport = await before.reports.post(lost, { title: "Lost", body: "b" });
   before.reports.stop();
 
-  clock.now = 60_000;
+  clock.now = 30_000;
   const after = announcer(clock);
-  after.fireSetSoFar(); // both deadlines are long past; neither session has been re-adopted yet
+  after.fireSetSoFar(); // both deadlines have passed; neither session has been re-adopted yet
   assert.equal(after.reports.get(lateReport.id)?.announcedAs, null, "absence right after a restart says nothing");
   assert.equal(after.reports.get(lostReport.id)?.announcedAs, null);
   after.set(late); // first seen working, past its deadline
@@ -691,7 +813,7 @@ test("every report a return digest counted is marked in the table, stamped or no
   assert.equal(a.reports.get(countedReport.id)?.countedInDigestAt, 4_000);
 });
 
-test("the digest mark survives a daemon restart before the stamp lands", async () => {
+test("a claimed digest's mark survives a daemon restart before the stamp lands", async () => {
   const clock = { now: 1_000 };
   const before = announcer(clock);
   const session = working("s-digest-restart");
@@ -699,6 +821,8 @@ test("the digest mark survives a daemon restart before the stamp lands", async (
   const report = await before.reports.post(session, { title: "Counted, then restarted", body: "b" });
   clock.now = 3_000;
   before.reports.countedInDigest([report.id]);
+  clock.now = 5_000;
+  before.reports.digestClaimed(); // a dashboard read the digest
   before.reports.stop(); // the daemon stops before the stamp
 
   clock.now = 10_000;
@@ -710,6 +834,30 @@ test("the digest mark survives a daemon restart before the stamp lands", async (
   const { detectAlerts } = await import("../src/shared/alerts.ts");
   const scope = (reports: ReportItem[]) => ({ sessions: [], tasks: [], reports, takenAt: clock.now });
   assert.deepEqual(detectAlerts(scope([{ ...stamped[0]!, announcedAs: null, announcedAt: null }]), scope(stamped)), []);
+});
+
+test("a digest lost to a restart before any dashboard claimed it takes its marks with it", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-digest-unclaimed");
+  before.set(session);
+  const report = await before.reports.post(session, { title: "Counted, never shown", body: "b" });
+  clock.now = 3_000;
+  before.reports.countedInDigest([report.id]);
+  // Every window is told at once, from memory: the closed window's digest is waiting to be read.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
+  before.reports.stop(); // the daemon stops before any dashboard claims the digest
+
+  clock.now = 10_000;
+  const after = announcer(clock);
+  // The digest is gone, so nothing keeps the report quiet as if one had shown it.
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
+  after.set({ ...session, state: "idle" });
+  const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
+  assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", null]]);
+  // A claim in the new run has no marks of the old one to keep.
+  after.reports.digestClaimed();
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
 });
 
 function mkDiscovered(id: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession {

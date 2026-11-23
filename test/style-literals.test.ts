@@ -37,6 +37,12 @@ const ALLOWED: readonly Allowed[] = [
     reason: "the canvas behind operator HTML, which is authored against a browser's white default",
   },
   {
+    selector: ".report-document-frame",
+    property: "background",
+    literal: "white",
+    reason: "the canvas behind operator HTML, which is authored against a browser's white default",
+  },
+  {
     selector: ".artifact-preview",
     property: "background",
     literal: "#fff",

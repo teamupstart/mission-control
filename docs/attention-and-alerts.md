@@ -109,8 +109,13 @@ nothing waits on it.
   body, the link and **Mark read**, and clicking it again closes it.
 - The top bar shows a separate, neutral **to read** figure, which opens the inbox. It never counts
   toward **need you** or **to answer**, and a report never turns a session amber.
+- A report with an attached document offers **Open report**, which shows the copy stored when it
+  was posted, and **Publish as scout**, which saves that document to the scout archive only when
+  you press it and then reads **Published** with **Open archive**. See
+  [Agent reports](sessions.md#agent-reports).
 - A report stays in **to read** until you press **Mark read**, reply to it, or start a follow-up
-  task from it that is dispatched. Opening it, or opening the inbox, does not clear it; Mission
+  task from it that is dispatched. Opening it, opening its document, publishing it, or opening
+  the inbox does not clear it; Mission
   Control records only when you first opened it, with no visible count. A report row has no
   **Dismiss**: one of those is how it leaves.
 - An agent that posts again with `replaces` set to its earlier report's id replaces it: the inbox
@@ -165,8 +170,9 @@ runs:
 - **A report that recorded no repository.** A line saying a follow-up task cannot be started from
   here.
 
-**Send reply**, **Start a follow-up task** and **Retry** are declared inbox actions; **Retry** is
-the follow-up action under another label. A report's entry in its session's conversation says
+**Send reply**, **Start a follow-up task**, **Retry**, **Open report**, **Publish as scout** and
+**Open archive** are declared inbox actions; **Retry** is the follow-up action under another
+label, and **Open archive** is click-only navigation. A report's entry in its session's conversation says
 whether it was read, replied to or followed up (see
 [Agent reports](sessions.md#agent-reports)).
 
@@ -385,7 +391,8 @@ is unchanged, and with the flag off the group is hidden and the switches are not
 
 **A report notification** is named by the agent's display name and worded by what the agent did
 after posting. An agent calls `post_report` mid-turn, so the daemon waits up to 20 seconds: if
-the session is seen working and then stops in that time, or leaves, the notification reads
+the session is seen working and then stops in that time, is seen stopped or blocked on you (a
+confirmed idle state, an open question, a menu), or leaves, the notification reads
 **Steve's back: Build failure diagnosed**, and otherwise, when the time is up, **Steve posted a
 report: Build failure diagnosed**. A session that reports no working state at all, such as one
 without hooks, gives no evidence that it stopped: while it is still present when the time is up,
@@ -396,7 +403,9 @@ A report the daemon had not yet worded when it stopped is worded from its sessio
 restart, against its original 20-second deadline: a restart neither extends nor restarts it. If
 that deadline has passed before the restarted daemon sees the session again, the wording waits
 for the session's first sighting, up to one more 20-second period, after which a session still
-unseen is taken to have left and the report is worded "back".
+unseen is taken to have left and the report is worded "back". Only a report whose deadline
+passed at most 20 seconds before the restart is recovered this way; an older one that was never
+worded, including every report posted before this build, is left alone and raises no notification.
 
 **Clicking a report notification** opens the inbox at that report. The first row that matches
 decides:
@@ -413,7 +422,8 @@ The click records that the report was opened and never marks it read. The **Open
 notification** band changes neither the Reports section nor the **to read** figure, offers
 **Mark read** while the report is unread, and is gone when the inbox closes. A report the
 dashboard no longer holds is read from `GET /api/reports/:id`, which returns the report and, when
-it was replaced, the latest report of its chain.
+it was replaced, the latest report of its chain. Like opening a report, that lookup is the
+operator's: an agent's token, credential or attribution is refused with 403.
 
 ### Stuck sessions
 
@@ -624,8 +634,10 @@ waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). A
 waiting as you return: one posted just before you came back is included before its notification
 wording is settled, and one you read or that was replaced while you were away is not. A report
 the digest counted raises no notification afterwards, even when its wording settles after you are
-back, after a page reload, a reconnect or another away window, or after a daemon restart: the
-daemon stores on the report that a digest counted it. A report announced while a dashboard is still
+back, after a page reload, a reconnect or another away window, or after a daemon restart: once a
+dashboard claims the digest, the daemon stores on the report that a digest counted it. Until then
+the mark is held in memory beside the digest, so a restart before any dashboard claims it loses
+both, and those reports are treated as never counted. A report announced while a dashboard is still
 loading, before it knows whether you are away, waits for that answer: it notifies only if you are
 not. Turning the flag off while you are away takes reports out of the digest; everything else in it
 stays. Stuck sessions still break

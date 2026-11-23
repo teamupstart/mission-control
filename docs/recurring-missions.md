@@ -40,6 +40,49 @@ The overlay has three screens:
 - **Run history** - the spine on its own, for a generated task's deep link into a mission the
   live catalog no longer lists because it was archived. History survives archive.
 
+### Creating missions from a session through MCP
+
+Enable **Settings > Feature flags > Recurring missions through MCP** (`mcp-schedules`).
+Then ask a session, for example: "Create a recurring mission to audit dependencies every
+Monday at 8am America/New_York in this repository."
+
+The MCP server exposes three tools:
+
+- `preview_schedule`: validate the definition and show future instants without saving.
+- `create_schedule`: save the mission, enabled by default; `enabled: false` saves paused.
+- `list_schedules`: read the live catalog, including paused missions, templates, health and
+  next run times. Check this before retrying a create whose response was lost.
+
+For example, preview and then create with this definition:
+
+```json
+{
+  "name": "Weekly dependency audit",
+  "expression": "0 8 * * 1",
+  "timezone": "America/New_York",
+  "completionPolicy": "auto-on-conclusion",
+  "template": {
+    "title": "Audit dependencies",
+    "intent": "Audit this repository's dependencies and report actionable findings."
+  }
+}
+```
+
+`template.repoRoot` defaults to the MCP process's current checkout and is canonicalized by
+Mission Control to the repository root. Supply an absolute checkout path to target another
+repository. The template accepts the existing kind, agent, model, effort, priority, labels
+and workflow settings. Omitted agent inherits the kind default; omitted workflow means None.
+The default policies are `skip-active`, `coalesce-latest` and `manual` completion. Choose
+`auto-on-conclusion` explicitly for a mission whose settled runs may have nothing to merge.
+
+Creation returns the saved schedule id, canonical definition and `nextRunAt`. It does not
+launch an agent. Due runs enter the backlog and remain subject to Foreman's usual launch
+controls. The existing one-hour minimum interval, five-field cron, time-zone validation,
+catch-up and overlap rules all apply. Edit, pause, resume or archive in **Missions**.
+Turning the preview flag off closes these MCP entry points; saved missions keep their cadence
+and remain manageable in the dashboard. An older daemon requires an update or restart before
+these tools work.
+
 ### The spine
 
 A mission's detail is arranged around **one time axis**, read downward: what has run, where

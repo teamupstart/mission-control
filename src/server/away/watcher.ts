@@ -87,6 +87,11 @@ export interface AwayDeps {
    * raises a notification afterwards in any window (see `ReportItem.countedInDigestAt`).
    */
   reportsCountedInDigest?: (ids: string[]) => void;
+  /**
+   * Told when a dashboard claims the digest, so the marks `reportsCountedInDigest` set are kept
+   * from then on. Until then they live and die with the digest, which is only in memory.
+   */
+  reportsDigestClaimed?: () => void;
 }
 
 export interface AwayWatcher {
@@ -156,19 +161,30 @@ export function startAwayWatcher(
     const closed = closeBuffer(buffer, at);
     // The digest's reports are the reports waiting as you return, including one whose
     // announcement has not landed yet and excluding one you read while away: see
-    // `reconcileReports`. Applied after the merge, so an unclaimed earlier window is brought
-    // up to date too.
+    // `reconcileReports`. Reports posted during this window join it before the merge, against
+    // this window's own start, so a report posted at the desk between it and an unclaimed earlier
+    // window is never counted as away activity. The merge is then pruned, without adding, so the
+    // earlier window is brought up to date too.
     const waiting = waitingReports();
     // With the flag off no report may be named or counted: the digest loses its report events,
     // keeps every other event, and nothing is marked counted.
-    pending = reconcileReports(pending ? mergeBuffers(pending, closed) : closed, waiting ?? [], at, true);
+    const closedWithReports = reconcileReports(closed, waiting ?? [], at, true);
+    pending = reconcileReports(pending ? mergeBuffers(pending, closedWithReports) : closedWithReports, waiting ?? [], at, false);
+    // Closed before anything else can fail: a window left open after being merged into `pending`
+    // would be merged again on the next close, doubling every count in the digest.
+    buffer = null;
+    bufferedSince = null;
     if (waiting && deps.reportsCountedInDigest) {
       const counted = new Set(pending.events.filter((e) => e.kind === "report").map((e) => e.key));
       const ids = waiting.filter((r) => counted.has(`report:${r.id}`)).map((r) => r.id);
-      if (ids.length > 0) deps.reportsCountedInDigest(ids);
+      // A failed write (a busy database) loses only the marks, so a counted report may notify
+      // once more; it must not stop the window closing or the return that closes it.
+      try {
+        if (ids.length > 0) deps.reportsCountedInDigest(ids);
+      } catch (err) {
+        console.error("[away] marking reports counted in the digest failed:", err);
+      }
     }
-    buffer = null;
-    bufferedSince = null;
   };
 
   /** One pass: re-run the stall rules, reconcile the window, fold what changed. */
@@ -297,6 +313,15 @@ export function startAwayWatcher(
     takePending: () => {
       const p = pending;
       pending = null;
+      // A failed write loses only the marks, so a counted report may notify once more after a
+      // restart; the digest is still handed over.
+      if (p) {
+        try {
+          deps.reportsDigestClaimed?.();
+        } catch (err) {
+          console.error("[away] keeping the digest's report marks failed:", err);
+        }
+      }
       return p;
     },
     flush: closeWindow,

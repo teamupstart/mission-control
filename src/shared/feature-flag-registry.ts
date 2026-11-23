@@ -14,6 +14,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
  */
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
+export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -102,11 +104,13 @@ export const FEATURE_FLAGS = [
   },
   {
     id: WORK_UNIT_ID_FLAG_ID,
-    label: "Work unit id",
+    // The label and description name no work unit: the id is tracked, never shown, and this
+    // switch is the one place the dashboard refers to it. Search still finds it by `keywords`.
+    label: "MCP call attribution",
     description:
-      "Tag a task's sessions with one id, so its traces and MCP calls can be found together. An agent " +
-      "started while this is on gets WORK_UNIT_ID in its environment, and the session detail shows the " +
-      "id. A switch takes effect at each agent's next start.",
+      "Tag each agent started for a task with one id that its MCP calls and traces carry, so a task's " +
+      "calls can be found together in your own tools. The id is tracked, never shown here. A switch " +
+      "takes effect at each agent's next start.",
     stage: "preview",
     keywords: ["work unit", "WORK_UNIT_ID", "x-work-unit-id", "mcp", "trace", "telemetry"],
   },
@@ -132,6 +136,13 @@ export const FEATURE_FLAGS = [
       "Reports section has Mark all read.",
     stage: "preview",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
+  },
+  {
+    id: MCP_SCHEDULES_FLAG_ID,
+    label: "Recurring missions through MCP",
+    description: "Let sessions preview and create recurring missions through MCP, and read the saved mission catalog.",
+    stage: "preview",
+    keywords: ["schedule", "recurring", "mission", "mcp", "create_schedule"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

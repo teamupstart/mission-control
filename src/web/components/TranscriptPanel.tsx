@@ -1401,6 +1401,7 @@ export function TranscriptPanel({
                   open={entryControls.openReportId === row.report.id}
                   onToggle={() => entryControls.onToggle(row.report)}
                   onMarkRead={() => entryControls.onMarkRead(row.report)}
+                  onOpenDocument={() => entryControls.onOpenDocument(row.report)}
                 />
               ) : row.kind === "review" ? (
                 (row.delivery ? row.delivery.envelope === "remind-later" : row.review.status === "snoozed") ? (

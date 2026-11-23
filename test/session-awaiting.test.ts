@@ -1904,6 +1904,7 @@ test("read_sessions summarizes a wait with whether it is overdue, and control_se
   assert.equal(awaitingSummary(null), null);
 
   const parsed = SessionControlRequestSchema.parse({ sessionId: "s1", command: { action: "clear_awaiting", awaitingId: "aw-1", resolution: "build cancelled" } });
+  if (parsed.command.action === "complete") assert.fail("parsed as the two-request complete action");
   assert.deepEqual(controlRequest("s1", parsed.command), {
     path: "/api/sessions/s1/awaiting/clear", method: "POST", body: { resolution: "build cancelled", awaitingId: "aw-1" },
   });

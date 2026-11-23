@@ -38,8 +38,14 @@ export function mkReportControls(
   target: ReplyTarget = { kind: "live", sessionId: "s1" },
   mutedAuthors: ReadonlySet<string> = new Set(),
 ) {
-  const calls: { toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[]; muted: string[]; markedAllRead: string[][] } =
-    { toggled: [], markedRead: [], replied: [], followedUp: [], muted: [], markedAllRead: [] };
+  const calls: {
+    toggled: string[]; markedRead: string[]; replied: string[]; followedUp: string[];
+    openedDocument: string[]; published: string[]; openedArchive: string[];
+    muted: string[]; markedAllRead: string[][];
+  } = {
+    toggled: [], markedRead: [], replied: [], followedUp: [], openedDocument: [], published: [], openedArchive: [],
+    muted: [], markedAllRead: [],
+  };
   return {
     calls,
     controls: {
@@ -49,6 +55,10 @@ export function mkReportControls(
       targetFor: (_report: ReportItem): ReplyTarget => target,
       onReply: async (report: ReportItem) => { calls.replied.push(report.id); return null; },
       onFollowUp: async (report: ReportItem) => { calls.followedUp.push(report.id); return null; },
+      onOpenDocument: (report: ReportItem) => { calls.openedDocument.push(report.id); },
+      onPublish: (report: ReportItem) => { calls.published.push(report.id); },
+      publishStateFor: (_report: ReportItem) => ({ busy: false, refusal: null }),
+      onOpenArchive: (report: ReportItem) => { calls.openedArchive.push(report.id); },
       mutedAuthors,
       onMute: async (report: ReportItem) => { calls.muted.push(report.author.key); return null; },
       onMarkAllRead: async (ids: readonly string[]) => { calls.markedAllRead.push([...ids]); return null; },
@@ -64,5 +74,8 @@ export function reportCardProps(target: ReplyTarget = { kind: "live", sessionId:
     onMarkRead: () => undefined,
     onReply: async () => null,
     onFollowUp: async () => null,
+    onOpenDocument: () => undefined,
+    onPublish: () => undefined,
+    onOpenArchive: () => undefined,
   };
 }

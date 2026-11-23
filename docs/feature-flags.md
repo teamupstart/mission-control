@@ -8,7 +8,7 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
-[Work unit id](work-units.md#the-launch-environment) (`work-unit-id`),
+[MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
 [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`) and
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
@@ -25,6 +25,13 @@ refuses `planInputChange` and `previewOnly` requests; it does not change saved p
 This release also adds raw `planInputs` and `dependencies` edits to MCP `update_task`, independently
 of this flag. Those edits remain subject to authentication and existing task, repository, and
 dependency validation. The dashboard task-update endpoint already supported these raw atomic edits.
+
+**Recurring missions through MCP** (`mcp-schedules`) enables `create_schedule`,
+`preview_schedule` and `list_schedules`. The daemon gates their authenticated `/mcp/schedules`
+entry points on every request. Turning it off does not pause saved missions or change the
+existing dashboard API. See [Recurring missions](recurring-missions.md#creating-missions-from-a-session-through-mcp).
+`test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
+creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
 ## Operator controls
 
@@ -183,7 +190,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
-| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, and its launch record, which the session detail's "work unit" row shows. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
+| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
 

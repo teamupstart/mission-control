@@ -45,7 +45,7 @@ import {
 } from "@shared/workflow.ts";
 import { envVar } from "../config.ts";
 import { llmRunner } from "../llm/index.ts";
-import { runStructured } from "../llm/structured.ts";
+import { ModelReplyMiss, replyMissClause, runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
@@ -53,7 +53,7 @@ import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution, resolveWorkflowNodeExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
-import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
+import { normalizePersonaVerdict, parsePersonaVerdictReply, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
@@ -1228,6 +1228,9 @@ export class WorkflowEngine {
     const priorRejection = claimed.reviewInput
       ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
     let violation = priorRejection === "parse" ? null : priorRejection;
+    // What was wrong with the previous execution's reply, when it was a parse miss this
+    // process observed. A restart only knows the persisted basis, so it keeps the generic text.
+    let replyMiss: ModelReplyMiss | null = null;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
       const providerState = claimed.reviewInput
         ? this.store.personaProviderRetryState(claimed.reviewInput.operationId) : null;
@@ -1237,6 +1240,8 @@ export class WorkflowEngine {
         this.blockProviderRetryExhausted(claimed, run.id, failure);
         return;
       }
+      const correction = violation
+        ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
         (request) => runner.run(request, {
           model: execution.model.id,
@@ -1244,9 +1249,11 @@ export class WorkflowEngine {
           timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
           images,
         }),
-        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
+        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
-          const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          replyMiss = reply instanceof ModelReplyMiss ? reply : null;
+          const parsed = replyMiss ? null : reply as PersonaVerdict;
           violation = parsed && claimed.reviewInput ? personaContractViolation(parsed) : null;
           if (violation) {
             this.store.appendEvent(run.id, "persona_contract_violation", {
@@ -1257,7 +1264,7 @@ export class WorkflowEngine {
             return null;
           }
           if (!parsed && claimed.reviewInput) this.store.retainRejectedPersonaVerdict(claimed.id, index + 1, "parse", raw);
-          return parsed;
+          return parsed ?? replyMiss;
         },
         `${node.persona.name} Persona`,
         { start: (_attempt, request) => observer.start(index + 1, request), finish: (_attempt, result) => observer.finish(index + 1, result) },

@@ -14,6 +14,31 @@ export interface ReportEntryControls {
   onToggle: (report: ReportItem) => void;
   /** Mark it read. Resolves to why the daemon refused, or null. */
   onMarkRead: (report: ReportItem) => Promise<string | null>;
+  /** Open Report: show its attached document's stored copy. Records the first open; never reads it. */
+  onOpenDocument: (report: ReportItem) => void;
+}
+
+/**
+ * One report's Publish as scout state, kept by the dashboard rather than the card so it survives
+ * the card being collapsed or the inbox being closed while the request is in flight.
+ */
+export interface ReportPublishState {
+  /** A publish request for this report is in flight. */
+  busy: boolean;
+  /** Why the last attempt published nothing, until the next attempt starts. */
+  refusal: ReportPublishRefusal | null;
+}
+
+/** Why Publish as scout published nothing: the first reason, and every problem the archive named. */
+export interface ReportPublishRefusal {
+  error: string;
+  problems: string[];
+  /**
+   * Mission Control itself failed (a 5xx, or no answer at all): a write or read failed, or it is
+   * restarting. Nothing is wrong with the document, so the card must not say it was refused, and
+   * the server's own reason is what it shows.
+   */
+  failed: boolean;
 }
 
 /**

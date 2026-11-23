@@ -418,17 +418,12 @@ function createAppConfig(d: DatabaseSync): void {
   }
 
   // Commit the first table and the install default together. An interrupted first start
-  // either retries as a fresh database or resumes with the default already recorded.
-  d.exec("BEGIN IMMEDIATE;");
-  try {
-    d.exec(CREATE_APP_CONFIG);
-    d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
-      .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
-    d.exec("COMMIT;");
-  } catch (error) {
-    try { d.exec("ROLLBACK;"); } catch {}
-    throw error;
-  }
+  // either retries as a fresh database or resumes with the default already recorded. The
+  // transaction that does it is the schema's own (`upgradeDatabaseToCurrentSchema`), which
+  // this runs first inside, so it opens none of its own.
+  d.exec(CREATE_APP_CONFIG);
+  d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
+    .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
 }
 
 /**
@@ -468,6 +463,37 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
+  // One transaction for every CREATE, not one per statement. Outside a transaction each of the
+  // few hundred tables and indexes a fresh database gains is its own commit, and under WAL with
+  // the default `synchronous=FULL` every commit syncs the WAL to disk: on ext4 that was over a
+  // second before a fresh daemon could listen, and every e2e test boots one. On an existing
+  // database every statement is a no-op and the commit writes nothing. `migrateTelemetry`,
+  // `migrate` and the one-time rollouts after them stay outside: their steps take their own
+  // transactions.
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    createSchemaObjects(d);
+    d.exec("COMMIT;");
+  } catch (error) {
+    // As in `rebuildDerivedPartialIndexIfStale`: a failed ROLLBACK must not bury the real error.
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
+  }
+  migrateTelemetry(d);
+  migrate(d);
+  migrateMockupsSkill(d);
+  migrateCodeRabbitFollowUp(d);
+  markDatabaseSchemaCurrent(d);
+}
+
+/**
+ * Every table and index the current schema declares, created where missing. The one row it
+ * writes is a fresh database's install default (`createAppConfig`), which has to commit with
+ * the first table; upgrade steps still belong in `migrate`.
+ */
+function createSchemaObjects(d: DatabaseSync): void {
   createAppConfig(d);
   d.exec(`
     CREATE TABLE IF NOT EXISTS pr_branch_update_attempts (
@@ -3568,11 +3594,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // is that a projection checkpoint, its aggregate state and its output batch must commit in
   // one transaction with the writer that already serializes everything else here.
   createTelemetryTables(d);
-  migrateTelemetry(d);
-  migrate(d);
-  migrateMockupsSkill(d);
-  migrateCodeRabbitFollowUp(d);
-  markDatabaseSchemaCurrent(d);
 }
 
 /** One rollout, not a default applied again whenever the app is upgraded. */
@@ -5113,9 +5134,9 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
     CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
   `);
-  // Schema 48: when a return digest counted a report, so it notifies no window afterwards. Stored
-  // rather than held in memory, so the stamp stays quiet for a window that reconnects or a daemon
-  // that restarts before it lands (`ReportManager.countedInDigest`).
+  // Schema 48: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
   addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
   // Schema 49: muted report authors (`ReportManager.mute`). One row per author key, deleted on
   // Unmute. A mute only hides: it never touches `reports`, so unmuting brings back every report

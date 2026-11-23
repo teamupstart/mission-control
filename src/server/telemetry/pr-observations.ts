@@ -26,13 +26,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { taskWorkEpisodeForTask, workEpisodeRepoPrsForTask } from "../db.ts";
 import { SYSTEM_ACTOR, TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { PR_OBSERVED_EVENT } from "@shared/telemetry-catalog.ts";
-import { TASK_KINDS, type TaskKind } from "@shared/types.ts";
+import { TASK_KINDS, type Session, type Task, type TaskKind } from "@shared/types.ts";
+import { WORK_UNIT_SPAN_ATTRIBUTE, isWorkUnitId } from "@shared/work-unit.ts";
 import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
 import { digest } from "./identity.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { findSourceIdentity, notePrObservationBytesAdded, telemetryTransaction } from "./store.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
+import { sessionWorkUnitId } from "../work-unit.ts";
 
 const SOURCE_KIND = "mission.pr";
 
@@ -55,6 +57,12 @@ export interface RetainedPrObservation {
   repoRole: "primary" | "secondary";
   taskKind: AttributionValue<TaskKind>;
   sessionId: string | null;
+  /**
+   * The work unit the producing session emitted for this task when the association was made,
+   * frozen with the rest of the attribution so a late merge carries it too. Null for none, and
+   * for a row retained before work units were recorded.
+   */
+  workUnitId: string | null;
   associatedAt: number;
   mergedAt: number | null;
   expiresAt: number;
@@ -91,6 +99,11 @@ export function retainPrObservation(input: {
   primaryRepoRoot: string | null;
   prUrl: string;
   sessionId: string | null;
+  /**
+   * What that session emits for this task (`sessionWorkUnitId`), read by the caller from the
+   * session's launch record. Frozen here; nothing reads the record again for this row.
+   */
+  workUnitId?: string | null;
   creationVerified: boolean;
   now?: number;
 }): { retained: boolean; prKey: string } {
@@ -140,6 +153,7 @@ export function retainPrObservation(input: {
           sessionId: input.sessionId, repoRole, taskKind,
           associationFact: input.creationVerified ? "creation_verified" : "associated_existing",
           associationCaptured: false,
+          ...(isWorkUnitId(input.workUnitId) ? { workUnitId: input.workUnitId } : {}),
         }),
         input.sessionId,
         now,
@@ -160,6 +174,43 @@ export function retainPrObservation(input: {
 
   if (observation) captureRetainedAssociation(observation, now);
   return { retained, prKey };
+}
+
+/** What `attachPrObservationTelemetry` reads off the Registry, and nothing else. */
+export interface PrObservationHost {
+  onTaskPrLinked(fn: (e: { taskId: string; repoRoot: string; prUrl: string; observedAt: number }) => void): () => void;
+  getTask(id: string): Task | undefined;
+  getSession(id: string): Session | undefined;
+}
+
+/**
+ * Retain every verified association the Registry announces. `onTaskPrLinked` fires only after
+ * the durable work-episode write succeeded, which is what makes this a VERIFIED association
+ * rather than an agent's claim - and it is the last moment at which the task's repository, kind
+ * and session can still be read, because `invalidateTaskOwnershipInTransaction` may delete the
+ * binding at any point after it. Returns the detach function.
+ */
+export function attachPrObservationTelemetry(host: PrObservationHost): () => void {
+  return host.onTaskPrLinked((e) => {
+    const task = host.getTask(e.taskId);
+    if (!task) return;
+    const session = task.sessionId ? host.getSession(task.sessionId) : undefined;
+    retainPrObservation({
+      taskId: e.taskId,
+      taskKind: task.kind,
+      repoRoot: e.repoRoot,
+      primaryRepoRoot: task.repoRoot,
+      prUrl: e.prUrl,
+      sessionId: task.sessionId,
+      // What that session emits for this task, from its launch record - frozen with the rest
+      // of the attribution so a merge observed after the session is gone still carries it.
+      workUnitId: session ? sessionWorkUnitId(session, task) : null,
+      // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
+      // carries no task. Here the honest claim is the weaker one.
+      creationVerified: false,
+      now: e.observedAt,
+    });
+  });
 }
 
 /** Retry the first fact from its frozen row, never from a later sighting's attribution. */
@@ -275,6 +326,7 @@ export function recordTelemetryPrMerges(
       repoRole: observation.repoRole,
       taskKind: observation.taskKind,
       sessionId: observation.sessionId,
+      workUnitId: observation.workUnitId,
       fact: "merged",
       delivery: isLive(observation) ? "live" : "late",
       ageMs: Math.max(0, (observation.mergedAt ?? now) - observation.associatedAt),
@@ -387,6 +439,7 @@ function capturePrFact(input: {
   repoRole: "primary" | "secondary";
   taskKind: AttributionValue<TaskKind>;
   sessionId: string | null;
+  workUnitId: string | null;
   fact: "associated_existing" | "creation_verified" | "updated" | "merged" | "closed_unmerged";
   delivery: "live" | "late";
   ageMs: number;
@@ -413,6 +466,7 @@ function capturePrFact(input: {
       repo_key: input.repoKey,
       pr_key: input.prKey,
       ...(input.sessionId ? { session_id: input.sessionId } : {}),
+      ...(input.workUnitId ? { [WORK_UNIT_SPAN_ATTRIBUTE]: input.workUnitId } : {}),
     },
     occurredAt: input.occurredAt,
     now: input.now,
@@ -437,6 +491,16 @@ function taskKindOf(kind: string): AttributionValue<TaskKind> {
   return attributionValue(kind, TASK_KINDS);
 }
 
+/** The work unit frozen into a retained row's attribution, or null when it has none. */
+function frozenWorkUnitId(contextJson: string): string | null {
+  try {
+    const value = (JSON.parse(contextJson) as Record<string, unknown>).workUnitId;
+    return isWorkUnitId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function toObservation(row: ObservationRow): RetainedPrObservation {
   return {
     taskId: row.task_id,
@@ -446,6 +510,7 @@ function toObservation(row: ObservationRow): RetainedPrObservation {
     repoRole: row.repo_role === "secondary" ? "secondary" : "primary",
     taskKind: taskKindOf(row.task_kind),
     sessionId: row.session_id,
+    workUnitId: frozenWorkUnitId(row.context_json),
     associatedAt: row.associated_at,
     mergedAt: row.merged_at,
     expiresAt: row.expires_at,

@@ -2215,6 +2215,14 @@ export const api = {
       ? { ok: true, view: view.data }
       : { ok: false, error: "Mission Control saved the guidance but did not answer with it. Reload to see what is stored" };
   },
+  /**
+   * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
+   * A page the archive's checker refused answers with every problem in `problems`.
+   */
+  publishReport: (id: string) =>
+    post<ActionResult & { archiveKey?: string; problems?: string[] }>(`/api/reports/${encodeURIComponent(id)}/publish`),
+  /** The stored copy of a report's attached document, as text. */
+  reportDocumentUrl: (id: string) => `/api/reports/${encodeURIComponent(id)}/document`,
   /** Every report a session posted, every version, read or not, for its conversation. */
   sessionReports: (id: string) =>
     readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),

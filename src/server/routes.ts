@@ -317,7 +317,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -2316,6 +2316,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? { ok: true } : { ok: false, error: result.error ?? "the follow-up task could not be dispatched" };
       },
     },
+    // Publish as scout: the archive's one operator-initiated capture.
+    publisher: archives
+      ? { publish: (input) => archives.publishReportPage(input), exists: (key) => archives.archivePresent(key) }
+      : undefined,
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
@@ -2893,7 +2897,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   ) => {
     const code = `workflow_command_${result.reason}`;
     if (result.reason === "invalid_recipe") return c.json({ error: c.req.param("slot") === "coderabbit"
-      ? "CodeRabbit requires typed repository-root tuning and no arbitrary argv"
+      ? "CodeRabbit requires repository-root tuning and a supported coderabbit review command"
       : `${c.req.param("slot")} requires nonempty argv overrides without review tuning`, code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);
@@ -4252,10 +4256,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const parsed = await parseBody(c, DeleteArchiveSchema);
     if (!parsed.ok) return parsed.res;
+    // A report published under this archive no longer has one once its bundle is gone: its card
+    // offers Publish as scout again rather than an Open archive that leads nowhere. Checked after
+    // every attempt, including one that failed after the bundle was already moved to the trash
+    // (a cleanup failure), and conditional and queued with that report's Publish: a bundle still
+    // present, or one a publish recreated meanwhile, keeps its key. A failure of this check is
+    // healed at the next startup and never replaces the delete's own answer.
+    const reconcileReport = () => reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
+      .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
     try {
       const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
+      await reconcileReport();
       return c.json(result);
     } catch (error) {
+      await reconcileReport();
       const failure = archiveErrorStatus(error);
       return c.json({ ok: false, error: failure.message }, failure.status);
     }
@@ -10405,19 +10419,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const scheduleValidationFailure = (c: Context, error: ScheduleValidationError) =>
     c.json({ error: error.message, field: error.field }, 400);
 
-  app.get("/api/schedules", (c) => {
+  // MCP aliases share the dashboard handlers and daemon-owned validation. The live
+  // preview gate affects only MCP access, never existing schedules or the scheduler.
+  const scheduleMcpAuth: MiddlewareHandler = async (c, next) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    await next();
+  };
+  app.use("/mcp/schedules", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+  app.use("/mcp/schedules/*", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+
+  const listScheduleCatalog = (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     // Served from the Registry, the SAME live collection the SSE snapshot carries, so a GET
     // and a reconnect return byte-identical catalogs. Non-archived schedules only.
     return c.json(registry.listSchedules());
-  });
+  };
+  app.get("/api/schedules", listScheduleCatalog);
+  app.get("/mcp/schedules", listScheduleCatalog);
 
   // Preview is a READ: no schedule, revision, occurrence, or task is written and no
   // ServerEvent is emitted. It forwards the WHOLE definition and the service runs the same
   // validation save does - cadence, name, title, intent, and repo-root resolution - so the
   // browser can never preview a definition the save route would then refuse.
-  app.post("/api/schedules/preview", async (c) => {
+  const previewScheduleDefinition = async (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, SchedulePreviewSchema);
@@ -10441,9 +10466,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // sub-hour interval, a non-repository root) returns `ok:false` with the offending field -
     // a 400, not a 500.
     return result.ok ? c.json(result) : scheduleValidationFailure(c, result.error);
-  });
+  };
+  app.post("/api/schedules/preview", previewScheduleDefinition);
+  app.post("/mcp/schedules/preview", previewScheduleDefinition);
 
-  app.post("/api/schedules", async (c) => {
+  const createScheduleDefinition = async (c: Context) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, CreateScheduleSchema);
@@ -10462,7 +10489,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       enabled: d.enabled,
     });
     return result.ok ? c.json(result.schedule, 201) : scheduleValidationFailure(c, result.error);
-  });
+  };
+  app.post("/api/schedules", createScheduleDefinition);
+  app.post("/mcp/schedules", createScheduleDefinition);
 
   app.post("/api/schedules/:id/update", async (c) => {
     const svc = scheduleService();

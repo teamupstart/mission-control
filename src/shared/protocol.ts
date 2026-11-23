@@ -155,6 +155,8 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  CODERABBIT_COMMAND_HELP,
+  isCodeRabbitCommand,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -1277,6 +1279,13 @@ export const ReportMuteBodySchema = z.object({
 export const ReportReadAllSchema = z.object({
   ids: z.array(z.string().regex(REPORT_ID_PATTERN, "must be a report id such as r-12")).min(1).max(REPORT_READ_ALL_BATCH),
 }).strict();
+
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
 
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
@@ -7782,6 +7791,10 @@ export const WorkflowCommandArgvSchema = z
     { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
   );
 
+export const CodeRabbitCommandSchema = WorkflowCommandArgvSchema.refine(isCodeRabbitCommand, {
+  message: CODERABBIT_COMMAND_HELP,
+});
+
 /** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
@@ -7794,6 +7807,7 @@ export const CodeRabbitTuningSchema = z.object({
   kind: z.literal("coderabbit"),
   baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
   severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+  command: CodeRabbitCommandSchema.optional(),
 }).strict();
 
 export const WorkflowCommandOverrideSchema = z.object({
@@ -8001,6 +8015,7 @@ export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
   baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
   empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  command: CodeRabbitCommandSchema.optional(),
   timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
 });
 export const CodeRabbitReviewSummarySchema = z.object({
@@ -9158,6 +9173,22 @@ export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
   });
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
 
+// MCP reuses the wire fields with repository omission and established policy defaults.
+// The daemon parses the complete HTTP schemas above, including cross-field refinements,
+// after the MCP process has supplied its checkout path.
+const McpScheduleFields = {
+  template: z.object({
+    ...ScheduleTemplateSchema.shape,
+    repoRoot: ScheduleTemplateSchema.shape.repoRoot.default(".").describe(
+      "Absolute local checkout path. Omit to use the calling session's working directory.",
+    ),
+  }),
+  overlapPolicy: ScheduleDefinitionSchema.shape.overlapPolicy.default("skip-active"),
+  missedPolicy: ScheduleDefinitionSchema.shape.missedPolicy.default("coalesce-latest"),
+};
+export const McpCreateScheduleSchema = CreateScheduleSchema.extend(McpScheduleFields);
+export const McpSchedulePreviewSchema = z.object({ ...SchedulePreviewSchema.shape, ...McpScheduleFields });
+
 /** Pause or resume. The service recomputes the cursor from the correct anchor. */
 export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });
 export type SetScheduleEnabledBody = z.infer<typeof SetScheduleEnabledSchema>;
@@ -9747,6 +9778,18 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
   z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
+  /**
+   * The dashboard's Complete dialog, delegated: record the target's task as done with the
+   * outcome the controller supplies, then close the session when completion did not already
+   * request it. The two confirmations mean exactly what the dialog's do (see
+   * `CompleteTaskSchema`): neither is ever implied, and an incomplete scout is refused first.
+   */
+  z.object({
+    action: z.literal("complete"),
+    outcome: z.string().trim().max(CONVERSATION_TEXT_MAX_LENGTH).optional(),
+    satisfyDependents: z.boolean().optional(),
+    confirmIncompleteScout: z.boolean().optional(),
+  }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

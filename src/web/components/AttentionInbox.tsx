@@ -23,7 +23,7 @@ import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
 import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
-import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import type { ReportEntryControls, ReportPublishState } from "../lib/sessionReports.ts";
 import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
@@ -99,6 +99,12 @@ export interface InboxReportControls extends ReportEntryControls {
    * Resolves to why the daemon refused, or null.
    */
   onMarkAllRead: (ids: readonly string[]) => Promise<string | null>;
+  /** Publish its attached document as a scout archive. The outcome lands in `publishStateFor`. */
+  onPublish: (report: ReportItem) => void;
+  /** Its Publish as scout state: in flight, and why the last attempt published nothing. */
+  publishStateFor: (report: ReportItem) => ReportPublishState;
+  /** Go to its published archive. */
+  onOpenArchive: (report: ReportItem) => void;
 }
 
 /**
@@ -277,6 +283,10 @@ export function AttentionInbox({
                 onFollowUp={(text) => reports.onFollowUp(pinned.report, text)}
                 muted={reports.mutedAuthors.has(pinned.report.author.key)}
                 onMute={() => mute(pinned.report)}
+                onOpenDocument={() => reports.onOpenDocument(pinned.report)}
+                onPublish={() => reports.onPublish(pinned.report)}
+                publishState={reports.publishStateFor(pinned.report)}
+                onOpenArchive={() => reports.onOpenArchive(pinned.report)}
                 error={readRefused.get(pinned.report.id) ?? null}
               />
             ) : (
@@ -705,6 +715,10 @@ function InboxItem({
               onFollowUp={(text) => reports.onFollowUp(report, text)}
               muted={reports.mutedAuthors.has(report.author.key)}
               onMute={() => onMute(report)}
+              onOpenDocument={() => reports.onOpenDocument(report)}
+              onPublish={() => reports.onPublish(report)}
+              publishState={reports.publishStateFor(report)}
+              onOpenArchive={() => reports.onOpenArchive(report)}
               error={readRefused.get(report.id) ?? null}
             />
           ))}

@@ -223,13 +223,23 @@ function unheldReportIsNews(report: ReportItem, prev: AlertScope): boolean {
 }
 
 /**
- * Whether an alert must wait for Away mode to be known before `shouldDeliver` can decide it: a
- * report alert, with the `inbox` flag on, raised before the daemon's first answer about Away mode
- * (`away` null, as during a page load). Delivered or held once that answer lands. Every other
- * alert never waits.
+ * Whether a report alert is held until this window knows it is not away (`inbox` flag on, the
+ * reports switch on): while Away mode is unknown (`away` null, as during a page load) or reads as
+ * on. A window's Away state comes from polling, so "on" can be stale - the window may already
+ * have been closed from another tab or device - and a report alert is raised once, so dropping it
+ * would lose it for good. Every other alert is never held.
  */
-export function awaitsAwayState(a: Alert, notify: NotifySwitches | null, away: boolean | null): boolean {
-  return away === null && notify !== null && a.notify === "report";
+export function heldForAway(a: Alert, notify: NotifySwitches | null, away: boolean | null): boolean {
+  return away !== false && notify !== null && notify.reports && a.notify === "report";
+}
+
+/**
+ * Whether a held report alert is still owed once this window knows it is not away: its report is
+ * still waiting to be read and no return digest counted it (that digest already told you).
+ */
+export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | undefined): boolean {
+  const report = reports?.find((r) => r.id === a.reportId);
+  return report !== undefined && reportToRead(report) && report.countedInDigestAt === null;
 }
 
 /**

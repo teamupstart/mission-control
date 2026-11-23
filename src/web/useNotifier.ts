@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { Alert, AlertScope, NotifySwitches } from "@shared/alerts.ts";
 import {
-  awaitsAwayState,
   batchSeverity,
   detectAlerts,
+  heldForAway,
+  heldReportStillDue,
   shouldDeliver,
   summarizeAlerts,
   withKnownStalls,
@@ -145,29 +146,37 @@ export function useNotifier(
     };
   }, []);
 
-  // Report alerts raised before Away mode was known, waiting for the daemon's first answer.
-  const awaitingAwayRef = useRef<Alert[]>([]);
+  // Report alerts held while this window was away, or did not know yet (`heldForAway`).
+  const heldRef = useRef<Alert[]>([]);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
-  // Away mode is now known: deliver what waited for it, unless you are away, where the digest
-  // has it instead.
-  const awayKnown = delivery.away !== null;
+  // Known not to be away: deliver each held report alert the return digest did not cover, read
+  // against the reports as they are now (`heldReportStillDue`). One read or counted meanwhile is
+  // dropped; the digest, or the operator, already has it.
+  const awayOff = delivery.away === false;
   useEffect(() => {
-    if (!awayKnown || awaitingAwayRef.current.length === 0) return;
-    const waited = awaitingAwayRef.current;
-    awaitingAwayRef.current = [];
-    const { notify: switches, away, onOpenReport } = deliveryRef.current;
-    raiseBatch(waited.filter((a) => shouldDeliver(a, switches, away ?? false)), settingsRef.current, onOpenReport);
-  }, [awayKnown]);
+    if (!awayOff || heldRef.current.length === 0) return;
+    const held = heldRef.current;
+    heldRef.current = [];
+    const { notify: switches, onOpenReport } = deliveryRef.current;
+    const reports = scopeRef.current.reports;
+    raiseBatch(
+      held.filter((a) => heldReportStillDue(a, reports) && shouldDeliver(a, switches, false)),
+      settingsRef.current,
+      onOpenReport,
+    );
+  }, [awayOff]);
 
   useEffect(() => {
-    // A report alert raised while Away mode is unknown waits for it (see above); everything else
-    // is decided now, exactly as before.
+    // A report alert raised while this window is away, or does not know yet, is held (see
+    // above); everything else is decided now, exactly as before.
     const deliver = (a: Alert) => {
       const { notify: switches, away } = deliveryRef.current;
-      if (awaitsAwayState(a, switches, away)) {
-        awaitingAwayRef.current.push(a);
+      if (heldForAway(a, switches, away)) {
+        heldRef.current.push(a);
         return false;
       }
       return shouldDeliver(a, switches, away ?? false);

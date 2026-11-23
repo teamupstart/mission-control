@@ -513,6 +513,37 @@ test("at the desk, a report posted while this window was disconnected keeps its 
     .getByRole("button", { name: "Timeout is the proxy" })).toHaveAttribute("aria-expanded", "true");
 });
 
+test("a report stamped after Away mode ended elsewhere, while this window still reads it as on, notifies once the window learns", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const name = "Shrink the bundle";
+  const session = await setup(page, daemon, name);
+  await api(daemon, "/api/away", { away: true }, "PUT");
+  await expect(page.getByRole("button", { name: /^Alerts & away mode - away$/ })).toBeVisible({ timeout: 15_000 });
+
+  // This window's next polls keep answering "away", as a poll that has not come round yet would.
+  const stale = await api<Record<string, unknown>>(daemon, "/api/away");
+  let stalePolls = true;
+  await page.route("**/api/away", async (route) => {
+    if (route.request().method() === "GET" && stalePolls) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(stale) });
+      return;
+    }
+    await route.continue();
+  });
+
+  // Away mode ends from another device, then a report is posted and stamped at the desk.
+  await api(daemon, "/api/away", { away: false }, "PUT");
+  const report = await postAndStop(daemon, session, { title: "Moment.js is the bulk", body: "Swap it for date-fns." });
+  expect((await api<{ report: ReportItem }>(daemon, `/api/reports/${report.id}`)).report.countedInDigestAt).toBeNull();
+  await page.waitForTimeout(6000); // at least one poll answered with the stale state
+  expect((await toasts(page)).some((t) => t.tag === `report:${report.id}`), "held while the window reads away").toBe(false);
+
+  // The window learns Away mode is off: the held report was in no digest, so it notifies now.
+  stalePolls = false;
+  await expect(page.getByRole("button", { name: /^Alerts & away mode - away$/ })).toHaveCount(0, { timeout: 15_000 });
+  await expect.poll(() => toastTitles(page), { timeout: 15_000 }).toContain(`${name}'s back: Moment.js is the bulk`);
+});
+
 test("a report stamped while away and this window was disconnected stays quiet when it reconnects after the digest", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   const name = "Trace the memory leak";

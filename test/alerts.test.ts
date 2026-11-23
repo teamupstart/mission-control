@@ -7,7 +7,8 @@ import {
   deliverable,
   detectAlerts,
   digestLine,
-  awaitsAwayState,
+  heldForAway,
+  heldReportStillDue,
   hasReportable,
   shouldDeliver,
   summarizeAlerts,
@@ -1020,7 +1021,7 @@ test("a report a return digest already counted raises nothing when its stamp lan
   assert.deepEqual(detectAlerts(reportsScope([], { takenAt: 1_400 }), reportsScope([counted], { takenAt: 5_000 })), []);
 });
 
-test("awaitsAwayState: only a report alert, with the flag on, waits while Away mode is unknown", () => {
+test("heldForAway: a report alert is held while this window is away or does not know yet; nothing else is", () => {
   const ALL_ON: NotifySwitches = { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true };
   const report = reportAlertFixture();
   const others: Alert[] = [
@@ -1028,14 +1029,24 @@ test("awaitsAwayState: only a report alert, with the flag on, waits while Away m
     { id: "s", kind: "stuck", title: "", body: "", sessionId: null, severity: "attention", notify: "stuck" },
     { id: "q", kind: "review", title: "", body: "", sessionId: null, severity: "attention", notify: "blocking-question" },
   ];
-  assert.equal(awaitsAwayState(report, ALL_ON, null), true);
-  // Known either way: decided at once.
-  assert.equal(awaitsAwayState(report, ALL_ON, false), false);
-  assert.equal(awaitsAwayState(report, ALL_ON, true), false);
-  // The flag off: no report alerts exist, and nothing waits.
-  assert.equal(awaitsAwayState(report, null, null), false);
-  // Every alert that existed before is delivered as it always was, Away mode known or not.
-  for (const a of others) assert.equal(awaitsAwayState(a, ALL_ON, null), false, a.kind);
+  assert.equal(heldForAway(report, ALL_ON, null), true, "Away mode unknown");
+  assert.equal(heldForAway(report, ALL_ON, true), true, "away, which may be stale: held, not dropped");
+  assert.equal(heldForAway(report, ALL_ON, false), false, "known at the desk: decided at once");
+  // The flag off, or the reports switch off: nothing is held (the switch drops it outright).
+  assert.equal(heldForAway(report, null, true), false);
+  assert.equal(heldForAway(report, { ...ALL_ON, reports: false }, true), false);
+  // Every alert that existed before is decided at once, Away mode known or not; stuck still breaks through.
+  for (const a of others) for (const away of [null, true]) assert.equal(heldForAway(a, ALL_ON, away), false, `${a.kind} away=${away}`);
+});
+
+test("heldReportStillDue: a held report alert is owed only while its report waits and no digest counted it", () => {
+  const alert = reportAlertFixture();
+  const waiting = stamped("working");
+  assert.equal(heldReportStillDue(alert, [waiting]), true, "away ended elsewhere before any digest counted it");
+  assert.equal(heldReportStillDue(alert, [{ ...waiting, countedInDigestAt: 9 }]), false, "the return digest already told you");
+  assert.equal(heldReportStillDue(alert, [{ ...waiting, readAt: 9, readBy: "mark-read" }]), false, "read meanwhile");
+  assert.equal(heldReportStillDue(alert, []), false, "no longer held by this window: read or replaced");
+  assert.equal(heldReportStillDue(alert, undefined), false);
 });
 
 test("a session entering awaiting_review on a new blocking question: both of its alerts answer to the Blocking questions switch", () => {

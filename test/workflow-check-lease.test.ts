@@ -736,6 +736,42 @@ test("a maintenance pass that overlaps startup reconciliation never resolves the
   assert.deepEqual(fresh.pinnedPaths(), []);
 });
 
+test("a release of a row startup reconciliation is resolving neither returns it nor drops startup's claim", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-release-during-startup");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-release-during-startup", 4321, "ticks-4321");
+  let answer!: (outcome: "empty") => void;
+  const answered = new Promise<"empty">((resolve) => (answer = resolve));
+  let asked!: () => void;
+  const askedOnce = new Promise<void>((resolve) => (asked = resolve));
+  const startup = fresh.reconcileOnStartup(() => {
+    asked();
+    return answered;
+  });
+  await askedOnce;
+
+  const released = await fresh.releaseForAttempt("att-release-during-startup");
+  assert.equal(released.outcome, "retry");
+  assert.equal(m.calls.filter((c) => c.cmd === "return").length, 0);
+  let maintenanceAsked = 0;
+  await fresh.reclaimLeaked(async () => {
+    maintenanceAsked++;
+    return "empty";
+  });
+  assert.equal(maintenanceAsked, 0, "startup still holds the row after the refused release");
+
+  answer("empty");
+  await startup;
+  assert.equal(m.calls.filter((c) => c.cmd === "return" && c.path === path).length, 1);
+  assert.equal(store.get("att-release-during-startup")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
 test("startup reconciliation skips a saved row that a maintenance pass is already resolving", async () => {
   const m = mkManager();
   const first = await acquire(m, "att-startup-first");

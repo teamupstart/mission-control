@@ -1044,6 +1044,12 @@ export class CheckLeaseManager {
    */
   async releaseForAttempt(attemptId: string): Promise<CheckLeaseRelease> {
     if (!this.liveRow(attemptId)) return this.releaseClaimed(attemptId);
+    if (this.busy.has(attemptId)) {
+      // Another pass is resolving this row, so the claim is not ours to take or drop. Ownership
+      // still goes, as on every exit, so reclamation can pick the row up if that pass keeps it.
+      this.owned.delete(attemptId);
+      return { outcome: "retry", reason: "another pass is already resolving this check lease" };
+    }
     this.busy.add(attemptId);
     try {
       return await this.releaseClaimed(attemptId);

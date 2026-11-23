@@ -9111,6 +9111,22 @@ export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
   });
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
 
+// MCP reuses the wire fields with repository omission and established policy defaults.
+// The daemon parses the complete HTTP schemas above, including cross-field refinements,
+// after the MCP process has supplied its checkout path.
+const McpScheduleFields = {
+  template: z.object({
+    ...ScheduleTemplateSchema.shape,
+    repoRoot: ScheduleTemplateSchema.shape.repoRoot.default(".").describe(
+      "Absolute local checkout path. Omit to use the calling session's working directory.",
+    ),
+  }),
+  overlapPolicy: ScheduleDefinitionSchema.shape.overlapPolicy.default("skip-active"),
+  missedPolicy: ScheduleDefinitionSchema.shape.missedPolicy.default("coalesce-latest"),
+};
+export const McpCreateScheduleSchema = CreateScheduleSchema.extend(McpScheduleFields);
+export const McpSchedulePreviewSchema = z.object({ ...SchedulePreviewSchema.shape, ...McpScheduleFields });
+
 /** Pause or resume. The service recomputes the cursor from the correct anchor. */
 export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });
 export type SetScheduleEnabledBody = z.infer<typeof SetScheduleEnabledSchema>;

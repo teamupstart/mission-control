@@ -5,7 +5,7 @@ import type { Task } from "@shared/types.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { runStructured, parseModelReply } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
@@ -345,7 +345,7 @@ export async function planBacklog(
         schema: BACKLOG_REPORT_JSON_SCHEMA,
       }),
     buildBacklogPrompt(backlog),
-    (raw) => parseModelJson(raw, BacklogReportSchema),
+    (raw) => parseModelReply(raw, BacklogReportSchema),
     "The backlog planner",
     undefined,
     { shapeGuaranteed: runner.structuredOutput?.guaranteesInputShape === true },

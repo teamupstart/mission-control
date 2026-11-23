@@ -2939,6 +2939,39 @@ test("a disabled node with an override still launches nothing and stamps no prov
   assert.equal(skipped.model, null);
 });
 
+for (const [label, firstReply, expected] of [
+  ["a schema miss", JSON.stringify({ verdict: "pass", summary: "LEAK-ME", approvalDetails: { reason: "Proven", evidence: [] }, confidence: "high" }),
+    "Correction required: the prior reply was valid JSON but did not match the required shape (confidence: Expected number, received string)."],
+  ["unparseable prose", "I approve this change.", "Correction required: the prior reply was not valid JSON."],
+] as const) test(`the Persona correction names ${label} rather than a generic parse failure`, async () => {
+  const id = `correction-${label.replaceAll(" ", "-")}`;
+  const reviewer = persona("p", "Contract reviewer", "claude", "Review");
+  const executionGraph: PublishedWorkflowGraph = {
+    nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
+    edges: [{ id: "start", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" }, { id: "pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" }, { id: "fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" }],
+  };
+  const store = seedSubmission(id, executionGraph);
+  const { personaReviewInput, personaReviewInputDigest } = await import("../src/server/workflows/persona-contract.ts");
+  const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
+  store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: personaReviewInputDigest(input), now: 4 });
+  store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
+  const prompts: string[] = [];
+  const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
+    prompts.push(prompt);
+    return prompts.length === 1
+      ? firstReply
+      : JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [{ kind: "decision", quote: "Chosen", path: null }] }, confidence: 1 });
+  } };
+  const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
+  engine.start();
+  try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
+  finally { await engine.stop(); }
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts[1]!.includes(expected), prompts[1]!.slice(-600));
+  assert.doesNotMatch(prompts[1]!, /could not be executed or parsed|LEAK-ME/);
+  assert.equal(store.getRun(`run-${id}`)?.status, "completed");
+});
+
 // A disconnect must retain the review gate across retries, restart and allowance exhaustion.
 for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
   const timerLimit = 2_147_483_647;

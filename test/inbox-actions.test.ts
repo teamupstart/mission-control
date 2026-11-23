@@ -9,7 +9,7 @@
  *
  * Every card file that draws its controls through `InboxActionButton` is scanned for a control
  * drawn any other way: a raw `<button>` or an `onClick` on anything else would be a control voice
- * could never reach. The report card is the first such file; later cards join `CARD_FILES`.
+ * could never reach. The report card and the Stuck card are scanned; later cards join `CARD_FILES`.
  *
  * The question card predates the registry, so only its two spoken forms are declared. Its name
  * line and hints are pinned below by rendering.
@@ -198,7 +198,7 @@ test("a question card's spoken hints address the agent, and stay hidden until vo
 // ---- card files: every control is a declared action ----
 
 /** Cards whose controls are all drawn through `InboxActionButton`. */
-const CARD_FILES = ["src/web/components/ReportCard.tsx", "src/web/components/ReportEntryCard.tsx"];
+const CARD_FILES = ["src/web/components/ReportCard.tsx", "src/web/components/ReportEntryCard.tsx", "src/web/components/StuckCard.tsx"];
 
 test("a card file draws no control except through InboxActionButton, and names only declared actions", () => {
   const declared = new Set(actions.map((action) => action.id));
@@ -334,4 +334,29 @@ test("a conversation entry draws its toggle and Mark read as declared actions, a
   assert.match(replaced, /Replaced by a later version/);
   assert.doesNotMatch(replaced, /data-inbox-action="mark-read"/);
   assert.match(draw({ version: 2, rootId: "r-1" }), /Version 2, replacing an earlier report/);
+});
+
+test("the Stuck card's ten actions are declared with the spoken forms or reasons the plan gives", () => {
+  const stuck: Record<string, InboxActionSpec["spoken"] | InboxActionSpec["clickOnly"]> = {
+    nudge: { named: "{name}, nudge", whileOpen: null },
+    continue: { named: "{name}, continue", whileOpen: null },
+    "mark-done": { named: "{name}, mark done", whileOpen: null },
+    resubmit: { named: "{name}, resubmit", whileOpen: null },
+    push: { named: "{name}, push", whileOpen: null },
+    stop: { named: "{name}, stop", whileOpen: null },
+    message: { named: "{name}, ...", whileOpen: "reply, ..." },
+    "open-session": "navigation",
+    "open-run": "navigation",
+    dismiss: "dismissal",
+  };
+  assert.equal(Object.keys(stuck).length, 10);
+  for (const [id, expected] of Object.entries(stuck)) {
+    const action = actions.find((entry) => entry.id === id);
+    assert.ok(action, `${id} is declared`);
+    if (typeof expected === "string") assert.equal(action.clickOnly, expected, id);
+    else assert.deepEqual(action.spoken, expected, id);
+  }
+  assert.equal(actions.find((entry) => entry.id === "stop")?.label, "Interrupt");
+  assert.equal(actions.find((entry) => entry.id === "push")?.label, "Tell it to push");
+  assert.ok(!actions.some((entry) => /cancel/i.test(entry.id) || /cancel/i.test(entry.label)), "no inbox action is Cancel");
 });

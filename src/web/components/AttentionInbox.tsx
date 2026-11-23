@@ -24,6 +24,7 @@ import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
 import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
   QUESTION_ACTION_COPY,
@@ -73,6 +74,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   pipeline_halt: "Pipeline halts",
   pipeline_commission: "Pipeline lifecycle",
   session_blocked: "Waiting on you",
+  session_stuck: "Stuck",
   parked_finalization: "Stuck finalizations",
   agent_reports: "Reports",
 };
@@ -104,6 +106,10 @@ export function AttentionInbox({
   onOpenPipelineCommission = () => undefined,
   reports,
   held = false,
+  onOpenRun = (runId) => {
+    window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
+  },
+  onReplyBox,
 }: {
   fold: AttentionFold;
   /**
@@ -134,6 +140,10 @@ export function AttentionInbox({
    * answers are held rather than claiming there is nothing to answer.
    */
   held?: boolean;
+  /** Open a workflow run on the Runs page, for a Stuck row about a parked run. */
+  onOpenRun?: (runId: string) => void;
+  /** A Stuck row's message box appearing or going, by session (the `onReplyBox` contract). */
+  onReplyBox?: (sessionId: string, present: boolean) => void;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
   // A refused Mark read, by report, drawn under its card until it is tried again.
@@ -208,7 +218,7 @@ export function AttentionInbox({
               you less than it has. */}
           <span className="dim">
             {reportsOn
-              ? " · answers, decisions, halts, stuck finalizations and reports"
+              ? " · answers, decisions, halts, stuck sessions, stuck finalizations and reports"
               : " · answers, decisions, halts and stuck finalizations"}
           </span>
           {fold.toRead > 0 && <span className="dim"> · {fold.toRead} to read</span>}
@@ -243,6 +253,9 @@ export function AttentionInbox({
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
+                onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+                onReplyBox={onReplyBox}
+                onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
               {saysNothingNew(item, refused.get(item.id)?.said) && (
@@ -311,6 +324,7 @@ function inboxSubject(item: AttentionItem): string {
     case "session_reviews":
     case "session_dialog":
     case "session_blocked":
+    case "session_stuck":
       return item.session.name || "(unnamed)";
   }
 }
@@ -356,6 +370,9 @@ function InboxItem({
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission,
+  onOpenRun,
+  onDismiss,
+  onReplyBox,
   onLeave,
 }: {
   item: AttentionItem;
@@ -367,11 +384,30 @@ function InboxItem({
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
+  onOpenRun: (runId: string) => void;
+  /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
+  onDismiss: () => void;
+  onReplyBox?: (sessionId: string, present: boolean) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
-  const subject = <AgentName view={useInboxSubject(item)} />;
+  const subjectView = useInboxSubject(item);
+  const subject = <AgentName view={subjectView} />;
   switch (item.kind) {
+    case "session_stuck":
+      // Draws its own Dismiss, like every other control on it, from the action registry.
+      return (
+        <StuckCard
+          session={item.session}
+          stall={item.stall}
+          context={item.context}
+          subject={subjectView}
+          onOpenSession={onOpenSession}
+          onOpenRun={onOpenRun}
+          onDismiss={onDismiss}
+          onReplyBox={onReplyBox ? (present) => onReplyBox(item.session.id, present) : undefined}
+        />
+      );
     case "pipeline_commission":
       return (
         <section className="inbox-item inbox-halt">

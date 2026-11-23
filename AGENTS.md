@@ -147,6 +147,8 @@ block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer 
 
 ## Working rules
 
+Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
+
 New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the three-release lifecycle.
 
 

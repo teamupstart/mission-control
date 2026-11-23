@@ -1,6 +1,5 @@
 import { InboxReplyBoxesContext } from "../../lib/inbox-reply-boxes.ts";
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
-import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
@@ -228,7 +227,6 @@ export function ConsoleDetail({
   onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
-  const controlRequests = useFeatureFlag("session-control-requests");
   useEffect(() => {
     return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab === "scouts" ? "archives" : tab);
   }, [session.id, tab]);
@@ -943,13 +941,6 @@ export function ConsoleDetail({
                 blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
             <SessionAwaitingBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
-            {/* The session's own ask for Control other sessions: answered before reading on,
-                like the menu above. Capped and scrolled like the blocker band below its
-                reason (`.detail-conv > .session-control-request`). */}
-            {controlRequests && (
-              // Keyed by the ask, so one ask's error or busy state never shows on the next.
-              <SessionControlRequestCard key={`${session.id}:${session.sessionControlRequest?.id ?? ""}`} session={session} />
-            )}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}

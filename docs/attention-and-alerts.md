@@ -12,27 +12,29 @@ obligation:
    modal draws, diff/plan/question and option menus included. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
-3. **Parked on a menu** - a session sitting on a terminal
+3. **Session control requests** - with the preview enabled, each request shows who asked and why.
+   **Accept** grants control from the desktop app. **Decline** answers the session from any dashboard.
+4. **Parked on a menu** - a session sitting on a terminal
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
    inbox: it deep-links to the session detail, while an ensemble member's live lane in the run
    detail also renders the verified pane dialog in place.
-4. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
+5. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
    you: a launch blocked on readiness, a failure, lifecycle evidence that conflicts with the task,
    a missing workspace, or a held Engineer. **Open Pipeline** opens the commission.
-5. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+6. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
    resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
    time anybody looks. Nothing here clears a halt: that stays with the engine's own CLI. The
    row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
-6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+7. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-7. **Stuck** - with the `inbox` preview flag on, a session the daemon's
+8. **Stuck** - with the `inbox` preview flag on, a session the daemon's
    [stuck rules](#stuck-sessions) flagged, with the fix on the row. See
    [Stuck rows](#stuck-rows).
-8. **Stuck finalizations** - a promotion that stopped on an error.
-9. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
+9. **Stuck finalizations** - a promotion that stopped on an error.
+10. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
    on. See [Agent reports](#agent-reports) below. They are read, not answered, so they are never
    in the **to answer** count.
 
@@ -255,7 +257,8 @@ else is waiting.
 
 ### Dismiss a row without resolving it
 
-Every row ends its header with **Dismiss**. It takes the row out of the inbox and out of the
+Most rows have a **Dismiss** button. Session control requests stay visible until answered or withdrawn,
+and reports have **Mark read**. **Dismiss** takes the row out of the inbox and out of the
 **to answer** count without resolving anything: no answer is sent, the agent keeps waiting, a
 halted pipeline stays halted, and the session keeps its colour on the board. Use it for something
 you have read and cannot or will not act on from here, such as a Pipeline lifecycle problem the

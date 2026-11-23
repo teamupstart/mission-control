@@ -25,19 +25,12 @@ function operatorRefusal(c: Context): string | null {
 }
 
 /**
- * A refused reply or follow-up body, as the one sentence its card prints beneath it. `parseBody`
- * carries the schema's whole issue list; the operator reads only the first issue's message.
+ * A refused reply or follow-up body, as the one sentence its card prints beneath it: the first
+ * schema issue's message, read from `parseBody`'s structured issues. A body that could not be
+ * read at all has no issues, and its own sentence already reads well.
  */
-function bodyRefusal(c: Context, error: string) {
-  let message = error;
-  try {
-    const issues: unknown = JSON.parse(error);
-    const first = Array.isArray(issues) ? (issues[0] as { message?: unknown } | undefined) : undefined;
-    if (typeof first?.message === "string") message = first.message;
-  } catch {
-    // Not an issue list (an unreadable or non-JSON body): its own sentence already reads well.
-  }
-  return c.json({ error: message }, 400);
+function bodyRefusal(c: Context, refused: { error: string; issues?: readonly { message: string }[] }) {
+  return c.json({ error: refused.issues?.[0]?.message ?? refused.error }, 400);
 }
 
 /**
@@ -110,7 +103,7 @@ export function registerReportRoutes(
     // Strict: a body that is present but not JSON is refused, never read as {} (for a follow-up,
     // that would start a task with no instructions). An absent body still reads as {}.
     const parsed = await parseBody(c, ReportReplySchema, { strict: true });
-    if (!parsed.ok) return bodyRefusal(c, parsed.error);
+    if (!parsed.ok) return bodyRefusal(c, parsed);
     try {
       return c.json(reports.reply(c.req.param("id"), parsed.data.text, answers.submit));
     } catch (error) {
@@ -127,7 +120,7 @@ export function registerReportRoutes(
     // Strict: a body that is present but not JSON is refused, never read as {} (for a follow-up,
     // that would start a task with no instructions). An absent body still reads as {}.
     const parsed = await parseBody(c, ReportFollowUpSchema, { strict: true });
-    if (!parsed.ok) return bodyRefusal(c, parsed.error);
+    if (!parsed.ok) return bodyRefusal(c, parsed);
     const id = c.req.param("id");
     let outcome: Awaited<ReturnType<ReportManager["followUp"]>>;
     try {

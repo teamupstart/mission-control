@@ -270,10 +270,15 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   const sessionPath = `/api/sessions/${encodeURIComponent(session.id)}`;
   await api(daemon, `${sessionPath}/rename`, { name });
   await api(daemon, `${sessionPath}/note`, { brief, disposition: "skipped" }, "PUT");
+  const activityStart = async () => {
+    const current = (await api<Session[]>(daemon, "/api/sessions")).find(s => s.id === session.id)!;
+    return current.lastActivity ?? current.firstSeen;
+  };
+  let since = await activityStart();
   const facts: StallFacts = { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 0 };
   await page.route("**/api/away/stalls", (route) => route.fulfill({ json: [{
     sessionId: session.id, kind: "unfinished-work", forMs: 21 * 60_000, reason: "idle 21m with work unfinished",
-    facts, fingerprint: "console-open-task",
+    facts, since, fingerprint: `console-open-task-${since}`,
   } satisfies Stall] }));
   await expect(page.locator("main.board")).toHaveCount(0);
 
@@ -300,6 +305,15 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await band.getByRole("button", { name: "Nudge", exact: true }).click();
   await expect.poll(() => heard(daemon, session.id, INBOX_MESSAGES.nudge), { timeout: 30_000 }).toBe(true);
   await expect.poll(() => sessionState(daemon, session.id), { timeout: 30_000 }).toBe("idle");
+  await expect.poll(activityStart).toBeGreaterThan(since);
+  await expect(band).toHaveCount(0);
+  await expect(row.locator(".rail-stalled")).toHaveCount(0);
+
+  // Even another poll about the previous episode cannot bring the old fixes back.
+  await page.waitForResponse(response => response.url().endsWith("/api/away/stalls"));
+  await expect(band).toHaveCount(0);
+  since = await activityStart();
+  await expect(band).toBeVisible({ timeout: 15_000 });
 
   // Dismiss returns the row to the rest of Idle: the mark and the band go, and nothing reaches the inbox.
   await page.getByRole("region", { name: "Session stalled" })

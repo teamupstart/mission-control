@@ -159,6 +159,20 @@ test("a cached open-task stall expires when the session changes or closes its ta
   }
 });
 
+test("a new activity episode retires an idle stall even if the session returns to the same task", () => {
+  const session = { ...idleSession("s-idle"), lastActivity: 100 };
+  const moved = { ...session, lastActivity: 200 };
+  for (const kind of ["unfinished-work", "workflow-parked"] as const) {
+    const raw = stall(session.id, kind);
+    const earlier = captureStalls([raw], [session]);
+    assert.deepEqual(currentStalls(earlier, [moved]), []);
+    const late = captureStalls([{ ...raw, since: 100 }], [moved]);
+    assert.deepEqual(currentStalls(late, [moved]), []);
+    const fresh = captureStalls([{ ...raw, since: 200, fingerprint: "new-episode" }], [moved]);
+    assert.equal(currentStalls(fresh, [moved]), fresh);
+  }
+});
+
 test("board and inbox honor the old reason hash only for a fingerprintless daemon response", () => {
   const session = idleSession("s-parked");
   const legacy = { ...PARKED, fingerprint: undefined, reason: "Previous review" };

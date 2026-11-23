@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { hasOpenStallTask, legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -12,10 +12,15 @@ const NONE: ObservedStall[] = [];
 
 /** Bind an older daemon's response to the session episode observed when its poll started. */
 export function captureStalls(stalls: Stall[], sessions: readonly Session[]): ObservedStall[] {
-  if (!stalls.some(stall => !stall.fingerprint)) return stalls;
+  if (stalls.every(stall => stall.fingerprint && (!isIdleStall(stall) || stall.since !== undefined))) return stalls;
   const byId = new Map(sessions.map(session => [session.id, session]));
-  return stalls.map(stall => stall.fingerprint ? stall : {
-    ...stall, legacy: true, fingerprint: legacyStallFingerprint(stall, byId.get(stall.sessionId)),
+  return stalls.map(stall => {
+    const session = byId.get(stall.sessionId);
+    const observed = isIdleStall(stall) && stall.since === undefined && session
+      ? { ...stall, since: session.lastActivity ?? session.firstSeen } : stall;
+    return stall.fingerprint ? observed : {
+      ...observed, legacy: true, fingerprint: legacyStallFingerprint(stall, session),
+    };
   });
 }
 
@@ -26,6 +31,8 @@ export function currentStalls(stalls: ObservedStall[] | undefined, sessions: rea
   const current = stalls.filter(stall => {
     const session = byId.get(stall.sessionId);
     if (stall.legacy && (!session || legacyStallFingerprint(stall, session) !== stall.fingerprint)) return false;
+    if (session && isIdleStall(stall) && stall.since !== undefined &&
+        (session.lastActivity ?? session.firstSeen) > stall.since) return false;
     const task = stall.facts?.kind === "unfinished-work" ? stall.facts.task : null;
     // SSE can reassign or finish a task before the next away poll. Its old card and
     // Mark done action expire together. A poll may also arrive before the SSE snapshot.
@@ -76,7 +83,7 @@ export function useStalls(sessions: readonly Session[]): Stall[] | undefined {
       // comparing on it would re-render on each poll for a stall nothing changed
       // about. The alert engine edge-triggers on (session, kind) anyway. The fingerprint is in
       // it because a Stuck row draws the facts, which can change while the sentence does not.
-      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint}`).join("|");
+      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint}:${s.since}`).join("|");
       if (sig === seen.current) return;
       seen.current = sig;
       setStalls(next.length > 0 ? next : NONE);

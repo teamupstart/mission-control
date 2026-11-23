@@ -96,6 +96,8 @@ export interface Stall {
   kind: StallKind;
   /** How long it has been stuck, ms. */
   forMs: number;
+  /** Start of the episode measured by the daemon, in epoch ms. Older daemons omit it. */
+  since?: number;
   /** One line naming the stall, for the alert body and the digest. */
   reason: string;
   /**
@@ -311,7 +313,7 @@ export function legacyStallFingerprint(stall: Stall, session?: Session): string 
 
 /** A stall with its facts and fingerprint attached. */
 function withFacts(stall: Stall, facts: StallFacts, since: number): Stall {
-  return { ...stall, facts, fingerprint: stallFingerprint(facts, since) };
+  return { ...stall, facts, since, fingerprint: stallFingerprint(facts, since) };
 }
 
 /**

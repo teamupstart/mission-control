@@ -206,8 +206,8 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   await expect(row().getByRole("button", { name: "Resubmit" })).toHaveCount(0);
   await capture(row(), "04-parked-push", page);
   await row().getByRole("button", { name: "Tell it to push", exact: true }).click();
-  await expect(row().getByRole("status")).toHaveText("Told it to push.");
-  expect(sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "push" });
+  // Starting the turn retires this idle stall. Follow the request into the real transcript.
+  await expect.poll(() => sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "push" });
   await expect.poll(() => heard(daemon, id, INBOX_MESSAGES.push), { timeout: 30_000 }).toBe(true);
 
   // 5. A self-resuming round that stalled: nothing to resubmit and nothing to push, so the row
@@ -222,8 +222,7 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   await expect(row().getByRole("button", { name: "Tell it to push" })).toHaveCount(0);
   await capture(row(), "05-parked-next-turn", page);
   await row().getByRole("button", { name: "Continue", exact: true }).click();
-  await expect(row().getByRole("status")).toHaveText("Asked it to continue.");
-  expect(sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "continue" });
+  await expect.poll(() => sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "continue" });
   await expect.poll(() => heard(daemon, id, INBOX_MESSAGES.continue), { timeout: 30_000 }).toBe(true);
 
   // 6. A resubmittable run: Resubmit asks for the run the row names. Its first answer is a

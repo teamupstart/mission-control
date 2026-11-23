@@ -41,6 +41,8 @@ export const SETUP_DEPENDENCY_IDS = [
   "acli-auth",
   "coderabbit-auth",
   "voice-previews",
+  "voice-model",
+  "voice-microphone",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -259,7 +261,14 @@ export type SetupRemedy =
   // Turn preview feature flags on, through the same `PUT /api/feature-flags` the Feature flags
   // panel uses. It names flags and nothing else: the browser could switch any of them anyway,
   // and the daemon's flag route refuses an id it does not know.
-  | { kind: "feature-flags"; flags: readonly FeatureFlagId[]; label: string; note: string };
+  | { kind: "feature-flags"; flags: readonly FeatureFlagId[]; label: string; note: string }
+  // Download the speech model through `POST /api/voice/model/download`. It names nothing: the
+  // daemon's manifest says what is fetched and what it must hash to, and the panel draws the
+  // download's progress from the live voice state rather than from this snapshot.
+  | { kind: "voice-model-download"; label: string; note: string }
+  // Microphone access for voice. Until the desktop shell can ask macOS (a later phase), the fix is
+  // the operator's: the panel says where the switch is and re-reads the permission on request.
+  | { kind: "microphone-access"; label: string; note: string };
 
 /**
  * Start Herdr's default server, offered in place of the install link while the CLI is
@@ -628,6 +637,33 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       label: "Turn on the previews voice needs",
       note: "Turn on Ask without stopping, Reports and inbox upgrades and File plan decisions in Settings > Feature flags.",
     },
+  },
+  "voice-model": {
+    id: "voice-model",
+    label: "Voice speech model",
+    family: "voice",
+    requirement: "optional",
+    enables: "Lets Mission Control hear spoken names and messages on this machine. Speech is recognized locally.",
+    remedy: {
+      kind: "voice-model-download",
+      label: "Download",
+      note: "Download the Parakeet speech model from Hugging Face, check every file against its pinned SHA-256 checksum, and keep it in the state home.",
+    },
+  },
+  // Read from the latest listener hello or desktop shell report; neither exists until a listener
+  // or the shell is running, and the row says it has not been checked rather than guessing.
+  "voice-microphone": {
+    id: "voice-microphone",
+    label: "Microphone access",
+    family: "voice",
+    requirement: "optional",
+    enables: "Lets the local listener hear you. Audio never leaves this machine.",
+    remedy: {
+      kind: "microphone-access",
+      label: "Check again",
+      note: "macOS asks for the microphone when voice first listens. If it was denied, allow Mission Control in System Settings > Privacy & Security > Microphone, then check again.",
+    },
+    after: "voice-previews",
   },
 };
 

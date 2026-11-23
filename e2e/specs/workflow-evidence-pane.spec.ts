@@ -52,7 +52,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   // where the last click left the pointer photographs that bubble over the thing under test.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-evidence-pane/${name}.png`);
 }
 
@@ -219,7 +218,6 @@ async function seedRun(daemon: DaemonHandle, sessionId: string): Promise<string>
     { message: "the seeded round should settle completed", timeout: 60_000 }).toBe("completed");
   } catch (caught) {
     // The seeding failure that matters here is server-side and invisible to a browser trace.
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

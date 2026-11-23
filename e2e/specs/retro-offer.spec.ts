@@ -64,14 +64,12 @@ async function shoot(
   // row is a line of adjacent buttons.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/retro-offer/${name}.png`);
 }
 
 /** Say what just held, after it held - so the transcript cannot narrate a step that did not. */
 function observed(line: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${line}`);
 }
 

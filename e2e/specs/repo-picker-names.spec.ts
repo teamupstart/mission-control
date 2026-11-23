@@ -71,7 +71,6 @@ test("the repo dropdown names checkouts by folder, and still writes the full pat
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.screenshot({ path: `${EVIDENCE}dispatch-repo-dropdown.png` });
-    // oxlint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/repo-picker-names/dispatch-repo-dropdown.png`);
   }
 
@@ -119,7 +118,6 @@ test("two checkouts sharing a name each say which one they are", async ({ page, 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.screenshot({ path: `${EVIDENCE}colliding-names.png` });
-    // oxlint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/repo-picker-names/colliding-names.png`);
   }
 
@@ -155,7 +153,6 @@ test("the task sources add form gets the same named rows", async ({ page, daemon
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.screenshot({ path: `${EVIDENCE}task-sources-repo-dropdown.png` });
-    // oxlint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/repo-picker-names/task-sources-repo-dropdown.png`);
   }
 

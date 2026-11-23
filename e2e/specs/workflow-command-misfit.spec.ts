@@ -134,7 +134,6 @@ test("a machine-wide default the repository does not provide shows a configurati
       }, { message: "the failed default should prepare one repair packet", timeout: 60_000 })
       .toBe(1);
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }
@@ -161,7 +160,6 @@ test("a machine-wide default the repository does not provide shows a configurati
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await packet.screenshot({ path: `${EVIDENCE}configuration-repair-packet.png` });
-    // eslint-disable-next-line no-console
     console.log(`REPAIR PACKET:\n${await packet.innerText()}`);
   }
 });
@@ -228,7 +226,6 @@ test("the session's configure_workflow_command shows the operator its card, and 
         && review.decisions?.[0]?.id.startsWith("configure-command:"));
     }, { message: "configure_workflow_command should raise the confirmation card", timeout: 90_000 }).toBe(true);
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
     throw caught;
   }

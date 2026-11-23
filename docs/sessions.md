@@ -2480,7 +2480,7 @@ forged browser headers.
 
 With the **Session control requests** preview on (Settings > Feature flags, off by default), a
 session that needs this grant can ask for it with the `request_session_control` tool, giving a
-reason. The ask appears as a **Permission** card at the top of that session's Conversation tab,
+reason. The ask appears as a **Permission** card in the attention inbox,
 showing the session's name and its reason verbatim, with **Decline** and **Accept**.
 
 - **Accept** gives the session exactly the grant the menu above gives, through the same real

@@ -44,7 +44,6 @@ const VIEWPORT = { width: 1512, height: 900 };
 
 function observed(what: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${what}`);
 }
 
@@ -57,7 +56,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.getByRole("navigation", { name: "The Line" }).screenshot({
     path: `${EVIDENCE}${name}.png`,
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
 }
 
@@ -69,7 +67,6 @@ async function shootSettings(page: Page, name: string): Promise<void> {
   await page.getByRole("radiogroup", { name: "Line density" }).screenshot({
     path: `${EVIDENCE}${name}.png`,
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
 }
 
@@ -424,7 +421,6 @@ async function shootPreview(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.locator(".topbar-line-setting").screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
 }
 
@@ -440,7 +436,6 @@ async function shootPlacement(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await page.locator('[data-anchor="display/topbar"]').screenshot({ path: `${EVIDENCE}${name}.png` });
   if (before) await page.setViewportSize(before);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
 }
 

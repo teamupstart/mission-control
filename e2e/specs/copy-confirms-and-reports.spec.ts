@@ -22,7 +22,6 @@ async function shoot(target: Locator, page: Page, name: string): Promise<void> {
   // button being photographed is what the pointer was last over.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/copy-confirms-and-reports/${name}.png`);
 }
 

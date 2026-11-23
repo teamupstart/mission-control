@@ -25,7 +25,6 @@ async function capture(target: Locator, name: string): Promise<void> {
   // Off the Residents button, whose tooltip would otherwise cover the dock's top edge.
   await target.page().mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/residents-dock-card/${name}.png`);
 }
 

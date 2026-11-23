@@ -32,7 +32,6 @@ async function capture(target: Locator | Page, name: string, page: Page): Promis
   await page.mouse.move(0, 0);
   await expect(page.locator(".tooltip")).toHaveCount(0, { timeout: 3000 }).catch(() => undefined);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/reports-reply/${name}.png`);
 }
 

@@ -110,6 +110,7 @@ requests. Its Linux jobs use ephemeral GitHub-hosted runners. Each job that cons
 `node_modules` cache depends on the producer for its Node.js version. The workflow
 defines the unit and E2E shard matrices. The [shared unit steps](.github/actions/run-unit-shard/action.yml)
 run the tests, build, and smoke-check the bundles. Typecheck and lint run in the gates job.
+See the [contributor lint guidance](CONTRIBUTING.md#commands) for what lint enforces.
 
 The [pull request title workflow](.github/workflows/pull-request-title.yml) checks titles
 for Release Please. Keep macOS packaging on manual CI dispatch. A packaging failure
@@ -117,6 +118,8 @@ on a tag push would block signing because [signed distribution](.github/workflow
 requires successful push CI for the release commit and ref.
 
 ## Working rules
+
+Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
 
 New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the preview, default-on, and retirement stages.
 

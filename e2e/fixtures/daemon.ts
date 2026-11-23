@@ -577,6 +577,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // root holds no policy, so Settings > Cost reads as it does on an unmanaged machine. A
     // spec that drives the managed-policy warning points it at a fixture through `daemonEnv`.
     MISSION_MANAGED_SETTINGS_ROOT: join(home, "managed-settings-root"),
+    // No spec downloads the real speech model. A Download pressed without the fixture server
+    // (`startModelServer` in `voice.ts`, passed through `daemonEnv`) reaches a closed loopback
+    // port and fails, rather than fetching half a gigabyte from Hugging Face.
+    MISSION_VOICE_MODEL_BASE_URL: "http://127.0.0.1:9",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through

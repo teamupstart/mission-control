@@ -24,6 +24,7 @@ import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
 import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls, ReportPublishState } from "../lib/sessionReports.ts";
+import { SessionControlRequestCard } from "./SessionControlRequestCard.tsx";
 import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
@@ -57,7 +58,7 @@ import {
  * one button without deciding what a stale menu does to it. It gets a row saying who is stuck
  * and a click through to the card that can answer it.
  *
- * EVERY row can be dismissed, whether or not what it reports has been resolved. Some rows have
+ * Most rows can be dismissed before they are resolved. Control requests stay until answered or withdrawn. Some rows have
  * nothing to answer here at all - a Pipeline lifecycle problem, a halt the engine's own CLI
  * clears - and a queue that could only be drained by fixing everything in it kept showing them
  * on every open. Dismiss removes the row from this list and from the `to answer` count, and the
@@ -69,6 +70,7 @@ import {
 /** The heading each kind of obligation sits under. The fold groups them; this names them. */
 const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   ensemble_decision: "Decisions",
+  session_control_request: "Session control requests",
   session_reviews: "Questions from agents",
   session_dialog: "Parked on a menu",
   pipeline_halt: "Pipeline halts",
@@ -152,7 +154,7 @@ export function AttentionInbox({
   reports: InboxReportControls;
   /**
    * The operator's dismissals are not known yet (still loading, or unreadable), so every row
-   * that can be dismissed is held back and only reports are listed. The heading then says the
+   * that can be dismissed is held back. Reports and control requests remain available. The heading then says the
    * answers are held rather than claiming there is nothing to answer.
    */
   held?: boolean;
@@ -246,7 +248,7 @@ export function AttentionInbox({
             figure at the moment they were trying to drain it.
           */}
           <strong>{fold.total > 0 ? `${fold.total} to answer` : held ? "Answers held" : "Nothing to answer"}</strong>
-          {held && <span className="dim"> · they appear once your inbox dismissals can be read</span>}
+          {held && <span className="dim"> · held items appear once your inbox dismissals can be read</span>}
           {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
@@ -382,6 +384,7 @@ function inboxSubject(item: AttentionItem): string {
       return item.run.slug;
     case "agent_reports":
       return item.authorName;
+    case "session_control_request":
     case "session_reviews":
     case "session_dialog":
     case "session_blocked":
@@ -459,6 +462,8 @@ function InboxItem({
   const subjectView = useInboxSubject(item);
   const subject = <AgentName view={subjectView} />;
   switch (item.kind) {
+    case "session_control_request":
+      return <SessionControlRequestCard sessionId={item.session.id} subject={subject} request={item.request} />;
     case "session_stuck":
       // Draws its own Dismiss, like every other control on it, from the action registry.
       return (

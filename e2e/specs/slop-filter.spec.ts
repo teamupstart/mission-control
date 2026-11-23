@@ -57,6 +57,5 @@ test("Slop Filter ships read-only with all six evidence-bound categories", async
     path: `${EVIDENCE}builtin-slop-filter.png`,
     fullPage: true,
   });
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/slop-filter/builtin-slop-filter.png");
 });

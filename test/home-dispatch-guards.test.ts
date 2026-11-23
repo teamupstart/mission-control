@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 449 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 452 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -58,15 +58,16 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // then for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you"
   // switches in `alerts`, all on. The recurring-mission MCP routes add GET/POST /mcp/schedules
   // and POST /mcp/schedules/preview, all answering 401 without a daemon token. Voice addressing's
-  // five routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`,
-  // `POST /voice/listener/hello` and `POST /voice/shell-report`) answer 404 with the `voice` flag
-  // off, and `POST /api/setup/install`'s refusal names the new `voice-previews` id.
-  // `GET /api/setup/checks` is unchanged, and what voice adds to `GET /api/ui/config` is withheld
-  // with the flag off.
+  // eight routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`,
+  // `POST /voice/listener/hello`, `POST /voice/shell-report`, the speech model's `POST` and
+  // `DELETE /api/voice/model/download` and the input devices' `GET /api/voice/devices`) answer 404
+  // with the `voice` flag off, and `POST /api/setup/install`'s refusal names the new
+  // `voice-previews`, `voice-model` and `voice-microphone` ids. `GET /api/setup/checks` is
+  // unchanged, and what voice adds to `GET /api/ui/config` is withheld with the flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 449);
+  assert.equal(others.length, 452);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "15a69ca9f84f700a8efc8d0849a76eff757b4489d9a03e1409ef2da09def983f");
+    "e018dc46047b22a5868c43adc815a028477647764a30e44012860341ceca9dba");
 });
 
 function sourceFiles(dir: string): string[] {

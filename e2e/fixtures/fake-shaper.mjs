@@ -6,6 +6,7 @@
 //   degraded  one fallback entry, and says it is degraded
 //   slow      waits `ms` (default 20 s) before answering, so its call times out
 //   garbage   prints something that is not JSON
+//   brief     one entry named for the task it was asked about, so two tasks' sections differ
 //   route     a router: `route <name>:<point>[,<name>:<point>...]` answers those skills, each
 //             with a fixed reason id, as FR-04's `route_skills` would
 //
@@ -42,6 +43,12 @@ switch (mode) {
   case "slow":
     await sleep(Number(ms ?? 20_000));
     reply({ guidance: [{ id: "late", body: "This arrives too late to be used." }] });
+    break;
+  case "brief":
+    reply({
+      version: "e2e-brief-1",
+      guidance: [{ id: "task/brief", title: `Brief for ${request.context.title}`, body: `Keep "${request.context.title}" to ${request.repo.name}.` }],
+    });
     break;
   case "garbage":
     process.stdout.write("this is not json");

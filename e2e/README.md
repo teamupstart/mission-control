@@ -2055,6 +2055,29 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### A task handed to a running agent
+
+A dispatched agent can never take a handover (`TaskManager.assign`): its session is an Agent SDK
+one, which `paneAcceptsPrompt` refuses, and it holds its task's worktree, which
+`taskResourceOwnerForSession` refuses. `fixtures/pane-agent.ts` stands up the kind that is
+accepted. `startPaneAgent` runs `fixtures/pane-agent.mjs` in a real tmux pane in the fixture
+repository, under a link named `claude`. Discovery cards it as an idle terminal session, and its
+first hook makes it instrumented. `paneSession` returns that session's id, `handOver` posts the
+assign the board's drop posts, and `sessionIdle` waits for the session to settle between
+handovers. A spec using it sets `test.use(PANE_AGENT_DAEMON)` (discovery on, outside sessions
+shown) and skips with `hasTmux()`. It addresses only its own pane's session, never the fleet.
+
+`startPaneAgent(daemon, { turns: true })` logs each submission's full text for `turns()` and
+reports each turn through `UserPromptSubmit` and `Stop`. In that mode a pending multi-line paste
+is drawn as Claude draws it, `[Pasted text #N +M lines]`. Seeing that placeholder leave the
+composer is how `injectPrompt` verifies a submit. Without it every handover's shaping record
+would read as unconfirmed.
+
+`specs/task-shaping.spec.ts` uses it to hand two tasks in turn to one agent. It asserts that the
+session header chip and "Context this session received" show exactly the section the agent
+received for the second task, and nothing from the first. With `MC_E2E_EVIDENCE=1` it writes
+`handover-chip.png` and `handover-viewer.png` under `e2e/.artifacts/task-shaping/`.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

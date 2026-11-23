@@ -7,6 +7,7 @@ import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { handOver, hasTmux, PANE_AGENT_DAEMON, paneSession, sessionIdle, startPaneAgent } from "../fixtures/pane-agent.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
@@ -17,6 +18,10 @@ import { expect, test } from "../fixtures/test.ts";
  * worker's turn one carries the section, the record lands on the task over SSE, and the chip,
  * its viewer and the board marker draw it - or, for a launch whose record names another
  * session, draw nothing.
+ *
+ * A backlog task handed over to an agent that is already running (`TaskManager.assign`) is
+ * shaped too, and its record has to land on the session that took the turn: the last block
+ * hands two tasks in turn to one live pane agent and reads what each showed.
  *
  * No model tokens: the agents are the suite's fakes, and the shaper is
  * `e2e/fixtures/fake-shaper.mjs`, which answers from a fixed script.
@@ -245,4 +250,86 @@ test("a dashboard that connected with shaping off shows the saved context as soo
   const viewer = dashboard.getByRole("dialog", { name: "Context this session received" });
   await expect(viewer.getByRole("region", { name: "Delivered in turn one" })).toContainText("## Task context");
   await shoot(dashboard, "flag-reenabled-chip", viewer);
+});
+
+test.describe("handed over to a running agent", () => {
+  // Only a discovered terminal agent can take a handover; see `fixtures/pane-agent.ts`.
+  test.use(PANE_AGENT_DAEMON);
+  test.skip(!hasTmux(), "tmux is not installed on this machine");
+
+  test("a handover shows exactly the context that agent received in its turn, not the previous task's", async ({ dashboard, daemon }) => {
+    // One entry per task, named for it, so two tasks' sections can be told apart.
+    await registerShaper(daemon, "task-briefs", "Task briefs", ["brief"]);
+    await useLayout(dashboard, daemon, "console");
+    const pane = startPaneAgent(daemon, { prefix: "mc-e2e-shaped-handover", turns: true });
+    try {
+      const sessionId = await paneSession(daemon, pane);
+      const backlogTask = (title: string, intent: string) => api<{ id: string }>(daemon, "/api/tasks", {
+        repoRoot: daemon.repo, title, intent, kind: "ship", agent: "claude", workflowId: null, backlog: true,
+      });
+      /** The section the pane agent was typed in the turn carrying this intent. */
+      const sectionFor = (intent: string): string => {
+        const turn = pane.turns().find((text) => text.includes(intent)) ?? "";
+        const at = turn.indexOf("## Task context");
+        return at === -1 ? "" : turn.slice(at).trim();
+      };
+      const detail = dashboard.locator(".console-detail");
+      const chip = detail.getByRole("button", { name: "Context: 1 entry", exact: true });
+      const viewer = dashboard.getByRole("dialog", { name: "Context this session received" });
+      const delivered = viewer.getByRole("region", { name: "Delivered in turn one" });
+
+      // The previous task: handed to this agent, shaped, and shown on its header, so the record
+      // a later handover must not show is really there on this session first.
+      const previousTitle = "Reconcile the ledger";
+      const previousIntent = "Reconcile the ledger every night.";
+      const previous = await backlogTask(previousTitle, previousIntent);
+      await handOver(daemon, previous.id, sessionId);
+      await expect.poll(() => sectionFor(previousIntent), { timeout: 60_000 }).toContain(`### Task briefs: Brief for ${previousTitle}`);
+      await sessionRail(dashboard, previousTitle).click();
+      await expect(chip).toBeVisible({ timeout: 30_000 });
+      await chip.click();
+      await expect(delivered).toContainText(`Brief for ${previousTitle}`);
+      await viewer.getByRole("button", { name: "Close" }).click();
+      await expect(viewer).toBeHidden();
+      await sessionIdle(daemon, sessionId);
+      await api(daemon, `/api/tasks/${previous.id}/complete`, { outcome: "Reconciled." });
+      await sessionIdle(daemon, sessionId);
+
+      // This task, handed to the same agent. Its turn carries its own section and nothing of the last one.
+      const title = "Cap the retry budget";
+      const intent = "Cap the retry worker at five attempts.";
+      const task = await backlogTask(title, intent);
+      await handOver(daemon, task.id, sessionId);
+      await expect.poll(() => sectionFor(intent), { timeout: 60_000 }).toContain(`### Task briefs: Brief for ${title}`);
+      const received = sectionFor(intent);
+      expect(received).not.toContain(previousTitle);
+
+      // The header chip on that session, and its viewer showing that section exactly.
+      await sessionRail(dashboard, title).click();
+      await expect(detail).toContainText(title);
+      await expect(chip).toBeVisible({ timeout: 30_000 });
+      await shoot(dashboard, "handover-chip", detail);
+      await chip.click();
+      await expect(viewer).toBeVisible();
+      await expect(viewer.getByRole("listitem", { name: "Task briefs: Answered" })).toContainText("version e2e-brief-1");
+      await expect(delivered).toContainText(`Brief for ${title}`);
+      expect((await delivered.locator("pre").innerText()).trim()).toBe(received);
+      await expect(viewer).not.toContainText(previousTitle);
+      await expectContentClearsBorder(viewer);
+      await shoot(dashboard, "handover-viewer", viewer);
+      await viewer.getByRole("button", { name: "Close" }).click();
+      await expect(viewer).toBeHidden();
+
+      // Every task read agrees: this task's record names the session that took the turn, and the
+      // previous task's, which named the same session, is no longer shown by any reader.
+      const shaping = await api<{ summary: { sessionId: string }; text: string | null }>(daemon, `/api/tasks/${task.id}/shaping`);
+      expect(shaping.summary.sessionId).toBe(sessionId);
+      expect(shaping.text?.trim()).toBe(received);
+      const reads = await api<Array<{ id: string; sessionId: string | null; shaping?: { state: string; sessionId: string } }>>(daemon, "/api/tasks");
+      expect(reads.find((entry) => entry.id === task.id)?.shaping).toMatchObject({ state: "ok", sessionId });
+      expect(reads.find((entry) => entry.id === previous.id)?.shaping).toBeUndefined();
+    } finally {
+      pane.cleanup();
+    }
+  });
 });

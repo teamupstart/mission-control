@@ -4250,8 +4250,9 @@ export type ServerEvent =
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces
    * `VoiceState.roster`; a change to the roster alone sends this and no `voice_state` frame. Sent
    * only while the `voice` flag is on, and only when the roster changed. Bounded by the live
-   * resident profiles (at most 200) and the launched tasks with a call sign that are running or
-   * hibernated, or that stopped within the last day (`computeVoiceRoster`).
+   * resident profiles (at most 200) and the launched tasks with a call sign that are running,
+   * hibernated, or recently stopped and still kept by the roster's retention rules
+   * (`computeVoiceRoster`; docs/voice.md, "Who can be addressed").
    */
   | { type: "voice_roster"; roster: import("./voice-names.ts").SpokenName[] }
   /**

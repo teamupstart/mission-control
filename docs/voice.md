@@ -251,11 +251,22 @@ taskId, sessionId, role, colorId, agent, state }`:
   as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
   else `not-running`. A task in the backlog is not listed until it launches.
 
-A task that is not running leaves the roster 24 hours after it stopped (a finished task counts from
-completion), or at once when another agent answers to the same name: a resident, a task that is
-running or hibernated, or a task that stopped later. A task the Registry drops from memory while its
-row remains keeps its name for the rest of its day; a deleted task leaves at once. Agents that are
-not running stay listed so a later phase can say "<name> isn't running".
+A task that is not running leaves the roster 24 hours after it stopped, or at once when another
+agent answers to the same name: a resident, a task that is running or hibernated, or a task that
+stopped later. A deleted task leaves at once. Agents that are not running stay listed so a later
+phase can say "<name> isn't running".
+
+When a task stopped is not always known across a daemon restart, so the 24 hours are not an
+absolute bound:
+
+- A finished task (done, failed or cancelled) counts from its stored completion time, so a restart
+  does not change its 24 hours.
+- A task that stopped without finishing (its session exited, the task still open) counts from when
+  the daemon first saw it stopped. That moment is held in memory only, so a restart starts the
+  clock again and the name can stay listed for longer than a day.
+- A finished task the Registry drops from memory while its row remains (it keeps the 50 most
+  recent finished tasks) keeps its name for the rest of its 24 hours, until a restart. The
+  restarted daemon lists it again only if it reloads the task, so it can leave sooner.
 
 **Settings > Voice** draws the roster as a table: the agent (a resident's profile name in its board
 colour, a session's task title), its kind, what to say, its state, and its check, "Distinct" or

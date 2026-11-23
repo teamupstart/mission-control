@@ -214,9 +214,10 @@ priority: an update may set or clear it while the agent runs, and with the
 modal, question cards and alerts print for the session.
 
 A task in the backlog answers to its call sign only once it launches. From then on it is listed
-while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed,
-marked not running, for at most a day, and leaves at once if another agent takes the name first;
-[who can be addressed](voice.md#who-can-be-addressed) has the full rules. A call sign already
+while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed
+for a while, marked not running, and leaves at once if another agent takes the name first;
+[who can be addressed](voice.md#who-can-be-addressed) has the rules, including its 24 hours and how
+a daemon restart changes them. A call sign already
 saved is kept, and read back by the editor, while the preview is off, but names nothing until it
 is on again; the field is drawn only while it is on.
 

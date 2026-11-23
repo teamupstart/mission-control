@@ -192,9 +192,10 @@ repeated states leaves the roster out, so the shell, which follows the mode, is 
 agent starting. Each `voice_state` frame still carries the roster as it stands. Sent only while the
 `voice` flag is on, and only when the roster changed. `wireVoiceNameEvents` in
 `src/server/voice/names.ts` is the one bridge. It is bounded by the live resident profiles (at most
-200) and the launched tasks with a call sign that are running or hibernated, or that stopped within
-the last day: a hibernated task stays however long it sleeps, and a stopped one can leave sooner
-when another agent takes its name (see [who can be addressed](voice.md#who-can-be-addressed)). It
+200) and the launched tasks with a call sign that are running, hibernated, or recently stopped and
+still kept by the roster's retention rules ([who can be addressed](voice.md#who-can-be-addressed)):
+a hibernated task stays however long it sleeps, and a stopped one leaves when its retention ends
+or sooner when another agent takes its name. It
 is not a `LINE_INPUT_EVENTS` member: the Line reads the task and session frames it is computed
 from. See [Voice addressing](voice.md#spoken-names).
 

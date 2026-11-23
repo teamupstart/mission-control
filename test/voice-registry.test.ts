@@ -189,6 +189,31 @@ test("a finished task counts its 24 hours from when it completed", () => {
   assert.deepEqual(brief(names.roster()), ["task:t-done Otto not-running"], "a day past completion is gone");
 });
 
+test("a restart keeps a finished task's 24 hours but starts a still-open stopped task's clock again", () => {
+  const { sources, names, clock } = harness();
+  const stoppedAt = clock.now;
+  sources.upsertTask(callSignTask("t-open", "Otto", { status: "running", sessionId: null }));
+  sources.upsertTask(callSignTask("t-done", "Ada", { status: "done", completedAt: stoppedAt, sessionId: null }));
+  assert.deepEqual(brief(names.roster()), ["task:t-done Ada not-running", "task:t-open Otto not-running"]);
+  names.stop();
+
+  // The daemon restarts 20 hours later: a new registry over the same rows, with no memory.
+  clock.now = stoppedAt + 20 * HOUR;
+  const restarted = new VoiceNameRegistry(sources, { now: () => clock.now, enabled: () => true, taskStored: () => true, setTimer: () => null, clearTimer: () => {} });
+  restarted.start();
+  assert.deepEqual(brief(restarted.roster()), ["task:t-done Ada not-running", "task:t-open Otto not-running"]);
+
+  // 30 hours after both stopped: the finished task's stored completion time has run out, while the
+  // open task's 24 hours count from the restart, so it is still listed.
+  clock.now = stoppedAt + 30 * HOUR;
+  restarted.refresh();
+  assert.deepEqual(brief(restarted.roster()), ["task:t-open Otto not-running"]);
+  clock.now = stoppedAt + 44 * HOUR;
+  restarted.refresh();
+  assert.deepEqual(brief(restarted.roster()), [], "24 hours after the restart it leaves too");
+  restarted.stop();
+});
+
 test("a hibernated task reads hibernated, never expires, and reads running again when resumed", () => {
   const { sources, names, clock } = harness();
   sources.upsertTask(callSignTask("t-h", "Hazel", { status: "hibernated" }));

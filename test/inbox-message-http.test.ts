@@ -150,3 +150,29 @@ test("the operator's own submit never carries the daemon-written mark, even with
   assert.equal(fixed.ok && fixed.pendingTurn?.text, INBOX_MESSAGES.nudge);
   f.pending.stop();
 });
+
+test("without a pending-turn outbox the route answers 503 and sends nothing", async () => {
+  setInbox(true);
+  const registry = new Registry();
+  const session = registry.registerSdkSession({
+    id: "sdk:inbox-message:no-outbox",
+    agent: "claude",
+    name: "no outbox",
+    cwd: "/repo/no-outbox",
+    agentSessionId: "agent:inbox-message:no-outbox",
+  });
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
+  const response = await app.request(`/api/sessions/${encodeURIComponent(session.id)}/inbox-message`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ kind: "nudge" }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { ok: false, error: "pending turns are unavailable" });
+  assert.deepEqual(registry.getSession(session.id)?.pendingTurns, []);
+});

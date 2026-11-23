@@ -289,6 +289,14 @@ test("Resubmit on a real parked run's Stuck row reopens that run through the dae
   expect((await runOf(daemon, runId)).round).toBe(parked.round);
   await capture(row, "08-real-parked-unchanged", page);
 
+  // Open run leaves the inbox for that run's page on the Runs page.
+  await row.getByRole("button", { name: "Open run", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Attention inbox" })).toBeHidden();
+  await expect.poll(() => new URL(page.url()).hash).toBe(`#/runs/${encodeURIComponent(runId)}`);
+  await expect(page.getByText("Stuck review").first()).toBeVisible();
+  await openInbox(page);
+  await expect(row).toBeVisible();
+
   // The session's fix lands in its checkout, as it does when an agent fixed the findings and
   // went quiet. Now Resubmit opens the next round.
   const cwd = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === sessionId)!.cwd!;

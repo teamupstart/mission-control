@@ -317,4 +317,9 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   served = [stall(id, reason, { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 2 }, "open-2")];
   await expect(row()).toContainText('Open: the task "Fix the parser" and 2 open queue items.', { timeout: 15_000 });
   await expect(row()).toContainText(reason);
+
+  // 11. Open session leaves the inbox and focuses that session's detail.
+  await row().getByRole("button", { name: "Open session", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Attention inbox" })).toBeHidden();
+  await expect(page.locator(".console-detail")).toContainText(session.name);
 });

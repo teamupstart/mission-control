@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,7 +8,9 @@ import test from "node:test";
 import {
   attachUtilityProcessOutput,
   endUtilityProcessLog,
+  openPathUtilityLog,
   openPrivateUtilityLog,
+  openUtilityLog,
   utilityProcessStdio,
 } from "../src/main/utility-log.ts";
 
@@ -123,4 +125,43 @@ test("a log stream failure is reported without its path instead of becoming an u
   }
   assert.equal(uncaught, null);
   assert.deepEqual(reported.mock.calls.map((call) => call.arguments), [["Could not write a utility log: ERR_STREAM_WRITE_AFTER_END"]]);
+});
+
+test("a log without captured output holds no handle, so a rotated file never takes its next line", () => {
+  // Foreman's worker rotates foreman.log by rename. The supervisor's lifecycle log for it must
+  // follow the PATH, not a handle opened at spawn, or its stop line lands in the renamed file.
+  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const logPath = join(root, "state", "foreman.log");
+  const log = openUtilityLog(logPath, false);
+  assert.equal(statSync(join(root, "state")).mode & 0o777, 0o700);
+  assert.equal(statSync(logPath).mode & 0o777, 0o600);
+
+  log.write("[mission-control] before rotation\n");
+  renameSync(logPath, `${logPath}.1`);
+  endUtilityProcessLog({ stdout: null, stderr: null }, log, "[mission-control] mission-control-foreman stopped\n");
+
+  assert.equal(readFileSync(`${logPath}.1`, "utf8"), "[mission-control] before rotation\n");
+  assert.equal(readFileSync(logPath, "utf8"), "[mission-control] mission-control-foreman stopped\n");
+  assert.equal(statSync(logPath).mode & 0o777, 0o600);
+  assert.equal(log.writableEnded, true);
+  log.write("after end\n");
+  assert.doesNotMatch(readFileSync(logPath, "utf8"), /after end/);
+});
+
+test("a path-only log reports a failed append by code and never throws", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const logPath = join(root, "state", "foreman.log");
+  const log = openPathUtilityLog(logPath);
+  const reported = t.mock.method(console, "error", () => {});
+  renameSync(join(root, "state"), join(root, "gone"));
+  assert.doesNotThrow(() => log.end("[mission-control] mission-control-foreman stopped\n"));
+  assert.deepEqual(reported.mock.calls.map((call) => call.arguments), [["Could not write a utility log: ENOENT"]]);
+});
+
+test("captured output keeps the streaming log", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const log = openUtilityLog(join(root, "daemon.log"), undefined);
+  assert.equal(typeof (log as { on?: unknown }).on, "function", "the daemon still writes through a stream");
+  log.end("[mission-control] mission-control-daemon stopped\n");
+  await once(log as unknown as NodeJS.EventEmitter, "close");
 });

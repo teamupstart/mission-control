@@ -30,8 +30,33 @@ export async function readSetupChecks(
   }
 }
 
-/** Mount-time and operator-requested reads only. Machine setup has no polling side effects. */
-export function useSetupChecks(enabled: boolean, macosTerminalPreview: boolean): SetupChecksState {
+/**
+ * Whether a Setup reading must be read again for the live flags, and the stamp now settled.
+ *
+ * Both stamps come from `setupReadingFlags`, with "" for none: a reading carries no stamp while
+ * every flag-gated family is off, and the live stamp is "" then too. A stamp is asked for once: a
+ * reading that still disagrees (a window whose own flags are stale) is not read again until the
+ * live stamp moves.
+ */
+export function setupFlagsRefresh(
+  settled: string | null,
+  live: string,
+  readWith: string,
+): { settled: string; refresh: boolean } {
+  if (readWith === live) return { settled: live, refresh: false };
+  if (settled === live) return { settled, refresh: false };
+  return { settled: live, refresh: true };
+}
+
+/**
+ * Mount-time and operator-requested reads only. Machine setup has no polling side effects.
+ *
+ * `flagsKey` is the live stamp of the preview flags Setup reads (`setupReadingFlags`, "" for
+ * none), or null before the first snapshot. When a reading was taken under other flags it is read again, once per live
+ * key (`setupFlagsRefresh`), so a family that follows a flag appears with its rows and a row about
+ * flags reads the switch just made - including a switch between the mount read and the snapshot.
+ */
+export function useSetupChecks(enabled: boolean, flagsKey: string | null = null, macosTerminalPreview = false): SetupChecksState {
   const [view, setView] = useState<SetupChecksSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,5 +92,12 @@ export function useSetupChecks(enabled: boolean, macosTerminalPreview: boolean):
     return null;
   }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, macosTerminalPreview, refresh]);
+  const settledFlags = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled || flagsKey === null || view === null || loading) return;
+    const next = setupFlagsRefresh(settledFlags.current, flagsKey, view.flagsKey ?? "");
+    settledFlags.current = next.settled;
+    if (next.refresh) void refresh();
+  }, [flagsKey, enabled, view, loading, refresh]);
   return { view, loading, error, refresh, dismissBanner };
 }

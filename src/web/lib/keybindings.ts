@@ -202,14 +202,10 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
-    // A review waiting on you is the most urgent thing a session can be, and the badge
-    // that says so is already a button - this is that button's chord. It reads the
-    // session's own `pendingReviews`, so it stays unclaimed on a fleet with nothing
-    // waiting and never steals `e` from a card that has no queue to open.
     id: "review",
-    label: "Open reviews",
+    label: "Open attention inbox",
     description:
-      "Open the review queue waiting on you - on the selected session, or on the first one asking.",
+      "Open the inbox from the Board or a conversation, starting at the current conversation's question when available.",
     defaultBinding: "e",
     group: "selection",
   },

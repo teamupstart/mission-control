@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 443 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 448 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -55,12 +55,16 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
   // then for the report document and Publish as scout routes, which answer 404 with it off.
   // The recurring-mission MCP routes add GET/POST /mcp/schedules and
-  // POST /mcp/schedules/preview, all answering 401 without a daemon token.
+  // POST /mcp/schedules/preview, all answering 401 without a daemon token. Voice addressing's five
+  // routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`, `POST /voice/listener/hello`
+  // and `POST /voice/shell-report`) answer 404 with the `voice` flag off, and
+  // `POST /api/setup/install`'s refusal names the new `voice-previews` id. `GET /api/ui/config` and
+  // `GET /api/setup/checks` are unchanged: what voice adds to them is withheld with the flag off.
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 443);
+  assert.equal(others.length, 448);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "ab52ee31f2bb74306b591543edd242d0a17354c3bda94440624da03abd8e9ddb");
+    "bdf110c94f8e2e7808fa0ac12778077127823e1607c7464bb6cf2b5168857597");
 });
 
 function sourceFiles(dir: string): string[] {

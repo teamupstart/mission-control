@@ -85,9 +85,16 @@ Not here: pipelines (a non-goal), Settings (Phase 3).
    written to. `GET /api/tasks/:id/shaping` returns the summary and the text that exist.
    Every reader goes through one shared predicate, `currentShaping(task)` in
    `src/shared/shaping.ts`: the record counts only while its `sessionId` is the task's
-   current `sessionId`. Task reads, this route, the board and rail markers, the chip and the
-   viewer all use it, so a redispatch whose commit failed shows no earlier context or
-   `degraded` anywhere.
+   current `sessionId` and its `deliveryId` is the delivery id the task's binding was written
+   with (`Task.shapingDelivery`, column `tasks.shaping_delivery`). Each turn-one delivery, a
+   launch or a handover, gets a fresh id, written with the record and its binding, the row
+   naming the receiving session, in one transaction. A delivery that recorded nothing binds
+   under its own id. One whose commit fails binds under its own id too, through a fallback
+   write of the binding alone. If that write also fails, the task keeps its previous binding,
+   live and durable alike. Task reads, this route, MCP, the board and rail markers, the
+   chip and the viewer all use it, so a redispatch whose commit failed, or a handover back to
+   the same session whose commit failed, shows no earlier context or `degraded` anywhere, before
+   or after a restart.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip, shown only
@@ -175,6 +182,9 @@ merges second resolves it the same way:
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - A dispatch that fails before turn one is handed to the worker changes no record.
 - No reader shows a record that names another session, including after a failed commit.
+- No reader shows a record from an earlier delivery to the same session, including after a
+  failed commit and a restart, and a stop between a launch's or a handover's record and its
+  binding leaves neither written.
 - No model tokens are spent by any test.
 
 ## Handoff

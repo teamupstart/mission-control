@@ -2,6 +2,9 @@ import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
 import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { TaskShapingPanel } from "./TaskShapingPanel.tsx";
+import { VoiceSettingsPanel } from "./VoiceSettingsPanel.tsx";
+import { useVoiceConfig } from "../useVoiceConfig.ts";
+import type { VoiceState } from "@shared/voice.ts";
 import type { ShapingSettings } from "../useShapingSettings.ts";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
@@ -228,11 +231,14 @@ export function SettingsPage({
   onOpenForemanProfile,
   featureFlagsSettings,
   shapingSettings,
+  voice = null,
   jump = null,
 }: {
   featureFlagsSettings?: FeatureFlagsSettings;
   /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
   shapingSettings?: ShapingSettings;
+  /** `MissionState.voice`, which Settings > Voice's mode line draws. */
+  voice?: VoiceState | null;
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -360,6 +366,8 @@ export function SettingsPage({
   // uncommitted text, so a poll running while the operator is elsewhere is pure noise
   // against a document only this panel edits.
   const standingInstructions = useStandingInstructions(shown === "standing-instructions");
+  // Read only while its own category is on screen, which also means only while its flag is on.
+  const voiceConfig = useVoiceConfig(shown === "voice");
   // Owned here for the same reason as the four above: nothing outside this page reads the
   // Workflow config, so it polls only while the page is open. Its poll is load-bearing
   // rather than tidy - the health strip, retention readout and health card are what it
@@ -656,6 +664,8 @@ export function SettingsPage({
         return <TaskSourcesPanel state={taskSources} />;
       case "standing-instructions":
         return <StandingInstructionsPanel state={standingInstructions} />;
+      case "voice":
+        return <VoiceSettingsPanel state={voiceConfig} voice={voice} onNavigate={navigateWithAnchor} />;
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":

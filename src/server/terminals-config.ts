@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import {
   TerminalsConfigSchema,
   type TerminalsConfig,
@@ -104,7 +105,7 @@ export const configuredTerminalDeps: TerminalDeps = {
   ...defaultTerminalDeps,
   emulators: {
     ...defaultTerminalDeps.emulators,
-    "macos-terminal": macosTerminalEmulator(undefined, () => featureEnabled(MACOS_TERMINAL_FLAG_ID)),
+    [MACOS_TERMINAL_ID]: macosTerminalEmulator(undefined, () => featureEnabled(MACOS_TERMINAL_FLAG_ID)),
   },
   focusEmulator: focusEmulatorFor,
 };

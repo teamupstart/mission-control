@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.ts";
 import {
   EMULATOR_IDS,
@@ -98,7 +99,7 @@ export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, 
     wezterm: weztermEmulator(exec),
     ghostty: ghosttyEmulator(exec),
     iterm: itermEmulator(exec),
-    "macos-terminal": macosTerminalEmulator(exec),
+    [MACOS_TERMINAL_ID]: macosTerminalEmulator(exec),
   };
 }
 

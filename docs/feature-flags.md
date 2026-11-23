@@ -9,8 +9,9 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
-[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`) and
-[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
+[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
+[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) and
+[Voice addressing](voice.md) (`voice`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 **File plan decisions** (`filed-plan-decisions`) files a `request_plan_decisions` form instead of
@@ -193,6 +194,7 @@ gates, not by resolving an unknown id as on.
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section and the top bar's to read figure), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `voice` | preview | `/api/voice/config`, `/api/voice/mute`, `/voice/listener/hello` and `/voice/shell-report`, the `voice_state` event and snapshot field, the Settings > Voice category and the Setup panel's Voice family. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
@@ -211,6 +213,8 @@ flag off.
 Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
+`e2e/specs/voice-flag-and-settings.spec.ts` checks the `voice` row, its Settings category and Setup
+family, and the voice state reaching the mode line.
 
 A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
 `settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search

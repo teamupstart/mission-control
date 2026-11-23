@@ -7,6 +7,7 @@ import {
   SETUP_REPOSITORY_ANCHORS,
   SETUP_SERVICE_INFO,
   homeRelative,
+  setupFamilyFlagOn,
   setupRowAnchor,
   type SetupCommandPurpose,
   type SetupDependencyId,
@@ -19,6 +20,9 @@ import type {
   PipelineProviderId,
 } from "@shared/pipeline.ts";
 import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
+import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
   resolveEmulatorBackend,
@@ -29,6 +33,7 @@ import {
 } from "@shared/terminal.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
+  api,
   fetchPipelineInstallers,
   openSetupInstaller,
   startSetupService,
@@ -559,8 +564,60 @@ function ProviderInstallerRemedy({
   );
 }
 
+/**
+ * Turn on the preview flags a row names, one `PUT /api/feature-flags` each, the way the Feature
+ * flags panel switches them. Stops at the first refusal and says which flag it was.
+ */
+function FeatureFlagsRemedy({
+  flags,
+  label,
+  note,
+  onRepaired,
+}: {
+  flags: readonly FeatureFlagId[];
+  label: string;
+  note: string;
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function turnOn(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      for (const id of flags) {
+        const result = await api.setFeatureFlags({ kind: "flag", id, enabled: true });
+        if (!result.ok) {
+          // Named by its label, the name Settings > Feature flags shows, so the hint below leads there.
+          const label = FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+          setError(`${label} could not be turned on${result.error ? `: ${result.error}` : "."}`);
+          return;
+        }
+      }
+    } finally {
+      setBusy(false);
+      onRepaired();
+    }
+  }
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void turnOn()}>
+            {busy ? "Turning on..." : label}
+          </button>
+        </Tooltip>
+      </div>
+      {error && <RemedyNotice tone="error" detail={error} hint="Switch it in Settings > Feature flags, then press Re-check." />}
+    </div>
+  );
+}
+
 function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element {
   const remedy = row.remedy;
+  if (remedy.kind === "feature-flags") {
+    return <FeatureFlagsRemedy flags={remedy.flags} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+  }
   if (remedy.kind === "service") {
     return (
       <ServiceRemedy
@@ -884,8 +941,8 @@ function tally(rows: readonly SetupRowView[]): FamilyTally {
  * answer behind a click - and the Setup banner links straight here precisely when something
  * required is unsatisfied.
  */
-function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
-  const byFamily = visibleSetupFamilyIds(rows).map((family) => ({
+function defaultFamily(rows: readonly SetupRowView[], flagOn?: (flag: FeatureFlagId) => boolean): SetupFamilyId {
+  const byFamily = visibleSetupFamilyIds(rows, undefined, flagOn).map((family) => ({
     family,
     tally: tally(rows.filter((row) => row.family === family)),
   }));
@@ -905,9 +962,14 @@ function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
  * so a jump to one has to select that family first, or the page's flash observer waits for
  * an element that will never mount and silently lights nothing.
  */
-export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
+export function familyForAnchor(
+  anchor: string,
+  rows: readonly SetupRowView[],
+  /** The resolved flags, so a link to a family behind an off flag (Voice) names nothing. */
+  flagOn?: (flag: FeatureFlagId) => boolean,
+): SetupFamilyId | null {
   // Only a family the rail draws: a link to one hidden with its integration names nothing.
-  const named = visibleSetupFamilyIds(rows).find((family) => anchor === `setup/family-${family}`);
+  const named = visibleSetupFamilyIds(rows, undefined, flagOn).find((family) => anchor === `setup/family-${family}`);
   if (named) return named;
   // The Repositories family's directory editor is not a row, but it is only mounted while
   // that family is selected, so its controls resolve the same way a row anchor does.
@@ -1087,8 +1149,20 @@ export function SetupPanel({
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
   // and a new identity every render makes both of them run every render.
-  const rows = state.view?.rows ?? NO_ROWS;
+  // The event stream's flags, so a family behind a preview flag (Voice) appears and leaves the
+  // rail the moment it is switched, in every window.
+  const flags = useContext(FeatureFlagsContext);
+  const flagOn = useCallback((flag: FeatureFlagId) => resolveFeatureFlag(flag, flags), [flags]);
+  // A snapshot read while a family's flag was on still holds its rows after the flag goes off,
+  // until the re-read lands. The live flag wins: those rows leave the rail, the pane and the
+  // verdict's counts at once, so no repair button outlives the feature it repairs.
+  const readRows = state.view?.rows ?? NO_ROWS;
+  const rows = useMemo(() => {
+    const shown = readRows.filter((row) => setupFamilyFlagOn(row.family, flagOn));
+    return shown.length === readRows.length ? readRows : shown;
+  }, [readRows, flagOn]);
   const home = state.view?.home ?? "";
+  const families = useMemo(() => visibleSetupFamilyIds(rows, undefined, flagOn), [rows, flagOn]);
 
   // A remedy that settles in the daemon re-reads the machine itself, so the row it repaired
   // reports the new truth rather than waiting for the operator to press Re-check on a
@@ -1106,8 +1180,8 @@ export function SetupPanel({
   // explicit request to look at one thing. Keyed on the request id so the same anchor asked
   // for twice still moves the rail back after the operator has clicked elsewhere.
   const jumpFamily = useMemo(
-    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows) : null),
-    [jumpAnchor, rows],
+    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows, flagOn) : null),
+    [jumpAnchor, rows, flagOn],
   );
 
   // Applied during render rather than only in the effect below, and both are needed.
@@ -1118,7 +1192,10 @@ export function SetupPanel({
   // The effect is what makes it STICK: the page clears the jump as soon as it has flashed the
   // control, so a family held only by the live prop would snap back the moment it went away.
   const unseenJump = jumpRequestId !== seenRequest ? jumpFamily : null;
-  const active = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows) : SETUP_FAMILY_IDS[0]);
+  const picked = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows, flagOn) : SETUP_FAMILY_IDS[0]);
+  // A family chosen while its flag was on stops being drawn when the flag goes off; the pane
+  // follows the rail rather than showing a family nothing selects.
+  const active = families.includes(picked) ? picked : families[0] ?? SETUP_FAMILY_IDS[0];
 
   // One effect applying one decision, because the jump and the opening default both write
   // `chosen`: as two effects they fire in the same commit and the loser is decided by
@@ -1153,7 +1230,7 @@ export function SetupPanel({
         <nav className="setup-rail" aria-label="Setup families">
           {/* A family emptied by a hidden integration (Pipelines, while ai-conductor is
               hidden) is not drawn at all, rather than drawn as a family with nothing in it. */}
-          {visibleSetupFamilyIds(rows).map((family) => {
+          {families.map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
             const counts = tally(familyRows);
             const label = SETUP_FAMILY_INFO[family].label;

@@ -36,6 +36,7 @@ test("macOS Terminal becomes a multiplexer focus option when the preview is enab
     await expect(terminal).toContainText("Terminal.app is available on macOS only.");
   }
 
+  await flags.getByRole("button", { name: "Voice addressing: off" }).click();
   const setup = await context.newPage();
   await setup.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(setup, "terminals");
@@ -55,8 +56,14 @@ test("macOS Terminal becomes a multiplexer focus option when the preview is enab
     await expect(focusOption).toBeDisabled();
   }
 
+  await openSetupFamily(setup, "voice");
+  const voicePreviews = setupRow(setup, "dependency-voice-previews");
+  await expect(voicePreviews).toBeVisible();
+  await openSetupFamily(setup, "terminals");
   await previewOn.click();
   await expect(terminal).toHaveCount(0);
   await expect(setupTerminal).toHaveCount(0);
+  await openSetupFamily(setup, "voice");
+  await expect(voicePreviews).toBeVisible();
   await expect(menu.getByText("WezTerm", { exact: true })).toBeVisible();
 });

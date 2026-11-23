@@ -247,22 +247,20 @@ and count.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.
+- **Filter.** Fleet's search box matches words across each live card's name, chip, status,
+  loop details, latest message, pending questions, controls and inline action alerts. Compressed
+  cards are still searchable by their full content. The live count and the Profiles list remain
+  available while you search.
 - **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
   in the color of the Board's **Working** column; while it needs you, in the color of **Needs
   you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
   the card wears its marker color.
 - **Needs you group.** Residents that need you move to the top of the drawer, into a group
   framed in the **Needs you** color under a **Needs you** heading with how many are asking.
-  With keycaps on, the heading prints <kbd>e</kbd>. <kbd>e</kbd> opens the review queue of the
-  first fleet session asking, as it always has, and otherwise addresses the first resident in
-  this group: its review queue, with its card selected, when it asked through a review, or its
-  conversation with the cursor in the reply box when it needs you some other way, such as a menu
-  it is parked on. That holds while a conversation is open and the resident is also a row in the
-  **Needs you** rail, and a fleet session's review still comes first even when that resident is
-  the one selected. <kbd>e</kbd> passes over the resident whose conversation is already open
-  while another is asking, unless it has a review to open; when that one is the only resident
-  asking, it puts the cursor back in its reply box. The rest of the residents follow below the
-  group.
+  With keycaps on, the heading prints <kbd>e</kbd>. On the Board, this opens the
+  [attention inbox](attention-and-alerts.md) when **to answer** is visible. When a resident's
+  conversation is open, the inbox starts at that resident's first pending question if one is
+  listed. The rest of the residents follow below the group.
   A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
   shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
 - **Compressing a card.** Every card starts open. Clicking a resident's title, or
@@ -285,8 +283,8 @@ and count.
   color, with its kind as the review modal names it (input, decisions, plan or diff), its
   title and a line on what answering takes, such as a question's options. The card never
   draws the form itself.
-  Clicking a row selects the card and opens the review modal on that resident's queue, the same
-  modal <kbd>e</kbd> opens, where the question is answered, dismissed or moved to chat. A menu
+  Clicking a row selects the card and opens the review modal on that resident's queue,
+  where the question is answered, dismissed or moved to chat. A menu
   the session is parked on is one such row too, and clicking it opens the same review modal,
   which shows the menu's rows as the Conversation tab does, so pressing one answers it. Once
   nothing is left pending, the modal closes and the amber state and the visitor card clear.

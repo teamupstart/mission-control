@@ -872,10 +872,36 @@ A SessionAction is a durable side effect, not an evaluator:
   child already captured - is supplied on `SessionActionAdapterContext` by the manager, which is
   where git and SQLite live. An adapter that fetched its own facts could not be tested without arranging them on a
   real machine, and "we could not look" would stop being distinguishable from "the answer is
-  no". Null means unknown, and unknown always means wait.
+  no". Null means unknown, never proof of success; each adapter owns its retry and recovery policy.
 
 ### The `pull_request` adapter
 
+- A settled Pull Request turn may complete with `no_change` when daemon-read Git facts prove
+  a clean checkout (including staged and untracked files) whose HEAD is contained in the locally
+  observed default branch, and its tree matches the accepted content. Base selection follows the
+  review diff's policy; stacked work is conservatively compared against the default branch too.
+  The persisted expectation pins HEAD, tree, base oid and base ref;
+  continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
+  This completion releases the existing conversation hold without creating a PR, including for
+  actions already waiting when the daemon restarts.
+  A sealed no-change continuation also completes an Inspector-policy run at End when there
+  is no candidate PR for that repository. A candidate PR still enters the normal Inspector gate.
+  Missing accepted-tree proof for a clean checkout, unavailable local reads (including timeouts, moving HEAD, and
+  an unresolved base), and clean-checkout mismatches with accepted or captured content all
+  retry for one minute after a settled turn with no adopted PR before a recoverable
+  `expectation_unmet` block with a precise diagnostic. A checkout returned to the default branch
+  after publication gets the same adoption grace period.
+  The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
+  sweeps and restart; a recovered read or a new active turn resets it. The lifecycle observer
+  records even a short turn between sweeps without replacing the delivery anchor or first
+  pickup timestamp. Adoption can still complete the action during that window. Both completion and blocking re-offer
+  queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
+  An observation discards its Git reads if the action or session changed while it awaited them.
+  The adapter's shared `settledAt` remains the current observation; only Pull Request reads
+  `proofRetryStartedAt` for the persisted retry window.
+  A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
+  Known changed work, including commits on a detached HEAD, waits for PR adoption even when
+  the accepted content tree is missing. No timeout or agent assertion is treated as proof of publication.
 - New publication requires a durable adoption in Mission Control's ledger. Repository,
   branch, head and content comparisons are advisory for a newly opened PR; differences are
   recorded as warnings. Earlier open adoptions use the existing session/checkout checks.

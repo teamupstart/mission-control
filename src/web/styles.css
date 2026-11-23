@@ -22983,6 +22983,47 @@ button.wf-carried.is-link:focus-visible {
   gap: 6px;
   flex-shrink: 0;
 }
+/* Settings > Voice's mode line: a dot, the mode in words and, when voice cannot listen, every
+   reason it cannot with the way to Setup. The word carries the mode, so colour is never the
+   only cue. */
+.voice-mode-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--muted);
+}
+.voice-mode-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+  background: var(--exited);
+}
+.voice-mode-dot-live {
+  background: var(--idle);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--idle) 70%, transparent);
+}
+.voice-mode-dot-quiet {
+  background: var(--muted);
+}
+.voice-mode-dot-warn {
+  background: var(--attention);
+}
+.voice-mode-label {
+  color: var(--fg);
+  font-weight: 620;
+}
+.voice-mode-why {
+  flex: 1;
+  min-width: 0;
+}
 /* The capture target is a button that shows the current key, and swaps to a live
    "Press a key…" prompt while recording. Min-width keeps the row from jumping. */
 .kb-capture {

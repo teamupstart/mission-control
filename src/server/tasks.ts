@@ -5804,16 +5804,19 @@ export class TaskManager {
       // stale spread here writes yesterday's priority back over one just set on the card,
       // silently, on a gesture that was only meant to hand the task to an agent.
       // The turn reached the session: only now does this handover's shaping record replace the
-      // task's last one, stamped with the session it was delivered to. Settled whether or not
-      // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
+      // task's last one, stamped with the session it was delivered to and this delivery's id.
+      // Settled whether or not shaping ran, so a handover nothing shaped clears an earlier
+      // record, as a launch does. The row naming the receiving session is written in the same
+      // transaction, so a stop between the two can never leave one without the other; and a
+      // record that cannot be committed still binds the task under this delivery's id, so the
+      // record an earlier delivery to this same session left never reads as this one's.
       // A paste whose submit was not seen may still be sitting in the composer: the assignment
       // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
       // Only a turn that carried a section has anything to confirm; an empty run keeps its outcome.
       const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
-      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section);
       const cur = this.registry.getTask(t.id) ?? t;
       const now = Date.now();
-      this.registry.upsertTask({
+      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section, {
         ...cur,
         status: "running",
         sessionId: s.id,

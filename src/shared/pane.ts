@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "./terminal.ts";
 import type {
   EmulatorHandle,
   MuxHandle,
@@ -120,7 +121,7 @@ export function paneToken(s: PaneHandles): string | null {
  */
 export function canWriteTo(s: PaneHandles): boolean {
   const pane = innermostPane(s);
-  return pane !== null && pane.backend !== "macos-terminal";
+  return pane !== null && pane.backend !== MACOS_TERMINAL_ID;
 }
 
 /**

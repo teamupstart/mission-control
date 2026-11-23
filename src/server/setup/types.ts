@@ -4,6 +4,7 @@ import type { PipelineProbe } from "@shared/pipeline.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type { SetupBannerDismissal, SetupRemedy, SetupStatus, SetupRuntimeView } from "@shared/setup-catalog.ts";
 import type { ExecutableId } from "@shared/executables.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
 import type { CmuxControl } from "../terminal/cmux.ts";
@@ -69,6 +70,12 @@ export interface SetupDeps {
    * (`server/pipelines/availability.ts`); a test may answer for itself.
    */
   conductorIntegration?(): boolean;
+  /**
+   * Whether a preview flag resolves on. Defaults to the daemon's flag store; a test may answer
+   * for itself. A family that follows a flag (Voice) is probed and listed only while it is on,
+   * and the `voice-previews` probe reads the flags voice depends on through it.
+   */
+  flagEnabled?(id: FeatureFlagId): boolean;
   terminalTargets(): TerminalTargetView[];
   /** The repository index this daemon walks: how many checkouts it found, and where it looked. */
   repositoryIndex(): Promise<SetupRepositoryIndexRead>;

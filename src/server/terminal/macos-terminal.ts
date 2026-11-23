@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { normTty } from "../discovery/tty.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { appleScriptString, appleScriptText } from "./applescript.ts";
@@ -64,13 +65,13 @@ export function macosTerminalEmulator(
     exec(FIXED_OS_EXECUTABLES.osascript, [], { input: script, timeoutMs: TIMEOUT_MS });
 
   return {
-    id: "macos-terminal",
+    id: MACOS_TERMINAL_ID,
     label: "macOS Terminal",
     glyph: "▣",
     macBundleId: BUNDLE_ID,
     dispatchUnavailable: "Choose a multiplexer for dispatch, then select macOS Terminal under Opens in.",
     bin: {
-      id: "macos-terminal",
+      id: MACOS_TERMINAL_ID,
       enabled,
       unsupportedReason: (platform) => platform === "darwin" ? null : "Terminal.app is available on macOS only.",
     },

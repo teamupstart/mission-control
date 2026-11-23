@@ -528,6 +528,85 @@ test("a launch whose commit fails keeps a record naming the previous session, wh
   }
 });
 
+for (const arm of ["terminal", "sdk"] as const) {
+  const launch = (options: DispatchOptions) => arm === "terminal" ? terminalDispatch(options) : sdkDispatch(options);
+
+  test(`${arm}: a launch whose commit fails binds under its own delivery id on disk, so a restart shows no earlier record`, async () => {
+    const repo = seedRepo(`commit-fails-durable-${arm}`);
+    const taskId = `cfd-${arm}`;
+    const registry = new Registry();
+    const first = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
+    assertRunning(first.task);
+    const earlier = currentShaping(first.task)!;
+    registry.shapingCommitter = () => { throw new Error("disk full"); };
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const second = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
+      assertRunning(second.task);
+    } finally {
+      console.warn = warn;
+      registry.shapingCommitter = null;
+    }
+    const stored = getDurableTask(taskId)!;
+    assert.equal(stored.status, "running");
+    assert.equal(stored.sessionId, registry.getTask(taskId)?.sessionId, "the binding is on disk");
+    assert.deepEqual(stored.shaping, earlier, "the earlier launch's record is still there");
+    assert.ok(stored.shapingDelivery, "and the binding carries a delivery id");
+    assert.notEqual(stored.shapingDelivery, earlier.deliveryId, "that is this launch's, not the earlier record's");
+    assert.equal(stored.shapingDelivery, registry.getTask(taskId)?.shapingDelivery, "memory and disk agree");
+    // Bound to the earlier session again by hand: the delivery id alone still rejects the record.
+    assert.equal(currentShaping({ ...stored, sessionId: earlier.sessionId! }), null);
+    assert.equal(currentShaping(new Registry().getTask(taskId)!), null, "a restart shows nothing");
+  });
+
+  test(`${arm}: a launch no shaper applied to clears the record and persists its own delivery id with its binding`, async () => {
+    const repo = seedRepo(`unshaped-delivery-${arm}`);
+    const taskId = `ud-${arm}`;
+    const registry = new Registry();
+    const first = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
+    const earlier = currentShaping(first.task)!;
+    const second = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn("").shapeTask });
+    assertRunning(second.task);
+    const stored = getDurableTask(taskId)!;
+    assert.equal(stored.shaping, undefined, "the earlier record is cleared");
+    assert.ok(stored.shapingDelivery);
+    assert.notEqual(stored.shapingDelivery, earlier.deliveryId, "a new id, not a cleared one");
+    assert.equal(stored.shapingDelivery, registry.getTask(taskId)?.shapingDelivery);
+  });
+
+  test(`${arm}: a launch stopped at its binding write leaves neither its record nor the binding`, async () => {
+    const repo = seedRepo(`torn-launch-${arm}`);
+    const taskId = `tl-${arm}`;
+    const registry = new Registry();
+    const first = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
+    const earlier = currentShaping(first.task)!;
+    const d = openDb();
+    d.exec(`CREATE TRIGGER stop_at_launch_binding_${arm} BEFORE UPDATE OF status ON tasks WHEN NEW.id = '${taskId}' AND NEW.status = 'running'
+            BEGIN SELECT RAISE(ABORT, 'process stopped'); END;`);
+    const warn = console.warn;
+    const error = console.error;
+    console.warn = () => {};
+    console.error = () => {};
+    try {
+      const second = await launch({ agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: standIn(SECTION, { state: "degraded" }).shapeTask });
+      assert.notEqual(second.task.status, "running");
+    } finally {
+      d.exec(`DROP TRIGGER stop_at_launch_binding_${arm}`);
+      console.warn = warn;
+      console.error = error;
+    }
+    const stored = getDurableTask(taskId)!;
+    assert.notEqual(stored.status, "running", "the binding was not written");
+    assert.deepEqual(stored.shaping, earlier, "and neither was this launch's record");
+    // The live registry did not move ahead of the row either.
+    const live = registry.getTask(taskId)!;
+    assert.equal(live.shapingDelivery, stored.shapingDelivery, "live and durable carry the same delivery id");
+    assert.deepEqual(live.shaping, stored.shaping);
+    assert.equal(currentShaping(new Registry().getTask(taskId)!), null, "a restart shows nothing for it");
+  });
+}
+
 // ---- the trace context ----
 
 test("the shaping input carries exactly the trace context the agent is launched with", async () => {
@@ -706,6 +785,12 @@ test("Pi's launch argument: the budget counts the WORK_UNIT_ID the launch export
   registerLargeShaper();
   const repo = seedRepo("pi-argmax-work-unit");
   const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // The comparison below needs the work unit to come from the launch alone. A runner that is
+  // itself an agent Mission Control started carries WORK_UNIT_ID in its own environment, which
+  // every launch inherits, so both launches would hold the variable and differ by nothing.
+  const inherited = process.env[WORK_UNIT_ENV_VAR];
+  delete process.env[WORK_UNIT_ENV_VAR];
+  t.after(() => { if (inherited !== undefined) process.env[WORK_UNIT_ENV_VAR] = inherited; });
   // Fill the environment to leave the terminal reserve plus about 24 KiB, as above, measured from
   // a launch that carries the work unit, so a 64 KiB section has to be cut.
   setFlag(false);

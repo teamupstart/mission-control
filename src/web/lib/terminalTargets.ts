@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { useEffect, useState } from "react";
 import type { TerminalTargetView } from "@shared/terminal.ts";
 import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
@@ -96,9 +97,9 @@ export function useTerminalTargets(revision = 0): TerminalTargetsState {
       live = false;
     };
   }, [revision, macosTerminalPreview]);
-  return macosTerminalPreview || !state.targets?.some(({ id }) => id === "macos-terminal")
+  return macosTerminalPreview || !state.targets?.some(({ id }) => id === MACOS_TERMINAL_ID)
     ? state
-    : { ...state, targets: state.targets.filter(({ id }) => id !== "macos-terminal") };
+    : { ...state, targets: state.targets.filter(({ id }) => id !== MACOS_TERMINAL_ID) };
 }
 
 /**

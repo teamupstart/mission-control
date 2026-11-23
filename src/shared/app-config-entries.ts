@@ -1,5 +1,6 @@
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
 import { ShapingConfigSchema } from "./shaping.ts";
+import { VoiceConfigSchema, type VoiceConfig } from "./voice.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
@@ -310,7 +311,24 @@ const uiFields = {
   compactTopbarItems: "setting",
   pauseCardControls: "setting",
   pauseConsoleControls: "setting",
+  voice: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
+
+/**
+ * Voice settings. `muted` is `operational`, like `away.away`: it is what the tray, the hotkey or
+ * the dashboard last did on this machine, and a restored snapshot must not mute or unmute it.
+ */
+const voiceFields = {
+  muted: "operational",
+  hotkey: "setting",
+  autoMuteDuringCalls: "setting",
+  cancelWindow: "setting",
+  whenUnsure: "setting",
+  planFormsByVoice: "setting",
+  inputDevice: "setting",
+  decisionProvider: "setting",
+  backend: "setting",
+} satisfies Record<keyof VoiceConfig, AppConfigValueClass>;
 
 const repoIndexFields = {
   directories: "setting",
@@ -362,6 +380,11 @@ export const APP_CONFIG_ENTRIES = {
   // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
   // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
   shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
+  /**
+   * Voice settings (contract A of the voice plan), behind the `voice` preview flag. Every field
+   * later phases read is declared here from the start, so none of them changes this entry.
+   */
+  voice: { ...fieldsEntry("voice", VoiceConfigSchema, "voice", voiceFields), optionalInSnapshot: true },
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
   // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.

@@ -37,17 +37,18 @@ interface StoredDraft {
 }
 
 /** A daemon whose draft routes remember what they were sent, as the real ones do. */
-function world(options: { host?: Omit<FakeModHostOptions, "daemon">; refuseRepo?: string[] } = {}) {
+function world(options: { host?: Omit<FakeModHostOptions, "daemon">; refuseRepo?: string[]; needsRepo?: boolean } = {}) {
   const daemon: FakeDaemon = createFakeDaemon();
   const drafts = new Map<string, StoredDraft>();
   const filed: Array<{ draftId: string; choice: string }> = [];
   let counter = 0;
   const summary = (draft: StoredDraft): HomeDispatchDraftSummary => {
     const kindLabel = TASK_KIND_INFO[draft.kind].label;
-    const needs = draft.words.trim() === "" ? ["description"] : [];
+    const needsRepo = options.needsRepo === true && draft.repo === undefined;
+    const needs = [...(draft.words.trim() === "" ? ["description"] : []), ...(needsRepo ? ["repo"] : [])];
     return {
       draftId: draft.id,
-      repoRoot: draft.repo ?? FAKE_REPO_ROOT,
+      repoRoot: draft.repo ?? (needsRepo ? "" : FAKE_REPO_ROOT),
       kind: draft.kind,
       kindLabel,
       afterWork: draft.workflowId ?? "None",
@@ -396,6 +397,33 @@ test("a repository that stays unresolved is tried three times, then the refusal 
   assert.deepEqual(filed, []);
   assert.ok(daemon.requests.every((r) => !r.path.endsWith("/confirm")));
   assert.equal(fake.dialogs.some((d) => d.header === "Confirm"), false);
+});
+
+test("a draft that still needs a repository asks for one, updates the draft, and confirms the updated draft", async () => {
+  const { daemon, fake, filed } = world({
+    needsRepo: true,
+    host: { answers: (q) => q.header === "Repo" ? { kind: "other", text: "/fake/other" } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  await runDispatchCommand(fake.host, SESSION, "ship add retries");
+  assert.deepEqual(fake.dialogs.map((d) => d.header), ["After work", "Repo", "Confirm"]);
+  const update = daemon.requests.find((r) => r.pattern === "/dispatch/drafts/:id")!;
+  assert.deepEqual({ repo: (update.body as { repo: string }).repo }, { repo: "/fake/other" });
+  // The confirm shows the updated draft, and the task is filed against it.
+  assert.ok(fake.notices.some((n) => n.startsWith("Repo: /fake/other\n")));
+  assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+  assert.match(fake.notices.at(-1)!, /^Started mc-new1: .+, in other\.$/);
+});
+
+test("dismissing the repository question cancels the draft and files nothing", async () => {
+  const { daemon, fake, filed } = world({
+    needsRepo: true,
+    host: { answers: (q) => q.header === "Repo" ? { kind: "dismissed" } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  await runDispatchCommand(fake.host, SESSION, "ship add retries");
+  assert.equal(fake.dialogs.some((d) => d.header === "Confirm"), false);
+  assert.deepEqual(filed.map((f) => f.choice), ["cancel"]);
+  assert.equal(daemon.requests.some((r) => r.pattern === "/dispatch/drafts/:id"), false);
+  assert.equal(fake.notices.at(-1), "Cancelled. Nothing was created.");
 });
 
 test("every route the flows call is on the daemon's own list and every failure reads in the mod's words", async () => {

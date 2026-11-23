@@ -18,7 +18,7 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
@@ -991,7 +991,7 @@ export class Dispatcher {
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.
       // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
-      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
+      // ask-channel redirect, terminal home, `waitForLaunchedSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if (runtime === "sdk") {
         const embeddedSession = await this.dispatchEmbedded(
@@ -1175,9 +1175,31 @@ export class Dispatcher {
       this.patch(taskId, homeRecord(home));
       if (await settled()) return;
 
-      let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
+      // Only the worker this spawn started: matched by the terminal resource or launch wrapper
+      // the spawn returned, never by the checkout alone, which a cancelled attempt's worker can
+      // still share while it waits to be retired. A home that names neither cannot tell its own
+      // worker from that one, so it binds nothing and its terminal is left standing.
+      if (!spawnHasLaunchIdentity(home)) {
+        throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
+      }
+      // Each session whose most recent identity check threw, so a timeout can name a failure that
+      // still stands instead of blaming the agent. A later check that completes clears it.
+      const checkFailures = new Map<string, string>();
+      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS, {
+        onCheckSettled: (sessionId, error) => {
+          if (error === null) checkFailures.delete(sessionId);
+          else checkFailures.set(sessionId, error instanceof Error ? error.message : String(error));
+        },
+      });
       if (!discovered) {
-        throw new Error("agent session never appeared (the launch may have exited immediately)");
+        // Only a session still live in this checkout: one that left took its failure with it.
+        const standing = [...checkFailures].find(([sessionId]) => {
+          const session = this.registry.getSession(sessionId);
+          return session !== undefined && session.state !== "exited" && session.cwd === wt.path;
+        })?.[1];
+        throw new Error(standing
+          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${standing})`
+          : "agent session never appeared (the launch may have exited immediately)");
       }
       if (await settled()) return;
       if (home.terminalResourceId?.startsWith("emulator:")) {
@@ -2466,7 +2488,7 @@ export class Dispatcher {
       // Listen BEFORE typing - the hook can land before the next line runs.
       const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal, sessionId)
         : null;
 
       let sent: Awaited<ReturnType<typeof injectPrompt>>;
@@ -3677,8 +3699,11 @@ export async function spawnManagedResume(
   return { ...result.value, resumeLeaseId: input.prepared.lease.id, launchOutcome: "launched" };
 }
 
-/** Shared backend mechanics. Resource ownership stays with the ordinary or managed caller. */
-async function spawnWrappedUniquely(
+/**
+ * Shared backend mechanics. Resource ownership stays with the ordinary or managed caller.
+ * Exported for the tests that pin what a spawn returns for discovery to find its worker by.
+ */
+export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,
@@ -3690,7 +3715,9 @@ async function spawnWrappedUniquely(
   const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
-      launchStateHome: first.backend.axis === "emulator" ? stateHome : undefined,
+      // On every axis: the wrapper always runs from this home, so a pane whose address the
+      // backend could not report is still found by the launch it descends from.
+      launchStateHome: stateHome,
       launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   if (first.outcomeUnknown || name === unique) throw new TerminalLaunchError(first.error, first.outcomeUnknown ?? false);
@@ -3701,7 +3728,7 @@ async function spawnWrappedUniquely(
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
-      launchStateHome: retry.backend.axis === "emulator" ? stateHome : undefined,
+      launchStateHome: stateHome,
       launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   throw new TerminalLaunchError(retry.error, retry.outcomeUnknown ?? false);

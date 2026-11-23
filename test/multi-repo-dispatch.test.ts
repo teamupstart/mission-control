@@ -299,7 +299,7 @@ test("Pi dispatches both worktrees without directory grant flags", async () => {
         pid: 4567, tty: "pi-test", startedAt: Date.now(),
         terminals: [mkMuxHandle({ session: "pi-supported", paneId: "%4567" })],
       }]);
-      return { homeName: "pi-supported", homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: "pi-supported", homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:pi-supported" };
     },
   });
   await dispatcher.dispatch("pi-supported");

@@ -216,6 +216,8 @@ something to say. It is `identity.referenceName` in the profile's revision JSON,
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.
 
+If Voice is switched off during an edit, saving the profile preserves its stored reference name.
+
 A reference name is a spoken name, not a launch setting, so it applies as soon as it is saved,
 also to a resident that is running: the roster reads the profile as it stands, and so does the
 display name a card prints. Every other profile edit still applies at the next launch.
@@ -263,7 +265,9 @@ taskId, sessionId, role, colorId, agent, state }`:
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
-stopped later. A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
+stopped later. The displaced name stays off the roster even if the other agent gives it up or the
+daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
+A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
 phase can say "<name> isn't running".
 
 When a task stopped is not always known across a daemon restart, so the 24 hours are not an

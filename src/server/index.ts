@@ -25,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, getAppConfig, getTask as getDurableTask, loadFinishedTasksWithCallSign, openDb, setAppConfig } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, getTask as getDurableTask, loadFinishedTasksWithCallSign, taskNameRetirement, openDb, setAppConfig } from "./db.ts";
 import { PauseManager } from "./pause/manager.ts";
 import { processFreezer } from "./pause/freezer.ts";
 import { StoredPauseStateSchema } from "@shared/protocol.ts";
@@ -255,6 +255,7 @@ const voiceNames = new VoiceNameRegistry(registry, {
   now: () => Date.now(),
   enabled: () => featureEnabled(VOICE_FLAG),
   taskStored: (id) => getDurableTask(id) !== undefined,
+  retirement: taskNameRetirement,
   finishedNamedTasks: (since) => loadFinishedTasksWithCallSign(since),
 });
 const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));

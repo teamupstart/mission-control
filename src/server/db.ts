@@ -324,7 +324,8 @@ let db: DatabaseSync | undefined;
 //     author was muted before it existed, so every report notifies and is listed as before.
 // 51: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
 //     no task was given a spoken name before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 51;
+// 52: remember a stopped task's displaced roster name until it runs or changes names.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 52;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -586,6 +587,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- The call sign: a short name the operator says to address the task's session by voice
       -- (@shared/voice-names.ts). NULL is none. Annotation: it may change while the agent runs.
       call_sign     TEXT,
+      retired_call_sign TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -4294,6 +4296,7 @@ function migrate(d: DatabaseSync): void {
   // A task's call sign (schema 51). Nullable with no backfill: no task had a spoken name before
   // this column existed, so every existing row reads as having none.
   addColumn(d, "tasks", "call_sign", "TEXT");
+  addColumn(d, "tasks", "retired_call_sign", "TEXT");
   d.exec(`
     CREATE TABLE IF NOT EXISTS task_shaping_text (
       task_id    TEXT PRIMARY KEY,
@@ -7578,6 +7581,7 @@ export function upsertTask(
          grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          persona_id=excluded.persona_id, call_sign=excluded.call_sign,
+         retired_call_sign=CASE WHEN excluded.call_sign IS NULL THEN NULL ELSE tasks.retired_call_sign END,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
@@ -9291,6 +9295,17 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
     .all(limit) as unknown as TaskRow[];
   return rowsToTasks(rows);
 }
+
+/** Roster retirement belongs to the task row and leaves its configured call sign intact. */
+export const taskNameRetirement = {
+  read(id: string): string | null {
+    const row = openDb().prepare("SELECT retired_call_sign FROM tasks WHERE id = ?").get(id);
+    return typeof row?.retired_call_sign === "string" ? row.retired_call_sign : null;
+  },
+  write(id: string, name: string | null): void {
+    openDb().prepare("UPDATE tasks SET retired_call_sign = ? WHERE id = ?").run(name, id);
+  },
+};
 
 /**
  * Finished tasks with a call sign that stopped at or after `since`, from storage rather than the

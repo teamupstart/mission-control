@@ -14,7 +14,7 @@ import { parse } from "jsonc-parser";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
-const { claudeHooks, missionHookScriptPath, missionHookShimCommand } = await import(
+const { claudeHooks, missionHookScriptPath, missionHookShimCommand, missionHookShimText } = await import(
   "../src/server/harness/claude/hooks.ts"
 );
 /** What every hook command of ours names now: the shim, never a script. */
@@ -645,6 +645,24 @@ test("--uninstall removes the shim along with the hooks", () => {
     runInstaller(path, ["--uninstall"]);
     assert.ok(!existsSync(shim), "uninstall removes it");
   });
+});
+
+test("a shim runs a checkout whose path holds shell syntax, without expanding it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-shim-quote-"));
+  try {
+    const checkout = join(dir, "ck $HOME `touch pwned`");
+    mkdirSync(checkout);
+    const script = join(checkout, "harness-hook.mjs");
+    writeFileSync(script, "process.stdout.write(process.argv.slice(1).join('|'));\n");
+    const shim = join(dir, "harness-hook");
+    writeFileSync(shim, missionHookShimText(process.execPath, script), { mode: 0o755 });
+    const run = spawnSync(shim, ["Stop"], { cwd: dir, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, `${script}|Stop`);
+    assert.equal(existsSync(join(dir, "pwned")), false, "a backtick in the path runs nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // A hook starting mid-install reads the shim it opened, so a rewrite must swap files, never truncate one.

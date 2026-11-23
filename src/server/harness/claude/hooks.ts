@@ -1,3 +1,4 @@
+import { ownedScriptCommand } from "@shared/owned-runtime.mjs";
 import type { HookIngest } from "@shared/protocol.ts";
 import type { HookSubagentSignal } from "../hook-subagents.ts";
 import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
@@ -293,7 +294,7 @@ export function missionHookShimCommand(event: string): string {
 
 /** Whether a settings.json hook command runs the shim rather than naming a script itself. */
 export function isMissionHookShimCommand(command: string): boolean {
-  return command.replace(/\\/g, "/").includes(MISSION_HOOK_SHIM);
+  return SHIM_IN_COMMAND.test(command.replace(/\\/g, "/"));
 }
 
 /**
@@ -309,7 +310,8 @@ export function missionHookShimText(nodeBin: string, scriptPath: string): string
     "#!/bin/sh",
     "# Mission Control's Claude Code hook bridge for this machine, written by",
     "# `npm run install-hooks`. Re-run that to update it; never edit it by hand.",
-    `exec "${nodeBin}" "${scriptPath}" "$@"`,
+    // Escaped as the desktop installer escapes its commands: `$` or a backtick in a path must not expand.
+    `exec ${ownedScriptCommand({ command: nodeBin, env: {} }, scriptPath)} "$@"`,
     "",
   ].join("\n");
 }
@@ -343,6 +345,9 @@ const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g,
 const HOOK_SCRIPT = new RegExp(
   `(?:^|${SEP})(?:${MISSION_HOOK_SCRIPTS.map((name) => name.split("/").map(escapeRe).join(SEP)).join("|")})$`,
 );
+
+// Bounded after, so a script or log beside the shim (`harness-hook.mjs`) is not taken for the shim itself.
+const SHIM_IN_COMMAND = new RegExp(`${escapeRe(MISSION_HOOK_SHIM)}(?=["'\\s]|$)`);
 
 /**
  * Whether a settings.json hook command is one an installer of ours wrote.

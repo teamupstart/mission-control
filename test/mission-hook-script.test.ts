@@ -7,6 +7,7 @@ import {
   MISSION_HOOK_SHIM,
   claudeHooks,
   isMissionHookCommand,
+  isMissionHookShimCommand,
   missionHookScriptPath,
   missionHookShimCommand,
   missionHookShimText,
@@ -349,6 +350,22 @@ test("a shim command is ours to remove, and names no path of its own", () => {
   const command = missionHookShimCommand("Stop");
   assert.equal(isMissionHookCommand(command), true);
   assert.equal(missionHookScriptPath(command), null);
+});
+
+test("only a command that runs the shim itself counts as a shim command", () => {
+  assert.equal(isMissionHookShimCommand(missionHookShimCommand("Stop")), true);
+  assert.equal(isMissionHookShimCommand("/home/me/.mission-control/bin/harness-hook Stop"), true);
+  const beside = '"/usr/bin/node" "/home/me/.mission-control/bin/harness-hook.mjs" Stop';
+  assert.equal(isMissionHookShimCommand(beside), false);
+  assert.equal(missionHookScriptPath(beside), "/home/me/.mission-control/bin/harness-hook.mjs");
+  assert.equal(isMissionHookShimCommand("my-hook >> /home/me/.mission-control/bin/harness-hook.log"), false);
+});
+
+test("the shim's text escapes paths a shell would expand, and still yields the script", () => {
+  const script = '/home/me/ck $HOME `id` "q"\\x/hooks/harness-hook.mjs';
+  const text = missionHookShimText("/opt/node $PATH/bin/node", script);
+  assert.match(text, /exec "\/opt\/node \\\$PATH\/bin\/node" "\/home\/me\/ck \\\$HOME \\`id\\` \\"q\\"\\\\x\/hooks\/harness-hook\.mjs" "\$@"/);
+  assert.equal(missionHookScriptPath(text), script);
 });
 
 test("a shim pointing at a moved checkout is reported through the shim", async () => {

@@ -55,6 +55,16 @@ export async function checkHealth(host: Fetcher): Promise<DaemonResult<null>> {
   return verdict === "compatible" ? { kind: "ok", value: null } : { kind: "off" };
 }
 
+/**
+ * Whether a daemon reply is the "flag is off" answer: while the headless-mode flag is off the whole
+ * `/dispatch/*` group answers 404 `{ feature: "headless-mode" }`. The one definition of that contract,
+ * used by every daemon call the mod makes (this file's and the flows'), so a missing route is never
+ * read as the flag being off.
+ */
+export function isFlagOffAnswer(status: number, body: unknown): boolean {
+  return status === 404 && body !== null && typeof body === "object" && (body as { feature?: unknown }).feature === "headless-mode";
+}
+
 async function call<T>(
   host: Fetcher,
   path: string,
@@ -73,12 +83,8 @@ async function call<T>(
   } catch {
     body = undefined;
   }
-  // While the flag is off the whole group answers 404 `{ feature: "headless-mode" }`. Any other 404
-  // (a route that is not there, a session the daemon forgot) is an error, not the flag being off.
-  if (reply.status === 404) {
-    const featured = body && typeof body === "object" && (body as { feature?: unknown }).feature === "headless-mode";
-    return featured ? { kind: "off" } : { kind: "error", status: 404 };
-  }
+  // Any other 404 (a route that is not there, a session the daemon forgot) is an error, not the flag being off.
+  if (reply.status === 404) return isFlagOffAnswer(reply.status, body) ? { kind: "off" } : { kind: "error", status: 404 };
   if (reply.status === 401) return { kind: "unauthorized" };
   if (reply.status !== 200 || body === undefined) return { kind: "error", status: reply.status };
   const value = parse(body);

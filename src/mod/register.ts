@@ -150,17 +150,19 @@ export function register(on: EngineOn, _options: unknown): void {
     void gate
       .run(() => runDispatchCommand(host, session, args))
       .then((ran) => { if (ran.busy) host.notice(FLOW_BUSY_TEXT); })
-      .catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error));
+      .catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error, session));
     return { text: "" };
   });
   on("tool.run", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
     const host = flowHost;
+    // Captured now: by the time a failure arrives the session may have ended and cleared the module's copy.
+    const session = flowSession;
     try {
-      const ran = await flowGate.run(() => runStartDispatchTool(host, flowSession!, e as Record<string, unknown>));
+      const ran = await flowGate.run(() => runStartDispatchTool(host, session, e as Record<string, unknown>));
       return { result: ran.busy ? FLOW_BUSY_TEXT : ran.value };
     } catch (error) {
-      reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error);
+      reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error, session);
       return { result: FLOW_FAILED_TEXT };
     }
   });

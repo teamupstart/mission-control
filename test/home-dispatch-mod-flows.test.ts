@@ -1071,3 +1071,15 @@ test("only the daemon's no-such-draft answer retires a waiting draft; any other 
   assert.equal(await gone.fake.host.paneState.get("draftId"), null);
   assert.ok(gone.fake.dialogs.some((d) => d.header === "Kind"));
 });
+
+test("a flow failure after its session ended is logged but not announced to the current session", () => {
+  const fake = createFakeModHost();
+  const logged: string[] = [];
+  reportFlowFailure(fake.host, (text) => logged.push(text), new Error("late boom"), { live: () => false });
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /late boom/);
+  assert.deepEqual(fake.notices, []);
+  // A session that is still there is told, as before.
+  reportFlowFailure(fake.host, (text) => logged.push(text), new Error("boom"), { live: () => true });
+  assert.deepEqual(fake.notices, [FLOW_FAILED_TEXT]);
+});

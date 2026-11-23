@@ -11,6 +11,7 @@ import { daemonBaseUrl, readDaemonToken, tokenFileCandidates } from "../src/mod/
 import type { ModState } from "../src/mod/host.ts";
 import type { HomeDispatchInbox } from "../src/shared/home-dispatch.ts";
 import { findDisallowedModCalls, isAllowedModCall, stripComments } from "../scripts/mod-calls.mjs";
+import { isFlagOffAnswer } from "../src/mod/client.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -675,4 +676,14 @@ test("the mod-calls scan ignores a path quoted in a comment and still catches a 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("one definition of the flag-off answer serves every daemon call: only a 404 carrying the feature", () => {
+  assert.equal(isFlagOffAnswer(404, { error: "This feature is disabled.", feature: "headless-mode" }), true);
+  assert.equal(isFlagOffAnswer(404, { error: "not found" }), false);
+  assert.equal(isFlagOffAnswer(404, null), false);
+  assert.equal(isFlagOffAnswer(404, undefined), false);
+  assert.equal(isFlagOffAnswer(404, "headless-mode"), false);
+  assert.equal(isFlagOffAnswer(200, { feature: "headless-mode" }), false);
+  assert.equal(isFlagOffAnswer(401, { feature: "headless-mode" }), false);
 });

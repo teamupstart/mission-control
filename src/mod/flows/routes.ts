@@ -9,6 +9,7 @@ import {
   type HomeDispatchOptionsRequest,
   type HomeDispatchOptionsResponse,
 } from "@shared/home-dispatch.ts";
+import { isFlagOffAnswer } from "../client.ts";
 import type { ModHost } from "../host.ts";
 
 /**
@@ -72,8 +73,7 @@ async function send<T>(
     parsed = null;
   }
   const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  // While the flag is off the whole group answers 404 `{ feature: "headless-mode" }`.
-  if (reply.status === 404 && record.feature === "headless-mode") return { ok: false, kind: "off" };
+  if (isFlagOffAnswer(reply.status, parsed)) return { ok: false, kind: "off" };
   if (reply.status === 401) return { ok: false, kind: "unauthorized" };
   if (reply.status === 200) {
     const checked = schema.safeParse(parsed);

@@ -318,9 +318,11 @@ let db: DatabaseSync | undefined;
 //     a current shaping record carries too (`TaskShaping.deliveryId`). Backfilled once: a record
 //     naming the task's bound session shares a fresh id with its row, so what readers showed
 //     still shows; every other record gains an id no binding carries, so it stays hidden.
-// 49: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
+// 49: `reports.counted_in_digest_at`, when a return digest counted a report (agent reports
+//     phase 6). Nullable, no backfill: no digest counted a report before it existed.
+// 50: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
 //     no task was given a spoken name before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 49;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 50;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4287,7 +4289,7 @@ function migrate(d: DatabaseSync): void {
       throw err;
     }
   }
-  // A task's call sign (schema 49). Nullable with no backfill: no task had a spoken name before
+  // A task's call sign (schema 50). Nullable with no backfill: no task had a spoken name before
   // this column existed, so every existing row reads as having none.
   addColumn(d, "tasks", "call_sign", "TEXT");
   d.exec(`
@@ -5171,6 +5173,10 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
     CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
   `);
+  // Schema 49: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
+  addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

@@ -7,8 +7,8 @@ import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkTask } from "./helpers/session-fixture.ts";
 
-// A version-48 database, written before call signs: the real schema, made in a child process by
-// this build, then wound back to what a version-48 daemon left on disk - the tasks table without
+// A version-49 database, written before call signs: the real schema, made in a child process by
+// this build, then wound back to what a version-49 daemon left on disk - the tasks table without
 // `call_sign`, holding one backlog task and one running task. The upgrade adds the nullable column,
 // every existing task reads as having no call sign, and a call sign written after survives a
 // reopen, which is what a daemon restart does.
@@ -22,18 +22,18 @@ old.exec(`ALTER TABLE tasks DROP COLUMN call_sign;
   INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at)
   VALUES ('backlog-task', 'Shelved', 'do it later', 'ship', 'claude', '/repo', 'backlog', 100, 100),
          ('running-task', 'Running', 'do it now', 'ship', 'claude', '/repo', 'running', 100, 100);
-  PRAGMA user_version = 48`);
+  PRAGMA user_version = 49`);
 old.close();
 const db = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
-test("version 48 upgrade adds tasks.call_sign, and every existing task has no call sign", () => {
+test("version 49 upgrade adds tasks.call_sign, and every existing task has no call sign", () => {
   const d = db.openDb();
   const columns = d.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string; type: string; notnull: number; dflt_value: unknown }>;
   const column = columns.find((c) => c.name === "call_sign");
   assert.deepEqual(column && { type: column.type, notnull: column.notnull, dflt: column.dflt_value }, { type: "TEXT", notnull: 0, dflt: null });
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 50);
   for (const id of ["backlog-task", "running-task"]) {
     const task = db.getTask(id)!;
     assert.equal(task.title, id === "backlog-task" ? "Shelved" : "Running");

@@ -147,6 +147,18 @@ export function registerReportRoutes(
     return c.json({ error: outcome.error, report: outcome.report, taskId: outcome.taskId }, outcome.status);
   });
 
+  // One report, read or not, and the latest of its chain when it was replaced: what a report
+  // notification opens when the dashboard no longer holds the report (already read, or replaced
+  // by one it never saw). It hands back any report on any session, whole, so like opening one
+  // it is the operator's alone.
+  app.get("/api/reports/:id", gate, (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
+    if (!reports) return unavailable(c);
+    const resolved = reports.resolve(c.req.param("id"));
+    return resolved ? c.json(resolved) : c.json({ error: "no such report" }, 404);
+  });
+
   // The attached document, from the copy stored when the report was posted, so it opens after
   // its worktree is gone. Served as the archive artifact route serves a report page: always an
   // attachment, with a sandbox policy and `nosniff`, because it is content an agent wrote and must

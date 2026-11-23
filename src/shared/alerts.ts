@@ -16,6 +16,7 @@
 import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
 import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
+import { reportToRead, type ReportItem } from "./reports.ts";
 import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
@@ -55,8 +56,35 @@ export type AlertKind =
    */
   | "workflow-repeat"
   | "ensemble"
-  | "pipeline";
+  | "pipeline"
+  /**
+   * An agent posted a report and has since stopped or kept working (`inbox` flag). Raised once,
+   * on the report's announce stamp, never on the post itself: the post happens mid-turn, so only
+   * the stamp knows whether to say "back" or "posted a report".
+   */
+  | "report";
 export type AlertSeverity = "attention" | "info";
+
+/**
+ * Which "What notifies you" switch an alert answers to (`inbox` flag). Only these four kinds of
+ * item have a switch; an alert without a class is delivered exactly as `deliverable` decides.
+ */
+export type AlertNotifyClass = "blocking-question" | "filed-question" | "report" | "stuck";
+
+/** The four notify switches, as `ui.alerts.notify` stores them. */
+export interface NotifySwitches {
+  blockingQuestions: boolean;
+  filedQuestions: boolean;
+  reports: boolean;
+  stuck: boolean;
+}
+
+const SWITCH_FOR: Record<AlertNotifyClass, keyof NotifySwitches> = {
+  "blocking-question": "blockingQuestions",
+  "filed-question": "filedQuestions",
+  report: "reports",
+  stuck: "stuck",
+};
 
 export interface Alert {
   /** Stable per (kind, subject) so a repeat replaces its toast via the Notification tag. */
@@ -68,6 +96,15 @@ export interface Alert {
   workflowRunId?: string | null;
   /** The ensemble a `kind === "ensemble"` alert points at, for deep-linking its toast. */
   ensembleId?: string | null;
+  /** The switch that may silence this alert; absent for every kind that has none. */
+  notify?: AlertNotifyClass;
+  /** The report a `kind === "report"` alert announces, which its notification opens. */
+  reportId?: string;
+  /**
+   * The display name a `kind === "report"` alert was raised under, the one the report stored when
+   * it was posted. The Away digest names who posted from it.
+   */
+  agentName?: string;
   severity: AlertSeverity;
 }
 
@@ -118,6 +155,23 @@ export interface AlertScope {
    * from the same flag, for the reason `names` gives.
    */
   spokenNames?: boolean;
+  /**
+   * Agent reports waiting to be read, present only while the `inbox` flag is on. Absent means
+   * not read, exactly as for `stalls`: a scope without it raises no report alert, and the first
+   * scope that has it announces only a report posted after the previous scope's `takenAt`, so
+   * turning the flag on announces nothing already waiting.
+   */
+  reports?: readonly ReportItem[];
+  /**
+   * When this scope was read. A report can be posted and stamped between two scopes - between
+   * two of the Away watcher's timed reads, or inside one batch of the dashboard's events when an
+   * agent stops right after posting - so a report the previous scope did not hold, stamped after
+   * that scope was read, is news. Unset, such a report never is. Both clocks are this machine's:
+   * the daemon writes `announcedAt`, and the dashboard it serves reads the same clock, because
+   * the daemon listens on 127.0.0.1 only and refuses a non-loopback Host on `/api/*` and
+   * `/events` (`requireLoopback`), so no dashboard runs on another machine.
+   */
+  takenAt?: number;
 }
 
 /**
@@ -134,6 +188,93 @@ export function deliverable(a: Alert): boolean {
 /** The complement: what accumulates into the return digest rather than notifying. */
 export function bufferable(a: Alert): boolean {
   return !deliverable(a);
+}
+
+/**
+ * Whether the dashboard raises a notification for an alert: `deliverable`, refined by the
+ * `inbox` flag's "What notifies you" switches and by Away mode.
+ *
+ * `notify` is null while the flag is off, and this is then exactly `deliverable`. With it on, an
+ * alert carrying a notify class obeys its switch; a report alert is also held while away, where
+ * the return digest summarises it instead (the daemon buffers every alert whatever is delivered
+ * here). Every alert without a class is delivered exactly as `deliverable` decides, so a stuck
+ * session still breaks through Away mode unless its own switch is off.
+ */
+export function shouldDeliver(a: Alert, notify: NotifySwitches | null, away: boolean): boolean {
+  if (notify === null || !a.notify) return deliverable(a);
+  if (!notify[SWITCH_FOR[a.notify]]) return false;
+  if (a.notify === "report") return !away;
+  return deliverable(a);
+}
+
+/**
+ * How far a stamp may predate the previous scope's read and still be news. The dashboard builds a
+ * scope when it renders, which can be a moment after the daemon stamped a report whose event was
+ * still on its way; a stamp older than this was already waiting.
+ */
+const REPORT_STAMP_IN_FLIGHT_MS = 5_000;
+
+/**
+ * Whether a stamped report the previous scope did not hold is news.
+ *
+ * While the flag was already on (`prev.reports` present), a report it did not hold was posted and
+ * stamped between the two reads, so its stamp landing since that read - allowing for an event
+ * still in flight - makes it news. When the previous scope carried no reports at all, the flag
+ * has just been turned on and the window is being handed every report already waiting, however
+ * recently stamped. A report cannot be posted while the flag is off, so only one CREATED since
+ * that read, with no allowance, is new; everything else was already waiting.
+ */
+function unheldReportIsNews(report: ReportItem, prev: AlertScope): boolean {
+  if (prev.takenAt === undefined) return false;
+  if (!prev.reports) return report.createdAt >= prev.takenAt;
+  return report.announcedAt !== null && report.announcedAt >= prev.takenAt - REPORT_STAMP_IN_FLIGHT_MS;
+}
+
+/**
+ * Whether a report alert is held until this window knows it is not away (`inbox` flag on, the
+ * reports switch on): while Away mode is unknown (`away` null, as during a page load) or reads as
+ * on. A window's Away state comes from polling, so "on" can be stale - the window may already
+ * have been closed from another tab or device - and a report alert is raised once, so dropping it
+ * would lose it for good. Every other alert is never held.
+ */
+export function heldForAway(a: Alert, notify: NotifySwitches | null, away: boolean | null): boolean {
+  return away !== false && notify !== null && notify.reports && a.notify === "report";
+}
+
+/**
+ * Whether a held report's notification is still owed once this window knows it is not away: the
+ * report is still waiting to be read and no return digest counted it (that digest already told
+ * you). Read it from the daemon's own copy where possible (see `useNotifier`).
+ */
+export function reportStillOwed(report: ReportItem): boolean {
+  return reportToRead(report) && report.countedInDigestAt === null;
+}
+
+/** `reportStillOwed` against the reports this window holds, for when the daemon cannot be read. */
+export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | undefined): boolean {
+  const report = reports?.find((r) => r.id === a.reportId);
+  return report !== undefined && reportStillOwed(report);
+}
+
+/**
+ * The alert a report's announce stamp raises, worded by the stamp and named by the name the
+ * report stored when it was posted, so it reads the same after its session is gone.
+ */
+export function reportAlert(report: ReportItem): Alert {
+  const name = report.author.name;
+  return {
+    id: `report:${report.id}`,
+    kind: "report",
+    title: report.announcedAs === "back"
+      ? `${name}'s back: ${report.title}`
+      : `${name} posted a report: ${report.title}`,
+    body: goalLine(report.body, 240),
+    sessionId: report.sessionId,
+    reportId: report.id,
+    agentName: name,
+    notify: "report",
+    severity: "info",
+  };
 }
 
 function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined, spokenNames = false): string {
@@ -190,6 +331,7 @@ export function stuckAlert(
     // round lives - landing on the session instead would leave a reader to work out which
     // of its runs stopped.
     ...(st.workflowRunId ? { workflowRunId: st.workflowRunId } : {}),
+    notify: "stuck",
     severity: "attention",
   };
 }
@@ -238,12 +380,17 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     const dialog = activePaneDialog(s);
     const beforeDialog = before ? activePaneDialog(before) : null;
     if (blocked(s.state) && !(before && blocked(before.state))) {
+      // A session entering awaiting_review because a question it waits on just arrived is the
+      // same blocking question the review alert below announces, so it answers to the same
+      // switch. Any other way of becoming blocked has no switch.
+      const forBlockingQuestion = s.state === "awaiting_review" && s.pendingReviews > (before?.pendingReviews ?? 0);
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
         title: `${label} needs you`,
         body: s.state === "awaiting_review" ? "needs review" : "needs input",
         sessionId: s.id,
+        ...(forBlockingQuestion ? { notify: "blocking-question" as const } : {}),
         severity: "attention",
       });
     } else if (dialog && (!beforeDialog || dialogIdentity(beforeDialog) !== dialogIdentity(dialog))) {
@@ -288,6 +435,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         body: goalLine(description ?? "", 240)
           || (s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review"),
         sessionId: s.id,
+        notify: "blocking-question",
         severity: "attention",
       });
     } else if (openQuestionCount(s) > (before ? openQuestionCount(before) : 0)) {
@@ -302,6 +450,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         title: `${label} ${confirmedWorking(s) ? "has a question, still working" : "needs your answer"}`,
         body: goalLine(question?.body ?? "", 240) || "a question is open",
         sessionId: s.id,
+        notify: "filed-question",
         severity: "attention",
       });
     }
@@ -386,6 +535,23 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
     alerts.push(stuckAlert(st, next.sessions, next.names, next.spokenNames));
+  }
+
+  // report: a report's announce stamp landed. Edge-triggered on `announcedAs` leaving null, so a
+  // report is announced once, and only while it is still waiting to be read: one read or
+  // replaced inside the grace period says nothing, and neither does one a return digest already
+  // counted before its stamp landed (`countedInDigestAt`), whichever window sees the stamp and
+  // whenever: a live event, a reconnect snapshot, or after a daemon restart.
+  // A session that stops without a report raises nothing here. A report the previous scope did not hold is news only when it is new since
+  // that scope was read (see `AlertScope.takenAt` and `unheldReportIsNews`).
+  if (next.reports && (prev.reports || prev.takenAt !== undefined)) {
+    const reportsBefore = new Map((prev.reports ?? []).map((r) => [r.id, r]));
+    for (const report of next.reports) {
+      if (report.announcedAs === null || !reportToRead(report) || report.countedInDigestAt !== null) continue;
+      const before = reportsBefore.get(report.id);
+      if (before ? before.announcedAs !== null : !unheldReportIsNews(report, prev)) continue;
+      alerts.push(reportAlert(report));
+    }
   }
 
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));

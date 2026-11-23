@@ -4534,7 +4534,17 @@ export const UI_CONFIG_DEFAULTS = {
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
   keybindings: {},
-  alerts: { notifications: false, sound: true },
+  /**
+   * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
+   * defaults on, which is exactly what each kind of item did before the switches existed, and
+   * none is read while the flag is off.
+   */
+  alerts: {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  },
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
@@ -4708,6 +4718,24 @@ export const UiConfigSchema = z.object({
     .object({
       notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
       sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
+      /**
+       * Which kinds of item raise a notification (`inbox` flag). A switch only stops the
+       * notification; the item is still in the inbox. A record stored before these keys existed
+       * parses to every switch on, which is what it already did, so no migration is owed.
+       */
+      notify: z
+        .object({
+          blockingQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.blockingQuestions),
+          filedQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.filedQuestions),
+          reports: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.reports),
+          stuck: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.stuck),
+        })
+        .prefault(UI_CONFIG_DEFAULTS.alerts.notify),
+      /**
+       * Whether agent reports are listed in the inbox and counted in the to read figure. Off,
+       * they stay in each conversation and are not marked read.
+       */
+      reportsInInbox: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.reportsInInbox),
     })
     .prefault(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */

@@ -136,8 +136,10 @@ test("notifier preserves workflow deep links and reconnect uses the shared detec
   assert.match(source, /#\/runs\/\$\{encodeURIComponent\(deepLink\.workflowRunId\)\}/);
   assert.match(
     source,
-    /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliverable\)/,
+    /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliver\)/,
   );
+  // The one delivery filter: `shouldDeliver`, exactly `deliverable` while the `inbox` flag is off.
+  assert.match(source, /shouldDeliver\(a, switches, away \?\? false\)/);
   assert.match(source, /"reconnect-catchup"/);
 });
 

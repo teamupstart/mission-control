@@ -317,7 +317,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -10419,7 +10419,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const scheduleValidationFailure = (c: Context, error: ScheduleValidationError) =>
     c.json({ error: error.message, field: error.field }, 400);
 
-  app.get("/api/schedules", (c) => {
+  // MCP aliases share the dashboard handlers and daemon-owned validation. The live
+  // preview gate affects only MCP access, never existing schedules or the scheduler.
+  const scheduleMcpAuth: MiddlewareHandler = async (c, next) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    await next();
+  };
+  app.use("/mcp/schedules", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+  app.use("/mcp/schedules/*", scheduleMcpAuth, requireFeature(MCP_SCHEDULES_FLAG_ID));
+
+  app.on("GET", ["/api/schedules", "/mcp/schedules"], (c) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     // Served from the Registry, the SAME live collection the SSE snapshot carries, so a GET
@@ -10431,7 +10440,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // ServerEvent is emitted. It forwards the WHOLE definition and the service runs the same
   // validation save does - cadence, name, title, intent, and repo-root resolution - so the
   // browser can never preview a definition the save route would then refuse.
-  app.post("/api/schedules/preview", async (c) => {
+  app.on("POST", ["/api/schedules/preview", "/mcp/schedules/preview"], async (c) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, SchedulePreviewSchema);
@@ -10457,7 +10466,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(result) : scheduleValidationFailure(c, result.error);
   });
 
-  app.post("/api/schedules", async (c) => {
+  app.on("POST", ["/api/schedules", "/mcp/schedules"], async (c) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, CreateScheduleSchema);

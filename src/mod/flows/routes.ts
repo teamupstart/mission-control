@@ -26,6 +26,12 @@ export interface FlowSession {
    * that would file or change a task; cancelling a draft is still sent. Absent means always live.
    */
   live?: () => boolean;
+  /**
+   * The drafts a blank command has already reminded the person about in this session. It lives and
+   * dies with the session, so an abandoned draft's entry is dropped with it. Absent means a fresh
+   * set for each call (every blank is a first one).
+   */
+  reminded?: Set<string>;
 }
 
 export type Outcome<T> =

@@ -145,7 +145,7 @@ function stop(host: FlowHost): FlowResult {
  * the draft is gone (expired, replaced, confirmed), and the caller treats the text as a new brief.
  */
 export async function describeDraft(host: FlowHost, session: FlowSession, draftId: string, words: string): Promise<FlowResult | null> {
-  reminded.delete(draftId);
+  session.reminded?.delete(draftId);
   const updated = await updateDraft(host, session, draftId, { words });
   // Only this session's own marker is cleared: a replacement session may have its own by now.
   if (!session.live || session.live()) await host.paneState.set("draftId", null);
@@ -336,9 +336,6 @@ export async function runDispatchFlow(host: FlowHost, session: FlowSession, inpu
   return completeDraft(host, session, created.value, input.intent);
 }
 
-/** Drafts a blank command has already reminded the person about: the second blank drops the draft. */
-const reminded = new Set<string>();
-
 /**
  * A blank `/mission-dispatch` while a draft waits for its description. The first time it asks
  * again for the description (and fills the prompt box again); the second drops the draft, so a
@@ -347,6 +344,7 @@ const reminded = new Set<string>();
 export async function remindOrDropWaitingDraft(host: FlowHost, session: FlowSession, draftId: string): Promise<FlowResult | null> {
   // The waiting-draft read that led here may have outlasted the session.
   if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
+  const reminded = session.reminded ?? new Set<string>();
   if (!reminded.has(draftId)) {
     reminded.add(draftId);
     try {

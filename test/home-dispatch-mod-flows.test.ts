@@ -678,7 +678,8 @@ test("a description update that outlasts the session does not clear a replacemen
 
 test("a blank command while a draft waits reminds first and drops the draft on the second blank, never silently", async () => {
   const { daemon, fake, filed } = world();
-  const waiting = await runDispatchCommand(fake.host, SESSION, "");
+  const session = { ...SESSION, reminded: new Set<string>() };
+  const waiting = await runDispatchCommand(fake.host, session, "");
   assert.equal(waiting.outcome, "waiting");
   const draftId = (await fake.host.paneState.get("draftId"))!;
   assert.ok(draftId);
@@ -686,7 +687,7 @@ test("a blank command while a draft waits reminds first and drops the draft on t
   const draftsBefore = createdDrafts(daemon).length;
 
   // First blank: the same draft is still waiting, the prompt is filled again, and nothing starts over.
-  const again = await runDispatchCommand(fake.host, SESSION, "");
+  const again = await runDispatchCommand(fake.host, session, "");
   assert.equal(again.outcome, "waiting");
   assert.equal(await fake.host.paneState.get("draftId"), draftId);
   assert.equal(fake.dialogs.length, dialogsBefore);
@@ -695,17 +696,18 @@ test("a blank command while a draft waits reminds first and drops the draft on t
   assert.equal(fake.prompts.at(-1), "/mission-dispatch ");
 
   // The description then still reaches that draft.
-  await runDispatchCommand(fake.host, SESSION, "the real description");
+  await runDispatchCommand(fake.host, session, "the real description");
   assert.deepEqual(filed.map((f) => f.choice), ["start"]);
   assert.equal(filed[0]!.draftId, draftId);
 });
 
 test("a second blank command drops the waiting draft at the daemon, says so, and starts over", async () => {
   const { fake, filed } = world();
-  await runDispatchCommand(fake.host, SESSION, "");
+  const session = { ...SESSION, reminded: new Set<string>() };
+  await runDispatchCommand(fake.host, session, "");
   const draftId = (await fake.host.paneState.get("draftId"))!;
-  await runDispatchCommand(fake.host, SESSION, "");
-  await runDispatchCommand(fake.host, SESSION, "");
+  await runDispatchCommand(fake.host, session, "");
+  await runDispatchCommand(fake.host, session, "");
   assert.ok(fake.notices.includes("Dropped the draft that was waiting for its description."));
   assert.deepEqual(filed.filter((f) => f.draftId === draftId).map((f) => f.choice), ["cancel"]);
   // A new draft is waiting now, not the dropped one.
@@ -781,4 +783,17 @@ test("the fill carries its session's guard to the host", async () => {
   await runDispatchCommand(fake.host, { ...SESSION, live }, "");
   await runDispatchCommand(fake.host, { ...SESSION, live }, "");
   assert.deepEqual(seen, [live, live]);
+});
+
+test("reminders are kept per session, so a new session starts with none", async () => {
+  const { fake } = world();
+  const first = { ...SESSION, reminded: new Set<string>() };
+  await runDispatchCommand(fake.host, first, "");
+  await runDispatchCommand(fake.host, first, "");
+  assert.equal(first.reminded.size, 1);
+  // A different session object (a new session) has its own, empty set: its first blank only reminds.
+  const second = { ...SESSION, reminded: new Set<string>() };
+  await runDispatchCommand(fake.host, second, "");
+  assert.equal(second.reminded.size, 1);
+  assert.ok(!fake.notices.includes("Dropped the draft that was waiting for its description."));
 });

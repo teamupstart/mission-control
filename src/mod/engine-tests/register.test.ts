@@ -33,7 +33,7 @@ function world(on, { flag, minModApi = 1 }) {
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
   on('state.set', async (_, e) => { if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
-  on('ui.open', async (_, e) => { seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
+  on('ui.open', async (_, e) => { if (seen.failOpen) throw new Error('the engine refused the open'); seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
@@ -488,4 +488,18 @@ test('overlapping session starts: the replacement owns dispatch and the held sta
   expect(seen.urls.filter((u) => u.endsWith('/dispatch/sessions')).length).toBe(1)
   expect(seen.urls.some((u) => u.includes('/dispatch/inbox') && u.includes('session=s2'))).toBe(true)
   expect(seen.urls.some((u) => u.includes('session=s1'))).toBe(false)
+})
+
+test('a refused pane open from the band button is logged, not left unhandled', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const ui = await $.ui.mount(ABOVE)
+  seen.failOpen = true
+  await ui.press({ key: 'open-needs-you' })
+  await settle(() => logs.some((t) => /could not open the pane: /.test(t)))
+  expect(logs.some((t) => /could not open the pane: /.test(t))).toBe(true)
+  await ui.unmount()
 })

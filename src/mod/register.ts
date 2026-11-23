@@ -26,7 +26,7 @@ import { daemonBaseUrl, readDaemonToken, type DaemonEnv } from "./daemon-link.ts
 export function register(on: EngineOn, _options: unknown): void {
   let core: ModCore | null = null;
   // What the flows need to speak for this session (7.11): set at session start, cleared at its end.
-  let flowSession: { sessionId: string; cwd: string; live: () => boolean } | null = null;
+  let flowSession: { sessionId: string; cwd: string; live: () => boolean; reminded: Set<string> } | null = null;
   let flowHost: FlowHostType | null = null;
   // One flow at a time for the session; a new session gets a new gate, so a stale flow never blocks it.
   let flowGate: FlowGate = createFlowGate();
@@ -58,7 +58,7 @@ export function register(on: EngineOn, _options: unknown): void {
     if (mine !== generation) return next(e);
     flowHost = host;
     flowGate = createFlowGate();
-    flowSession = { sessionId, cwd: e.cwd, live: () => mine === generation };
+    flowSession = { sessionId, cwd: e.cwd, live: () => mine === generation, reminded: new Set<string>() };
     // The command and the tool are always registered: with the flag off they answer that it is off.
     await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch((error: unknown) => logRegistrationFailure($, "command", error));
     await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch((error: unknown) => logRegistrationFailure($, "tool", error));
@@ -113,7 +113,8 @@ export function register(on: EngineOn, _options: unknown): void {
               key: "open-needs-you",
               label: band.button.label,
               hotkey: band.button.hotkey,
-              onPress: () => core?.openNeedsYou(),
+              // A refused open is logged, not left to reject unhandled in the engine.
+              onPress: () => void core?.openNeedsYou().catch((error: unknown) => $.ui.log(`mission-control: could not open the pane: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })),
             }),
           ],
         }),

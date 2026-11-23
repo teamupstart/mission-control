@@ -23,8 +23,21 @@ export function isAllowedModCall(path, allowed) {
 }
 
 /**
+ * Whether a `/` here starts a regular expression rather than dividing: after an operator, an open
+ * bracket, a separator, a keyword like `return`, or at the start of the file.
+ */
+function startsRegex(out) {
+  const before = out.trimEnd();
+  if (before === "") return true;
+  if ("(,=:[!&|?{};+-*%<>~^".includes(before.at(-1))) return true;
+  return /(?:^|[^\w])(?:return|typeof|case|in|of|void|delete|throw|yield|await)$/.test(before);
+}
+
+/**
  * The source with its comments blanked, so prose that quotes an example path is not mistaken for
- * a call. Strings and template literals are walked as units, so a `//` inside one (a URL) is kept.
+ * a call. Strings, template literals and regular expression literals are walked as units, so a
+ * `//` inside one (a URL, or the end of a regex like `/\//`) is not a comment and nothing after it
+ * on the line is hidden from the scan.
  */
 export function stripComments(text) {
   let out = "";
@@ -39,6 +52,18 @@ export function stripComments(text) {
       // Keep the line breaks so nothing else shifts.
       out += text.slice(i, stop).replace(/[^\n]/g, " ");
       i = stop;
+    } else if (c === "/" && startsRegex(out)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < text.length && text[j] !== "\n") {
+        if (text[j] === "\\") j += 2;
+        else if (text[j] === "[") { inClass = true; j += 1; }
+        else if (text[j] === "]") { inClass = false; j += 1; }
+        else if (text[j] === "/" && !inClass) break;
+        else j += 1;
+      }
+      out += text.slice(i, j + 1);
+      i = j + 1;
     } else if (c === '"' || c === "'" || c === "`") {
       let j = i + 1;
       while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;

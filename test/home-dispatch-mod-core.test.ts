@@ -599,6 +599,14 @@ test("the mod-calls scan ignores a path quoted in a comment and still catches a 
     // A `//` inside a string is not a comment.
     assert.equal(stripComments('const u = "http://x/api/y"; // gone').includes("gone"), false);
     assert.equal(stripComments('const u = "http://x/api/y";').includes("/api/y"), true);
+    // A regex literal that ends in `//` is not a comment: a disallowed path later on the line is still found.
+    writeFileSync(join(root, "src/mod/call.ts"), 'const parts = path.split(/\\//); const bad = "/api/hidden"; // trailing\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/hidden"]);
+    // Division and a slash inside a regex class do not confuse it, and a comment after them is still blanked.
+    const tricky = 'const half = total / 2; const re = /[/]x/g; const ok = "/api/health"; // "/api/gone"';
+    assert.equal(stripComments(tricky).includes("/api/gone"), false);
+    assert.equal(stripComments(tricky).includes("/api/health"), true);
+    assert.equal(stripComments('return /a\\/b/.test(x) && "/api/seen"').includes("/api/seen"), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -336,12 +336,12 @@ const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
   outbox: pendingTurns,
   // `workflows` is constructed below; this is read only when a prompt is written, long after.
   workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
-  // What the queue stores of Foreman's wrap-up, so startup releases a prompt whose answer was
-  // persisted just before the daemon stopped.
-  wrapupState: (sessionId) => {
-    const queue = registry.getQueue(sessionId);
-    return queue ? { askedAt: queue.wrapupAskedAt, answer: queue.wrapupAnswer } : null;
-  },
+});
+// In the answer's own transaction: mark the held prompts it releases, so a daemon that stops
+// before the release below still releases them at its next start.
+queues.onWrapupAnswerRecorded((key) => {
+  const session = registry.sessionForNoteKey(key);
+  if (session) afterWorkSkills.recordAnswered(session.id);
 });
 queues.onWrapupAnswered((key) => {
   const session = registry.sessionForNoteKey(key);

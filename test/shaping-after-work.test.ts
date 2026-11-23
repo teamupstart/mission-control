@@ -69,8 +69,6 @@ function setup(options: {
   refused?: Record<string, string>;
   /** The outbox refuses while this returns a refusal, as a starting outbox or a busy pane does. */
   outboxRefusal?: () => { error: string; retryable: boolean } | null;
-  /** Each session's Foreman wrap-up as its queue stores it. */
-  wrapups?: Map<string, { askedAt: number | null; answer: string | null }>;
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -90,9 +88,6 @@ function setup(options: {
     enabled: () => options.enabled ?? true,
     now: () => ++now,
     catalogId: (name) => options.catalog?.[name] ?? null,
-    ...(options.wrapups
-      ? { wrapupState: (sessionId: string) => (registry.getSession(sessionId) ? options.wrapups!.get(sessionId) ?? { askedAt: null, answer: null } : null) }
-      : {}),
     catalogCommand: (_session, id) => options.refused?.[id]
       ? { ok: false, message: options.refused[id]! }
       : { ok: true, command: `/${id}` },
@@ -540,45 +535,68 @@ test("a refusal that cannot clear still ends the prompt not delivered, and a wai
 });
 
 test("a held prompt whose wrap-up was answered just before the daemon stopped is released when it starts again", () => {
-  // An earlier episode's answer is still on the queue when this launch's prompt is held.
-  const wrapups = new Map([["s1", { askedAt: 5, answer: "foreman:automatic-wrapup-skipped" }]]);
-  const before = setup({ wrapups });
+  const before = setup();
   const taskId = nextTask();
   before.registry.launch(taskId, "s1");
   assert.deepEqual(before.prompts.prompt("s1", { hold: true }), { kind: "held" });
-  // The daemon stops after Foreman's answer is persisted, before the listener could release it.
+  // Foreman's answer is recorded, which marks the held prompt in the answer's own transaction,
+  // and the daemon stops before the listener could release it.
+  before.prompts.recordAnswered("s1");
   before.prompts.stop();
-  wrapups.set("s1", { askedAt: 5, answer: "/ship" });
+  assert.equal(before.queued.length, 0);
 
-  // The restarted daemon: same database and queue, its sessions not restored yet at start.
-  const after = setup({ wrapups });
+  // The restarted daemon: same database, its sessions not restored yet at start.
+  const after = setup();
   after.prompts.stop();
   after.prompts.start();
   assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "held", "kept while the session is not restored");
   after.registry.tasks = before.registry.tasks;
   after.registry.sessions = before.registry.sessions;
   after.registry.emit("event", { type: "session_upsert", session: after.registry.getSession("s1") });
-  assert.equal(after.queued.length, 1, "the persisted answer releases it once the session is back");
+  assert.equal(after.queued.length, 1, "the recorded answer releases it once the session is back");
   assert.equal(after.queued[0]!.turn.text.split("\n")[0], "/retro");
   assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "queued");
   after.prompts.stop();
 
-  // An answer an earlier episode left, unchanged since the hold, keeps it held across a restart,
-  // as an unanswered card does; and a session already there at start is checked at once.
-  const stale = setup({ wrapups });
-  const held = nextTask();
-  stale.registry.launch(held, "s4");
-  wrapups.set("s4", { askedAt: 9, answer: "an earlier episode's answer" });
-  assert.deepEqual(stale.prompts.prompt("s4", { hold: true }), { kind: "held" });
-  stale.prompts.stop();
-  stale.prompts.start();
-  assert.equal(stale.queued.length, 0);
-  assert.equal(db.getTaskSkillPrompt(held, "s4")?.state, "held");
-  // Answered while the daemon was down: the next start releases it.
-  stale.prompts.stop();
-  wrapups.set("s4", { askedAt: 9, answer: "/ship" });
-  stale.prompts.start();
-  assert.equal(stale.queued.length, 1);
-  assert.equal(db.getTaskSkillPrompt(held, "s4")?.state, "queued");
-  stale.prompts.stop();
+  // Whatever the answer says - the same skip marker as an earlier episode included - a recorded
+  // answer releases it, and a session already there at start is released at once.
+  const again = setup();
+  const second = nextTask();
+  again.registry.launch(second, "s4");
+  assert.deepEqual(again.prompts.prompt("s4", { hold: true }), { kind: "held" });
+  // No answer recorded yet: a restart keeps it held, as an unanswered card does.
+  again.prompts.stop();
+  again.prompts.start();
+  assert.equal(again.queued.length, 0);
+  assert.equal(db.getTaskSkillPrompt(second, "s4")?.state, "held");
+  again.prompts.recordAnswered("s4");
+  again.prompts.stop();
+  again.prompts.start();
+  assert.equal(again.queued.length, 1);
+  assert.equal(db.getTaskSkillPrompt(second, "s4")?.state, "queued");
+  again.prompts.stop();
+});
+
+test("a recorded wrap-up answer and the held prompts it marks commit together, or neither", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  const taskId = nextTask();
+  db.insertTaskSkillPrompt({ taskId, sessionId: "q1", state: "held", reason: null, skills: ["retro"], now: 1 });
+  db.openDb().prepare(`INSERT INTO foreman_queues (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
+    VALUES ('note-q1', '/repo', 'main', 5, NULL, NULL, 1)`).run();
+  const answer = () => (db.openDb().prepare(`SELECT wrapup_answer FROM foreman_queues WHERE note_key = 'note-q1'`).get() as { wrapup_answer: string | null }).wrapup_answer;
+  const marked = () => db.listAnsweredHeldTaskSkillPromptSessions().includes("q1");
+  // A recorder that fails rolls the answer back with it: neither is recorded.
+  const failing = queues.onWrapupAnswerRecorded(() => { db.markHeldTaskSkillPromptsAnswered("q1"); throw new Error("marker failed"); });
+  assert.throws(() => queues.setWrapupAnswer("note-q1", "/ship"), /marker failed/);
+  assert.equal(answer(), null);
+  assert.equal(marked(), false);
+  failing();
+  // One that succeeds commits both.
+  queues.onWrapupAnswerRecorded(() => { db.markHeldTaskSkillPromptsAnswered("q1"); });
+  queues.setWrapupAnswer("note-q1", "/ship");
+  assert.equal(answer(), "/ship");
+  assert.equal(marked(), true);
 });

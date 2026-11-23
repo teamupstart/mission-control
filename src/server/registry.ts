@@ -10805,9 +10805,19 @@ export class Registry extends EventEmitter {
       promptedConsumedGeneration?: number | null;
     },
     now = Date.now(),
+    /**
+     * A durable write that must commit with this one or not at all, such as the after-work
+     * prompts an answered wrap-up releases. Database writes only: it runs inside the transaction,
+     * and the session is published after the commit.
+     */
+    alongside?: () => void,
   ): void {
     const prev = getQueueRow(key);
     if (!prev) return;
+    const d = openDb();
+    const owns = alongside !== undefined && !d.isTransaction;
+    if (owns) d.exec("BEGIN IMMEDIATE");
+    try {
     upsertQueue({
       ...prev,
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
@@ -10835,6 +10845,12 @@ export class Registry extends EventEmitter {
           : prev.promptedConsumedGeneration,
       updatedAt: now,
     });
+      alongside?.();
+      if (owns) d.exec("COMMIT");
+    } catch (error) {
+      if (owns && d.isTransaction) d.exec("ROLLBACK");
+      throw error;
+    }
     this.syncSessionsForQueue(key);
   }
 

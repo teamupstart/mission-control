@@ -1,3 +1,4 @@
+import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
@@ -388,6 +389,7 @@ export interface WorkflowManagerOptions {
    * database, and the proof it feeds has to be provable without one.
    */
   readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  readUnchangedRepository?: typeof readUnchangedRepository;
   readRepositoryId?: typeof readWorkflowRepositoryId;
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
@@ -6142,7 +6144,12 @@ export class WorkflowManager {
     const blocked = this.store.blockSessionActionAttempt({ attemptId, code, detail, now });
     if (!blocked) return;
     const submission = this.store.getSubmission(blocked.submissionId);
-    if (submission) this.publishRun(submission.runId);
+    if (submission) {
+      this.publishRun(submission.runId);
+      const run = this.store.getRun(submission.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    }
     workflowLog("error", { event: "session_action_blocked", call: attemptId, error: code });
   }
 
@@ -6299,6 +6306,15 @@ export class WorkflowManager {
     const acceptedContentTreeOid = parentContext.success
       ? workflowPublicationTree(parentContext.data.evidence)
       : null;
+    let unchangedRepository = null;
+    let unchangedRepositoryProblem: string | null = null;
+    if (snapshot.completion.kind === "pull_request" && repository?.headOid) {
+      try {
+        unchangedRepository = await (this.options.readUnchangedRepository ?? readUnchangedRepository)(repository.root, repository.headOid);
+      } catch (error) {
+        unchangedRepositoryProblem = error instanceof Error ? error.message : "Repository publication proof could not be read.";
+      }
+    }
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -6311,6 +6327,8 @@ export class WorkflowManager {
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
       capturedHeadOid,
       acceptedContentTreeOid,
+      unchangedRepository,
+      unchangedRepositoryProblem,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
@@ -6678,13 +6696,19 @@ export class WorkflowManager {
         completion: snapshot.completion.kind,
       }),
     }));
-    return Boolean(this.store.completeSessionActionContinuation({
+    const completed = Boolean(this.store.completeSessionActionContinuation({
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
       warnings,
       now: Date.now(),
     }));
+    // Capture starts while the action still holds the conversation. Re-offer only after
+    // its completion is durable, including when sealing a captured child after restart.
+    const run = completed ? this.store.getRun(child.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    return completed;
   }
 
   private trackBackgroundTask(task: Promise<void>): void {

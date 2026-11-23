@@ -876,6 +876,19 @@ A SessionAction is a durable side effect, not an evaluator:
 
 ### The `pull_request` adapter
 
+- A settled Pull Request turn may complete with `no_change` when daemon-read Git facts prove
+  a clean checkout (including staged and untracked files) whose HEAD is contained in the locally
+  observed default branch, and its tree matches the accepted content. Base selection follows the
+  review diff's policy; stacked work is conservatively compared against the default branch too.
+  The persisted expectation pins HEAD, tree, base oid and base ref;
+  continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
+  This completion releases the existing conversation hold without creating a PR, including for
+  actions already waiting when the daemon restarts.
+  Missing local or accepted-tree proof after a settled turn with no adopted PR is a recoverable
+  `expectation_unmet` block, with a precise diagnostic. Both completion and blocking re-offer
+  queued sibling packets after the durable transition; unknown proof must not hold the turn.
+  Known changed work on a branch can still wait for PR adoption. No timeout or agent assertion
+  is treated as proof of publication.
 - New publication requires a durable adoption in Mission Control's ledger. Repository,
   branch, head and content comparisons are advisory for a newly opened PR; differences are
   recorded as warnings. Earlier open adoptions use the existing session/checkout checks.

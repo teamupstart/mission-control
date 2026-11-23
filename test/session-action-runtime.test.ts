@@ -146,6 +146,8 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  unchangedRepository?: boolean;
+  unchangedRepositoryProblem?: string;
   realLedger?: boolean;
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
   readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
@@ -225,6 +227,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         sha256: createHash("sha256").update("report").digest("hex"),
       }] : [],
     }) } : {}),
+    readUnchangedRepository: async (_root, headOid) => {
+      if (options.unchangedRepositoryProblem) throw new Error(options.unchangedRepositoryProblem);
+      return options.unchangedRepository
+        ? { headOid, baseOid: headOid, baseRef: "origin/main", treeOid: contentTree.oid } : null;
+    },
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -2498,7 +2505,7 @@ for (const proof of ["known", "unknown", "missing-review"] as const) {
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
       h.runActionTurn();
       await h.manager.sweepSessionActions(SETTLED());
-      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      assert.equal(h.store.getRun(runId)?.status, proof === "missing-review" ? "blocked" : "waiting_for_action");
       await h.manager.sweepSessionActions(SETTLED());
       assert.equal(reads, proof === "missing-review" ? 0 : 1);
       const failures = warnings.filter(line => line.includes("event=session_action_publication_tree_unavailable"));
@@ -2602,4 +2609,47 @@ test("overlapping sweep and Inspector observations share a pending publication-t
     await sweep;
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "shared proof did not complete the action");
   } finally { release(); await h.stop(); }
+});
+
+
+for (const proof of ["verified", "missing-base", "missing-tree"] as const) test(`an unchanged PR action releases sibling feedback with ${proof} proof`, async () => {
+  const h = await harness(`no-change-queue-${proof}`, { pullRequest: true, unchangedRepository: true,
+    omitContentTree: proof === "missing-tree",
+    unchangedRepositoryProblem: proof === "missing-base" ? "The default base could not be resolved." : undefined });
+  try {
+    h.repository.branch = null;
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    const attempt = waitingAttempt(h, runId)!;
+    const parent = h.store.latestSubmission(runId)!;
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const sibling = h.store.insertBinding({ ...binding, id: `no-change-sibling-${proof}`, sessionId: h.sessionId, repoRoot: "/sibling",
+      sessionCwd: "/sibling", sessionRepoRoot: "/sibling", now: Date.now() });
+    h.setVerdict(() => "fail");
+    const submitted = await h.manager.submit(sibling.id, { requestId: "sibling-feedback" });
+    assert.ok(submitted.ok, JSON.stringify(submitted));
+    const siblingRun = submitted.value.run.id;
+    await waitFor(() => h.store.listDeliveries(siblingRun).length > 0, "sibling feedback not prepared");
+    const packet = h.store.listDeliveries(siblingRun)[0]!;
+    assert.equal(h.store.getDelivery(packet.id)?.state, "prepared");
+    assert.equal(h.store.conversationDeliveryHold(packet)?.runId, runId);
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting", "pre-pickup idle is not completion");
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    await h.settle();
+    assert.equal(h.store.getAttempt(attempt.id)?.state, proof === "verified" ? "completed" : "error");
+    if (proof === "verified") {
+      assert.equal((h.store.getAttempt(attempt.id)!.output as { expectation: { kind: string } }).expectation.kind, "no_change");
+    } else {
+      assert.ok(h.store.runSummary(runId)?.recovery?.operations.includes("resubmit"));
+      const detail = h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.blocked?.detail;
+      assert.match(detail ?? "", proof === "missing-base" ? /default base/ : /accepted content tree/);
+    }
+    assert.equal(h.store.latestSubmission(runId)?.round, parent.round);
+    assert.equal(h.store.conversationDeliveryHold(packet), null);
+    assert.equal(h.store.getDelivery(packet.id)?.state, "delivered");
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.listSubmissions(runId).length, proof === "verified" ? 2 : 1, "no duplicate continuation");
+  } finally { await h.stop(); }
 });

@@ -574,7 +574,9 @@ function SessionActionCard({
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
-              ? warnings.length > 0
+              ? state.expectation?.kind === "no_change"
+                ? `No changes to publish. The checkout is clean and its HEAD is already contained in ${state.expectation.baseRef}. No pull request was needed.`
+                : warnings.length > 0
                 ? "The pull request was opened and the workflow continued with a warning."
                 : verifiedShipping
                 ? "The pull request was verified open at the captured commit, its content matched the prior review, and the workflow reached End."

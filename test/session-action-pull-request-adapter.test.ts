@@ -647,8 +647,9 @@ for (const patch of [
 });
 
 test("a historical merge never accepts missing review proof", () => {
-  assert.deepEqual(decide([oldMerge()], { acceptedContentTreeOid: null }),
-    { kind: "waiting", reason: "awaiting_pull_request" });
+  const decision = decide([oldMerge()], { acceptedContentTreeOid: null });
+  assert.equal(decision.kind, "blocked");
+  if (decision.kind === "blocked") assert.match(decision.detail, /accepted content tree/);
 });
 
 for (const dirty of [false, true]) test(`historical publication rechecks continuation content, dirty=${dirty}`, () => {
@@ -690,3 +691,55 @@ test("historical publication reports missing continuation proof as capture failu
   assert.equal(result.code, "capture_failed");
   assert.match(result.detail, /publication tree could not be read/);
 });
+
+test("a settled untouched detached repository completes without borrowing a sibling PR", () => {
+  const unchangedRepository = { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" };
+  const decision = decide([pr({ repositoryRoot: "/sibling" })], {
+    repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository,
+  });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.deepEqual(decision.continuationExpectation, { kind: "no_change", ...unchangedRepository });
+  assert.equal(SessionActionContinuationExpectationSchema.safeParse(decision.continuationExpectation).success, true);
+  const capture = { capturedHeadOid: HEAD, context: { evidence: {
+    workingTreeDirty: false, contentTreeOid: TREE,
+  } } as WorkflowContextSnapshot };
+  assert.equal(ADAPTER.validateCapture(decision.continuationExpectation, capture), null);
+  for (const changed of [
+    { ...capture, capturedHeadOid: OTHER_HEAD },
+    { ...capture, context: { evidence: { workingTreeDirty: true, contentTreeOid: TREE } } as WorkflowContextSnapshot },
+    { ...capture, context: { evidence: { workingTreeDirty: false, contentTreeOid: OTHER_HEAD } } as WorkflowContextSnapshot },
+  ]) assert.equal(ADAPTER.validateCapture(decision.continuationExpectation, changed)?.kind, "blocked");
+});
+
+test("no-change proof cannot discard accepted work or replace a same-repository adoption", () => {
+  const unchangedRepository = { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" };
+  assert.equal(decide([], { unchangedRepository, acceptedContentTreeOid: OTHER_HEAD }).kind, "blocked");
+  const adopted = decide([pr()], { unchangedRepository });
+  assert.equal(adopted.kind === "complete" && adopted.continuationExpectation.kind, "pull_request");
+});
+
+
+test("an unrelated PR on another branch does not veto positive no-change proof", () => {
+  const decision = decide([pr({ branch: "unrelated", sessionId: "other-session" })], {
+    unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" },
+  });
+  assert.equal(decision.kind === "complete" && decision.continuationExpectation.kind, "no_change");
+});
+
+for (const branch of [null, BRANCH]) {
+  for (const [label, patch, detail] of [
+    ["base", { unchangedRepositoryProblem: "The default base could not be resolved." }, /default base/],
+    ["accepted tree", { acceptedContentTreeOid: null }, /accepted content tree/],
+  ] as const) test(`missing ${label} proof on branch ${branch} blocks with a recoverable explanation`, () => {
+    const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 }, ...patch };
+    const decision = decide([], context);
+    assert.equal(decision.kind, "blocked");
+    if (decision.kind !== "blocked") return;
+    assert.equal(decision.code, "expectation_unmet");
+    assert.match(decision.detail, detail);
+    assert.match(decision.detail, /resubmit/i);
+    assert.equal(decide([pr()], context).kind, "complete", "durable adoption still wins");
+  });
+}

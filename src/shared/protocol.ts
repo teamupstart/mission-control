@@ -6441,9 +6441,11 @@ const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
  * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
  * only completion kind that could have written one refused before deciding, because its
  * capability shipped `available: false`. Nothing stored names it, so the union stays closed
- * over exactly the two shapes that are written.
+ * over the shapes that are written. `no_change` retains positive Git absence proof.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("no_change"), headOid: CommitOidSchema, treeOid: CommitOidSchema,
+    baseOid: CommitOidSchema, baseRef: z.string().min(1).max(400) }),
   z.object({ kind: z.literal("none") }),
   z.object({
     kind: z.literal("pull_request"),

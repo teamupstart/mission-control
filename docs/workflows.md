@@ -726,7 +726,8 @@ snapshot outdated or its source archived and shows the exact instruction that ve
 #### Pull request actions
 
 The shipped **Pull Request** action invokes the [`pull-request`](skills-and-settings.md#skills-every-session-mixed-reload-behavior) skill and completes
-only after Mission Control has durable proof that a pull request was opened. Duplicating it keeps
+after Mission Control has durable proof that a pull request was opened, or verifies that the
+repository has no changes to publish. Duplicating it keeps
 that completion and that skill, so you can rewrite the instruction without losing the adoption
 proof.
 
@@ -744,6 +745,13 @@ What the daemon has to see before the stages below it run, and before End:
 2. Mission Control has **adopted** a pull request - the same ledger the
    [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews from, which only records pull requests it can prove are
    ours.
+
+When Mission Control verifies there are no changes to publish, the action completes and Runs
+explains **No changes to publish**. If required proof is unavailable and no PR was adopted,
+Runs names the problem and offers **Start repair round** after it is corrected. Both completion
+and blocking release any sibling repository's held feedback. See the
+[Pull Request adapter contract](agent-guides/change-contracts.md#the-pull_request-adapter)
+for the proof and continuation rules.
 
 None of that can be satisfied by the session saying so. A pull request URL on the session card
 is a lookup hint and nothing more. The durable adoption record is the proof that the creation

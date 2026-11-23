@@ -8,6 +8,7 @@ under the already ignored `.tmp/voice-spike/`. Do not commit them.
 
 ```sh
 node scripts/voice-spike/run.mjs --dry
+node --test --import ./test/setup-state.mjs scripts/voice-spike/download.test.mjs
 npm run typecheck
 npm run lint
 ```
@@ -36,7 +37,11 @@ node scripts/voice-spike/summarize.mjs
 Run timing commands sequentially after the builds finish. Concurrent compilation skews
 latency. FluidAudio can print a CoreML diagnostic before its first JSON record; retain
 that output and extract from the first `{` when summarizing. The download probe verifies
-sizes and LFS digests, then records actual per-file SHA-256 in `model-manifest.json`.
+every downloaded or cached file's size and SHA-256 against committed `models.json`,
+then records the verified bytes in `.tmp/voice-spike/model-manifest.json`. The committed
+manifest also supplies all repositories, revisions and file paths. A mismatch stops the
+run; remove the reported invalid file and rerun to download it again. The focused
+download tests use synthetic files and intercept curl without network access.
 The bootstrap replaces a stalled SwiftPM URL download with the identical verified local
 xcframework. It changes only ignored vendor package manifests, not library source.
 

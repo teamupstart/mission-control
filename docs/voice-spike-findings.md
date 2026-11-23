@@ -518,11 +518,10 @@ policy on one setup establish feasibility, not a universal echo-control guarante
   formatting failures and role-over-name errors. All failures are retained, not discarded.
 - The small recognizer uses 110M fp32 because its int8 repository is empty; using the
   same NeMo TDT decoder path is favored over the much smaller Zipformer alternative.
-- The task's later initial-handoff instruction forbids committing, pushing or creating
-  a PR in this turn. None was done. On the later authorized PR path, target
-  `harness/voice-addressing-for-agents-phas-f69e9c` and start the body with
-  `Stacked on #1653` linked to https://github.com/teamupstart/mission-control/pull/1653.
-  Carry these deviations and the completed measurement evidence into that PR.
+- After planning PR #1653 merged, this work was rebased onto `main` and published as
+  [PR #1666](https://github.com/teamupstart/mission-control/pull/1666), targeting `main`.
+  Its description records the stack relationship, these deviations and the completed
+  measurement evidence.
 - The first Mac run exposed a hotkey dispatch flaw and a CoreAudio process-lifetime race
   in the throwaway probe. The focused follow-up preserves the original evidence, explicitly
   verifies denial, labels call states and adds the acoustic S9 comparison.

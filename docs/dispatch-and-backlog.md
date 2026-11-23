@@ -684,7 +684,9 @@ Changing the setting later moves every chip you never set. Set a chip, or the se
 
 A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
 until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
-dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependents** behave exactly as above. A released card and its editor both show *Stacked on #N*. In the editor,
+**Dispatch now** saves edits and launches from the prerequisite branch. Changing the primary
+repository, dependency set, or a dependency mode invalidates that release for the draft. A card whose
 dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
 cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
 prerequisites in one repository, a prerequisite in another repository, or a stack at the

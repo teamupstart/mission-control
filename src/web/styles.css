@@ -4168,7 +4168,8 @@ body {
 /* Launch-failure toasts are bottom-anchored, which keeps them out of the bar on any window
    tall enough to use - the same assumption every entry above was added after breaking. Each
    holds a Report bug button. */
-.is-desktop .lf-toasts {
+.is-desktop .lf-toasts,
+.is-desktop .vi-floating {
   -webkit-app-region: no-drag;
 }
 
@@ -43119,10 +43120,18 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 
 /* In-window voice indicators */
-.vi-listening { --vi: var(--voice-listening); }
-.vi-muted { --vi: var(--voice-muted); }
-.vi-auto-muted, .vi-unavailable { --vi: var(--voice-call); }
-.vi-push-to-talk { --vi: var(--voice-talk); }
+.vi-listening {
+  --vi: var(--voice-listening);
+}
+.vi-muted {
+  --vi: var(--voice-muted);
+}
+.vi-auto-muted, .vi-unavailable {
+  --vi: var(--voice-call);
+}
+.vi-push-to-talk {
+  --vi: var(--voice-talk);
+}
 .vi { color: var(--vi); -webkit-app-region: no-drag; }
 button.vi { cursor: pointer; }
 .vi svg {
@@ -43216,7 +43225,11 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .topbar[data-rung~="5"]:has(.vi-topbar) { column-gap: 4px; padding-right: 8px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .topbar-actions { gap: 6px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .tb-group { gap: 3px; }
-.topbar[data-rung~="5"]:has(.vi-topbar) :is(.pulse-seg, .page-seg-btn, .ghost-btn, .dispatch-btn, .spend-chip) { padding-inline: 5px; }
+.topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg,
+.topbar[data-rung~="5"]:has(.vi-topbar) .page-seg-btn,
+.topbar[data-rung~="5"]:has(.vi-topbar) .ghost-btn,
+.topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn,
+.topbar[data-rung~="5"]:has(.vi-topbar) .spend-chip { padding-inline: 5px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .glyph-btn { min-width: 26px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }

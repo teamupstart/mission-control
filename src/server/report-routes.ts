@@ -25,6 +25,22 @@ function operatorRefusal(c: Context): string | null {
 }
 
 /**
+ * A refused reply or follow-up body, as the one sentence its card prints beneath it. `parseBody`
+ * carries the schema's whole issue list; the operator reads only the first issue's message.
+ */
+function bodyRefusal(c: Context, error: string) {
+  let message = error;
+  try {
+    const issues: unknown = JSON.parse(error);
+    const first = Array.isArray(issues) ? (issues[0] as { message?: unknown } | undefined) : undefined;
+    if (typeof first?.message === "string") message = first.message;
+  } catch {
+    // Not an issue list (an unreadable or non-JSON body): its own sentence already reads well.
+  }
+  return c.json({ error: message }, 400);
+}
+
+/**
  * Agent reports' routes, all behind the `inbox` flag. A refusal while the flag is off is a 404
  * carrying `feature`, which the MCP tool turns into a message saying where to turn it on.
  *
@@ -92,7 +108,7 @@ export function registerReportRoutes(
     if (refusal) return c.json({ error: refusal }, 403);
     if (!reports || !answers.submit) return unavailable(c);
     const parsed = await parseBody(c, ReportReplySchema);
-    if (!parsed.ok) return parsed.res;
+    if (!parsed.ok) return bodyRefusal(c, parsed.error);
     try {
       return c.json(reports.reply(c.req.param("id"), parsed.data.text, answers.submit));
     } catch (error) {
@@ -107,7 +123,7 @@ export function registerReportRoutes(
     if (refusal) return c.json({ error: refusal }, 403);
     if (!reports || !answers.followUpTasks) return unavailable(c);
     const parsed = await parseBody(c, ReportFollowUpSchema);
-    if (!parsed.ok) return parsed.res;
+    if (!parsed.ok) return bodyRefusal(c, parsed.error);
     const outcome = await reports.followUp(c.req.param("id"), parsed.data.text, answers.followUpTasks);
     if (outcome.ok) return c.json({ report: outcome.report, taskId: outcome.taskId });
     return c.json({ error: outcome.error, report: outcome.report, taskId: outcome.taskId }, outcome.status);

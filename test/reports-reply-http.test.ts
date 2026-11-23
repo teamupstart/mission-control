@@ -145,7 +145,13 @@ test("only the operator replies, and a reply needs words", async () => {
   const report = await post(f, "Guarded report");
   assert.equal((await f.reply(report.id, "x", { "x-harness-token": ensureToken() })).status, 403);
   assert.equal((await f.reply(report.id, "x", { "x-mission-operation-actor": "foreman" })).status, 403);
-  assert.equal((await f.reply(report.id, "   ")).status, 400);
+  const empty = await f.reply(report.id, "   ");
+  assert.equal(empty.status, 400);
+  // The card prints the refusal beneath itself, so it is the schema's sentence, not its issue list.
+  assert.equal(empty.body.error, "a reply needs words");
+  const tooLong = await f.reply(report.id, "x".repeat(4_001));
+  assert.equal(tooLong.status, 400);
+  assert.equal(tooLong.body.error, "a reply can be at most 4000 characters");
   assert.equal((await f.reply("r-999999", "x")).status, 404);
   assert.equal(f.reports.get(report.id)!.readAt, null);
 });

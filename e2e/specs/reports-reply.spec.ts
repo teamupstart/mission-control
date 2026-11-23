@@ -200,6 +200,74 @@ test("a report is answered from its card: a reply reaches the agent, and a follo
   await capture(page, "05-follow-up-task-running", page);
 });
 
+test("a refused reply stays on its card with the draft, and a follow-up whose dispatch is held is retried on the same task", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(240_000);
+  const title = "Trace the slow build";
+  const { task, session } = await startSession(daemon, title);
+  await setInbox(daemon, true);
+  const posted = await report(daemon, session.cwd!, { title: "Slow build traced", body: "The test shards wait on one runner." });
+
+  // A reply the daemon refuses: the reason is shown beneath the card, the words stay in the box,
+  // and the report is still waiting to be read.
+  let inbox = await openInbox(page);
+  let card = inbox.getByRole("article", { name: "Report: Slow build traced" });
+  await card.getByRole("button", { name: "Slow build traced" }).click();
+  const box = card.getByRole("textbox", { name: `Reply to ${title}` });
+  const tooLong = `Split the shards. ${"x".repeat(4_000)}`;
+  await box.fill(tooLong);
+  await card.getByRole("button", { name: "Send reply" }).click();
+  await expect(card.getByRole("alert")).toHaveText("a reply can be at most 4000 characters");
+  await expect(box).toHaveValue(tooLong);
+  await expect(card.getByRole("button", { name: "Send reply" })).toBeEnabled();
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+  expect((await history(daemon, session.id)).find((r) => r.id === posted.id)?.readAt).toBeNull();
+  await capture(card, "07-reply-refused", page);
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+
+  // The session ends, and Pause all holds every launch: the follow-up task is created but its
+  // dispatch is refused, so the card says so and offers Retry, and the report stays unread.
+  await api(daemon, `/api/tasks/${task.id}/complete`, { outcome: "Traced" });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).some((s) => s.id === session.id && s.state !== "exited"),
+    { timeout: 60_000 }).toBe(false);
+  await api(daemon, "/api/pause/fleet", {});
+  try {
+    inbox = await openInbox(page);
+    card = inbox.getByRole("article", { name: "Report: Slow build traced" });
+    await card.getByRole("textbox", { name: "Instructions for the follow-up task" }).fill("Split the shards across runners.");
+    await card.getByRole("button", { name: "Start a follow-up task" }).click();
+    await expect(card).toContainText("Follow-up task created but not started.");
+    await expect(card.getByRole("alert")).toContainText("everything is paused");
+    const retry = card.getByRole("button", { name: "Retry" });
+    await expect(retry).toBeVisible();
+    await expect(retry).toHaveAttribute("data-inbox-action", "follow-up");
+    await expect(card.getByRole("button", { name: "Start a follow-up task" })).toHaveCount(0);
+    await expect(toRead(page).locator(".pulse-n")).toHaveText("1");
+    const held = (await history(daemon, session.id)).find((r) => r.id === posted.id)!;
+    expect(held.readAt).toBeNull();
+    expect(held.followUpTaskId).not.toBeNull();
+    const followUps = async () => (await api<Task[]>(daemon, "/api/tasks")).filter((t) => t.title === "Follow up: Slow build traced");
+    expect((await followUps()).map((t) => [t.id, t.status])).toEqual([[held.followUpTaskId, "backlog"]]);
+    await capture(card, "08-follow-up-held-retry", page);
+
+    // Resumed, Retry dispatches that same task: no second task, the report leaves to read, and
+    // the new session starts.
+    await api(daemon, "/api/pause/fleet/resume", {});
+    await retry.click();
+    await expect(toRead(page)).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(async () => (await history(daemon, session.id)).find((r) => r.id === posted.id)?.readBy, { timeout: 30_000 })
+      .toBe("follow-up");
+    expect((await history(daemon, session.id)).find((r) => r.id === posted.id)?.followUpTaskId).toBe(held.followUpTaskId);
+    expect((await followUps()).map((t) => t.id)).toEqual([held.followUpTaskId]);
+    await expect.poll(async () => {
+      const live = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === held.followUpTaskId);
+      return live ? live.id !== session.id && live.state !== "exited" : false;
+    }, { timeout: 60_000 }).toBe(true);
+  } finally {
+    await fetch(`${daemon.baseURL}/api/pause/fleet/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  }
+});
+
 const RESIDENT = "Report watcher";
 
 test("a resident that is not running gets a line and a relaunch hint instead of a reply box", async ({ dashboard: page, daemon }) => {

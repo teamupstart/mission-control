@@ -1191,7 +1191,8 @@ export const McpPostReportSchema = PostReportBodySchema.extend({
  * restates the report. The cap leaves room for the restated report inside one message.
  */
 export const ReportReplySchema = z.object({
-  text: z.string().trim().min(1, "a reply needs words").max(REPORT_LIMITS.body),
+  text: z.string().trim().min(1, "a reply needs words")
+    .max(REPORT_LIMITS.body, `a reply can be at most ${REPORT_LIMITS.body} characters`),
 });
 
 /**

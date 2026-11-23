@@ -533,6 +533,17 @@ export function App(): React.JSX.Element {
     pinnedRequest.current += 1;
     setPinnedReport(null);
   }, [inboxOpen]);
+  // An action on the pinned report (Mark read, a reply, a follow-up) takes it out of `reports`,
+  // which holds only reports waiting to be read, so the band would fall back to its copy from the
+  // click, unread. Re-read it from the daemon instead. A band showing another report, or none,
+  // by the time the read lands is left alone.
+  const refreshPinned = useCallback((id: string) => {
+    void fetchReport(id).then((answer) => {
+      if (!answer) return;
+      setPinnedReport((current) =>
+        current?.status === "ready" && current.report.id === id ? { status: "ready", report: answer.report } : current);
+    });
+  }, []);
   // What a report's conversation entry needs: which report is open, opening it, and Mark read.
   // Kept apart from the inbox's controls so that typing a draft, or a session or resident run
   // changing, does not hand the open conversation new controls and re-merge its transcript.
@@ -548,9 +559,10 @@ export function App(): React.JSX.Element {
       const result = await api.markReportRead(report.id);
       if (!result.ok) return result.error ?? "Could not mark the report read";
       setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
       return null;
     },
-  }), [openReportId, recordReportOpened]);
+  }), [openReportId, recordReportOpened, refreshPinned]);
   // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up. The
   // card's draft lives in its own store (`lib/reportDrafts.ts`), so typing re-renders the card
   // alone; a send that is accepted clears it here.
@@ -564,6 +576,7 @@ export function App(): React.JSX.Element {
       if (!result.ok) return result.error ?? "Could not send the reply";
       clearReportDraft(report.rootId);
       setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
       return null;
     },
     onFollowUp: async (report, text) => {
@@ -571,9 +584,10 @@ export function App(): React.JSX.Element {
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
       clearReportDraft(report.rootId);
       setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
       return null;
     },
-  }), [reportEntryControls, sessions, residentRuns]);
+  }), [reportEntryControls, sessions, residentRuns, refreshPinned]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It

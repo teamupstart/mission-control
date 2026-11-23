@@ -350,6 +350,12 @@ test("with reports unlisted the toast still arrives and opens its report on its 
   await expect(inbox).toBeVisible();
   await band(inbox).getByRole("button", { name: "Mark read" }).click();
   await expect.poll(async () => (await api<{ report: ReportItem }>(daemon, `/api/reports/${unlisted.id}`)).report.readBy).toBe("mark-read");
+  // The band itself shows it read: Mark read closes the card, and reopened it offers no second one.
+  const toggle = band(inbox).getByRole("button", { name: "Two unmaintained packages" });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(band(inbox).getByText("Read", { exact: true })).toBeVisible();
+  await expect(band(inbox).getByRole("button", { name: "Mark read" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(inbox).toBeHidden();
 

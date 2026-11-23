@@ -1,9 +1,9 @@
-import { routeUtterance, type HeardEntry, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
+import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceConfig, VoiceState } from "@shared/voice.ts";
 
 export interface VoiceDeliverer {
-  deliver(target: SpokenName, text: string, utteranceId: string): Promise<VoiceDeliveryOutcome>;
+  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand): Promise<VoiceDeliveryOutcome>;
 }
 
 export interface PendingVoiceAction {
@@ -29,6 +29,7 @@ interface OpenCard {
   card: VoiceCard;
   entry: HeardEntry;
   message: string;
+  command?: VoiceAddressedCommand;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -88,7 +89,7 @@ export class VoiceRouter {
       parts: [{ target: addressed ? decision.target : null, text: addressed ? decision.text : utterance.text }],
       candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
     };
-    await this.openCard({ card, entry, message: decision.text });
+    await this.openCard({ card, entry, message: decision.text, command: decision.command });
     return true;
   }
 
@@ -133,7 +134,7 @@ export class VoiceRouter {
     this.take(item);
     item.entry.matchedName = target.name;
     item.entry.detail = "picked";
-    await this.openCard({ entry: item.entry, message: item.message, card: { ...item.card, state: "pending", reason: "picked",
+    await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
       candidates: [], parts: [{ target, text: item.message }] } });
     return true;
   }
@@ -149,7 +150,7 @@ export class VoiceRouter {
     this.delivering.set(id, item);
     let outcome: VoiceDeliveryOutcome = "not-running";
     try {
-      if (target) outcome = await this.deliverer.deliver(target, part.text, id);
+      if (target) outcome = await this.deliverer.deliver(target, part.text, id, item.command);
     } catch {
       outcome = "failed";
     }

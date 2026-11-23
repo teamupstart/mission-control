@@ -39,19 +39,17 @@ export interface HeardEntry {
   detail: string;
 }
 
+export type VoiceAddressedCommand = "stop";
+
 type Decision =
   | { kind: "control"; command: "cancel" }
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
-  | { kind: "addressed"; command?: "stop"; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
-  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
+  | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
+  | { kind: "needs-model"; command?: VoiceAddressedCommand; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message"; closest?: string };
 
 function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
-}
-
-export function isVoiceStop(text: string): boolean {
-  return normalized(text) === "stop";
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -113,7 +111,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const before = words[count - 1];
   const after = words[count];
   const pauseMs = before && after ? after.startMs - before.endMs : null;
-  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs };
+  const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
+  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {
     const remaining = tokens.slice(count).map((m) => normalized(m[0]));
@@ -122,8 +121,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     const later = names.filter(({ name, target: other }) => other.key !== target.key &&
       mentions.has(name));
     if (later.length) {
-      return { kind: "needs-model", reason: "second-name", candidates: [target, ...later.map(({ target: other }) => other)], text: body, pauseMs };
+      return { kind: "needs-model", reason: "second-name", candidates: [target, ...later.map(({ target: other }) => other)], text: body, pauseMs, ...command };
     }
   }
-  return { kind: "addressed", target, text: body, match, pauseMs, ...(isVoiceStop(body) ? { command: "stop" } : {}) };
+  return { kind: "addressed", target, text: body, match, pauseMs, ...command };
 }

@@ -5,7 +5,6 @@ import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
-import { isVoiceStop } from "@shared/voice-routing.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
@@ -9296,9 +9295,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
-    async deliver(target, text) {
+    async deliver(target, text, _utteranceId, command) {
       if (target.state !== "running" || !target.sessionId) return "not-running";
-      if (isVoiceStop(text)) {
+      if (command === "stop") {
         const session = registry.getSession(target.sessionId);
         if (!session || interruptUnsupportedWhy(session.agent, session.runtime)) return "failed";
         const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);

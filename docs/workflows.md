@@ -768,6 +768,15 @@ notice, preserves both identities, and activates its `complete` route. Inspector
 downstream stage can continue. When the run finishes, **Run this review again** captures the
 published state for a fresh full workflow run.
 
+**Downgrade compatibility:** the no-change result stores a `no_change` expectation that older
+builds cannot read. Keep a build that supports this result when inspecting or resuming those
+runs. There is no in-place downgrade migration for these records. A rollback to an older build
+requires a verified full-database recovery point from before the upgrade and the supported
+[offline recovery procedure](database-and-migrations.md#recovering-the-product-database);
+restoring that point discards database changes made since it was captured. A settings backup
+does not contain workflow state. The [single-daemon ownership and update lifecycle](agent-guides/architecture.md)
+prevents old and new daemon writers from sharing a state home during replacement.
+
 **Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
 applies when the daemon prepares a workflow action whose completion is **Pull request**,
 including custom actions and actions frozen in older workflow versions. When selected, the

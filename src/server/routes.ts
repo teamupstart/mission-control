@@ -4,6 +4,7 @@ import { OpenQuestionLimitError } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
+import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -58,7 +59,7 @@ import {
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
-import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
@@ -71,13 +72,13 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
-  isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
   taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "@shared/plan-publication.ts";
 import {
   dismissLaunchFailures,
   launchFailureGroupFor,
@@ -317,6 +318,7 @@ import {
   type ProductIssueSubmitResult,
 } from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
+import { deliveredReviewIds } from "./review-deliveries.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
@@ -616,6 +618,7 @@ import {
   retryWritebacks,
   getSkillsAcks,
   loadConversationResolvedReviews,
+  loadReviewsByIds,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   loadOpenInspectorInspections,
@@ -4406,7 +4409,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
-  app.get("/api/tasks", (c) => c.json(tasks.list()));
+  // Every task read applies the one shaping reader rule: a record left by an earlier launch
+  // describes another session and is not returned.
+  app.get("/api/tasks", (c) => c.json(tasks.list().map(taskShapingForReads)));
   app.get("/api/tasks/:id/plan-dependencies", (c) => {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
@@ -7225,7 +7230,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadConversationResolvedReviews(session.id));
+    // `?lineage=1`: the same history for the sessions this conversation was transferred from,
+    // never this one's own. The dashboard reads it only to draw an answer delivered here whose
+    // question a predecessor asked (`mergeConversation`), never as entries of this session.
+    const lineage = c.req.query("lineage") === "1";
+    const owners = lineage
+      ? runtimeTransferPredecessors(session.id, noteKeyFor(session)).filter((id) => id !== session.id)
+      : [session.id];
+    const history = owners.flatMap((id) => loadConversationResolvedReviews(id));
+    // The history is capped to its newest rows. A review an answer delivered into this
+    // conversation names is added whatever its age, so the delivered turn can always draw its
+    // card rather than "no longer available" while the review still exists.
+    const present = new Set(history.map((review) => review.id));
+    const owned = new Set(owners);
+    const delivered = loadReviewsByIds(deliveredReviewIds(noteKeyFor(session)).filter((id) => !present.has(id)))
+      .filter((review) => owned.has(review.sessionId));
+    return c.json([...history, ...delivered]);
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -7450,11 +7470,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const queue = queues.get(session.id);
     const task = registry.getTask(parsed.data.taskId);
+    // The same live publication read the worker made: a plan is claimable only while its
+    // `foreman_complete` workflow still waits on Foreman's completion claim.
+    const planStartsWorkflow = task?.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
     if (
       !queue
       || !task
       || session.task?.id !== task.id
-      || !isShippingTaskKind(task.kind)
+      || !heldGapRecoveryApplies(task.kind, planStartsWorkflow)
       || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
@@ -7464,6 +7488,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // The session can report a blocker while the diff runs; the decision below reads the
     // object taken before the await, so ask the live one first.
     if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    // A binding can be replaced or switched to Manual while the diff runs too. Re-read plan
+    // ownership so a stale foreman_complete answer cannot authorize this attempt.
+    const livePlanStartsWorkflow = task.kind === "plan"
+      && planStartsWorkflowOnCompletion(task, manager.planPublicationContext(session.id));
+    if (!heldGapRecoveryApplies(task.kind, livePlanStartsWorkflow)) {
       return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
     }
     const cfg = getForemanConfig();
@@ -7480,6 +7511,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
       workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      planStartsWorkflowOnCompletion: livePlanStartsWorkflow,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -8980,7 +9012,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // Task shaping, behind its preview flag. See docs/task-shaping.md.
-  registerShapingRoutes(app);
+  registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

@@ -37229,6 +37229,41 @@ body.foreman-sidecar-open .modal-backdrop {
   font: 13px/1.5 var(--sans);
   color: var(--fg);
 }
+/* How an answer filed as a message (async-input) reached its agent: "On its way to the
+   agent" while it waits in the outbox, then "Delivered to the agent" at the turn it went in
+   with. Quiet on purpose - it is the card's footnote, not a second byline. */
+.review-delivery {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--dim);
+}
+.review-delivery .turn-time {
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+}
+/* Exactly what the agent read, one click away, so the card hides nothing for good. */
+.review-received > summary {
+  cursor: pointer;
+  width: fit-content;
+  font: 500 11px/1.35 var(--sans);
+  color: var(--muted);
+}
+.review-received-text {
+  margin-top: 6px;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
+}
 
 /* --- the rail + drawer --- */
 
@@ -42093,6 +42128,143 @@ body.foreman-sidecar-open .modal-backdrop {
 .feature-flag-row .settings-grant { flex: none; }
 .feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
 
+/* Task shaping: what a session's turn one received. The chip sits beside the standing
+   instructions mark and is shed with the header's other conditional chips at rung 7; the
+   amber state is the one tone that asks for attention, because a degraded step means a
+   shaper failed and the worker started with less context than it was configured to get. */
+.task-context-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid color-mix(in oklab, var(--muted) 26%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.task-context-chip:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--muted) 48%, transparent);
+}
+.task-context-chip:focus-visible {
+  outline: 1px solid var(--select);
+  outline-offset: 2px;
+}
+.task-context-chip.is-degraded {
+  color: color-mix(in oklab, var(--attention) 84%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--attention) 34%, transparent);
+}
+.task-context-chip.is-degraded:hover {
+  background: color-mix(in oklab, var(--attention) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--attention) 58%, transparent);
+}
+.task-context-modal {
+  max-width: 760px;
+}
+.task-context-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(64vh, 640px);
+  overflow: auto;
+  /* Its own scrollport, so it bleeds to the border and keeps the shell's inset itself. */
+  padding: 4px var(--modal-inset, 18px) 12px;
+}
+.task-context-body p {
+  margin: 0;
+}
+.task-context-state {
+  font-weight: 600;
+}
+.task-context-state.is-degraded,
+.task-context-shaper:not(.is-ok) .task-context-outcome {
+  color: var(--attention);
+}
+.task-context-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-context-shapers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.task-context-shaper,
+.task-context-delivered {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.task-context-shaper-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-context-outcome {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.task-context-shaper-facts,
+.task-context-reason {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.task-context-reason {
+  color: var(--fg);
+}
+.task-context-definition {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.task-context-definition code {
+  font: 11.5px/1.5 var(--mono);
+}
+.task-context-delivered-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.task-context-delivered-text {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-context-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.tile-flag.tf-shaping {
+  border-color: color-mix(in oklab, var(--attention) 48%, var(--border));
+  background: color-mix(in oklab, var(--attention) 13%, transparent);
+  color: var(--attention);
+  cursor: help;
+}
+.rail-shaping {
+  font-size: 9.5px;
+  color: var(--attention);
+  cursor: help;
+}
+
 /* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
    add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
 .task-shaping { display: flex; flex-direction: column; gap: 16px; }
@@ -42131,6 +42303,13 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-row-reach { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 .shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
 .shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+/* A folder shaper's path: the one place it is installed, so it reads whole and wraps anywhere. */
+.shaping-row-path { margin: 0; font-size: 11.5px; color: var(--dim); overflow-wrap: anywhere; }
+.shaping-row-path code { font: 11.5px/1.5 var(--mono); }
+/* A folder shaper that is not run says so in the warning colour, beside its origin. */
+.shaping-chip.is-invalid, .shaping-chip.is-refused, .shaping-chip.is-shadowed { color: var(--attention); border-color: color-mix(in srgb, var(--attention) 45%, transparent); }
+.shaping-folder-note { margin: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
+.shaping-folder-note code { font: 11.5px/1.5 var(--mono); }
 .shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
 /* Always present as a live region; while empty it is taken out of the flow, so it adds no flex
    gap, yet stays in the accessibility tree, which display: none would not. */

@@ -952,16 +952,20 @@ export function nextSetupSelection(
   current: SetupSelection,
   input: SetupSelectionInput,
 ): SetupSelection | null {
-  // Nothing to decide from. The request is deliberately left unconsumed: the panel starts
-  // fetching as it mounts, so a link from the command palette or Foreman routinely arrives
-  // before the rows that would resolve it.
-  if (input.rows.length === 0) return null;
-
   const unseen = input.jumpRequestId !== current.seenRequest;
-  // A fresh deep link outranks the default and the operator's last click alike.
+  // A fresh deep link outranks the default and the operator's last click alike. Latched as
+  // soon as it resolves, rows or not: an environment-check anchor resolves from the catalog
+  // before the snapshot lands (`familyForAnchor`), and the page stops handing the jump down
+  // once it has started waiting for the control. Waiting for rows here as well let a slow
+  // first read lose the jump and open the default family instead.
   if (unseen && input.jumpFamily) {
     return { chosen: input.jumpFamily, seenRequest: input.jumpRequestId };
   }
+
+  // Nothing else to decide from. An unresolved request is deliberately left unconsumed: the
+  // panel starts fetching as it mounts, so a link from the command palette or Foreman
+  // routinely arrives before the rows that would resolve it.
+  if (input.rows.length === 0) return null;
 
   // An unresolvable request is consumed rather than waited on, so a link to a row this build
   // does not render cannot pin the rail forever.

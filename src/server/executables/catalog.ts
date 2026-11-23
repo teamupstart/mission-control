@@ -159,6 +159,9 @@ export const FIXED_OS_EXECUTABLES = {
   // platform's own: `-c` is macOS clonefile, so a PATH that put GNU `cp` first would turn the
   // clone into a refusal or something else.
   cp: "/bin/cp",
+  // `ARG_MAX`, read once so a launch-argument turn one is budgeted against the platform's
+  // combined argument-and-environment limit. POSIX names the utility; both platforms ship it here.
+  getconf: "/usr/bin/getconf",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

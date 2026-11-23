@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -75,7 +75,32 @@ test("with the flag off all three routes answer 404 and write nothing", async ()
 test("GET returns the config and the final reply shape", async () => {
   const response = await get();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], references: {} });
+  assert.deepEqual(await response.json(), {
+    config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], folder: { path: join(home, "shapers"), ignored: 0 }, references: {},
+  });
+});
+
+test("GET reads the shapers folder afresh, and a folder shaper is switched by its manifest", async () => {
+  const dir = join(home, "shapers", "folder-notes");
+  mkdirSync(dir, { recursive: true, mode: 0o755 });
+  const text = JSON.stringify({ id: "folder-notes", label: "Folder notes", stage: "gather", transport: { type: "command", command: "/bin/echo" } });
+  writeFileSync(join(dir, "shaper.json"), text, { mode: 0o644 });
+  chmodSync(dir, 0o755);
+  chmodSync(join(dir, "shaper.json"), 0o644);
+  try {
+    const reply = await (await get()).json() as { discovered: Array<{ id: string; state: string; path: string; sha256: string }> };
+    assert.deepEqual(reply.discovered.map(({ id, state, path }) => ({ id, state, path })), [{ id: "folder-notes", state: "ok", path: realpathSync(dir) }]);
+    const sha256 = reply.discovered[0]!.sha256;
+    const stale = await put({ kind: "enable", id: "folder-notes", enabled: true, manifest: "0".repeat(64) });
+    assert.equal(stale.status, 409);
+    const off = await put({ kind: "enable", id: "folder-notes", enabled: false, manifest: sha256 });
+    assert.equal(off.status, 200);
+    assert.equal(shaping.getShapingConfig().overrides["folder-notes"], false);
+  } finally {
+    rmSync(join(home, "shapers"), { recursive: true, force: true });
+    setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+    shaping.reloadShaping();
+  }
 });
 
 test("each intent persists, notifies and is reflected by GET", async () => {

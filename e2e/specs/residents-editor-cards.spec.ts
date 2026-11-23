@@ -110,9 +110,11 @@ test("the resident editor lays its sections out as a card grid with a live board
   await expect(preview).toContainText(`Claude Code · ${chosen}`);
   const harness = editor.getByRole("combobox", { name: "Harness" });
   await harness.selectOption("codex");
+  await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
   await expect(preview).toContainText("Codex · harness default");
   await expect(preview).not.toContainText(chosen);
   await harness.selectOption("claude");
+  await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
   await expect(preview).toContainText("Claude Code · harness default");
   await editor.getByLabel("Name").fill("Fleet Watch");
   await expect(preview).toContainText("Fleet Watch");

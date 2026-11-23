@@ -174,6 +174,7 @@ test("a profile saves a nondefault harness, model and effort, edits to a new rev
 
   // Codex, a model from its catalog, and an effort other than the default.
   await editor.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+  await dashboard.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
   const model = editor.getByRole("combobox", { name: "Model" });
   const models = (await options(model)).filter((value) => value !== "");
   expect(models.length).toBeGreaterThan(0);

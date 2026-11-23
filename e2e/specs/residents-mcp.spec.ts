@@ -27,7 +27,7 @@ async function capture(target: Locator, name: string): Promise<void> {
 test.describe("Codex OAuth servers", () => {
   test.use({ daemonEnv: { MC_E2E_CODEX_OAUTH_MCP: "1" } });
 
-  test("a Codex resident can switch from pinned inheritance to native MCP sources", async ({ dashboard: page, daemon }) => {
+  test("a new Codex resident launches with its native OAuth server by default and can still opt into pinning", async ({ dashboard: page, daemon }) => {
     const codexHome = join(daemon.home, ".codex");
     mkdirSync(codexHome, { recursive: true });
     writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [
@@ -36,31 +36,6 @@ test.describe("Codex OAuth servers", () => {
     const configPath = join(codexHome, "config.toml");
     const nativeConfig = '[mcp_servers.glean]\nurl = "https://glean.example.test/mcp"\n';
     writeFileSync(configPath, nativeConfig);
-
-    await page.goto(`${daemon.baseURL}/#/residents`);
-    await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
-    const profile = page.getByRole("region", { name: "New resident profile" });
-    await profile.getByLabel("Name").fill("Codex OAuth Resident");
-    await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
-    await profile.getByRole("combobox", { name: "Harness" }).selectOption("codex");
-    await profile.getByRole("combobox", { name: "Model", exact: true }).selectOption("gpt-5.4");
-    await profile.getByRole("button", { name: "Save" }).click();
-
-    const saved = page.getByRole("region", { name: "Resident profile Codex OAuth Resident" });
-    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
-    await saved.getByRole("button", { name: "Launch" }).click();
-    await dialog.getByRole("button", { name: "Launch resident" }).click();
-    await expect(dialog).toContainText("global MCP server glean is inherited but residents cannot use it: it uses an OAuth login held by Codex");
-    await capture(dialog, "codex-pinned-oauth-refusal");
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-
-    const section = saved.getByRole("region", { name: "MCP servers" });
-    const all = section.getByRole("radio", { name: "All native sources (not pinned)" });
-    await expect(all).toHaveCount(0);
-    await expect(section).toContainText("Enable Codex resident native MCP in Settings > Feature flags");
-    await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
-    await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
-    await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
 
     const created = await fetch(`${daemon.baseURL}/api/residents/mcp-servers`, {
       method: "POST",
@@ -72,18 +47,28 @@ test.describe("Codex OAuth servers", () => {
       }),
     });
     expect(created.status).toBe(201);
+
     await page.goto(`${daemon.baseURL}/#/residents`);
-    await page.getByRole("button", { name: /Codex OAuth Resident/ }).click();
-    await all.click();
-    const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
-    await expectContentClearsBorder(confirm);
-    await capture(confirm, "codex-all-sources-confirm");
-    await confirm.getByRole("button", { name: "Import all sources" }).click();
-    await expect(section.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toHaveCount(0);
-    await section.getByRole("combobox", { name: "Add an MCP server" }).selectOption({ label: "notes.custom" });
-    await section.getByRole("button", { name: "Add", exact: true }).click();
-    await saved.getByRole("button", { name: "Save" }).click();
-    await expect(saved).toContainText("Revision 2");
+    await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+    const profile = page.getByRole("region", { name: "New resident profile" });
+    await profile.getByLabel("Name").fill("Codex OAuth Resident");
+    await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
+    await profile.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+    const destination = page.getByRole("dialog", { name: "Import all native MCP sources" });
+    await expectContentClearsBorder(destination);
+    await destination.getByRole("button", { name: "Import all sources" }).click();
+    const sources = profile.getByRole("region", { name: "MCP servers" });
+    await expect(sources.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
+    await capture(sources, "codex-new-profile-default");
+    await expect(sources.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toHaveCount(0);
+    await sources.getByRole("combobox", { name: "Add an MCP server" }).selectOption({ label: "notes.custom" });
+    await sources.getByRole("button", { name: "Add", exact: true }).click();
+    await profile.getByRole("combobox", { name: "Model", exact: true }).selectOption("gpt-5.4");
+    await profile.getByRole("button", { name: "Save" }).click();
+
+    const saved = page.getByRole("region", { name: "Resident profile Codex OAuth Resident" });
+    await expect(saved).toContainText("Revision 1");
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
     await saved.getByRole("button", { name: "Launch" }).click();
     await expect(dialog).toContainText("MCP: all native sources (not pinned) + notes.custom");
     await capture(dialog, "codex-native-dispatch");
@@ -97,6 +82,17 @@ test.describe("Codex OAuth servers", () => {
     const records = recordsIn<{ file?: string; names?: string[] }>(join(daemon.recordDir, "codex"));
     expect(records).toContainEqual({ file: configPath, names: ["glean", "mission-control", "notes.custom"] });
     expect(readFileSync(configPath, "utf8")).toBe(nativeConfig);
+
+    await page.keyboard.press("Escape");
+    await page.goto(`${daemon.baseURL}/#/residents`);
+    await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Codex OAuth Resident/ }).click();
+    await saved.getByRole("radio", { name: "Pinned at launch" }).check();
+    await saved.getByRole("button", { name: "Save" }).click();
+    await expect(saved).toContainText("Revision 2");
+    await saved.getByRole("button", { name: "Launch" }).click();
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toContainText("global MCP server glean is inherited but residents cannot use it: it uses an OAuth login held by Codex");
+    await capture(dialog, "codex-pinned-oauth-refusal");
   });
 });
 
@@ -107,12 +103,8 @@ test("a resident can opt out of claude.ai connectors without disabling native pl
   await profile.getByLabel("Name").fill("Plugin Resident");
   await profile.getByLabel("Profile instructions").fill("Summarize available plugin tools.");
   const section = profile.getByRole("region", { name: "MCP servers" });
-  await section.getByRole("radio", { name: "All native sources (not pinned)" }).click();
-  const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
-  await expectContentClearsBorder(confirm);
-  await confirm.getByRole("button", { name: "Import all sources" }).click();
-  // Dismissal restores the opener, whose focus tooltip can coexist with hover help.
-  await expect(section.getByRole("radio", { name: "All native sources (not pinned)" })).toBeFocused();
+  await expect(section.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
+  await capture(section, "claude-new-profile-default");
   const optOut = section.getByRole("checkbox", { name: "Disable claude.ai connectors" });
   await optOut.hover();
   const description = "Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident";
@@ -258,6 +250,7 @@ test("a custom MCP server's secret is write-only, its selection reaches the laun
   await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
   await profile.getByLabel("Default repository").fill(daemon.repo);
   await page.keyboard.press("Escape");
+  await profile.getByRole("radio", { name: "Pinned at launch" }).check();
   await expect(profile.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
   const add = profile.getByRole("combobox", { name: "Add an MCP server" });
   await expect(add.locator("option", { hasText: "leaky (unavailable)" })).toHaveAttribute("disabled", "");
@@ -352,6 +345,7 @@ test("a profile that selects a global server with inheritance off launches with 
   await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
   await profile.getByLabel("Default repository").fill(daemon.repo);
   await page.keyboard.press("Escape");
+  await profile.getByRole("radio", { name: "Pinned at launch" }).check();
   const inherit = profile.getByRole("checkbox", { name: "Inherit harness defaults" });
   await inherit.uncheck();
   await expect(profile.getByText("Only the selection.", { exact: false })).toBeVisible();
@@ -413,6 +407,7 @@ test("an inherited remote server Claude Code signs in to reaches the launch as c
   await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
   await profile.getByLabel("Default repository").fill(daemon.repo);
   await page.keyboard.press("Escape");
+  await profile.getByRole("radio", { name: "Pinned at launch" }).check();
   await expect(profile.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
   await profile.getByRole("button", { name: "Save" }).click();
   const saved = page.getByRole("region", { name: "Resident profile OAuth Resident" });
@@ -508,15 +503,10 @@ test("a profile that imports all native sources is confirmed first, says it is n
   const section = profile.getByRole("region", { name: "MCP servers" });
   const pinned = section.getByRole("radio", { name: "Pinned at launch" });
   const all = section.getByRole("radio", { name: "All native sources (not pinned)" });
+  await expect(all).toBeChecked();
+  await pinned.check();
   await expect(pinned).toBeChecked();
   await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
-
-  // The choice is offered only where the harness can make it: Codex keeps a pinned set.
-  const harnessSelect = profile.getByRole("combobox", { name: "Harness" });
-  await harnessSelect.selectOption({ label: "Codex" });
-  await expect(section.getByRole("radio")).toHaveCount(0);
-  await harnessSelect.selectOption({ label: "Claude Code" });
-  await expect(all).toBeVisible();
 
   // Choosing it asks first, naming what is given up. Cancel keeps the pinned set.
   await all.click();
@@ -540,17 +530,6 @@ test("a profile that imports all native sources is confirmed first, says it is n
   await expect(all).toBeChecked();
   await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toHaveCount(0);
   await expect(section).toContainText("The set is not pinned");
-  // An unavailable destination uses pinned sources. Consent from the previous harness is gone.
-  await harnessSelect.selectOption({ label: "Codex" });
-  await expect(confirm).toBeHidden();
-  await expect(all).toHaveCount(0);
-  await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
-  await harnessSelect.selectOption({ label: "Claude Code" });
-  await expect(pinned).toBeChecked();
-  await all.click();
-  await expect(confirm).toContainText("everything Claude Code loads");
-  await confirm.getByRole("button", { name: "Import all sources" }).click();
-  await expect(all).toBeChecked();
   const add = section.getByRole("combobox", { name: "Add an MCP server" });
   await expect(add.locator("option", { hasText: "github-global" })).toHaveCount(0);
   await add.selectOption({ label: "notes-custom" });
@@ -611,12 +590,13 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
     settings: { mcp: { nativeSources: string; inheritDefaults: boolean } };
   }>).find((profile) => profile.name === "Edited Resident");
 
-  // A profile saved with the default: pinned, inheriting the harness defaults.
+  // Save a pinned profile that inherits harness defaults.
   await page.goto(`${daemon.baseURL}/#/residents`);
   const rail = page.getByRole("complementary", { name: "Resident profiles" });
   await rail.getByRole("button", { name: "New" }).click();
   const draft = page.getByRole("region", { name: "New resident profile" });
   await draft.getByLabel("Name").fill("Edited Resident");
+  await draft.getByRole("radio", { name: "Pinned at launch" }).check();
   await draft.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
   await draft.getByLabel("Default repository").fill(daemon.repo);
   await page.keyboard.press("Escape");
@@ -669,10 +649,7 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
   await capture(dialog, "all-sources-edited-dispatch-summary");
 });
 
-test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, context, daemon }) => {
-  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
-  await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
-  await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/residents`);
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
   const draft = page.getByRole("region", { name: "New resident profile" });
@@ -681,9 +658,7 @@ test("changing the harness of an all-native profile requires destination consent
   await draft.getByLabel("Spend per 24 hours (USD)").fill("");
   const allSources = { name: "All native sources (not pinned)" };
   const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
-  await draft.getByRole("radio", allSources).click();
-  await expect(confirm).toContainText("everything Claude Code loads");
-  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  await expect(draft.getByRole("radio", allSources)).toBeChecked();
   await draft.getByRole("button", { name: "Save" }).click();
 
   const saved = page.getByRole("region", { name: "Resident profile Harness Consent Resident" });
@@ -692,21 +667,12 @@ test("changing the harness of an all-native profile requires destination consent
   await harness.selectOption("codex");
   await expect(confirm).toContainText("everything Codex loads", { timeout: 5_000 });
   await expectContentClearsBorder(confirm);
-  await capture(confirm, "codex-harness-change-preview-on");
-  const settings = await context.newPage();
-  await settings.goto(`${daemon.baseURL}/#/settings/feature-flags`);
-  await settings.getByRole("button", { name: "Codex resident native MCP: on" }).click();
-  await expect(confirm.getByRole("button", { name: "Import all sources" })).toBeDisabled({ timeout: 5_000 });
-  await expect(confirm.getByRole("alert")).toContainText("The Codex resident native MCP preview is off.");
-  await capture(confirm, "codex-harness-change-preview-off");
+  await capture(confirm, "codex-harness-change");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(harness).toHaveValue("claude");
   await expect(saved.getByRole("radio", allSources)).toBeChecked();
   await expect(saved).not.toContainText("unsaved changes");
 
-  await settings.getByRole("button", { name: "Codex resident native MCP: off" }).click();
-  await expect(settings.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
-  await settings.close();
   await harness.selectOption("codex");
   await expect(confirm).toContainText("everything Codex loads");
   await confirm.getByRole("button", { name: "Import all sources" }).click();

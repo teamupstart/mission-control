@@ -28,6 +28,7 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     const editor = page.getByRole("region", { name: "New resident profile" });
     await editor.getByLabel("Name").fill(name);
     await editor.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
+    if (agent === "codex") await editor.getByRole("radio", { name: "Pinned at launch" }).check();
     await editor.getByRole("combobox", { name: "Harness" }).selectOption(agent);
     if (agent === "codex") {
       // Phase 3 requires a priced explicit model and native context metadata. Keep both

@@ -279,9 +279,10 @@ export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[numb
  * and a selected global server have nothing to add; only the selected custom servers are
  * snapshotted. Both stay stored, so switching back to pinned restores them.
  */
-export const ResidentMcpSectionSchema = z
+const ResidentMcpSourceModeSchema = z.enum(RESIDENT_MCP_NATIVE_SOURCES);
+const ResidentMcpInputSchema = z
   .object({
-    nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
+    nativeSources: ResidentMcpSourceModeSchema.optional(),
     /** Opt-in workaround for Claude's plugin/connector double suppression. Only applies to all native sources. */
     disableClaudeAiConnectors: z.boolean().optional(),
     inheritDefaults: z.boolean().default(true),
@@ -296,7 +297,18 @@ export const ResidentMcpSectionSchema = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selected"], message: "an MCP server is selected twice" });
     }
   });
+// Revisions written before source modes existed always used the pinned set.
+export const ResidentMcpSectionSchema = ResidentMcpInputSchema.safeExtend({
+  nativeSources: ResidentMcpSourceModeSchema.default("pinned"),
+});
 export type ResidentMcpSection = z.infer<typeof ResidentMcpSectionSchema>;
+
+/** Older clients can request a pinned set by selecting servers or turning off inheritance. */
+export function newResidentMcpSettings(agent: AgentType, mcp = ResidentMcpInputSchema.parse({})): ResidentMcpSection {
+  const useNative = HARNESS_CAPABILITIES[agent].mcpSelection?.allNativeSources
+    && mcp.inheritDefaults && mcp.selected.length === 0;
+  return { ...mcp, nativeSources: mcp.nativeSources ?? (useNative ? "all" : "pinned") };
+}
 
 /** A string's user-perceived characters, so an accented letter or an emoji counts once. */
 function graphemes(text: string): string[] {
@@ -473,11 +485,18 @@ export function residentRoleProblem(settings: Pick<ResidentProfileRevision, "per
     : null;
 }
 
-/** The request-body form: unknown top-level sections are refused rather than dropped. */
-export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict().superRefine((settings, ctx) => {
+function validateResidentRole(settings: Pick<ResidentProfileRevision, "persona" | "instructions">, ctx: z.RefinementCtx) {
   const problem = residentRoleProblem(settings);
   if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["instructions", "markdown"], message: problem });
-});
+}
+
+/** Requests refuse unknown top-level sections. Only creation supplies a harness-specific MCP default. */
+const ResidentProfileRequestSections = ResidentProfileRevisionSchema.strict();
+export const ResidentProfileRevisionRequestSchema = ResidentProfileRequestSections.superRefine(validateResidentRole);
+export const NewResidentProfileSettingsSchema = ResidentProfileRequestSections
+  .extend({ mcp: ResidentMcpInputSchema.prefault({}) })
+  .superRefine(validateResidentRole)
+  .transform((settings) => ({ ...settings, mcp: newResidentMcpSettings(settings.execution.agent, settings.mcp) }));
 
 /** A profile as the catalog and the browser see it: the identity plus its current revision. */
 export interface ResidentProfile {

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import {
   RESIDENT_WEEKDAYS,
@@ -12,9 +12,7 @@ import {
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
   RESIDENT_AGENTS,
   RESIDENT_LIMITS,
@@ -36,7 +34,6 @@ import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
-import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentAccentStyle } from "./marker.ts";
 import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
@@ -173,23 +170,15 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   );
 }
 
-function residentNativeMcpSources(agent: ResidentAgent, flags: FeatureFlagsConfig) {
-  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
-  return capability?.previewFlag && !resolveFeatureFlag(capability.previewFlag, flags) ? null : capability;
-}
-
 function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const { agent, model, effort } = draft.execution;
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const levels = capabilitiesFor(agent).effort?.levels ?? [];
-  const flags = useContext(FeatureFlagsContext);
   const [pendingHarness, setPendingHarness] = useState<ResidentAgent | null>(null);
   const pendingSources = pendingHarness && capabilitiesFor(pendingHarness).mcpSelection?.allNativeSources;
-  const pendingAvailable = pendingHarness && residentNativeMcpSources(pendingHarness, flags);
-  const pendingFlag = FEATURE_FLAGS.find((flag) => flag.id === pendingSources?.previewFlag);
   const chooseHarness = (next: ResidentAgent): void => {
     if (next === agent) return;
-    if (draft.mcp.nativeSources === "all" && residentNativeMcpSources(next, flags)) {
+    if (draft.mcp.nativeSources === "all" && capabilitiesFor(next).mcpSelection?.allNativeSources) {
       setPendingHarness(next);
     } else {
       changeHarness(next, "pinned");
@@ -256,11 +245,9 @@ function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavail
           harness={AGENT_IDENTITY[pendingHarness].label}
           sources={pendingSources.sources}
           changingHarness
-          unavailableReason={pendingAvailable ? undefined
-            : `The ${pendingFlag?.label ?? "native MCP"} preview is off. Enable it in Settings > Feature flags to continue.`}
           onClose={() => setPendingHarness(null)}
           onConfirm={() => {
-            if (disabled || !pendingAvailable) return;
+            if (disabled) return;
             changeHarness(pendingHarness, "all");
             setPendingHarness(null);
           }}
@@ -440,11 +427,7 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   const label = AGENT_IDENTITY[agent].label;
   const mcp = draft.mcp;
   const selectable = residentMcpSelectable(catalog, agent);
-  // A saved native profile still shows the choice when its preview is off, so it can be undone.
-  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
-  const flags = useContext(FeatureFlagsContext);
-  const allSources = residentNativeMcpSources(agent, flags);
-  const previewOff = capability?.previewFlag && !allSources;
+  const allSources = capabilitiesFor(agent).mcpSelection?.allNativeSources;
   const claudeConnectors = allSources?.mechanism === "lift-strict-mcp-config";
   const importsAll = mcp.nativeSources === "all";
   const chosen = new Set(mcp.selected.map(residentMcpRefKey));
@@ -541,9 +524,7 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           </p>
         ) : (
           <p role="alert" className="field-hint resident-problem resident-mcp-unavailable">
-            {previewOff
-              ? "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch."
-              : `${label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch to save this profile.`}
+            {label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch to save this profile.
           </p>
         )
       ) : (
@@ -566,11 +547,9 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
             Mission Control's own server is always attached. A running resident keeps the set it
             launched with.
           </p>
-          {capability?.mechanism === "codex-native-home" && (
+          {allSources?.mechanism === "codex-native-home" && (
             <p className="field-hint">
-              {previewOff
-                ? "Enable Codex resident native MCP in Settings > Feature flags to use Codex's saved MCP logins."
-                : "Choose All native sources to use Codex's saved MCP logins."}
+              Choose All native sources to use Codex's saved MCP logins.
             </p>
           )}
         </>

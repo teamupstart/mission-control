@@ -590,7 +590,7 @@ connectors at every start. That is the MCP launch every other Agent SDK session 
 no isolation to probe. The post-start `mcpServerStatus` check still requires Mission's server and
 every snapshot server to connect, and no longer refuses a server outside the snapshot.
 
-Codex uses `codex-native-home` when the preview is enabled and the profile opts in. The app-server
+Codex uses `codex-native-home` for profiles on all native sources. The app-server
 stays on the normal Codex home, so native MCP configuration and OAuth remain owned by Codex.
 Mission Control's server and the snapshot's custom servers ride launch-only overrides and are marked
 required. Custom definitions use a TOML table with quoted names so dotted names stay intact.

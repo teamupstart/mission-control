@@ -103,6 +103,7 @@ test("an inherited unpriced model names the resolved default and preserves the c
   await editor.getByLabel("Name", { exact: true }).fill("Inherited model");
   await editor.getByLabel("Profile instructions").fill("Watch the fleet.");
   await editor.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+  await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
   const model = editor.getByRole("combobox", { name: "Model", exact: true });
   await expect(model).toHaveValue("");
   await expect(model).toHaveAccessibleDescription(/Spend cap unavailable for unpriced-inherited-model/);
@@ -122,6 +123,7 @@ test.describe("unpriced live catalog choices", () => {
     await editor.getByLabel("Name", { exact: true }).fill("Live catalog watcher");
     await editor.getByLabel("Profile instructions").fill("Watch the fleet.");
     await editor.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+    await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
     const model = editor.getByRole("combobox", { name: "Model", exact: true });
     const offered = model.getByRole("option", { name: "Unpriced live model", exact: false });
 
@@ -178,6 +180,7 @@ for (const inherited of ["gpt-6-sol", "unpriced-delayed-default"]) {
       await editor.getByLabel("Name", { exact: true }).fill("Pending defaults");
       await editor.getByLabel("Profile instructions").fill("Watch the fleet.");
       await editor.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+      await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
       const model = editor.getByRole("combobox", { name: "Model", exact: true });
       const cap = editor.getByLabel("Spend per 24 hours (USD)", { exact: true });
       const save = editor.getByRole("button", { name: "Save", exact: true });
@@ -227,6 +230,7 @@ for (const failure of ["http", "network"] as const) {
     await editor.getByLabel("Name", { exact: true }).fill("Failed defaults");
     await editor.getByLabel("Profile instructions").fill("Watch the fleet.");
     await editor.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+    await page.getByRole("dialog", { name: "Import all native MCP sources" }).getByRole("button", { name: "Import all sources" }).click();
     const model = editor.getByRole("combobox", { name: "Model", exact: true });
     const cap = editor.getByLabel("Spend per 24 hours (USD)", { exact: true });
     const save = editor.getByRole("button", { name: "Save", exact: true });

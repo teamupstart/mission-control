@@ -701,9 +701,13 @@ test("a waiting prompt follows an ordinary resume to its successor session and i
   assert.equal(db.rekeyTaskLaunch(taskId, "s-old", "s-new"), true);
   registry.launch(taskId, "s-new");
   registry.sessions.delete("s-old");
-  // No restart and no flag change: the successor's own update retries it once it can take it.
+  // A session update reads nothing from the database: the pending sets are memory only.
   refusal = null;
   registry.emit("event", { type: "session_upsert", session: registry.getSession("s-new") });
+  assert.equal(queued.length, 0, "a session update alone does not re-read the pending rows");
+  // No restart and no flag change: the task published with its record's new session is what the
+  // prompter follows, and the successor is sent the prompt once it can take it.
+  registry.emit("event", { type: "task_upsert", task: registry.getTask(taskId)! });
   assert.equal(queued.length, 1);
   assert.equal(queued[0]!.sessionId, "s-new");
   assert.equal(db.getTaskSkillPrompt(taskId, "s-new")?.state, "queued");

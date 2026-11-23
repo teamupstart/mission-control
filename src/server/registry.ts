@@ -10814,11 +10814,7 @@ export class Registry extends EventEmitter {
   ): void {
     const prev = getQueueRow(key);
     if (!prev) return;
-    const d = openDb();
-    const owns = alongside !== undefined && !d.isTransaction;
-    if (owns) d.exec("BEGIN IMMEDIATE");
-    try {
-    upsertQueue({
+    const next: typeof prev = {
       ...prev,
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
@@ -10844,7 +10840,13 @@ export class Registry extends EventEmitter {
           ? patch.promptedConsumedGeneration
           : prev.promptedConsumedGeneration,
       updatedAt: now,
-    });
+    };
+    // The row and `alongside` commit together. Inside a caller's transaction, that one holds both.
+    const d = openDb();
+    const owns = alongside !== undefined && !d.isTransaction;
+    if (owns) d.exec("BEGIN IMMEDIATE");
+    try {
+      upsertQueue(next);
       alongside?.();
       if (owns) d.exec("COMMIT");
     } catch (error) {

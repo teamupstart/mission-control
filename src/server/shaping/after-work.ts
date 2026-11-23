@@ -148,6 +148,8 @@ export class AfterWorkSkills {
   private readonly waiting = new Set<string>();
   /** Sessions with an answered held prompt a restart releases once the session is back. */
   private readonly heldCheck = new Set<string>();
+  /** The session each task's shaping record last named, so a resume's move is seen once. */
+  private readonly shapingSessions = new Map<string, string>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -168,13 +170,9 @@ export class AfterWorkSkills {
         if (event.type === "session_remove") this.sessionEnded(event.id);
         // A session that changes may be able to take its waiting prompt now: the outbox has
         // started, or it can receive messages again.
-        else if (event.type === "session_upsert") {
-          // A resume moves a durable row to its successor session, which these sets have never
-          // seen: while any row is pending, an unknown session re-reads them from the database.
-          this.follow(event.session.id);
-          if (this.heldCheck.has(event.session.id)) this.checkHeld(event.session.id);
-          if (this.waiting.has(event.session.id)) this.retry(event.session.id);
-        }
+        else if (event.type === "session_upsert") this.pendingChanged(event.session.id);
+        else if (event.type === "task_upsert") this.follow(event.task);
+        else if (event.type === "task_remove") this.shapingSessions.delete(event.id);
       }),
       // Prompts owed while task shaping was off - answered held ones, waiting ones - are
       // recovered when it is turned on again, without waiting for a restart.
@@ -183,20 +181,43 @@ export class AfterWorkSkills {
     this.recover();
   }
 
-  /** Re-read the pending sets when a session they do not name updates while either is non-empty. */
-  private follow(sessionId: string): void {
+  /** Release or retry what a session that changed is owed. Memory only until it names one. */
+  private pendingChanged(sessionId: string): void {
+    if (this.heldCheck.has(sessionId)) this.checkHeld(sessionId);
+    if (this.waiting.has(sessionId)) this.retry(sessionId);
+  }
+
+  /**
+   * A resume moves a task's shaping record, and its durable prompt row with it, to a successor
+   * session these sets have never seen, and publishes the task with the record's new session.
+   * Only that move re-reads them from the database, and only while a row is pending: a session
+   * update, or a task update that leaves its record where it was, costs nothing, however long a
+   * row stays pending. A task this prompter has not seen yet counts as moved, once.
+   */
+  private follow(task: Task): void {
+    const to = task.shaping?.sessionId;
+    const from = this.shapingSessions.get(task.id);
+    if (!to) {
+      this.shapingSessions.delete(task.id);
+      return;
+    }
+    this.shapingSessions.set(task.id, to);
+    if (from === to || this.waiting.has(to) || this.heldCheck.has(to)) return;
+    if (this.waiting.size === 0 && this.heldCheck.size === 0) return;
     try {
-      if (this.waiting.size > 0 && !this.waiting.has(sessionId)) {
+      if (this.waiting.size > 0) {
         this.waiting.clear();
         for (const id of listWaitingTaskSkillPromptSessions()) this.waiting.add(id);
       }
-      if (this.heldCheck.size > 0 && !this.heldCheck.has(sessionId)) {
+      if (this.heldCheck.size > 0) {
         this.heldCheck.clear();
         for (const id of listAnsweredHeldTaskSkillPromptSessions()) this.heldCheck.add(id);
       }
     } catch (error) {
       console.warn("[shaping] could not re-read the after-work prompts still owed:", error);
+      return;
     }
+    this.pendingChanged(to);
   }
 
   /**

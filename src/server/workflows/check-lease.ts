@@ -1043,22 +1043,36 @@ export class CheckLeaseManager {
    * to someone else, terminating their processes and hard-resetting their work.
    */
   async releaseForAttempt(attemptId: string): Promise<CheckLeaseRelease> {
+    if (!this.liveRow(attemptId)) return this.releaseClaimed(attemptId);
+    this.busy.add(attemptId);
+    try {
+      return await this.releaseClaimed(attemptId);
+    } finally {
+      this.busy.delete(attemptId);
+    }
+  }
+
+  private liveRow(attemptId: string): CheckLeaseRow | null {
     const row = this.store.get(attemptId);
+    return row && LIVE_STATES.includes(row.cleanupState) ? row : null;
+  }
+
+  /** `releaseForAttempt` for a caller that already holds this attempt's `busy` claim. */
+  private async releaseClaimed(attemptId: string): Promise<CheckLeaseRelease> {
+    const row = this.liveRow(attemptId);
     // No row, or an already-terminal one: the prior return is accounted for. Complete
     // cleanup without invoking the recorded provider, because there is nothing left to return
     // and a return issued on a hunch is exactly the destructive mistake above.
-    if (!row || !LIVE_STATES.includes(row.cleanupState)) {
-      this.forget(attemptId, row?.leasePath ?? null);
+    if (!row) {
+      this.forget(attemptId, this.store.get(attemptId)?.leasePath ?? null);
       return { outcome: "returned" };
     }
-    this.busy.add(attemptId);
     try {
       // From the ROW, never from a fresh probe of this machine - see `providerFor`. Inside the
       // try so a refusal still drops this process's claim on the way out.
       const provider = this.providerFor(row);
       return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider));
     } finally {
-      this.busy.delete(attemptId);
       this.owned.delete(attemptId);
     }
   }
@@ -1199,16 +1213,24 @@ export class CheckLeaseManager {
    *    `not-empty` and `unknown` keep the row and the pin for a later pass.
    */
   private async resolveRecovered(row: CheckLeaseRow, recovery: CheckGroupRecovery): Promise<void> {
-    if (row.cleanupState === "returning") {
-      await this.releaseForAttempt(row.attemptId);
-      return;
-    }
-    if (row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS) {
-      await this.releaseForAttempt(row.attemptId);
-      return;
-    }
-    if ((await recovery(row.attemptId)) === "empty") {
-      await this.releaseForAttempt(row.attemptId);
+    // Claimed before the group question: startup reconciliation runs un-awaited, so maintenance or
+    // an operator recovery can reach this row mid-flight, and two returns can undo `returned`.
+    if (this.busy.has(row.attemptId)) return;
+    this.busy.add(row.attemptId);
+    try {
+      if (row.cleanupState === "returning") {
+        await this.releaseClaimed(row.attemptId);
+        return;
+      }
+      if (row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS) {
+        await this.releaseClaimed(row.attemptId);
+        return;
+      }
+      if ((await recovery(row.attemptId)) === "empty") {
+        await this.releaseClaimed(row.attemptId);
+      }
+    } finally {
+      this.busy.delete(row.attemptId);
     }
   }
 

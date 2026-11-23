@@ -361,37 +361,37 @@ test("a check that throws is reported and retried, not silently dropped", async 
     if (++checks === 1) throw new Error("ps: timed out");
     return true;
   };
-  const reported: string[] = [];
+  const settledChecks: Array<[string, string | null]> = [];
   const spawned = { homeName: "mux", homeBackend: "tmux" as const, terminalResourceId: null, launchStateHome: "/state/throws" };
   const session = await registry.waitForLaunchedSessionAtCwd(cwd, spawned, 5_000, {
     matches,
-    onCheckError: (error) => reported.push((error as Error).message),
+    onCheckSettled: (sessionId, error) => settledChecks.push([sessionId, error === null ? null : (error as Error).message]),
   });
-  assert.deepEqual(reported, ["ps: timed out"], "the failure reached the caller");
+  assert.deepEqual(settledChecks, [[worker.syntheticId, "ps: timed out"], [worker.syntheticId, null]],
+    "the failure reached the caller, and so did the check that got past it");
   assert.equal(session?.id, worker.syntheticId, "and the next check still bound the worker");
 });
 
-test("a dispatch whose identity checks keep failing names that failure, not an agent that never started", async () => {
-  const repo = seedRepo("check-failure");
-  const taskId = "check-failure-launch";
+/**
+ * One real dispatch whose worker is never matched, every identity check answered by `matches`.
+ * The wait is the dispatcher's own, with `deadlineMs` in place of the dispatch's long deadline.
+ */
+async function unmatchedDispatch(name: string, deadlineMs: number, matches: () => Promise<boolean>) {
+  const repo = seedRepo(name);
+  const taskId = `${name}-launch`;
   const registry = new Registry();
-  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Check failure", intent: "do it", agent: "claude" }));
-  // The dispatcher's own wait, with every identity check failing the way an unreadable process
-  // table does, and a short deadline in place of the dispatch's long one.
+  registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: name, intent: "do it", agent: "claude" }));
   const wait = registry.waitForLaunchedSessionAtCwd.bind(registry);
-  registry.waitForLaunchedSessionAtCwd = (cwd, home, _timeoutMs, options) => wait(cwd, home, 700, {
-    ...options,
-    matches: async () => { throw new Error("process listing failed: ps timed out"); },
-  });
+  registry.waitForLaunchedSessionAtCwd = (cwd, home, _timeoutMs, options) => wait(cwd, home, deadlineMs, { ...options, matches });
   const prompted: string[] = [];
   await new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
     missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
     verifyMissionMcpTools: async () => ({ ok: true }),
-    worktrees: reusedSlotPool(repo, join(home, "check-failure-slot")),
+    worktrees: reusedSlotPool(repo, join(home, `${name}-slot`)),
     spawn: async (_label, _short, cwd) => {
-      registry.applyDiscovery([discovered(cwd, "$65@unverifiable")]);
-      return { homeName: "home-check-failure", homeBackend: "tmux", terminalResourceId: null, launchStateHome: "/state/check-failure" };
+      registry.applyDiscovery([discovered(cwd, `$${name}@unmatched`)]);
+      return { homeName: `home-${name}`, homeBackend: "tmux", terminalResourceId: null, launchStateHome: `/state/${name}` };
     },
     inject: async (session) => {
       prompted.push(session.id);
@@ -399,12 +399,31 @@ test("a dispatch whose identity checks keep failing names that failure, not an a
     },
     killHome: async () => ({ ok: true, asked: true }),
   }).dispatch(taskId);
+  return { task: registry.getTask(taskId)!, prompted };
+}
 
-  const task = registry.getTask(taskId)!;
+test("a dispatch whose identity checks keep failing names that failure, not an agent that never started", async () => {
+  // Every check fails the way an unreadable process table does.
+  const { task, prompted } = await unmatchedDispatch("check-failure", 700,
+    async () => { throw new Error("process listing failed: ps timed out"); });
   assert.equal(task.status, "failed");
   assert.match(task.error ?? "", /checking a worker's launch identity failed \(process listing failed: ps timed out\)/);
   assert.doesNotMatch(task.error ?? "", /may have exited immediately/);
   assert.deepEqual(prompted, [], "nothing was typed into a worker that was never matched");
+});
+
+test("a failed identity check that a later check got past is not blamed for the timeout", async () => {
+  // The first check fails; every later one completes and finds the worker is not this launch's.
+  let checks = 0;
+  const { task, prompted } = await unmatchedDispatch("stale-failure", 1_500, async () => {
+    if (++checks === 1) throw new Error("process listing failed: ps timed out");
+    return false;
+  });
+  assert.ok(checks >= 2, `a later check completed before the deadline (${checks} checks)`);
+  assert.equal(task.status, "failed");
+  assert.match(task.error ?? "", /agent session never appeared/);
+  assert.doesNotMatch(task.error ?? "", /launch identity failed/, "the stale failure is not reported");
+  assert.deepEqual(prompted, []);
 });
 
 test("a process listing that could not be read in full does not reject a worker for good", async () => {

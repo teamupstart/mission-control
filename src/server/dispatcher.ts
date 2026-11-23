@@ -1182,14 +1182,23 @@ export class Dispatcher {
       if (!spawnHasLaunchIdentity(home)) {
         throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
       }
-      // The last check that failed outright, so a timeout names it instead of blaming the agent.
-      let checkFailure: string | null = null;
+      // Each session whose most recent identity check threw, so a timeout can name a failure that
+      // still stands instead of blaming the agent. A later check that completes clears it.
+      const checkFailures = new Map<string, string>();
       let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS, {
-        onCheckError: (error) => { checkFailure = error instanceof Error ? error.message : String(error); },
+        onCheckSettled: (sessionId, error) => {
+          if (error === null) checkFailures.delete(sessionId);
+          else checkFailures.set(sessionId, error instanceof Error ? error.message : String(error));
+        },
       });
       if (!discovered) {
-        throw new Error(checkFailure
-          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${checkFailure})`
+        // Only a session still live in this checkout: one that left took its failure with it.
+        const standing = [...checkFailures].find(([sessionId]) => {
+          const session = this.registry.getSession(sessionId);
+          return session !== undefined && session.state !== "exited" && session.cwd === wt.path;
+        })?.[1];
+        throw new Error(standing
+          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${standing})`
           : "agent session never appeared (the launch may have exited immediately)");
       }
       if (await settled()) return;

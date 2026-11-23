@@ -8352,8 +8352,9 @@ export class Registry extends EventEmitter {
    * its check settles, it is still live and still at `cwd`.
    *
    * A check that throws (an unreadable state home, a failed `ps`) leaves that session undecided
-   * and is retried like any other; `onCheckError` hears each such failure, so a caller that times
-   * out can name the real cause rather than suggest the agent never started.
+   * and is retried like any other. `onCheckSettled` hears how each check of each session ended:
+   * the error it threw, or null when it completed. A caller that times out can then name a
+   * failure that is still current, rather than one a later check of the same session got past.
    *
    * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
    * `matches` defaults to `launchedSessionMatcher(home)`.
@@ -8364,10 +8365,10 @@ export class Registry extends EventEmitter {
     timeoutMs: number,
     {
       matches = launchedSessionMatcher(home),
-      onCheckError,
+      onCheckSettled,
     }: {
       matches?: (session: Session) => Promise<boolean>;
-      onCheckError?: (error: unknown) => void;
+      onCheckSettled?: (sessionId: string, error: unknown) => void;
     } = {},
   ): Promise<Session | null> {
     if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
@@ -8387,14 +8388,16 @@ export class Registry extends EventEmitter {
         checking.add(s.id);
         void matches(s).then(
           (ok) => {
-            if (!ok || settled) return;
+            if (settled) return;
+            onCheckSettled?.(s.id, null);
+            if (!ok) return;
             const current = this.sessions.get(s.id);
             // It may have exited, or moved to another checkout, while its identity was read;
             // a later sighting at `cwd` can still qualify.
             if (current && current.state !== "exited" && current.cwd === cwd) finish(current);
           },
           (error: unknown) => {
-            if (!settled) onCheckError?.(error);
+            if (!settled) onCheckSettled?.(s.id, error ?? new Error("the identity check failed"));
           },
         ).finally(() => checking.delete(s.id));
       };

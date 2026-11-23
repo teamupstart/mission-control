@@ -184,3 +184,37 @@ test("without a pending-turn outbox the route answers 503 and sends nothing", as
   assert.deepEqual(await response.json(), { ok: false, error: "pending turns are unavailable" });
   assert.deepEqual(registry.getSession(session.id)?.pendingTurns, []);
 });
+
+test("an outbox that cannot accept a turn refuses the fixed message with 409 and queues nothing", async () => {
+  setInbox(true);
+  const registry = new Registry();
+  const session = registry.registerSdkSession({
+    id: "sdk:inbox-message:stopped-outbox",
+    agent: "claude",
+    name: "stopped outbox",
+    cwd: "/repo/stopped-outbox",
+    agentSessionId: "agent:inbox-message:stopped-outbox",
+  });
+  const supervisor = { ...unexpectedActiveSdkDelivery } as unknown as SdkSupervisor;
+  // Present but never started: the outbox refuses every turn until it is.
+  const pending = new PendingTurnManager(registry, supervisor, { idleSettleMs: 0 });
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    sdkSessions: supervisor,
+    pendingTurns: pending,
+  });
+  const response = await app.request(`/api/sessions/${encodeURIComponent(session.id)}/inbox-message`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ kind: "continue" }),
+  });
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { ok: boolean; error: string; pendingTurn?: unknown };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "pending turns are still starting");
+  assert.equal(body.pendingTurn, undefined);
+  assert.deepEqual(registry.getSession(session.id)?.pendingTurns, []);
+});

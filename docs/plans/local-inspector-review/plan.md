@@ -29,7 +29,7 @@ Inspector judge.
    the problem changes what a review starts from (the local snapshot, before the push), not
    where its output goes.
 4. **Recommendation: Option A, a Local Inspector stage.** Run the same Inspector review (same
-   brief, prompt, model setting and finding fingerprints) as a new workflow stage placed
+   brief, prompt and finding fingerprints) as a new workflow stage placed
    before the Pull Request action, on the Command-stage machinery that the Local CodeRabbit
    Command already established. One new Inspector setting turns it on. The review moves: the
    step after the pull request stops reviewing and only checks that what was pushed is what
@@ -37,8 +37,9 @@ Inspector judge.
 5. **Read access is worth adding, as a separate lever.** It makes judges more thorough. It does
    not make rounds fewer: the one comparison the ledger holds shows more findings with read
    tools and the same number of rounds. Local rounds are what make that thoroughness
-   affordable, so the two belong in one plan. The Inspector judge gets read access from Phase
-   1 whenever it runs on Claude. Persona judges get it in a fourth phase (decision D4).
+   affordable, so the two belong in one plan. For the Inspector judge it is a requirement, not
+   an option: the Local Inspector always reads the whole submitted worktree, from Phase 1
+   (requirement R1). Persona judges get read access in a fourth phase (decision D4).
 
 ## The problem, measured
 
@@ -232,13 +233,30 @@ GitHub: brief, standards, prompt, runner options, verdict parsing, and planning.
 | Title and description | Pull request title and body | The run's captured goal, fenced as untrusted, same cap |
 | Brief and standards | `readBrief`, `readStandards` | The same calls |
 | Open findings | Ledger rows for the pull request | Unresolved findings of this stage's previous attempt in the same run |
-| Tools | Claude: read tools in the session worktree. Codex: none | Claude: the same grant and deny paths in a worktree pinned to the snapshot commit. Codex: none |
+| Tools | Claude: read tools in the session worktree. Codex: none | Always: `Read`, `Grep` and `Glob` over the whole submitted worktree, in a checkout pinned to the snapshot commit, with the same deny paths (requirement R1) |
 | Output | Posted or drafted comments | Findings retained on the attempt. Nothing posted |
 
 The output schema, fingerprints, secret scrubber and the rule that a finding must name a
 changed file all stay. The policy text changes one sentence: findings go to the author's
 session rather than to public comments. Spend is recorded under the existing
 `inspector:review` role.
+
+**Requirement R1, set by the operator on 2026-11-23: the Local Inspector has read access to
+the whole submitted worktree. It is never limited to the diff.** Every local review runs with
+`Read`, `Grep` and `Glob` over the complete checkout at the review snapshot commit: every
+tracked file, plus the submission's uncommitted and untracked changes that the snapshot
+captures. The existing secret deny paths still apply, and files Git ignores are not in the
+snapshot. There is no diff-only mode. If a review cannot be given that access, the stage does
+not review. It blocks for the operator and says why. It never falls back to the prompt alone,
+and it never passes without having had the access.
+
+What R1 means for providers: Claude can take this grant today, so Phase 1 delivers R1 on
+Claude. Codex cannot, and this installation's Inspector runs on Codex. So before the Local
+Inspector can run here, one of two things must be true: its provider is Claude, or Codex has
+been given the same access through the repository MCP server of the approved repository-access
+plan (the full path in D4). Phase 1 therefore gives the Local Inspector its own provider and
+model row in Settings > Models, separate from the GitHub Inspector's, so the GitHub reviewer
+can stay on Codex while the Local Inspector runs on Claude.
 
 ### 2. An `inspector` Command slot: the Local Inspector
 
@@ -254,8 +272,9 @@ operator action).
   locally and the next submission is reviewed. Nothing is pushed.
 - **Skips with a note** when Local review is off, Inspector is off, or the repository lacks the
   Commands consent every Command already needs.
-- **Blocks for the operator** on a provider failure, an oversize diff, or a spent allowance.
-  None of these spends a repair round or sends a code-fix packet.
+- **Blocks for the operator** on a provider failure, an oversize diff, a spent allowance, or a
+  provider that cannot be given worktree read access (requirement R1). None of these spends a
+  repair round or sends a code-fix packet.
 
 Findings are retained as the attempt's normalized findings, read through the existing Load
 findings control and `read_workflow_command_output`.
@@ -344,8 +363,10 @@ Every one needs a Playwright spec, and the modal inset check where a modal opens
 - Library > Commands: the Local Inspector row (allowance, timeout, exhaustion policy, blocking
   severity per D3).
 - Workflow pipeline view: the new stage in version 23.
-- Run detail: the Local Inspector card with findings and whether it ran with read tools, and
-  the Completion tab's "reviewed locally" state.
+- Run detail: the Local Inspector card with findings and confirmation that it read the
+  worktree, and the Completion tab's "reviewed locally" state.
+- Settings > Models: the Local Inspector's own provider and model row, and the notice when
+  the chosen provider cannot be given worktree read access.
 - Session chip and Shipping merge queue: the local posture and its block reasons.
 - Persona node Routing panel (Phase 4): the read access control and its provider diagnostic.
 
@@ -383,7 +404,7 @@ rounds did not move. Read access is a thoroughness lever. It is not a rounds lev
 
 | Judge | Expected benefit | Why |
 | --- | --- | --- |
-| Local Inspector (the Inspector judge) | High | Its brief tells it to open files before it comments. On Codex it cannot |
+| Local Inspector (the Inspector judge) | High, and required (R1) | Its brief tells it to open files before it comments. A diff-only Local Inspector is not allowed |
 | Code Design Reviewer | High | "This duplicates a helper that already exists" needs to know what exists |
 | Test Coverage Judge | High | Whether a test exists, and whether it reaches the production path |
 | Documentation Steward | High | Stale documents are found by searching. Today the author must register document text as evidence |
@@ -411,11 +432,12 @@ access can open what was cut.
 
 ### The Inspector judge
 
-The Local Inspector stage is the Inspector judge. Design item 1 already gives it the read
-grant in a worktree pinned to the snapshot commit whenever its provider can sandbox one. On
-this installation that means it reads the worktree as soon as Inspector's provider in
-Settings > Models is Claude, and it stays diff-only on Codex. No extra build. Its run card
-says which of the two it ran with.
+The Local Inspector stage is the Inspector judge, and worktree read access is a requirement
+for it (R1 in design item 1), not something that depends on configuration. It always reviews
+with the read grant in a checkout pinned to the snapshot commit. On this installation that
+means its provider must be Claude until Codex has equivalent access, and on a provider that
+cannot take the grant the stage blocks instead of reviewing the diff alone. Its run card
+confirms that it read the worktree.
 
 ### Two ways to give Persona judges read access (decision D4)
 
@@ -437,12 +459,13 @@ supersedes those requirements for this work. The approved plan stays the route t
 later, replacing the executor under the same node flag.
 
 **Full path: the approved plan, three phases.** Both providers through a local repository MCP
-server, an exact-state artifact, per-operation audit events. It is independent of Option A and
-could later give a Codex Inspector read access too. It is three phases before any judge reads
-a file, against a gain the ledger suggests is real but modest.
+server, an exact-state artifact, per-operation audit events. It is independent of Option A,
+and it is what would let the Local Inspector run on Codex under requirement R1. It is three
+phases before any Persona judge reads a file, against a gain the ledger suggests is real but
+modest.
 
-**Neither.** Persona judges stay prompt-only. Only the Inspector judge reads, and only on
-Claude.
+**Neither.** Persona judges stay prompt-only. Only the Inspector judge reads, as R1 requires,
+and it runs only on Claude.
 
 Suggested first judges for the duplicated workflow: Code Design Reviewer, Test Coverage Judge,
 Documentation Steward, Code Risk Reviewer and Code Quality Judge.
@@ -451,7 +474,7 @@ Documentation Steward, Code Risk Reviewer and Code Quality Judge.
 
 | Phase | Delivers | Proves |
 | --- | --- | --- |
-| 1. Local Inspector Command | Review core extraction, the `inspector` slot and interpreter with the read grant in a pinned worktree, findings retention and repair packet, the `localReview` setting gating only whether the stage runs, the Library row and run card, preview flag, docs | The stage works in a duplicated workflow while GitHub Inspector still gates. The ledger then shows how many GitHub rounds remain after a local pass, against the 4.3 baseline |
+| 1. Local Inspector Command | Review core extraction, the `inspector` slot and interpreter, worktree read access on every review with no diff-only mode (requirement R1), the Local Inspector's own provider and model row, findings retention and repair packet, the `localReview` setting gating only whether the stage runs, the Library row and run card, preview flag, docs | The stage works in a duplicated workflow while GitHub Inspector still gates, and no local review runs without worktree read access. The ledger then shows how many GitHub rounds remain after a local pass, against the 4.3 baseline |
 | 2. Local review replaces the GitHub round | No-Mistakes version 23, the gate accepting a matching local pass, the worker skipping matched heads, Settings control copy, Completion tab and chip states | A converged change reaches GitHub with one push and one CI run, and completes with no GitHub review |
 | 3. Shipping on local provenance (if D2 says so) | The `local` posture in the merge predicate, merge queue reasons, Trust and Prerequisites copy | YOLO merges a locally reviewed head and holds any head that is not |
 | 4. Read access for Persona judges (if D4 says slim) | The node flag and Routing control, the engine path with the grant in the shared pinned tree, the `repository` evidence kind, the publish diagnostic, its preview flag, docs | In a duplicated workflow, read-enabled judges against their prompt-only twins: findings per round, findings later withdrawn, time and spend per review |
@@ -469,8 +492,12 @@ remote is switched off.
   Without D3, expect runs to stop for a rounds grant. The budget stays operator-adjustable per
   built-in.
 - **Engine seam.** The Command runtime spawns an argv in a leased worktree. The Local Inspector
-  and a read-enabled Persona are in-daemon model calls that need a lease only when the provider
-  can sandbox read tools. Phase 1 must add that seam without a second lease or execution path.
+  is an in-daemon model call that always needs a leased checkout (requirement R1), and so does
+  a read-enabled Persona. Phase 1 must add that seam without a second lease or execution path.
+- **Provider constraint from R1.** The Local Inspector cannot run on Codex until Codex has
+  sandboxed read access, so on this installation it runs on Claude or not at all. A review
+  that reads files is also slower and costs more per round than the diff-only review Inspector
+  runs today.
 - **Prompt drift.** A local review sees the goal instead of a pull request description. Phase 1
   measures whether its findings match the GitHub review's on the same content.
 - **Base drift.** The local diff is against the base as it was at review time. The tree match
@@ -489,7 +516,8 @@ remote is switched off.
 ## Verification
 
 - Focused node tests for the review core with a fake runner: local diff, open-finding carry,
-  resolution, blocking threshold, off-diff drop, scrubbing, grant present or absent by provider.
+  resolution, blocking threshold, off-diff drop, scrubbing, the read grant present on every
+  local review, and a provider that cannot take the grant blocking instead of reviewing (R1).
 - Engine tests: stage ordering before the Pull Request action, the repair loop on fresh
   evidence, allowance and exhaustion policy, skip reasons, restart recovery.
 - Gate tests: a matching tree completes, a moved head does not, a skipped stage falls back.
@@ -502,11 +530,13 @@ remote is switched off.
 
 ## Decisions
 
-Every decision is open. Each row is the proposed choice, not an adopted one. A choice is
-adopted only when the operator selects it and approves the exact revision that records it.
+Decisions D1 to D4, the follow-up and approval are open. For those, each row is the proposed
+choice, not an adopted one. A choice is adopted only when the operator selects it and approves
+the exact revision that records it. R1 is a requirement the operator set directly.
 
 | Id | Decision | Proposed choice | State |
 | --- | --- | --- | --- |
+| R1 | Whether the Local Inspector may review from the diff alone | No. It always has read access to the whole submitted worktree | Required by the operator, 2026-11-23 |
 | D1 | Which option | A, Local Inspector stage | Open, in discussion |
 | D2 | Whether Shipping accepts a matching local review as merge provenance | Yes, as Phase 3 | Open, in discussion |
 | D3 | Which findings block the local stage | Tunable in Library > Commands, default major and above | Open, in discussion |
@@ -533,6 +563,12 @@ adopted only when the operator selects it and approves the exact revision that r
 - Revision 4 changes no plan content. It rebuilds the rendered page from this Markdown so the
   two carry the same wording, and drops the revision number from the status line. Every
   decision, the phased follow-up and approval remain open.
+- 2026-11-23, line comments on revision 4. The operator asked why Claude has read tools and
+  Codex does not. That was answered in the comment thread with no plan change. The operator
+  then set a requirement: the new Local Inspector must have full worktree access and cannot be
+  limited to the diff like the Persona stages. Revision 5 records it as requirement R1 and
+  carries it through design item 1, the stage outcomes, "The Inspector judge", Phase 1, the
+  risks and the verification list. Decisions D1 to D4, the follow-up and approval remain open.
 - No phased implementation plan exists and no implementation task is scheduled.
 
 ## Evidence

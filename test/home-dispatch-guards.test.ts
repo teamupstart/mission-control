@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 440 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 445 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -53,11 +53,15 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // reply and follow-up routes, which answer 404 with it off too, then for
   // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
   // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
-  // then for the report document and Publish as scout routes, which answer 404 with it off.
+  // then for the report document and Publish as scout routes, which answer 404 with it off, and
+  // then for voice addressing's five routes (`GET` and `PUT /api/voice/config`,
+  // `POST /api/voice/mute`, `POST /voice/listener/hello` and `POST /voice/shell-report`), which
+  // answer 404 with the `voice` flag off, `GET /api/ui/config` gaining `ui.voice`, and
+  // `POST /api/setup/install`'s refusal naming the new `voice-previews` id.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 440);
+  assert.equal(others.length, 445);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "942886b7a6be16f3e87b575ff8a503bd579c1570feed58356b84ff113e82d59a");
+    "077aa6fefddcb209b1e9ad010dc0401819db3f9a96cc9d589f623f672bf33f2b");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -251,9 +251,11 @@ findings are reported without blocking).
   locally and the next submission is reviewed. Nothing is pushed.
 - **Skips with a note** when Local review is off, Inspector is off, or the repository lacks the
   Commands consent every Command already needs.
-- **Blocks for the operator** on a provider failure, an oversize diff, a spent allowance, or
-  repository access being unavailable (requirement R1). None of these spends a repair round or
-  sends a code-fix packet.
+- **Blocks for the operator** on a provider failure, an oversize diff, or repository access
+  being unavailable (requirement R1). None of these spends a repair round or sends a code-fix
+  packet.
+- **A spent allowance follows the slot's exhaustion policy.** The default, Block, blocks for
+  the operator. Skip skips the stage with a note, and a skipped stage keeps the GitHub review.
 
 Findings are retained as the attempt's normalized findings, read through the existing Load
 findings control and `read_workflow_command_output`.
@@ -546,6 +548,9 @@ against the exact revision, not in this file.
   that were not adopted.
 - Earlier revisions numbered the phases differently. The numbering in "Phases (outline)" is
   the current one.
+- 2026-11-23, review of the pull request. Design item 2 stated the spent-allowance rule two
+  ways. Revision 10 states one: the slot's exhaustion policy decides, with Block as the
+  default.
 
 ## Evidence
 

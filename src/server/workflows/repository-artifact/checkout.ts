@@ -5,7 +5,7 @@ import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit } from "./git.ts";
-import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
+import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
 export type Entry = { mode: string; id: string };
@@ -158,18 +158,9 @@ async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSigna
       throw new RepositoryCaptureChanged();
     if (stat.size > MAX_CAPTURE_OBJECT_BYTES)
       throw Object.assign(new Error("Worktree file exceeds capture limit"), { code: "worktree_file_too_large" });
-    // The extra byte detects growth without extending the allocation. Short reads can
-    // occur on a regular file, so only EOF establishes the final size.
-    const buffer = Buffer.allocUnsafe(stat.size + 1);
-    let offset = 0;
-    while (offset < buffer.length) {
-      signal.throwIfAborted();
-      const { bytesRead } = await fd.read(buffer, offset, buffer.length - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-    }
-    if (offset !== stat.size) throw new RepositoryCaptureChanged();
-    return { data: buffer.subarray(0, offset), mode: stat.mode & 0o100 ? "100755" : "100644" };
+    const data = await readExactFile(fd, stat.size, signal);
+    if (data === null) throw new RepositoryCaptureChanged();
+    return { data, mode: stat.mode & 0o100 ? "100755" : "100644" };
   } finally {
     await fd.close();
   }

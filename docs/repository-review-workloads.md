@@ -75,7 +75,10 @@ filters or textconv to produce status. An unmerged index has no single tree and 
 History starts at HEAD and visits all parents breadth-first in recorded order. The service
 stops before the first revision that would exceed 2,048 commits or 512 MiB of additional
 unique allowed blob bytes. It counts objects already required by base, HEAD, index or
-worktree once, outside the history budget. A shallow checkout contributes its declared
+worktree once, outside the history budget. Capture also caps additional unique commit
+and tree payloads at 64 MiB. Before copying a revision, it checks the sizes of the
+commit and its new trees. If they would exceed this budget, the preceding revision
+remains the end of the retained prefix. A shallow checkout contributes its declared
 boundary commits to the same breadth-first prefix. Traversal stops before the first
 omitted parent, including at a merge, and records the original parent IDs in the frontier.
 Missing objects inside the selected prefix fail sealing. Changing the source's shallow

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, lstat, mkdir, readdir, writeFile } from "node:fs/promises";
+import { open, lstat, mkdir, readdir, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { deflate } from "node:zlib";
 import { promisify } from "node:util";
@@ -92,21 +92,49 @@ export function descriptor(manifest: Manifest, digest: string, objectView: strin
     ...(statusDeletions.length ? { statusDeletions } : {}) });
 }
 
-async function ordinaryFile(path: string, mode: number, expectedSize?: number) {
+/** Probe one byte beyond the sampled size. Short reads may precede EOF. */
+export async function readExactFile(fd: FileHandle, size: number, signal: AbortSignal) {
+  signal.throwIfAborted();
+  const buffer = Buffer.allocUnsafe(size + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    signal.throwIfAborted();
+    const { bytesRead } = await fd.read(buffer, offset, buffer.length - offset, offset);
+    if (!bytesRead) break;
+    offset += bytesRead;
+  }
+  return offset === size ? buffer.subarray(0, size) : null;
+}
+
+async function ordinaryFile(path: string, mode: number, signal: AbortSignal, expected: number | string) {
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await fd.stat();
     if (!stat.isFile() || (stat.mode & 0o777) !== mode ||
-        (expectedSize !== undefined && stat.size !== expectedSize)) unavailable();
-    return await fd.readFile();
+        (typeof expected === "number" && stat.size !== expected)) unavailable();
+    // Only the manifest lacks an authenticated size. Authenticate a large one in
+    // chunks before allowing its observed size to determine an allocation.
+    if (typeof expected === "string" && stat.size > MAX_CAPTURE_OBJECT_BYTES) {
+      const hash = createHash("sha256");
+      const chunk = Buffer.allocUnsafe(64 * 1024);
+      for (let offset = 0; offset < stat.size;) {
+        signal.throwIfAborted();
+        const { bytesRead } = await fd.read(chunk, 0, Math.min(chunk.length, stat.size - offset), offset);
+        if (!bytesRead) unavailable();
+        hash.update(chunk.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+      if (hash.digest("hex") !== expected) unavailable();
+    }
+    return (await readExactFile(fd, stat.size, signal)) ?? unavailable();
   } finally {
     await fd.close();
   }
 }
 
-async function readManifest(root: string, digest: string) {
+async function readManifest(root: string, digest: string, signal: AbortSignal) {
   if (!(await lstat(root)).isDirectory()) unavailable();
-  const bytes = await ordinaryFile(join(root, "manifest.json"), 0o400);
+  const bytes = await ordinaryFile(join(root, "manifest.json"), 0o400, signal, digest);
   if (sha256(bytes) !== digest) unavailable();
   const manifest = manifestSchema.parse(JSON.parse(bytes.toString()));
   if (!bytes.equals(Buffer.from(JSON.stringify(manifest)))) unavailable();
@@ -118,10 +146,10 @@ async function readManifest(root: string, digest: string) {
   return manifest;
 }
 
-async function readObject(root: string, entry: ObjectRecord) {
+async function readObject(root: string, entry: ObjectRecord, signal: AbortSignal) {
   const header = Buffer.from(`${entry.type} ${entry.size}\0`);
   const size = header.length + entry.size;
-  const data = await ordinaryFile(join(root, entry.id), entry.mode, size);
+  const data = await ordinaryFile(join(root, entry.id), entry.mode, signal, size);
   if (data.length !== size || !data.subarray(0, header.length).equals(header) ||
       sha256(data) !== entry.sha256 || createHash(entry.id.length === 40 ? "sha1" : "sha256")
         .update(data).digest("hex") !== entry.id) unavailable();
@@ -136,10 +164,10 @@ export async function verifyDirectory(root: string, digest: string, signal: Abor
     throw error;
   };
   signal.throwIfAborted();
-  const manifest = await readManifest(root, digest).catch(sourceFailure);
+  const manifest = await readManifest(root, digest, signal).catch(sourceFailure);
   for (const entry of manifest.objects) {
     signal.throwIfAborted();
-    const data = await readObject(root, entry).catch(sourceFailure);
+    const data = await readObject(root, entry, signal).catch(sourceFailure);
     if (lease) {
       const dir = join(lease, "objects", entry.id.slice(0, 2));
       await mkdir(dir, { recursive: true, mode: 0o700 });

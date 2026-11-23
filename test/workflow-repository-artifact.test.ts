@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  appendFileSync,
   chmodSync,
   truncateSync,
   existsSync,
@@ -347,6 +348,77 @@ test("one service per root protects live candidates, provisional claims and leas
   await supervisor.release(first.submissionId);
   await supervisor.release(second.submissionId);
   await f.service.reconcile();
+});
+
+test("verification detects object growth after fstat within the declared size plus one byte", async (t) => {
+  const f = fixture(t);
+  f.write("file", "submitted");
+  const blob = f.git("hash-object", "file");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const path = realpathSync(join(f.root, "digests", snapshot.digest, blob));
+  const expected = lstatSync(path).size;
+  const fs = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fs.open;
+  let total = 0;
+  const inspect = t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+    const fd = await open(...args);
+    if (String(args[0]) !== path) return fd;
+    const stat = fd.stat.bind(fd);
+    t.mock.method(fd, "stat", async () => {
+      const observed = await stat();
+      chmodSync(path, 0o600);
+      truncateSync(path, expected + 4096);
+      chmodSync(path, 0o400);
+      return observed;
+    });
+    const read = fd.read.bind(fd);
+    t.mock.method(fd, "read", async (buffer: Buffer, offset: number, length: number, position: number) => {
+      assert.ok(length <= expected + 1 - total);
+      // A short read is possible even before EOF.
+      const result = await read(buffer, offset, Math.min(length, 3), position);
+      total += result.bytesRead;
+      return result;
+    });
+    return fd;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
+    assert.equal(total, expected + 1);
+    assert.equal(f.service.artifacts()[0]?.state, "failed");
+  } finally {
+    inspect.mock.restore();
+    syncBuiltinESMExports();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  }
+});
+
+test("verification authenticates an oversized manifest before allocating space for it", async (t) => {
+  const f = fixture(t);
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const path = join(f.root, "digests", snapshot.digest, "manifest.json");
+  chmodSync(path, 0o600);
+  truncateSync(path, MAX_CAPTURE_OBJECT_BYTES + 1);
+  chmodSync(path, 0o400);
+  let largest = 0;
+  const allocate = Buffer.allocUnsafe;
+  const sizes = t.mock.method(Buffer, "allocUnsafe", (size: number) => {
+    largest = Math.max(largest, size);
+    return allocate(size);
+  });
+  try {
+    await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
+    assert.equal(f.service.artifacts()[0]?.state, "failed");
+    assert.ok(largest < MAX_CAPTURE_OBJECT_BYTES);
+  } finally {
+    sizes.mock.restore();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  }
 });
 
 test("transient verification I/O errors preserve ready claims and both submissions can retry", async (t) => {
@@ -1161,6 +1233,47 @@ test("2,048-commit breadth-first merge prefix survives source deletion with shal
   await f.service.release(s.submissionId);
   await f.service.reconcile();
 });
+
+for (const overflow of ["commit", "tree"]) {
+  test(`64 MiB history metadata budget counts shared trees once and stops before an overflowing ${overflow}`, async (t) => {
+    const f = fixture(t);
+    const { write, commit } = objects(f.checkout);
+    const empty = write("tree", Buffer.alloc(0));
+    const leafBytes = Buffer.concat(Array.from({ length: 16 }, (_, i) =>
+      Buffer.concat([Buffer.from("160000 module-" + i.toString(16) + "\0"), Buffer.alloc(20, i + 1)])));
+    const leaf = write("tree", leafBytes);
+    const treeBytes = Buffer.concat(["a", "b"].map(path =>
+      Buffer.concat([Buffer.from("40000 " + path + "\0"), Buffer.from(leaf, "hex")])));
+    const tree = write("tree", treeBytes);
+    const omittedTree = write("tree", Buffer.concat([Buffer.from("40000 different\0"), Buffer.from(leaf, "hex")]));
+    const omitted = commit(omittedTree, [], "omitted by metadata budget");
+    const placeholder = commit(tree, [omitted], "small");
+    const spare = overflow === "tree" ? Number(f.git("cat-file", "-s", omitted)) : 0;
+    const paddedBytes = (64 << 20) - treeBytes.length - leafBytes.length - Number(f.git("cat-file", "-s", placeholder)) - spare;
+    // Write a valid commit message in chunks to exercise the real ceiling.
+    f.write("padded", `tree ${tree}\nparent ${omitted}\nauthor A <a@test> 123 +0000\ncommitter A <a@test> 123 +0000\n\n`);
+    const paddedPath = join(f.checkout, "padded");
+    const chunk = Buffer.alloc(1 << 20, 0x61);
+    for (let pos = lstatSync(paddedPath).size; pos < paddedBytes; pos += chunk.length)
+      appendFileSync(paddedPath, chunk.subarray(0, paddedBytes - pos));
+    const padded = f.git("hash-object", "-w", "-t", "commit", "padded");
+    rmSync(join(f.checkout, "padded"));
+    const small = commit(tree, [padded], "small");
+    const head = commit(empty, [small], "head");
+    f.git("update-ref", "HEAD", head);
+    const candidate = await f.prepare();
+    const artifact = join(f.root, "pending", candidate.id, "artifact");
+    const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")));
+    assert.equal(manifest.view.retainedBlobBytes, 0);
+    assert.deepEqual(manifest.view.retainedRevisions.map(r => r.id), [head, small, padded]);
+    assert.deepEqual(manifest.view.frontier, [{ revision: padded, omittedParents: [omitted] }]);
+    assert.equal(existsSync(join(artifact, omitted)), false);
+    assert.equal(existsSync(join(artifact, omittedTree)), false);
+    const additional = manifest.objects.filter(e => [small, padded, tree, leaf].includes(e.id));
+    assert.equal(additional.reduce((bytes, entry) => bytes + entry.size, 0), (64 << 20) - spare);
+    await f.service.discard(candidate);
+  });
+}
 
 test("512 MiB history limit stops before a large first parent and leaves the later small parent outside", async (t) => {
   const f = fixture(t);

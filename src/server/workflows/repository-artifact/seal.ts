@@ -185,22 +185,37 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return directories;
   }
 
+  // Bound the extra commit and tree payloads written for history independently of
+  // the v1 blob budget. Objects already required for the submission cost nothing.
+  let historyMetadataRemaining = 64 * 1024 * 1024;
+  async function fitsHistoryMetadata(id: string, type: "commit" | "tree") {
+    if (table.has(id)) return true;
+    const { size } = await reader.get(id, type, true);
+    if (size > historyMetadataRemaining) return false;
+    historyMetadataRemaining -= size;
+    return true;
+  }
+
   const includedTrees = new Set<string>();
   async function flatten(tree: string, incremental = false) {
     const layer: Layer = new Map();
     const treeIds = new Set<string>();
-    async function visit(id: string, prefix: Buffer) {
+    async function visit(id: string, prefix: Buffer): Promise<boolean> {
       signal.throwIfAborted();
       const location = id + ":" + prefix.toString("hex");
-      if (incremental && includedTrees.has(location)) return;
+      if (incremental && includedTrees.has(location)) return true;
+      if (incremental && !treeIds.has(id) && !await fitsHistoryMetadata(id, "tree")) return false;
       // Traversal stops altogether at the first overflow, so rejected subtrees cannot
       // influence the selection of any later revision.
       includedTrees.add(location);
       treeIds.add(id);
-      for (const directory of await scanTree(id, prefix, layer)) await visit(directory.id, directory.prefix);
+      for (const directory of await scanTree(id, prefix, layer)) {
+        if (!await visit(directory.id, directory.prefix)) return false;
+      }
+      return true;
     }
-    await visit(tree, Buffer.alloc(0));
-    return { layer, treeIds };
+    const complete = await visit(tree, Buffer.alloc(0));
+    return { layer, treeIds, complete };
   }
 
   async function saveTree(layer: Layer) {
@@ -263,6 +278,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const worktree = await scanWorking(git.path, state, signal);
     collect(index);
     collect(worktree);
+    const indexTree = await saveTree(index),
+      worktreeTree = await saveTree(worktree);
     const retainedRevisions: RepositoryViewDescriptor["retainedRevisions"] = [];
     const queue = head ? [head] : [];
     const seen = new Set<string>();
@@ -275,11 +292,13 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       // parent, even when another branch in the queue has deeper history available.
       if (omittedParents.has(id)) break;
       if (seen.has(id)) continue;
+      if (!await fitsHistoryMetadata(id, "commit")) break;
       const revision = await commit(id);
       const { record } = revision;
       // A v1 frontier cannot declare an already-retained revision to be omitted.
       if (shallow.has(id) && record.parents.some(parent => seen.has(parent))) break;
-      const { layer, treeIds } = await flatten(record.tree, true);
+      const { layer, treeIds, complete } = await flatten(record.tree, true);
+      if (!complete) break;
       const extra = new Set(
         [...layer]
           .filter(([key, e]) => allowed(key) && e.mode !== "160000" && !needed.has(e.id))
@@ -312,8 +331,6 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const after = await sample(git.path, input.checkout, signal);
     if (metadataBoundary(state) !== metadataBoundary(after)) throw new RepositoryCaptureChanged();
 
-    const indexTree = await saveTree(index),
-      worktreeTree = await saveTree(worktree);
     type Classifications = RepositoryViewDescriptor["worktree"][number]["classifications"];
     // Include the path policy for every packaged revision, including historical-only names.
     const keys = [...capturedPaths].sort();

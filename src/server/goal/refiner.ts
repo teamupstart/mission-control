@@ -192,6 +192,10 @@ export function startGoalRefiner(registry: Registry): () => void {
         const standing = registry.pruneStandingInstructions(now - GOAL_PRUNE_AGE_MS);
         if (standing > 0)
           console.log(`[goal] pruned ${standing} orphaned standing-instruction snapshot(s)`);
+        // And launch work unit records, their twin: one row per session whose agent was
+        // started with a work unit. Same tick, same window, same live-key safety property.
+        const launchUnits = registry.pruneLaunchWorkUnits(now - GOAL_PRUNE_AGE_MS);
+        if (launchUnits > 0) console.log(`[goal] pruned ${launchUnits} orphaned launch work unit record(s)`);
         // And session blockers, which ride the same note key. An exit alone never ends one, so
         // only a key no session has held for the window goes.
         const blockers = registry.pruneBlockers(now - GOAL_PRUNE_AGE_MS, now);

@@ -30295,6 +30295,32 @@ span.line-run-prov {
 .detail-sub .branch {
   color: var(--idle);
 }
+/* The work unit row's copy control: a quiet chip on the band's baseline, sized to the 11.5px
+   cells beside it rather than to a toolbar button, so the band keeps its one-line height. */
+.detail-sub .work-unit {
+  align-items: center;
+}
+.detail-sub .work-unit-copy {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.detail-sub .work-unit-copy:hover,
+.detail-sub .work-unit-copy:focus-visible {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.detail-sub .work-unit-copy-error {
+  color: var(--danger-text);
+  font-size: 10.5px;
+}
 
 /* The tab strip, which is also the conversation's toolbar - see the ladder further down and
    the call site in `ConsoleDetail.tsx`.

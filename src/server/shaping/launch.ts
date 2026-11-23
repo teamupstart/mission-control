@@ -34,6 +34,15 @@ export interface LaunchShapingInput {
   workflowName: () => string | null;
   /** The trace context the session's agent is launched with, or null when it gets none. */
   trace: ShapingTraceContext | null;
+  /**
+   * The work unit the agent this turn reaches carries, or null when it carries none. For a new
+   * agent that is the launch's one decision, `launchWorkUnitId(task)`, taken where the launch
+   * began and never computed again; for an agent that is already running it is
+   * `sessionWorkUnitId(session, task)`, from its launch record. Every shaper call of the run
+   * carries exactly this value (see `docs/work-units.md`, "Task shaping"). Required, so a new
+   * call site has to say which.
+   */
+  workUnitId: string | null;
   /** How this launch's turn one reaches the worker. */
   delivery: TurnOneDelivery;
   /** Every turn-one variant this launch may send, without the section, exactly as the path carries it. */
@@ -89,7 +98,7 @@ async function settleWithin<T>(work: Promise<T>, ms: number, fallback: T): Promi
 
 /** The engine's input, from everything dispatch collected (constraint C2). */
 export function shapingInputFor(
-  input: Pick<LaunchShapingInput, "task" | "runtime" | "trace"> & { workflowName: string | null },
+  input: Pick<LaunchShapingInput, "task" | "runtime" | "trace" | "workUnitId"> & { workflowName: string | null },
 ): ShapeTaskInput {
   const { task } = input;
   // Named as the dry run names them: the repository's own directory, not the worktree's.
@@ -116,6 +125,7 @@ export function shapingInputFor(
       repositories,
     },
     trace: input.trace,
+    workUnitId: input.workUnitId,
     // Both call sites shape a conversation's first turn: a dispatch's launch, or the turn a
     // handover types after its reset. A resident's wake turn is an `iteration` and never
     // reaches either of them.

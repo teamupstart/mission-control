@@ -16,6 +16,7 @@ import {
   type ResidentMcpHarnessCatalog,
 } from "@shared/resident-mcp.ts";
 import { RESIDENT_AGENTS, type ResidentAgent } from "@shared/residents.ts";
+import { isWorkUnitHeaderReference } from "@shared/work-unit.ts";
 import type { ResidentMcpOptions } from "../harness/types.ts";
 import { operatorCodexHome } from "../harness/codex/resident-home.ts";
 import { ResidentMcpServerError, type ResidentMcpSnapshotTransport } from "./mcp-store.ts";
@@ -265,6 +266,15 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     if (!headerTable) return unreadable(name, type, "its headers are not a table of strings");
     const headers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(headerTable)) {
+      // The work unit reference (`docs/work-units.md`) is dropped before expansion: a resident
+      // run has no work unit, so the header would carry nothing - expanded from an unset
+      // variable it is an empty header on every call, and from a set one it would make the
+      // server unavailable as `inherited`. Not stored and not a secret. With it gone, a server
+      // whose only header it was is headerless again, so the sign-in decision below hands the
+      // harness the entry it had before the reference was added. Not gated by the preview: an
+      // MCP config is shared, and it must not break a pinned resident where the preview is
+      // off. A literal value an operator wrote is not the reference and is kept.
+      if (isWorkUnitHeaderReference(key, raw, "claude")) continue;
       const value = expanded(raw);
       if (typeof value !== "string") problem ??= expansionProblem(value);
       else headers[key] = value;
@@ -364,14 +374,33 @@ function codexOptions(entry: Record<string, unknown>): ResidentMcpOptions | stri
 }
 
 /**
+ * The entry without the work unit reference, when `env_http_headers` holds only that:
+ * `{ "x-work-unit-id" = "WORK_UNIT_ID" }`, the line the config guide recommends. A resident run
+ * has no work unit, so the entry carries nothing for it, and residents cannot carry
+ * `env_http_headers` at all - without this a pinned resident's launch would be refused for a
+ * server that is otherwise usable. Any other `env_http_headers` content is returned unchanged
+ * and keeps today's refusal. Not gated by the preview.
+ */
+function withoutCodexWorkUnitReference(entry: Record<string, unknown>): Record<string, unknown> {
+  const table = entry.env_http_headers;
+  if (!PLAIN(table)) return entry;
+  const pairs = Object.entries(table);
+  if (pairs.length !== 1 || !isWorkUnitHeaderReference(pairs[0]![0], pairs[0]![1], "codex-env")) return entry;
+  const rest = { ...entry };
+  delete rest.env_http_headers;
+  return rest;
+}
+
+/**
  * Parse one entry of Codex's user `mcp_servers` table, as `config/read` returns the raw layer.
  * `authStatus` is `codex mcp list --json`'s answer, the one place Codex says it holds an OAuth
  * login for the server, which the launcher's bridge cannot perform.
  */
-export function parseCodexServer(name: string, entry: unknown, authStatus: string | null | undefined, env: NodeJS.ProcessEnv = process.env): GlobalMcpDefinition {
+export function parseCodexServer(name: string, raw: unknown, authStatus: string | null | undefined, env: NodeJS.ProcessEnv = process.env): GlobalMcpDefinition {
   const badName = residentMcpGlobalNameProblem(name);
   if (badName) return unreadable(name, "stdio", badName);
-  if (!PLAIN(entry)) return unreadable(name, "stdio", "its configuration is not a table");
+  if (!PLAIN(raw)) return unreadable(name, "stdio", "its configuration is not a table");
+  const entry = withoutCodexWorkUnitReference(raw);
   const http = entry.url !== undefined;
   const allowed = http ? CODEX_HTTP_FIELDS : CODEX_STDIO_FIELDS;
   const unknownField = Object.keys(entry).find((key) => !allowed.has(key));

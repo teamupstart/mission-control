@@ -836,6 +836,18 @@ merges](inspector-and-shipping.md#when-a-tasks-pull-request-merges) - not when y
 Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
 default it stays, ready for the next drop.
 
+**An agent stays in the work unit it was started for.** An agent started with a
+[work unit](work-units.md#the-launch-environment) has `WORK_UNIT_ID` in its environment for as
+long as it runs, and a drop starts no process, so its MCP calls would tag the next task with the
+first one's work unit. The daemon therefore refuses a drop onto an agent that was started for
+another work unit - "that agent was started for another work unit, so its MCP calls would be
+tagged with it" - and the backlog autopilot does not offer it that task; the task can still be
+dispatched to a new agent. An agent started for the task's own work unit takes it, which is how
+a plan's phase tasks can follow one another on one agent. An agent started with none takes any
+task, and that task emits no work unit until the agent's next start. The rule reads only what
+the agent was started with, never the `work-unit-id` preview, so it holds after the preview is
+switched off; with the preview never switched on no agent has one and nothing is refused.
+
 **Each task keeps its own record.** The card shows the task the agent is executing, or the
 one it most recently finished until it takes another; the previous task keeps its own
 outcome, its own pull request and its own row. That's what makes a day's work on one agent

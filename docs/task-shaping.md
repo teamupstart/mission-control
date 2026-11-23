@@ -226,7 +226,11 @@ A `command` shaper is any program. Mission Control runs it once per call:
 - **Work unit id.** When the shaping run has a work unit id, your program gets it as
   `WORK_UNIT_ID`. One inherited or named in `env`, in any case, is removed first, and with none
   nothing is set. It is an opaque id, not a credential, so it is never redacted.
-  [Security](security.md#task-shaping) states the exact rule.
+  [Security](security.md#task-shaping) states the exact rule. The value is the launch's own work
+  unit decision, the same one the agent is started with, so a call your program makes with it is
+  found by the same query as the worker's own MCP calls. A call made before an agent that then
+  fails to start keeps it. A dry run carries none. [Work units](work-units.md#task-shaping) owns
+  the rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
@@ -866,6 +870,13 @@ and a longer one is `failed` without being read further. The call's timeout abor
   case, is always removed first, with or without a value to send, so only the launch's own
   are ever sent. Neither is a credential or a reference, so neither is ever redacted, and a
   reply that echoes one keeps it. A dry run carries neither.
+- **Work unit.** The work unit a run carries is decided by the launch, not by whether an agent
+  is running when the call is made: for a dispatch, the decision that launch made, which the
+  calls keep if the agent then fails to start; for a task handed to an agent that is already
+  running, the one that agent was started with. An `http` shaper gets the header only, because
+  it has no `tools/call` envelope, and its request body does not change. A `get_guidance` call
+  keeps its arguments: `params._meta` is part of the envelope, not of the tool's input. The
+  rules, including when there is none, are in [Work units](work-units.md#task-shaping).
 
 ## The built-in gatherer
 

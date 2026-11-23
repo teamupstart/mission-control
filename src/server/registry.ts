@@ -150,7 +150,7 @@ import type { DiscoveredSession, DiscoveryAdmission, DiscoveryAdmit } from "./di
 import { getTerminalsConfig } from "./terminals-config.ts";
 import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
-import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
+import { launchedSessionMatcher, spawnHasLaunchIdentity, verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
   RuntimeMetaRead,
   SdkEvent,
@@ -8326,6 +8326,58 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Resolve the session at `cwd` that THIS spawn started, once discovery has bound it, or null
+   * on timeout. `waitForSessionAtCwd` answers "some agent is here", which is the wrong question
+   * whenever two launches share a checkout: a cancelled launch and its replacement can both be
+   * live in one worktree, and the replacement would take whichever process the map yields first
+   * - typing its turn one into a worker the old attempt is about to retire.
+   *
+   * A session qualifies only by carrying the identity the spawn returned
+   * (`launchedSessionMatcher`): the terminal resource it opened, or the launch wrapper it
+   * descends from. When the spawn returned no identity at all this resolves null at once. When
+   * a worker appeared is no evidence of whose it is - a cancelled launch's agent can be
+   * discovered late - so a home that cannot name its worker never binds one.
+   *
+   * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
+   */
+  waitForLaunchedSessionAtCwd(
+    cwd: string,
+    home: SpawnedHome,
+    timeoutMs: number,
+  ): Promise<Session | null> {
+    if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
+    const matches = launchedSessionMatcher(home);
+    return new Promise<Session | null>((resolve) => {
+      let settled = false;
+      const finish = (session: Session | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsub();
+        resolve(session);
+      };
+      const consider = (s: Session): void => {
+        if (settled || s.cwd !== cwd || s.state === "exited") return;
+        void matches(s).then(
+          (ok) => {
+            if (!ok || settled) return;
+            const current = this.sessions.get(s.id);
+            // It may have exited while its ancestry was read; a later sighting can still qualify.
+            if (current && current.state !== "exited") finish(current);
+          },
+          () => {},
+        );
+      };
+      const timer = unref(setTimeout(() => finish(null), timeoutMs));
+      // Subscribed before the scan, so a sighting between the two is not lost.
+      const unsub = this.subscribe((e) => {
+        if (e.type === "session_upsert") consider(e.session);
+      });
+      for (const s of this.sessions.values()) consider(s);
+    });
+  }
+
+  /**
    * Resolve the named session at `cwd` once it has proven it can read input. Returns
    * null if that session is missing, exits while watched, or reaches the timeout.
    *
@@ -8358,11 +8410,16 @@ export class Registry extends EventEmitter {
    *
    * Subscribe BEFORE typing, then await this after: the hook can beat the caller's next
    * line, and a check-after-the-fact would miss it and re-type over a live prompt.
+   *
+   * With `sessionId`, only that session's transition counts. Another worker in the same
+   * checkout - a cancelled launch still finishing its own turn - is no evidence that the
+   * prompt typed into this one landed.
    */
   waitForPromptAcceptedAtCwd(
     cwd: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    sessionId?: string,
   ): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
@@ -8381,7 +8438,8 @@ export class Registry extends EventEmitter {
 
       timer = unref(setTimeout(() => finish(false), timeoutMs));
       unsub = this.subscribe((e) => {
-        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working") {
+        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working" &&
+          (sessionId === undefined || e.session.id === sessionId)) {
           finish(true);
         }
       });

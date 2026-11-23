@@ -18,7 +18,7 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
@@ -991,7 +991,7 @@ export class Dispatcher {
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.
       // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
-      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
+      // ask-channel redirect, terminal home, `waitForLaunchedSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if (runtime === "sdk") {
         const embeddedSession = await this.dispatchEmbedded(
@@ -1175,7 +1175,14 @@ export class Dispatcher {
       this.patch(taskId, homeRecord(home));
       if (await settled()) return;
 
-      let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
+      // Only the worker this spawn started: matched by the terminal resource or launch wrapper
+      // the spawn returned, never by the checkout alone, which a cancelled attempt's worker can
+      // still share while it waits to be retired. A home that names neither cannot tell its own
+      // worker from that one, so it binds nothing and its terminal is left standing.
+      if (!spawnHasLaunchIdentity(home)) {
+        throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
+      }
+      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS);
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
@@ -2461,7 +2468,7 @@ export class Dispatcher {
       // Listen BEFORE typing - the hook can land before the next line runs.
       const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal, sessionId)
         : null;
 
       let sent: Awaited<ReturnType<typeof injectPrompt>>;
@@ -3671,7 +3678,9 @@ async function spawnWrappedUniquely(
   const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
-      launchStateHome: first.backend.axis === "emulator" ? stateHome : undefined,
+      // On every axis: the wrapper always runs from this home, so a pane whose address the
+      // backend could not report is still found by the launch it descends from.
+      launchStateHome: stateHome,
       launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   if (first.outcomeUnknown || name === unique) throw new TerminalLaunchError(first.error, first.outcomeUnknown ?? false);
@@ -3682,7 +3691,7 @@ async function spawnWrappedUniquely(
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
-      launchStateHome: retry.backend.axis === "emulator" ? stateHome : undefined,
+      launchStateHome: stateHome,
       launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   throw new TerminalLaunchError(retry.error, retry.outcomeUnknown ?? false);

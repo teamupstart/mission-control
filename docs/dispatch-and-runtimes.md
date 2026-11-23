@@ -6,8 +6,10 @@ initial intent without hiding a failed choice behind an unrelated fallback.
 
 The [dispatcher](../src/server/dispatcher.ts) coordinates launch. Runtime selection lives
 with the [harness configuration](../src/server/harnesses.ts), while the [SDK supervisor](../src/server/sdk/supervisor.ts)
-owns embedded turns after launch. Terminal execution uses a home and waits for discovery;
-an SDK turn has no terminal home or discovery wait.
+owns embedded turns after launch. Terminal execution uses a home and waits for discovery
+of the worker that home's own spawn started, matched by the terminal or launch process the
+spawn returned rather than by the checkout, which a cancelled launch can still share; an SDK
+turn has no terminal home or discovery wait.
 
 This split lets the dashboard offer one task experience without pretending the runtimes are
 identical. A terminal runtime is controlled through a pane. An SDK runtime is driven by

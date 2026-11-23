@@ -807,6 +807,9 @@ test("a digest lost to a restart before any dashboard claimed it takes its marks
   const after = announcer(clock);
   // The digest is gone, so nothing keeps the report quiet as if one had shown it.
   assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
+  // The marks were the old run's own: starting another manager erased nothing of the first one's.
+  // What the new run lacks is only what was never written to the table.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
   after.set({ ...session, state: "idle" });
   const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
   assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", null]]);

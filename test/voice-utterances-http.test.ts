@@ -92,7 +92,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(1);
   await Promise.resolve();
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
-  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
@@ -130,7 +130,7 @@ test("window off queues immediately and an addressed stop interrupts the session
   assert.ok(queued("Steve").includes("ship   it!"));
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
-  assert.deepEqual(cards.map((c) => c.state), ["sent", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
@@ -340,4 +340,15 @@ test("Recently heard keeps the refusal reasons from the queue and interrupt adap
   assert.deepEqual((await readHeard()).map(({ outcome, detail }) => [outcome, detail]), [
     ["failed", "this session has no live embedded driver"], ["failed", "Queue full."],
   ]);
+});
+
+test("a busy session's accepted turn stays queued on its card and in Recently heard", async () => {
+  registry.applyDriverEvent("sdk:Bill", { kind: "state", state: "working", activity: "Running tests" });
+  await say("Bill, review the logs", "busy");
+  assert.equal((await act("busy", "send-now")).status, 200);
+  const session = registry.getSession("sdk:Bill")!;
+  assert.equal(session.state, "working");
+  assert.ok(session.pendingTurns.some((turn) => turn.text === "review the logs" && turn.claimedAt === null));
+  assert.deepEqual(cards.map((card) => card.state), ["pending", "queued"]);
+  assert.equal((await readHeard())[0]?.outcome, "queued");
 });

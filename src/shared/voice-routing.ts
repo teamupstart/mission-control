@@ -52,6 +52,12 @@ function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
 
+function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
+  const first = normalized(token[0]);
+  if (!next || text.slice(token.index, next.index).includes(",")) return [first];
+  return [first, first + " " + normalized(next[0])];
+}
+
 function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
   let index = 0;
   let previousEndMs = 0;
@@ -114,11 +120,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
-  const first = normalized(firstToken[0]);
-  const leadingNames = [first];
-  if (secondToken && !text.slice(firstToken.index, secondToken.index).includes(",")) {
-    leadingNames.push(first + " " + normalized(secondToken[0]));
-  }
+  const leadingNames = namesStartingAt(text, firstToken, secondToken);
   let count = 1;
   let match: "exact" | "phonetic" = "exact";
   let candidates: SpokenName[] = [];
@@ -148,6 +150,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (candidates.length) break;
   }
   if (!candidates.length) {
+    const first = leadingNames[0];
     const near = names.filter(({ name }) => Math.abs(name.length - first.length) <= 1 && editDistance(first, name) === 1);
     if (!near.length) return { kind: "ignored", reason: "no-name" };
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
@@ -160,9 +163,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {
-    const remaining = tokens.slice(count).map((m) => normalized(m[0]));
-    const mentions = new Set(remaining);
-    for (let i = 1; i < remaining.length; i++) mentions.add(remaining[i - 1] + " " + remaining[i]);
+    const remaining = tokens.slice(count);
+    const mentions = new Set(remaining.flatMap((token, i) => namesStartingAt(text, token, remaining[i + 1])));
     const later = names.filter(({ name, target: other }) => other.key !== target.key &&
       mentions.has(name));
     if (later.length) {

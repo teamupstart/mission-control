@@ -192,7 +192,12 @@ const ROSTER_EVENTS = new Set<ServerEvent["type"]>([
  * The daemon's one name registry. Subscribed to the Registry's frames; recomputes the roster
  * when one of them can move it, and tells its listeners when the roster changed.
  *
- * Lazy while the `voice` flag is off: frames only mark it stale, and the next read recomputes.
+ * It recomputes whatever the `voice` flag says, and only telling the listeners waits for the
+ * flag. The bookkeeping a recompute keeps (when a task was first seen stopped, which tasks are
+ * listed and so kept if the Registry evicts them) has to follow the frames as they happen: kept
+ * only while voice is on, a task that stopped or was evicted while it was off would have its 24
+ * hours counted from when voice came back, or lose its name early. A recompute is cheap and only
+ * the frames that can move the roster reach it.
  */
 export class VoiceNameRegistry {
   private current: SpokenName[] = [];
@@ -226,7 +231,7 @@ export class VoiceNameRegistry {
     this.disarm();
   }
 
-  /** Who can be addressed now. Recomputed first when anything it reads has moved. */
+  /** Who can be addressed now. Computed first if nothing has computed it yet. */
   roster(): readonly SpokenName[] {
     if (this.stale) this.compute();
     return this.current;
@@ -237,13 +242,11 @@ export class VoiceNameRegistry {
     return () => { this.listeners.delete(listener); };
   }
 
-  /** Mark the roster stale, and while voice is on recompute it and tell the listeners. */
+  /** Recompute the roster, and while voice is on tell the listeners when it changed. */
   refresh(): void {
-    this.stale = true;
-    if (!this.deps.enabled()) return;
     const before = this.currentKey;
     this.compute();
-    if (this.currentKey === before) return;
+    if (!this.deps.enabled() || this.currentKey === before) return;
     for (const listener of Array.from(this.listeners)) {
       try { listener(this.current); }
       catch (error) { console.warn("[voice] roster listener failed:", error); }
@@ -314,9 +317,10 @@ export class VoiceNameRegistry {
     this.arm(result.nextExpiry, now);
   }
 
+  /** Armed whatever the flag, so a name that expires while voice is off is gone when it is on. */
   private arm(at: number | null, now: number): void {
     this.disarm();
-    if (at === null || !this.deps.enabled()) return;
+    if (at === null) return;
     const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {
       const handle = setTimeout(fn, ms);
       handle.unref?.();

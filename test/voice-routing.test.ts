@@ -97,6 +97,18 @@ test("a two-word call sign ends at the address comma for exact and phonetic matc
   assert.equal(route("Steven Captain, run tests", ["Steve Captain"]).kind, "addressed");
 });
 
+test("later two-word roster mentions must be on the same side of a comma", () => {
+  const roster = ["Steve", "Release Captain"];
+  for (const body of ["ship the release, captain.", "ship the release,captain.", "ship the release , captain."]) {
+    assert.deepEqual(route("Steven, " + body, roster), {
+      kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
+    });
+  }
+  const decision = route("Steven, ask Release Captain for a review.", roster);
+  assert.equal(decision.kind, "needs-model");
+  if (decision.kind === "needs-model") assert.deepEqual(decision.candidates.map(({ name }) => name), roster);
+});
+
 test("the full phonetic call sign wins over a shorter phonetic match in either roster order", () => {
   const names = ["Steve", "Steve Captain"];
   for (const roster of [names, names.toReversed()]) {

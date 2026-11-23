@@ -27,7 +27,8 @@ first word after normalizing case and boundary punctuation. The exact first word
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
 descriptive only. Recently heard measures from the last address word to the first message word,
 skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
-A two-word call sign must fit before the address comma. “Release Captain, run tests” can address
+A two-word call sign must stay on one side of a comma, both in an address and in a later mention.
+“Release Captain, run tests” can address
 Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such
 as “Steven” or “Steve’s” can address Steve. If both Steve and Steve Captain sound like the
 start of the capture, “Steven Captain, run tests” selects the longer phonetic match.
@@ -43,8 +44,9 @@ heard records `candidate-unavailable`. A bare roster name with no matching optio
 `no-message`.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
-the window off, the running target receives the remaining text verbatim through the standard
-operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
+the window off, the daemon submits the remaining text verbatim to the running target’s operator
+queue. The card and Recently heard show `queued` when the queue accepts the message.
+For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
@@ -56,7 +58,9 @@ Picking a candidate opens the ordinary cancel window. The loopback card routes a
 `GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
 ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
-card history exist only in memory and disappear on daemon restart or disabling voice. A message
+card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview
+toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
+a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
 
 ## The model step

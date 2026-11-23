@@ -80,6 +80,12 @@ function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
 
+function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
+  const first = normalized(token[0]);
+  if (!next || text.slice(token.index, next.index).includes(",")) return [first];
+  return [first, first + " " + normalized(next[0])];
+}
+
 function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
   let index = 0;
   let previousEndMs = 0;
@@ -142,11 +148,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
-  const first = normalized(firstToken[0]);
-  const leadingNames = [first];
-  if (secondToken && !text.slice(firstToken.index, secondToken.index).includes(",")) {
-    leadingNames.push(first + " " + normalized(secondToken[0]));
-  }
+  const leadingNames = namesStartingAt(text, firstToken, secondToken);
   let count = 1;
   let match: "exact" | "phonetic" = "exact";
   let candidates: SpokenName[] = [];
@@ -176,6 +178,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (candidates.length) break;
   }
   if (!candidates.length) {
+    const first = leadingNames[0];
     const near = names.filter(({ name }) => Math.abs(name.length - first.length) <= 1 && editDistance(first, name) === 1);
     if (!near.length) return { kind: "ignored", reason: "no-name" };
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
@@ -193,12 +196,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   let ambiguousSplitTarget = false;
   const splits: VoiceSplitPoint[] = [];
   for (let i = count; i < tokens.length; i++) {
-    for (const length of [2, 1]) {
-      if (i + length > tokens.length) continue;
-      const at = tokens[i]!;
+    const at = tokens[i]!;
+    const laterNames = namesStartingAt(text, at, tokens[i + 1]);
+    for (let length = laterNames.length; length > 0; length--) {
       const end = tokens[i + length - 1]!;
-      if (length === 2 && text.slice(at.index, end.index).includes(",")) continue;
-      const heard = tokens.slice(i, i + length).map((m) => normalized(m[0])).join(" ");
+      const heard = laterNames[length - 1];
       const matches = names.filter(({ name }) => name === heard);
       if (!matches.length) continue;
       const head = splitHead(text.slice(text.length - body.length, at.index));

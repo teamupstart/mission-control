@@ -1664,7 +1664,7 @@ export class Registry extends EventEmitter {
    * `wireVoiceStateEvents` is the caller.
    */
   emitVoiceState(state: VoiceState): void {
-    if (state.mode === "off") this.voiceRouter?.reset();
+    if (state.mode === "off") this.voiceRouter?.clearActionsAndHistory();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;

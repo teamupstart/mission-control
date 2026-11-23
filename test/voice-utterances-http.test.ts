@@ -86,6 +86,25 @@ test("turning voice off clears pending actions and gates every contract D route"
       app.request("/api/voice/heard", { method, headers: { host: "localhost" } })))]) assert.equal(response.status, 404);
 });
 
+test("a cancel retried after toggling voice cannot dismiss a new card", async () => {
+  await say("Steve old message", "old");
+  await say("Steve cancel this one", "cancelled");
+  const cancel = capture("cancel", "original-cancel");
+  await post("/voice/utterances", cancel, token);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["old"]);
+
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.deepEqual(await readHeard(), []);
+  await say("Will check the new build", "new");
+  assert.deepEqual(await (await post("/voice/utterances", cancel, token)).json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["new", "pending"]]);
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["new"]);
+  await say("cancel", "fresh-cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");
@@ -99,7 +118,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(1);
   await Promise.resolve();
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
-  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
@@ -137,7 +156,7 @@ test("window off queues immediately and an addressed stop interrupts the session
   assert.ok(queued("Steve").includes("ship   it!"));
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
-  assert.deepEqual(cards.map((c) => c.state), ["sent", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
@@ -166,7 +185,7 @@ test("a split queues each part to its own agent", async () => {
   assert.equal((await act("split", "send-now")).status, 200);
   assert.ok(queued("Steve").includes("check the build"));
   assert.ok(queued("Will").includes("review the PR"));
-  assert.equal(cards.at(-1)?.state, "sent");
+  assert.equal(cards.at(-1)?.state, "queued");
 });
 
 test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
@@ -370,4 +389,15 @@ test("Recently heard keeps the refusal reasons from the queue and interrupt adap
   assert.deepEqual((await readHeard()).map(({ outcome, detail }) => [outcome, detail]), [
     ["failed", "this session has no live embedded driver"], ["failed", "Queue full."],
   ]);
+});
+
+test("a busy session's accepted turn stays queued on its card and in Recently heard", async () => {
+  registry.applyDriverEvent("sdk:Bill", { kind: "state", state: "working", activity: "Running tests" });
+  await say("Bill, review the logs", "busy");
+  assert.equal((await act("busy", "send-now")).status, 200);
+  const session = registry.getSession("sdk:Bill")!;
+  assert.equal(session.state, "working");
+  assert.ok(session.pendingTurns.some((turn) => turn.text === "review the logs" && turn.claimedAt === null));
+  assert.deepEqual(cards.map((card) => card.state), ["pending", "queued"]);
+  assert.equal((await readHeard())[0]?.outcome, "queued");
 });

@@ -222,7 +222,15 @@ interface AnnounceWatch {
    * restart. The session's first sighting then decides the wording at once.
    */
   deadlinePassed: boolean;
+  /**
+   * The wording already decided, while its stamp waits to be written again after a failed write.
+   * Later sightings and the grace period no longer change it: only the retry stamps it.
+   */
+  stamping: ReportAnnouncement | null;
 }
+
+/** How long a stamp whose write failed (a busy database) waits before it is written again. */
+const REPORT_STAMP_RETRY_MS = 5_000;
 
 const isWorking = (session: Session): boolean => reportBucket(session) === "working";
 
@@ -389,7 +397,7 @@ export class ReportManager {
   /** Wait for a report's session to stop, or for the grace period to end, then stamp it. */
   private watch(id: string, sessionId: string, working: boolean | null, delayMs = REPORT_ANNOUNCE_GRACE_MS): void {
     const timer = this.timers.set(() => this.graceEnded(id), delayMs);
-    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false });
+    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false, stamping: null });
   }
 
   /**
@@ -401,13 +409,15 @@ export class ReportManager {
   private observe(event: ServerEvent): void {
     if (this.watches.size === 0) return;
     if (event.type === "session_remove") {
-      for (const [id, watch] of this.watches) if (watch.sessionId === event.id) this.announce(id, "back");
+      for (const [id, watch] of this.watches) {
+        if (watch.sessionId === event.id && watch.stamping === null) this.announce(id, "back");
+      }
       return;
     }
     if (event.type !== "session_upsert") return;
     const working = isWorking(event.session);
     for (const [id, watch] of this.watches) {
-      if (watch.sessionId !== event.session.id) continue;
+      if (watch.sessionId !== event.session.id || watch.stamping !== null) continue;
       // Found at startup and first seen idle with an unconfirmed state (uninstrumented, or
       // re-adopted before a hook confirmed it): that says nothing about stopping, so it is the
       // same no-evidence case as a post whose session was never seen working. A session blocked
@@ -431,6 +441,10 @@ export class ReportManager {
   private graceEnded(id: string): void {
     const watch = this.watches.get(id);
     if (!watch) return;
+    if (watch.stamping !== null) {
+      this.announce(id, watch.stamping);
+      return;
+    }
     const session = this.registry.getSession(watch.sessionId);
     // Found at startup, and its session not re-adopted yet: absence says nothing so soon after a
     // restart. Its first sighting decides the wording, and a session still unseen one grace
@@ -455,17 +469,38 @@ export class ReportManager {
    * Stamp how a report is announced, once, and tell every window: the stamp is what raises the
    * report's notification. A report read or replaced before its stamp is left unstamped, since
    * there is nothing left to announce.
+   *
+   * Called from the registry's event loop and from timers, so it never throws. A failed write (a
+   * busy database) keeps the watch, with its wording decided, and writes the same stamp again
+   * shortly: dropping it would leave the report never announced.
    */
   private announce(id: string, as: ReportAnnouncement): void {
     const watch = this.watches.get(id);
+    let changed: boolean;
+    try {
+      changed = openDb().prepare(
+        `UPDATE reports SET announced_as = ?, announced_at = ?
+         WHERE id = ? AND announced_as IS NULL AND read_at IS NULL AND superseded_by IS NULL`,
+      ).run(as, this.now(), id).changes > 0;
+    } catch (err) {
+      console.error(`[reports] stamping ${id} failed; trying again:`, err);
+      if (watch) {
+        this.timers.clear(watch.timer);
+        watch.stamping = as;
+        watch.timer = this.timers.set(() => this.graceEnded(id), REPORT_STAMP_RETRY_MS);
+      }
+      return;
+    }
     if (watch) this.timers.clear(watch.timer);
     this.watches.delete(id);
-    const changed = openDb().prepare(
-      `UPDATE reports SET announced_as = ?, announced_at = ?
-       WHERE id = ? AND announced_as IS NULL AND read_at IS NULL AND superseded_by IS NULL`,
-    ).run(as, this.now(), id).changes > 0;
-    const report = changed ? this.getRow(id) : null;
-    if (report) this.registry.upsertReport(report);
+    if (!changed) return;
+    // Stamped: a failed read now costs only this event, and a window's next snapshot carries it.
+    try {
+      const report = this.getRow(id);
+      if (report) this.registry.upsertReport(report);
+    } catch (err) {
+      console.error(`[reports] reading ${id} after its stamp failed:`, err);
+    }
   }
 
   get(id: string): ReportItem | null {

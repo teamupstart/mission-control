@@ -502,6 +502,45 @@ test("a report whose session stops within the grace period is stamped back, once
   assert.equal(a.stamps(report.id).length, 2);
 });
 
+test("a stamp whose write fails is kept and written again, from a sighting or from the grace period", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_busy BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'database is locked'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_busy;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const stops = working("s-stamp-busy-back");
+  const keeps = working("s-stamp-busy-working");
+  a.set(stops);
+  a.set(keeps);
+  const back = await a.reports.post(stops, { title: "Stopped", body: "b" });
+  const kept = await a.reports.post(keeps, { title: "Kept going", body: "b" });
+  busy(true);
+  // The session stops while the database is busy: nothing escapes into the registry's loop, and
+  // the report is not stamped yet.
+  clock.now = 3_000;
+  assert.doesNotThrow(() => a.set({ ...stops, state: "idle" }));
+  assert.equal(a.reports.get(back.id)?.announcedAs, null);
+  assert.ok(a.delays().includes(5_000), "the stamp is written again shortly");
+  // The wording is decided: working again before the retry does not change it.
+  a.set(stops);
+  // The other's grace period ends while still busy: its timer does not throw either, and retries.
+  clock.now = 21_000;
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.equal(a.reports.get(kept.id)?.announcedAs, null);
+  // Still busy at the first retry: tried again, still not dropped.
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.deepEqual([a.reports.get(back.id)?.announcedAs, a.reports.get(kept.id)?.announcedAs], [null, null]);
+  busy(false);
+  clock.now = 31_000;
+  a.fireSetSoFar();
+  assert.deepEqual(a.stamps(back.id).at(-1), ["back", 31_000]);
+  assert.deepEqual(a.stamps(kept.id).at(-1), ["working", 31_000]);
+  assert.deepEqual(a.delays(), [], "both watches are done");
+});
+
 test("a report whose session keeps working through the grace period is stamped working", async () => {
   const clock = { now: 1_000 };
   const a = announcer(clock);

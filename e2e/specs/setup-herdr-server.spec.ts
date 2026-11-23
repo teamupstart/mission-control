@@ -64,7 +64,6 @@ test("Setup reports a stopped Herdr server, starts it, and discovery never logs 
     mkdirSync(evidence, { recursive: true });
     await page.mouse.move(1, 1);
     await page.screenshot({ path: join(evidence, "herdr-row-started.png"), fullPage: true });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/herdr-server-setup/herdr-row-started.png");
   }
 });
@@ -106,7 +105,6 @@ test("Setup keeps a refused start on screen with the daemon's own sentence", asy
     await page.mouse.move(1, 1);
     await herdr.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(evidence, "herdr-row-refused.png") });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/herdr-server-setup/herdr-row-refused.png");
   }
 });
@@ -145,7 +143,6 @@ test.describe("a Herdr newer than the supported floor", () => {
       await page.mouse.move(1, 1);
       await herdr.scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(evidence, "herdr-row-newer-protocol.png") });
-      // eslint-disable-next-line no-console
       console.log("CAPTURED e2e/.artifacts/herdr-server-setup/herdr-row-newer-protocol.png");
     }
   });

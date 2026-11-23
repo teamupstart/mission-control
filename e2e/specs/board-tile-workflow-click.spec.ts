@@ -44,7 +44,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // ladder half-faded, which reads as a rendering fault in a picture meant for pixel review.
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-tile-workflow-click/${name}.png`);
 }
 

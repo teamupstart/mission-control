@@ -51,7 +51,7 @@ export function validateSettingsBackupDomains(snapshot: SettingsBackupEnvelopeV1
     if (config) parseSettingPayload(config, entry.payload);
     else parseSettingsCatalogPayload(entry.domain, entry.payload);
   }
-  for (const domain of [...expectedDomains]) {
+  for (const domain of Array.from(expectedDomains)) {
     if (domain !== null && (settingsCatalogIsOptional(domain) || configByDomain.get(domain)?.optionalInSnapshot)) expectedDomains.delete(domain);
   }
   if (expectedDomains.size > 0) {

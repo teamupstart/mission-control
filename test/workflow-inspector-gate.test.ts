@@ -1973,7 +1973,6 @@ test("restart recovery skips packets after the current submission advances past 
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
 
-
 test("Inspector completes with retained local artifacts but refuses missing or extra publication", async () => {
   const treeOid = "a".repeat(40);
   const path = "docs/reports/result/report.html";
@@ -2391,7 +2390,6 @@ test("a recovered closed block that was not waiting on a repair push resumes the
     await seeded.manager.stop();
   }
 });
-
 
 async function blockUnsentFeedback(seeded: Seeded) {
   await settleGate(seeded);
@@ -2839,7 +2837,6 @@ for (const policy of ["inspector_only", "restart_workflow"] as const) {
   }
 }
 
-
 for (const policy of ["restart_workflow", "inspector_only"] as const) {
   for (const review of ["pending", "open-findings", "publication-pending"] as const) {
     test(`unsent Inspector recovery does not approve a newer non-clean head: ${policy}, ${review}`, async () => {
@@ -2911,7 +2908,6 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
   }
 }
 
-
 for (const policy of ["restart_workflow", "inspector_only"] as const) {
   for (const newest of ["ledger", "event", "ledger-tie"] as const) {
     test(`unsent Inspector recovery uses the newest remote observation: ${policy}, ${newest}`, async () => {
@@ -2962,7 +2958,6 @@ for (const policy of ["restart_workflow", "inspector_only"] as const) {
     });
   }
 }
-
 
 for (const source of ["ledger", "event"] as const) {
   for (const staleState of ["OPEN", "CLOSED", "MERGED"] as const) {
@@ -3016,7 +3011,6 @@ for (const source of ["ledger", "event"] as const) {
     });
   }
 }
-
 
 for (const guard of ["uncertain", "sending", "delivered", "refused", "preview", "retargeted",
   "paused", "unauthorized", "unavailable", "stale", "closed", "switched-pr", "old-submission"] as const) {
@@ -3116,7 +3110,6 @@ test(`startup refreshes a blocked unsent packet before recovery: ${answer}`, asy
 });
 }
 
-
 for (const kind of ["evidence_capture_repair", "persona_feedback", "pr_handoff", "inspector_feedback"] as const) {
   test(`Inspector recheck is limited to the recoverable blocked packet: ${kind}`, async () => {
     const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
@@ -3173,7 +3166,7 @@ for (const recovery of ["session return", "operator acknowledgement"] as const) 
       }
       assert.equal(seeded.store.getRun(run.id)?.status, "waiting_for_session",
         "recovery must not restore Inspector-only bypass when full review is owed");
-      assert.deepEqual((seeded.store.getRun(run.id)?.gateState as unknown as WorkflowInspectorGateState).reviewedContent,
+      assert.deepEqual((seeded.store.getRun(run.id)?.gateState as unknown as WorkflowInspectorGateState)?.reviewedContent,
         reviewedContent);
     } finally {
       scriptGitHub(null);

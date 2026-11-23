@@ -295,7 +295,7 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   assert.equal(store.getDelivery("delivery")?.payloadPrunedAt, 20);
   const pruneEvent = store.listEvents("compact").at(-1);
   assert.equal(pruneEvent?.kind, "evidence_pruned");
-  assert.equal((pruneEvent?.payload as { textArtifactCount?: number }).textArtifactCount, 1);
+  assert.equal((pruneEvent?.payload as { textArtifactCount?: number })?.textArtifactCount, 1);
   assert.equal((store.getSubmission("submission-uncertain")!.context as typeof context).evidence.diff, "secret diff body");
   assert.equal(store.getDelivery("uncertain-delivery")?.payload, "must remain exact");
   assert.equal(store.getRun("failed")?.evidencePrunedAt ?? null, null);
@@ -369,8 +369,7 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
     {},
   );
   assert.equal(
-    (store.getSubmission("submission-valid")?.context as typeof context)
-      .evidence.retention.state,
+    (store.getSubmission("submission-valid")?.context as typeof context)?.evidence.retention.state,
     "pruned",
   );
   assert.equal(store.getRun("c-malformed")?.evidencePrunedAt, null);

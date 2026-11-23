@@ -125,7 +125,7 @@ export function writeOtelEnv(spec: OtelEnvSpec | null): "installed" | "updated" 
   // installer, which is what keeps a settings.json from churning across installers.
   const formattingOptions = {
     insertSpaces: !/^\t/m.test(original),
-    tabSize: (original.match(/\n( +)\S/) ?? [, "  "])[1]?.length ?? 2,
+    tabSize: original.match(/\n( +)\S/)?.[1]?.length ?? 2,
     eol: (original.includes("\r\n") ? "\r\n" : "\n") as "\n" | "\r\n",
   };
   let text = original.trim() ? original : "{}";

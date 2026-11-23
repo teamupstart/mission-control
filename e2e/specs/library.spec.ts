@@ -49,7 +49,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     // One frame for the grid to settle after the resize; the shelf re-places its tracks.
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
-    // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/library-cross-link/${name}-${suffix}.png`);
   }
   await page.setViewportSize(original);
@@ -418,7 +417,6 @@ test("the built-in workflow graph fills the full builder canvas", async ({
       path: `${WORKFLOW_GRAPH_EVIDENCE}workflow-graph-full-canvas.png`,
       fullPage: true,
     });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png");
   }
 });

@@ -60,7 +60,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   if (restore) await page.setViewportSize(restore);
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/push-task-to-github/${name}.png`);
 }
 

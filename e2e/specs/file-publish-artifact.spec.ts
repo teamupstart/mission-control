@@ -38,13 +38,11 @@ async function shoot(page: Page, name: string): Promise<void> {
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/file-publish-artifact/${name}.png`);
 }
 
 function observed(what: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${what}`);
 }
 

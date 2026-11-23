@@ -233,7 +233,6 @@ test("the Foreman worker itself claims the bound Workflow once the misread amend
       (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
     { message: "the run Foreman started should finish", timeout: 40_000 }).toBe("completed");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().slice(logStart).split("\n").slice(-80).join("\n")}`);
     throw caught;
   }
@@ -255,7 +254,6 @@ test("the Foreman worker itself claims the bound Workflow once the misread amend
   await expect(claims.getByRole("listitem")).toHaveCount(1);
   await expect(claims.getByRole("listitem")).toContainText("The requested change is present in the diff");
   await expect(claims.getByRole("listitem")).toContainText("prompted");
-  // eslint-disable-next-line no-console
   console.log(`FOREMAN LOG: ${daemon.readLog().slice(logStart).match(/.*workflow claimed prompted completion for run \S+/)?.[0]}`);
 
   if (process.env.MC_E2E_EVIDENCE) {

@@ -34,7 +34,6 @@ async function shoot(page: Page, name: string, fullPage = false): Promise<void> 
     fullPage,
     animations: "disabled",
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/telemetry-settings/${name}.png`);
 }
 

@@ -160,7 +160,6 @@ async function promEventually(
  * its numbers rather than take the assertion's word for it.
  */
 function checkpoint(label: string, detail: string): void {
-  // eslint-disable-next-line no-console
   console.log(`  [restart-recovery] ${label}: ${detail}`);
 }
 

@@ -5643,7 +5643,7 @@ export class WorkflowManager {
 
   /** Re-offer every packet a pause held for this session, now that it has resumed. */
   private offerResumedDeliveries(sessionId: string): void {
-    for (const id of [...this.pausedDeliveries]) {
+    for (const id of Array.from(this.pausedDeliveries)) {
       const delivery = this.store.getDelivery(id);
       if (delivery && delivery.sessionId !== sessionId) continue;
       this.pausedDeliveries.delete(id);
@@ -6826,7 +6826,6 @@ export class WorkflowManager {
     }
     return this.registry.promptResourceBlockerForSession(session.id);
   }
-
 
   /**
    * Hold a packet behind the sibling review currently using the conversation's turn.

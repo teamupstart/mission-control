@@ -65,7 +65,6 @@ test("Display settings no longer offers the Cards layout", async ({ page, daemon
     mkdirSync(EVIDENCE, { recursive: true });
     await page.mouse.move(0, 0);
     await picker.screenshot({ path: `${EVIDENCE}01-layout-options.png` });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/settings-conversation-picker/01-layout-options.png");
   }
 });
@@ -138,7 +137,6 @@ test("the conversation picker draws sized thumbnails, not a full-width picture",
     // lands on top of the rows being photographed.
     await page.mouse.move(0, 0);
     await section.screenshot({ path: `${EVIDENCE}02-after.png` });
-    // eslint-disable-next-line no-console
     console.log(
       `CAPTURED e2e/.artifacts/settings-conversation-picker/02-after.png` +
         ` (rows ${heights.join("/")}px, section ${Math.ceil(sectionBox.height)}px;` +

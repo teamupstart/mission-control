@@ -33,7 +33,6 @@ async function capture(target: Locator | Page, name: string, page: Page): Promis
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/async-input-answer-cards/${name}.png`);
 }
 

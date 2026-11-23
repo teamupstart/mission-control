@@ -128,7 +128,6 @@ async function shoot(page: Page, observed: Locator, name: string): Promise<void>
   mkdirSync(EVIDENCE, { recursive: true });
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   const seen = (await observed.innerText()).split("\n").map((line) => `  | ${line}`).join("\n");
-  // eslint-disable-next-line no-console
   console.log(
     `CAPTURED e2e/.artifacts/workflow-spent-check-queue/${name}.png\n`
     + `OBSERVED ${name}, as the browser rendered it while both other Commands were running:\n${seen}`,

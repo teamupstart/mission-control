@@ -2127,7 +2127,6 @@ function DeliveriesPane({
   );
 }
 
-
 /**
  * Every frozen image body for one submission, fetched once and shared by everything that draws it.
  *
@@ -3605,9 +3604,7 @@ export function WorkflowRunView({
   const context = contextRound && detail.contextState === "captured"
     ? readCapturedContext(contextRound.context)
     : null;
-  const contextUnreadable = contextRound !== null
-    && detail.contextState === "captured"
-    && context === null;
+
   const submissionImages = viewed
     ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images ?? []
     : [];

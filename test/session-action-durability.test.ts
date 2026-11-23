@@ -478,7 +478,7 @@ test("a superseded parent, a terminal run, and a settled attempt all refuse to c
 });
 
 test("the completion transaction closes the attempt and seeds only the action's route", () => {
-  const { runId, submissionId, attemptId } = seedWaitingAction();
+  const { submissionId, attemptId } = seedWaitingAction();
   const reserved = store.reserveSessionActionContinuation({
     attemptId,
     submissionId: "child-1",

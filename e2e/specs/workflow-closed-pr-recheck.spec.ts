@@ -53,7 +53,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-closed-pr-recheck/${name}.png`);
 }
 
@@ -153,7 +152,6 @@ async function seedRun(page: Page, daemon: DaemonHandle, name = "E2E closed pull
       timeout: 40_000,
     }).toBe("completed");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

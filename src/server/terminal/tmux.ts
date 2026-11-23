@@ -260,7 +260,7 @@ export const TMUX_NAMES: NameRules = {
     // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never falls
     // back to a name lookup, so a session named `$0` would make focus and kill target
     // whichever session holds ID 0 instead of this one.
-    if (/^\$/.test(name)) return "a tmux session name can't start with '$'";
+    if (name.startsWith('$')) return "a tmux session name can't start with '$'";
     return null;
   },
   /**

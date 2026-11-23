@@ -534,7 +534,7 @@ export class WorkflowEngine {
     // `src/server/index.ts` calls this before native maintenance stops, so provider-owned
     // cleanup can finish through the ordinary lease state machine.
     killLiveCheckGroups();
-    await Promise.allSettled([...this.inFlight]);
+    await Promise.allSettled(this.inFlight);
   }
 
   wake(): void {

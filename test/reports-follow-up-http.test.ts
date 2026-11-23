@@ -588,6 +588,31 @@ test("a follow-up for a replaced or already-read report is refused, and files no
   assert.equal(f.reports.get(second.id)!.readBy, "mark-read", "it keeps how it was cleared");
 });
 
+test("a call for an answered report whose follow-up task was later removed changes nothing", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  const ran = await f.followUp(report.id, "Go");
+  const taskId = String(ran.body.taskId);
+  f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "done", sessionId: "s-ran" });
+  // Removed without the watcher seeing it (as after a restart before the startup check, or a
+  // stale Retry racing the removal): the route's own fallback must not undo the answer.
+  f.reports.stop();
+  f.registry.removeTask(taskId);
+  const before = f.reports.get(report.id)!;
+  assert.equal(before.readBy, "follow-up");
+  assert.equal(before.followUpTaskId, taskId, "still names the removed task");
+  for (const words of [undefined, "Do it again"]) {
+    const call = await f.followUp(report.id, words);
+    assert.equal(call.status, 409);
+    assert.equal(call.body.error, "This report has already been read.");
+  }
+  const after = f.reports.get(report.id)!;
+  assert.equal(after.readBy, "follow-up", "still answered");
+  assert.equal(after.readAt, before.readAt);
+  assert.equal(after.followUpTaskId, taskId, "nothing was forgotten");
+  assert.equal(f.followUpTasks().length, 0, "no new task");
+});
+
 test("only the operator starts a follow-up", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });

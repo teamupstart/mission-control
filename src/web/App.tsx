@@ -8,6 +8,8 @@ import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
+import type { ReportEntryControls } from "./lib/sessionReports.ts";
+import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -500,18 +502,6 @@ export function App(): React.JSX.Element {
     const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
     if (successor) setOpenReportId(successor.id);
   }, [reports, openReportId]);
-  // What the operator is typing on each report card, by chain, so a replacement (a new id with
-  // the same `rootId`) keeps the words. Cleared once a reply or follow-up is accepted.
-  const [reportDrafts, setReportDrafts] = useState<ReadonlyMap<string, string>>(new Map());
-  const setReportDraft = useCallback((rootId: string, text: string) => {
-    setReportDrafts((current) => {
-      if ((current.get(rootId) ?? "") === text) return current;
-      const next = new Map(current);
-      if (text) next.set(rootId, text);
-      else next.delete(rootId);
-      return next;
-    });
-  }, []);
   const reportOpenPosted = useRef(new Set<string>());
   // The report whose attached document the reader is showing, if any.
   const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
@@ -519,7 +509,11 @@ export function App(): React.JSX.Element {
   // still in flight survives the card being collapsed or the inbox being closed, until the next
   // attempt starts.
   const [publishStates, setPublishStates] = useState<ReadonlyMap<string, ReportPublishState>>(new Map());
-  const reportControls = useMemo<InboxReportControls>(() => {
+  // What a report's conversation entry needs: which report is open, opening it, opening its
+  // document, and Mark read. Kept apart from the inbox's controls so that typing a draft, or a
+  // session or resident run changing, does not hand the open conversation new controls and
+  // re-merge its transcript. Everything here depends only on the open report and stable setters.
+  const reportEntryControls = useMemo<ReportEntryControls>(() => {
     // Record the first time the operator opened a report, whichever way they opened it.
     const postOpened = (report: AgentReport) => {
       if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
@@ -529,19 +523,47 @@ export function App(): React.JSX.Element {
       });
     };
     return {
-    openReportId,
-    draftFor: (report) => reportDrafts.get(report.rootId) ?? "",
-    onDraft: (report, text) => setReportDraft(report.rootId, text),
-    onToggle: (report) => {
-      const opening = openReportId !== report.id;
-      setOpenReportId(opening ? report.id : null);
-      openReportRoot.current = opening ? report.rootId : null;
-      if (opening) postOpened(report);
+      openReportId,
+      onToggle: (report) => {
+        const opening = openReportId !== report.id;
+        setOpenReportId(opening ? report.id : null);
+        openReportRoot.current = opening ? report.rootId : null;
+        if (opening) postOpened(report);
+      },
+      // Open report: the stored copy of its document. Posts opened, and never marks it read.
+      onOpenDocument: (report) => {
+        setDocumentReport(report);
+        postOpened(report);
+      },
+      onMarkRead: async (report) => {
+        const result = await api.markReportRead(report.id);
+        if (!result.ok) return result.error ?? "Could not mark the report read";
+        setOpenReportId((current) => (current === report.id ? null : current));
+        return null;
+      },
+    };
+  }, [openReportId]);
+  // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up, and
+  // Publish as scout. The card's draft lives in its own store (`lib/reportDrafts.ts`), so typing
+  // re-renders the card alone; a send that is accepted clears it here.
+  const reportControls = useMemo<InboxReportControls>(() => ({
+    ...reportEntryControls,
+    // Read from the live sessions and resident runs, so a card changes what it offers the moment
+    // its agent exits or a resident is relaunched.
+    targetFor: (report) => replyTarget(report, sessions, residentRuns),
+    onReply: async (report, text) => {
+      const result = await api.replyToReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not send the reply";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
     },
-    // Open report: the stored copy of its document. Posts opened, and never marks it read.
-    onOpenDocument: (report) => {
-      setDocumentReport(report);
-      postOpened(report);
+    onFollowUp: async (report, text) => {
+      const result = await api.followUpReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      clearReportDraft(report.rootId);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      return null;
     },
     // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
     onPublish: (report) => {
@@ -567,31 +589,7 @@ export function App(): React.JSX.Element {
       setInboxOpen(false);
       navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
-    onMarkRead: async (report) => {
-      const result = await api.markReportRead(report.id);
-      if (!result.ok) return result.error ?? "Could not mark the report read";
-      setOpenReportId((current) => (current === report.id ? null : current));
-      return null;
-    },
-    // Read from the live sessions and resident runs, so a card changes what it offers the moment
-    // its agent exits or a resident is relaunched.
-    targetFor: (report) => replyTarget(report, sessions, residentRuns),
-    onReply: async (report, text) => {
-      const result = await api.replyToReport(report.id, text);
-      if (!result.ok) return result.error ?? "Could not send the reply";
-      setReportDraft(report.rootId, "");
-      setOpenReportId((current) => (current === report.id ? null : current));
-      return null;
-    },
-    onFollowUp: async (report, text) => {
-      const result = await api.followUpReport(report.id, text);
-      if (!result.ok) return result.error ?? "Could not start the follow-up task";
-      setReportDraft(report.rootId, "");
-      setOpenReportId((current) => (current === report.id ? null : current));
-      return null;
-    },
-    };
-  }, [openReportId, sessions, residentRuns, navigate, publishStates, reportDrafts, setReportDraft]);
+  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -3657,7 +3655,7 @@ export function App(): React.JSX.Element {
     reviews,
     // Agent reports' conversation entries, behind the `inbox` flag like the inbox's section.
     reports: inboxNames ? reports : [],
-    reportControls,
+    reportControls: reportEntryControls,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,

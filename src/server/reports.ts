@@ -719,8 +719,9 @@ export class ReportManager {
   }
 
   /**
-   * The one way a report becomes read. Sets `readAt` and `readBy` once; a report already read
-   * keeps the first time and the first way.
+   * The one way a single report becomes read. Sets `readAt` and `readBy` once; a report already
+   * read keeps the first time and the first way. `markAllRead` writes the same two columns, under
+   * the same guard, for a whole batch at once.
    */
   markRead(id: string, readBy: ReportReadBy): ReportItem | null {
     const changed = openDb().prepare("UPDATE reports SET read_at = ?, read_by = ? WHERE id = ? AND read_at IS NULL")
@@ -731,18 +732,29 @@ export class ReportManager {
   }
 
   /**
-   * Mark all read: `markRead` with `mark-all` for exactly these ids, which are the reports the
-   * Reports section listed when it was pressed. A report not named stays unread, however recently
-   * it arrived. Answers the reports this call took out of to read; an unknown id, or one already
-   * read, changes nothing.
+   * Mark all read for exactly these ids, which are the reports the Reports section listed when it
+   * was pressed, as `mark-all`. A report not named stays unread, however recently it arrived.
+   * Answers the reports this call took out of to read; an unknown id, or one already read, changes
+   * nothing.
+   *
+   * One batch is one transaction, and nothing is announced until it commits: a write that fails
+   * partway rolls the whole batch back, so a refused request leaves every report it named unread
+   * and no window was told otherwise. Every report in a batch is read at the same moment.
    */
   markAllRead(ids: readonly string[]): ReportItem[] {
+    const at = this.now();
+    const clearedIds = inTransaction(() => {
+      const mark = openDb().prepare(
+        "UPDATE reports SET read_at = ?, read_by = 'mark-all' WHERE id = ? AND read_at IS NULL",
+      );
+      return [...new Set(ids)].filter((id) => mark.run(at, id).changes > 0);
+    });
     const cleared: ReportItem[] = [];
-    for (const id of new Set(ids)) {
-      const before = this.getRow(id);
-      if (!before || before.readAt !== null) continue;
-      const after = this.markRead(id, "mark-all");
-      if (after?.readBy === "mark-all") cleared.push(after);
+    for (const id of clearedIds) {
+      const report = this.getRow(id);
+      if (!report) continue;
+      cleared.push(report);
+      this.registry.upsertReport(report);
     }
     return cleared;
   }

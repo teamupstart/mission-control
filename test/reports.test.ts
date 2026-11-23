@@ -950,3 +950,35 @@ function mkDiscovered(id: string, over: Partial<DiscoveredSession> = {}): Discov
     ...over,
   } as DiscoveredSession;
 }
+
+test("a Mark all read batch is one transaction: a write that fails partway reads and announces nothing", async () => {
+  const { reports, events } = wired();
+  const session = mkSession({ id: "s-read-all-atomic", name: "batch", cwd: checkout() });
+  const posted = [
+    await reports.post(session, { title: "One", body: "b" }),
+    await reports.post(session, { title: "Two", body: "b" }),
+    await reports.post(session, { title: "Three", body: "b" }),
+  ];
+  const ids = posted.map((report) => report.id);
+  // The database refuses the second report's write, as a busy or failing one would, after the
+  // first report's write has already run inside the batch.
+  db.openDb().exec(`CREATE TEMP TRIGGER fail_read_all BEFORE UPDATE OF read_at ON reports
+    WHEN NEW.id = '${ids[1]}' BEGIN SELECT RAISE(ABORT, 'database is busy'); END`);
+  const before = events.length;
+  try {
+    assert.throws(() => reports.markAllRead(ids), /database is busy/);
+  } finally {
+    db.openDb().exec("DROP TRIGGER IF EXISTS fail_read_all");
+  }
+  // Rolled back whole: the first report's write is undone too, and no window was told any changed.
+  assert.deepEqual(reports.listForSession(session.id).map((report) => [report.id, report.readAt, report.readBy]),
+    ids.map((id) => [id, null, null]));
+  assert.equal(events.slice(before).filter((event) => event.type === "report_upsert").length, 0);
+
+  // The same batch, once the database accepts it: all three read at one moment, each announced once.
+  const cleared = reports.markAllRead(ids);
+  assert.deepEqual(cleared.map((report) => [report.id, report.readBy]), ids.map((id) => [id, "mark-all"]));
+  assert.equal(new Set(cleared.map((report) => report.readAt)).size, 1, "one moment for the whole batch");
+  const announced = upserts(events.slice(before)).filter((report) => report.readBy === "mark-all").map((report) => report.id);
+  assert.deepEqual(announced, ids);
+});

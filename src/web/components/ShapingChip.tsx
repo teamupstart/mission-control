@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { currentShaping, type ShapingShaperSummary, type TaskShaping } from "@shared/shaping.ts";
+import {
+  announcedSkills,
+  currentShaping,
+  type ShapingShaperSummary,
+  type ShapingSkillSummary,
+  type TaskShaping,
+  type TaskSkillPrompt,
+} from "@shared/shaping.ts";
 import type { Session } from "@shared/types.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { fetchTaskShaping, type TaskShapingView } from "../lib/api.ts";
@@ -27,6 +34,21 @@ export function sessionShaping(session: Pick<Session, "id" | "task">): TaskShapi
 
 function entriesLabel(entries: number): string {
   return `${entries} ${entries === 1 ? "entry" : "entries"}`;
+}
+
+function skillsLabel(skills: number): string {
+  return `${skills} ${skills === 1 ? "skill" : "skills"}`;
+}
+
+/**
+ * The chip's words for a record that is not degraded: "Context: 3 entries", "Context: 3 entries,
+ * 2 skills" once routed skills were announced, or "Skills: 2" when only skills were.
+ */
+export function shapingChipLabel(record: TaskShaping): string {
+  const skills = announcedSkills(record).length;
+  if (skills === 0) return `Context: ${entriesLabel(record.entries)}`;
+  if (record.entries === 0) return `Skills: ${skills}`;
+  return `Context: ${entriesLabel(record.entries)}, ${skillsLabel(skills)}`;
 }
 
 /** The reason a degraded record is degraded, in one sentence for a tooltip or a marker. */
@@ -67,7 +89,7 @@ export function ShapingChip({ session }: { session: Pick<Session, "id" | "task">
   useEffect(() => setOpen(false), [session.id, taskId, record?.at, record?.sessionId]);
   if (!record || !taskId) return null;
   const degraded = record.state === "degraded";
-  const label = degraded ? "Context degraded" : `Context: ${entriesLabel(record.entries)}`;
+  const label = degraded ? "Context degraded" : shapingChipLabel(record);
   const tip = degraded
     ? `See the context this session received. ${shapingDegradedReason(record)}`
     : "See the context this session received.";
@@ -186,6 +208,14 @@ export function ShapingViewer({
               </li>
             ))}
           </ul>
+          {record.skills && record.skills.length > 0 && (
+            <RoutedSkills
+              skills={record.skills}
+              shapers={record.shapers}
+              afterWork={view !== null && view !== "loading" && view.summary.at === record.at ? view.afterWork ?? null : null}
+              loading={view === "loading"}
+            />
+          )}
           {delivered.kind === "loading" ? (
             <p className="task-context-empty">Loading what was delivered…</p>
           ) : delivered.kind === "text" ? (
@@ -210,6 +240,97 @@ export function ShapingViewer({
         </footer>
       </>
     </Overlay>
+  );
+}
+
+const SKILL_STATE_WORDS: Record<ShapingSkillSummary["state"], string> = {
+  announced: "Announced",
+  superseded: "Superseded",
+  unavailable: "Unavailable",
+  unsupported: "Unsupported",
+  dropped: "Left out",
+};
+
+const SKILL_WHEN_WORDS: Record<string, string> = {
+  "task-start": "at the start",
+  during: "during the work",
+  "after-work": "after the work",
+};
+
+function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Whether, and when, an after-work skill was prompted, in one phrase. */
+export function afterWorkPromptWords(prompt: TaskSkillPrompt | null, name: string, loading: boolean): string {
+  if (loading) return "Checking whether it was prompted…";
+  if (!prompt) return "Not prompted yet: Mission Control prompts it when the work is complete.";
+  switch (prompt.state) {
+    case "delivered":
+      return prompt.skills.includes(name)
+        ? `Prompted${prompt.deliveredAt !== null ? ` at ${clockTime(prompt.deliveredAt)}` : ""}.`
+        : `Not prompted: ${prompt.reason ?? "it did not resolve when the work was complete."}`;
+    case "queued":
+      return "Prompt queued: it goes to the session when the current turn ends.";
+    case "held":
+      return "Prompt held until Foreman's wrap-up is answered.";
+    case "waiting":
+      return `Prompt waiting for the session to take it${prompt.reason ? `: ${prompt.reason}` : "."}`;
+    case "skipped":
+      return `Not prompted: ${prompt.reason ?? "no skill was left to prompt."}`;
+    case "not_delivered":
+      return `Not delivered: ${prompt.reason ?? "the prompt could not be sent."}`;
+  }
+}
+
+/**
+ * "Skills for this task" in the viewer: every routed skill with when it applies, why the router
+ * chose it, which router, whether Mission Control could check it, and what became of it. An
+ * after-work skill also says whether and when it was prompted.
+ */
+export function RoutedSkills({
+  skills,
+  shapers,
+  afterWork,
+  loading = false,
+}: {
+  skills: readonly ShapingSkillSummary[];
+  shapers: readonly ShapingShaperSummary[];
+  /** The launch's prompt row, null when none was written, or undefined for a dry run, which prompts nothing. */
+  afterWork: TaskSkillPrompt | null | undefined;
+  loading?: boolean;
+}): React.JSX.Element {
+  const routerLabel = (id: string) => shapers.find((shaper) => shaper.id === id)?.label ?? id;
+  return (
+    <section className="task-context-skills" aria-label="Skills for this task">
+      <span className="task-context-delivered-head">Skills for this task</span>
+      <ul className="task-context-shapers" aria-label="Routed skills">
+        {skills.map((skill) => (
+          <li
+            key={skill.name}
+            className={`task-context-shaper task-context-skill${skill.state === "announced" ? " is-ok" : ""}`}
+            aria-label={`${skill.name}: ${SKILL_STATE_WORDS[skill.state]}`}
+          >
+            <span className="task-context-shaper-head">
+              <strong><code>{skill.name}</code></strong>
+              <span className="task-context-outcome">{SKILL_STATE_WORDS[skill.state]}</span>
+            </span>
+            <span className="task-context-shaper-facts">
+              {Object.hasOwn(SKILL_WHEN_WORDS, skill.lifecyclePoint) ? SKILL_WHEN_WORDS[skill.lifecyclePoint] : skill.lifecyclePoint} · routed by {routerLabel(skill.shaper)} ·{" "}
+              {skill.verified ? "verified in the skill catalog" : "not verified"}
+              {skill.repositories.length > 0 ? ` · ${skill.repositories.join(", ")}` : ""}
+            </span>
+            <span className="task-context-definition">
+              Reason <code>{skill.reasonId}</code>
+            </span>
+            {skill.reason && <span className="task-context-reason">{skill.reason}</span>}
+            {skill.state === "announced" && skill.lifecyclePoint === "after-work" && afterWork !== undefined && (
+              <span className="task-context-note" role="note">{afterWorkPromptWords(afterWork, skill.name, loading)}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

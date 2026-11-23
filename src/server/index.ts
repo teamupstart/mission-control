@@ -61,6 +61,7 @@ import {
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -342,6 +343,16 @@ tasks.useMergeQuestions({
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
 const queues = new QueueManager(registry);
+// Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
+// or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
+// which is what releases a prompt held behind it. Delivered through the one outbox.
+const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
+  registry,
+  outbox: pendingTurns,
+  // `workflows` is constructed below; this is read only when a prompt is written, long after.
+  workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
@@ -443,6 +454,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  afterWorkSkills,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -918,6 +930,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // After the outbox: a delivery it confirms settles the prompt row it was queued as.
+  afterWorkSkills.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
   // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
   // temporary files can be removed safely.
@@ -1120,6 +1134,7 @@ async function shutdown(): Promise<void> {
   // between a harness closing its session file cleanly and it being killed mid-turn.
   const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
+  afterWorkSkills.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
   // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's

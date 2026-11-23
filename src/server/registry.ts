@@ -339,7 +339,7 @@ import {
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
-  rekeyTaskShaping as dbRekeyTaskShaping,
+  rekeyTaskLaunch as dbRekeyTaskLaunch,
   clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
@@ -8020,9 +8020,14 @@ export class Registry extends EventEmitter {
   commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
     const summary = unstamped ? { ...unstamped, sessionId } : null;
     try {
-      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
+      // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
+      // prompt an earlier launch into this session left.
+      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId);
       // This commit settled the row, so no earlier clean-up may touch it now.
       forgetSupersededShaping(taskId);
+      // An earlier launch's after-work turn may have just left this session's outbox.
+      const delivered = this.sessions.get(sessionId);
+      if (delivered) this.refreshPendingTurns(noteKeyFor(delivered));
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
       this.hideSupersededShaping(taskId, sessionId);
@@ -8056,7 +8061,9 @@ export class Registry extends EventEmitter {
     const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== prior.sessionId) return null;
     try {
-      if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
+      // The record and the launch's after-work prompt row move in one transaction: the same
+      // conversation continuing is the same launch, so it is never prompted a second time.
+      if (!dbRekeyTaskLaunch(taskId, prior.sessionId, toSessionId)) return null;
     } catch (error) {
       // The successor still binds: the record keeps naming the prior session, so
       // `currentShaping` hides it rather than show it for a conversation it no longer describes.
@@ -8113,7 +8120,7 @@ export class Registry extends EventEmitter {
     const record = current ? current.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== fromSessionId || fromSessionId === toSessionId) return;
     try {
-      if (!dbRekeyTaskShaping(taskId, fromSessionId, toSessionId)) return;
+      if (!dbRekeyTaskLaunch(taskId, fromSessionId, toSessionId)) return;
     } catch (error) {
       console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its resumed session:`, error);
       return;
@@ -11659,10 +11666,16 @@ export class Registry extends EventEmitter {
       promptedConsumedGeneration?: number | null;
     },
     now = Date.now(),
+    /**
+     * A durable write that must commit with this one or not at all, such as the after-work
+     * prompts an answered wrap-up releases. Database writes only: it runs inside the transaction,
+     * and the session is published after the commit.
+     */
+    alongside?: () => void,
   ): void {
     const prev = getQueueRow(key);
     if (!prev) return;
-    upsertQueue({
+    const next: typeof prev = {
       ...prev,
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
@@ -11688,7 +11701,19 @@ export class Registry extends EventEmitter {
           ? patch.promptedConsumedGeneration
           : prev.promptedConsumedGeneration,
       updatedAt: now,
-    });
+    };
+    // The row and `alongside` commit together. Inside a caller's transaction, that one holds both.
+    const d = openDb();
+    const owns = alongside !== undefined && !d.isTransaction;
+    if (owns) d.exec("BEGIN IMMEDIATE");
+    try {
+      upsertQueue(next);
+      alongside?.();
+      if (owns) d.exec("COMMIT");
+    } catch (error) {
+      if (owns && d.isTransaction) d.exec("ROLLBACK");
+      throw error;
+    }
     this.syncSessionsForQueue(key);
   }
 

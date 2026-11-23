@@ -52,7 +52,7 @@ const remote = {
   id: "acme-guidance", label: "Acme guidance", stage: "select",
   transport: { type: "http", url: "https://context.acme.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}", "x-user": "{caller.user}" } },
 };
-const unsupported = { id: "future", label: "Future shaper", stage: "route", transport: { type: "grpc" } };
+const unsupported = { id: "future", label: "Future shaper", stage: "audit", transport: { type: "grpc" } };
 
 function view(input: Record<string, unknown>): ShapingConfigView {
   return daemonShapingView(ShapingConfigSchema.parse(input));
@@ -143,7 +143,8 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups.map((group) => group.stage), [...SHAPING_STAGES, null]);
   assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a"]);
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
-  assert.deepEqual(groups[2]!.rows, [{
+  assert.deepEqual(groups[2]!.rows, [], "no router is registered");
+  assert.deepEqual(groups.at(-1)!.rows, [{
     id: "future", label: "Future shaper", origin: "registered", path: null, folderState: null, manifest: null, startsOff: false,
     shaper: null, on: false,
     problem: "stage: This build does not support the stage this entry names.", revision: shapingReviser([unsupported as never]),
@@ -583,7 +584,7 @@ test("a view from a daemon that sends no revisions draws its rows with every rev
 
 test("only the owning entry may say an import replaces it, never a repeat behind it", () => {
   // An unsupported owner, then a repeat under its id whose literal credential the store emptied.
-  const owner = { id: "twin", label: "Owner", stage: "route", transport: { type: "grpc" } };
+  const owner = { id: "twin", label: "Owner", stage: "audit", transport: { type: "grpc" } };
   const repeat = gatherer("twin", { label: "Repeat", transport: { type: "command", command: "/usr/local/bin/notes", args: ["ghp_" + "a".repeat(36)] } });
   const stored = ShapingConfigSchema.parse({ shapers: [owner, repeat] });
   const shown = daemonShapingView(stored).shapers as Array<{ label: string; replaceable?: true }>;

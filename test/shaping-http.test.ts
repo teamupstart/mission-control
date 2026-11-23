@@ -147,7 +147,7 @@ test("refused intents answer 400 with a reason and change nothing", async () => 
     assert.equal(response.status, 400);
     assert.equal(((await response.json()) as { error: string }).error, error);
   }
-  for (const body of [{}, { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), stage: "route" } },
+  for (const body of [{}, { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), stage: "audit" } },
     { kind: "upsert", shaper: { ...fixture("x", "gather", "ok"), transport: { type: "command", command: "sh -c x" } } },
     { kind: "settings", limits: { totalBytes: 1_000_000 } }]) {
     assert.equal((await put(body)).status, 400, JSON.stringify(body));
@@ -156,7 +156,7 @@ test("refused intents answer 400 with a reason and change nothing", async () => 
 });
 
 test("an entry this build does not understand survives writes, is never enabled, and cannot be dry-run", async () => {
-  const future = { id: "skill-router", label: "Router", stage: "route", transport: { type: "grpc", endpoint: "dns:///r" }, extra: [1] };
+  const future = { id: "skill-router", label: "Router", stage: "audit", transport: { type: "grpc", endpoint: "dns:///r" }, extra: [1] };
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [future] });
   shaping.reloadShaping();
   assert.equal((await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") })).status, 200);
@@ -176,7 +176,7 @@ test("a deeply nested stored entry takes the unreadable path instead of throwing
   // The row as a corrupt or foreign store would hold it: raw JSON, about 14 KiB, 7,000 levels deep.
   const note = `${"[".repeat(7_000)}"leaf"${"]".repeat(7_000)}`;
   openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key,
-    `{"shapers":[{"id":"deep","label":"Deep","stage":"route","transport":{"type":"grpc"},"note":${note}}]}`);
+    `{"shapers":[{"id":"deep","label":"Deep","stage":"audit","transport":{"type":"grpc"},"note":${note}}]}`);
   assert.doesNotThrow(() => shaping.reloadShaping());
   assert.deepEqual(shaping.getShapingConfig(), SHAPING_CONFIG_DEFAULTS, "reads fall back to the defaults");
   const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
@@ -513,7 +513,7 @@ test("a literal credential is refused, so a settings snapshot holds only the ref
 test("an entry stored by another path cannot carry a literal credential into a snapshot", async () => {
   // Written straight into app_config, as a restore or a newer build would, past the API's check.
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{
-    id: "future", label: "Future", stage: "route",
+    id: "future", label: "Future", stage: "audit",
     transport: { type: "grpc", url: "https://user:pw-literal@context.example/x",
       headers: { authorization: "Bearer sk-live-bypass", "x-api-key": "sk-live-trailing ", "x-auth-token": "sk-live-prefix {env:X}" } },
   }] });
@@ -538,7 +538,7 @@ test("an entry stored by another path cannot carry a literal credential into a s
   const { digest: _digest, ...body } = saved.snapshot;
   const crafted = createSettingsBackupEnvelope({ ...body, id: "daily-2026-11-21", localDate: "2026-11-21",
     domains: body.domains.map((domain) => domain.domain !== "shaping" ? domain : { ...domain, payload: {
-      ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+      ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
         transport: { type: "grpc", headers: { authorization: "Bearer sk-live-in-snapshot", "x-api-key": "sk-live-restore-trailing " } } }],
     } }) });
   backupStore.write(crafted);
@@ -665,7 +665,7 @@ test("a stored entry at the size limit stays within it once a credential is stri
 });
 
 test("GET and PUT /api/shaping return the config view, never an unsupported entry's raw envelope", async () => {
-  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
     note: "sk-live-envelope-note", transport: { type: "grpc", endpoint: "grpc://sk-live-envelope-endpoint" } }] });
   shaping.reloadShaping();
   const read = await get();
@@ -937,7 +937,7 @@ test("an import with a literal token in an authorization header is refused, stor
 
 test("a stored unsupported entry holding a literal token reaches the snapshot, a frame and the reply only as its id, label and reason", async () => {
   const secret = "sk-live-unsupported-envelope-token";
-  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "audit",
     note: secret, transport: { type: "grpc", endpoint: "grpc://" + secret } }] });
   shaping.reloadShaping();
   setFlag(false);
@@ -1006,7 +1006,7 @@ test("enable, remove and a dry run that name a replaced definition answer 409 an
 test("an unsupported entry replaced with a different raw envelope answers 409 to the revision shown before", async () => {
   // Two envelopes this build cannot run: the view shows both only as id, label and reason, so
   // only the daemon's revision over the stored entry can tell them apart.
-  const envelope = (endpoint: string) => ({ id: "future", label: "Future shaper", stage: "route",
+  const envelope = (endpoint: string) => ({ id: "future", label: "Future shaper", stage: "audit",
     transport: { type: "grpc", endpoint } });
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [envelope("grpc://first")] });
   shaping.reloadShaping();
@@ -1461,4 +1461,19 @@ test("an ordered write numbered too far ahead, or sent too long ago, is refused 
   assert.equal(((await old.json()) as { error: string }).error, "expired");
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
   assert.equal((await send(Date.now() * 1000, "sent-just-now")).status, 200);
+});
+
+test("a dry run of a router returns its skills and the section, for the harness it names", async () => {
+  const router = { id: "router", label: "Router", stage: "route", transport: { type: "command", command: process.execPath,
+    args: [FIXTURE, "route", "lint-fix:during,wrap-notes:after-work"] }, timeoutMs: 30_000 };
+  assert.equal((await put({ kind: "upsert", shaper: router })).status, 200);
+  const claude = await dryRun({ id: "router", repository });
+  assert.equal(claude.status, 200);
+  const run = (await claude.json()) as { section: string; entries: unknown[]; skills: Array<{ name: string; state: string; verified: boolean }> };
+  assert.deepEqual(run.entries, []);
+  assert.deepEqual(run.skills.map((skill) => [skill.name, skill.state, skill.verified]), [["lint-fix", "announced", false], ["wrap-notes", "announced", false]]);
+  assert.match(run.section, /^## Skills for this task[\s\S]*- `\/lint-fix` - during the work[\s\S]*- `\/wrap-notes` - after the work/);
+  const codex = (await (await dryRun({ id: "router", repository, agent: "codex" })).json()) as { section: string };
+  assert.match(codex.section, /- `\$lint-fix` - during the work/);
+  assert.equal((await dryRun({ id: "router", repository, agent: "other" })).status, 400, "only a known harness");
 });

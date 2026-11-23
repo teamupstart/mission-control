@@ -1,5 +1,6 @@
-// A local MCP server with one `get_guidance` tool, for the `mcp` shaping transport's tests. No
-// network beyond loopback, no tokens, no model.
+// A local MCP server with a `get_guidance` tool and a `route_skills` tool (FR-04), for the `mcp`
+// shaping transport's tests. No network beyond loopback, no tokens, no model. `route_skills`
+// answers in every mode as `get_guidance` does, except `ok`, where it routes one skill.
 //
 // Over stdio: `node fake-guidance-mcp.mjs <mode> [args...]`.
 // Over streamable HTTP: `startGuidanceHttp({ mode, args, json })` from a test, which listens on
@@ -44,15 +45,18 @@ function okReply(args) {
 export function createGuidanceServer(mode = "ok", args = []) {
   const server = new Server({ name: "fake-guidance", version: "1.0.0" }, { capabilities: { tools: {}, logging: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [{
-      name: "get_guidance",
-      description: "Guidance for a task in a repository.",
+    tools: ["get_guidance", "route_skills"].map((name) => ({
+      name,
+      description: name === "get_guidance" ? "Guidance for a task in a repository." : "Skills for a task in a repository.",
       inputSchema: { type: "object", properties: { task: { type: "string" }, repo: { type: "object" }, version: { type: "string" } }, required: ["task", "repo"] },
-    }],
+    })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    if (request.params.name !== "get_guidance") {
+    if (request.params.name !== "get_guidance" && request.params.name !== "route_skills") {
       return { isError: true, content: [{ type: "text", text: `no tool named ${request.params.name}` }] };
+    }
+    if (request.params.name === "route_skills" && mode === "ok") {
+      return structured({ version: "fr04-1", skills: [{ name: "lint-fix", lifecycle_point: "during", reason_id: "fixture/lint" }] });
     }
     const callArgs = request.params.arguments ?? {};
     const headers = extra.requestInfo?.headers ?? null;

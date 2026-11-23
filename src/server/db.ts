@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
-import { TaskShapingSchema, type TaskShaping } from "@shared/shaping.ts";
+import { TaskShapingSchema, TaskSkillPromptSchema, type TaskShaping, type TaskSkillPrompt } from "@shared/shaping.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
@@ -53,7 +53,7 @@ import {
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
-import { MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
+import { AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -304,7 +304,10 @@ let db: DatabaseSync | undefined;
 //     work unit until its next start. No existing row is migrated.
 // 44: declared waits on background processes (`session_awaitings`), keyed by note key. A new
 //     empty table: no session declared a wait before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 44;
+// 45: each launch's after-work skills prompt (`task_skill_prompts`), keyed by task and session
+//     and replaced in the same transaction as each launch's shaping commit. A new empty table:
+//     no skill was routed before it existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 45;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4226,6 +4229,27 @@ function migrate(d: DatabaseSync): void {
       created_at INTEGER NOT NULL
     );
   `);
+  // A launch's after-work skills prompt (task shaping's route stage). Keyed by task AND session,
+  // so a later launch of the task into another session gets its own row and never collides with
+  // the first launch's, and the key is what makes the prompt once per launch. `turn_id` is the
+  // outbox row it was queued as, which never changes once written, even when a resume re-keys
+  // the row to its successor session. Not part of `tasks.shaping`, which keeps one writer.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS task_skill_prompts (
+      task_id      TEXT NOT NULL,
+      session_id   TEXT NOT NULL,
+      state        TEXT NOT NULL,
+      reason       TEXT,
+      skills       TEXT NOT NULL,
+      turn_id      TEXT,
+      created_at   INTEGER NOT NULL,
+      delivered_at INTEGER,
+      PRIMARY KEY (task_id, session_id)
+    );
+  `);
+  // Set on a held row in the same transaction as the wrap-up answer that releases it, so a
+  // daemon that stops before the release still releases it at its next start. 0 otherwise.
+  addColumn(d, "task_skill_prompts", "wrapup_answered", "INTEGER NOT NULL DEFAULT 0");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -8649,6 +8673,7 @@ export function deleteTask(id: string): void {
     d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
     if (ownsTransaction) d.exec("COMMIT");
   } catch (error) {
@@ -8674,7 +8699,19 @@ export function deleteTask(id: string): void {
  * A task with no record and no text, settled with neither, is not written to at all, so an
  * unshaped launch never touches either table. Returns whether anything changed.
  */
-export function commitTaskShaping(taskId: string, summary: TaskShaping | null, text: string, at = Date.now()): boolean {
+export function commitTaskShaping(
+  taskId: string,
+  summary: TaskShaping | null,
+  text: string,
+  at = Date.now(),
+  /**
+   * The session this launch was delivered to. Its after-work prompt row, left by an earlier
+   * launch of the task into the same session (a handover back to the agent it already ran on),
+   * describes a launch this commit supersedes: it is removed here, with its outbox turn while no
+   * delivery has claimed it, so the new launch writes its own. Defaults to the summary's session.
+   */
+  deliveredTo: string | null = summary?.sessionId ?? null,
+): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -8700,6 +8737,7 @@ export function commitTaskShaping(taskId: string, summary: TaskShaping | null, t
     } else {
       changes += Number(d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(taskId).changes);
     }
+    if (deliveredTo) changes += clearSupersededSkillPrompt(d, taskId, deliveredTo);
     if (ownsTransaction) d.exec("COMMIT");
     return changes > 0;
   } catch (error) {
@@ -8744,6 +8782,281 @@ export function clearTaskShapingFor(taskId: string, sessionId: string): boolean 
     return cleared;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+// ---- task shaping: after-work skills prompts ----
+
+interface TaskSkillPromptRow {
+  task_id: string;
+  session_id: string;
+  state: string;
+  reason: string | null;
+  skills: string;
+  turn_id: string | null;
+  created_at: number;
+  delivered_at: number | null;
+}
+
+/** A stored prompt row, as reads carry it, or null when it does not parse under this build. */
+function rowToTaskSkillPrompt(row: TaskSkillPromptRow): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  let skills: unknown;
+  try { skills = JSON.parse(row.skills); } catch { return null; }
+  const parsed = TaskSkillPromptSchema.safeParse({
+    sessionId: row.session_id, state: row.state, reason: row.reason, skills,
+    createdAt: row.created_at, deliveredAt: row.delivered_at,
+  });
+  return parsed.success ? { ...parsed.data, taskId: row.task_id, turnId: row.turn_id } : null;
+}
+
+/** One launch's after-work prompt, or null when none was written for that task and session. */
+export function getTaskSkillPrompt(taskId: string, sessionId: string): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  const row = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE task_id = ? AND session_id = ?`)
+    .get(taskId, sessionId) as TaskSkillPromptRow | undefined;
+  return row ? rowToTaskSkillPrompt(row) : null;
+}
+
+/**
+ * Inside the shaping commit: drop the prompt row an earlier launch of `taskId` into `sessionId`
+ * left, and its outbox turn while it is still queued and unclaimed. A turn a delivery already
+ * claimed cannot be deleted under it; with its row gone it is no longer owed, and the outbox's
+ * delivery guard refuses it before the agent takes it (`afterWorkTurnOwed`). A guard that cannot
+ * read the row holds the turn back rather than deliver it. Returns the rows changed.
+ */
+function clearSupersededSkillPrompt(d: DatabaseSync, taskId: string, sessionId: string): number {
+  const row = d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ? AND session_id = ? RETURNING turn_id`)
+    .get(taskId, sessionId) as { turn_id: string | null } | undefined;
+  if (!row) return 0;
+  const turn = row.turn_id
+    ? Number(d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND claimed_at IS NULL`).run(row.turn_id).changes)
+    : 0;
+  return 1 + turn;
+}
+
+/**
+ * Whether an after-work outbox turn is still owed: its prompt row exists and is `queued` under
+ * this turn id. A later launch's shaping commit removes the row, so a turn it left in flight
+ * answers false, and the outbox refuses to deliver it.
+ */
+export function afterWorkTurnOwed(turnId: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM task_skill_prompts WHERE turn_id = ? AND state = 'queued'`).get(turnId));
+}
+
+/**
+ * Drop a queued after-work turn that is about to be delivered after task shaping was turned
+ * off, and record its prompt row as not delivered, in one transaction. Only an unclaimed queued
+ * turn: one a delivery already took is left to finish. True when the turn was dropped.
+ */
+export function dropQueuedAfterWorkTurn(turnId: string, reason: string): boolean {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const dropped = Number(d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND claimed_at IS NULL`)
+      .run(turnId).changes) > 0;
+    if (dropped) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'not_delivered', reason = ?, delivered_at = NULL
+                   WHERE turn_id = ? AND state = 'queued'`).run(reason, turnId);
+    }
+    d.exec("COMMIT");
+    return dropped;
+  } catch (error) {
+    try { d.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+/** The prompt rows still owed to a session: held, queued or waiting. */
+export function listOpenTaskSkillPrompts(sessionId: string): Array<TaskSkillPrompt & { taskId: string; turnId: string | null }> {
+  const rows = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE session_id = ? AND state IN ('held', 'queued', 'waiting')`)
+    .all(sessionId) as unknown as TaskSkillPromptRow[];
+  return rows.map(rowToTaskSkillPrompt).filter((row) => row !== null);
+}
+
+/** The sessions that have a prompt the outbox refused for a reason that can clear. */
+export function listWaitingTaskSkillPromptSessions(): string[] {
+  const rows = openDb().prepare(`SELECT DISTINCT session_id FROM task_skill_prompts WHERE state = 'waiting'`)
+    .all() as unknown as Array<{ session_id: string }>;
+  return rows.map((row) => row.session_id);
+}
+
+/**
+ * Record that the outbox refused a launch's prompt for a reason that can clear. A launch with no
+ * row gets one (`from` null); otherwise only a row still in `from` moves, and a row already
+ * waiting keeps waiting with the latest reason. True when written.
+ */
+export function markTaskSkillPromptWaiting(input: {
+  taskId: string;
+  sessionId: string;
+  from: "held" | "waiting" | null;
+  skills: readonly string[];
+  reason: string;
+  now: number;
+}): boolean {
+  const d = openDb();
+  const r = input.from === null
+    ? d.prepare(
+      `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+         VALUES (?, ?, 'waiting', ?, ?, NULL, ?, NULL)
+       ON CONFLICT(task_id, session_id) DO NOTHING`,
+    ).run(input.taskId, input.sessionId, input.reason, JSON.stringify(input.skills), input.now)
+    : d.prepare(
+      `UPDATE task_skill_prompts SET state = 'waiting', reason = ?, skills = ?
+         WHERE task_id = ? AND session_id = ? AND state = ?`,
+    ).run(input.reason, JSON.stringify(input.skills), input.taskId, input.sessionId, input.from);
+  return Number(r.changes) > 0;
+}
+
+/** The prompt row an outbox row was queued as. */
+export function taskSkillPromptForTurn(turnId: string): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  const row = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE turn_id = ?`).get(turnId) as TaskSkillPromptRow | undefined;
+  return row ? rowToTaskSkillPrompt(row) : null;
+}
+
+/**
+ * Write a launch's prompt row in a state that queues nothing: `held`, `skipped` or
+ * `not_delivered`. Only when the launch has none yet, so it is written once per launch whoever
+ * asks. True when this call wrote it.
+ */
+export function insertTaskSkillPrompt(input: {
+  taskId: string;
+  sessionId: string;
+  state: "held" | "skipped" | "not_delivered";
+  reason: string | null;
+  skills: readonly string[];
+  now: number;
+}): boolean {
+  const r = openDb().prepare(
+    `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)
+     ON CONFLICT(task_id, session_id) DO NOTHING`,
+  ).run(input.taskId, input.sessionId, input.state, input.reason, JSON.stringify(input.skills), input.now);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Mark a session's held prompts as answered: called inside the transaction that records its
+ * wrap-up answer, so the release they are owed survives a daemon that stops before it runs.
+ */
+export function markHeldTaskSkillPromptsAnswered(sessionId: string): number {
+  return Number(openDb().prepare(`UPDATE task_skill_prompts SET wrapup_answered = 1 WHERE session_id = ? AND state = 'held'`)
+    .run(sessionId).changes);
+}
+
+/** The sessions with a held prompt whose wrap-up was answered and not yet released. For startup. */
+export function listAnsweredHeldTaskSkillPromptSessions(): string[] {
+  const rows = openDb().prepare(`SELECT DISTINCT session_id FROM task_skill_prompts WHERE state = 'held' AND wrapup_answered = 1`)
+    .all() as unknown as Array<{ session_id: string }>;
+  return rows.map((row) => row.session_id);
+}
+
+/**
+ * Queue a launch's after-work prompt: the outbox row and the prompt row marked `queued`, in ONE
+ * transaction, so a crash leaves neither or both and a retry never queues a second turn. A launch
+ * with no row yet gets one (`from` null); otherwise only a row still in `from` - `held` behind a
+ * wrap-up, or `waiting` after a refusal that could clear - moves. Null when the prompt is no
+ * longer owed: a row exists already, or the row has moved on.
+ */
+export function queueTaskSkillPromptTurn(input: {
+  taskId: string;
+  sessionId: string;
+  noteKey: string;
+  turnId: string;
+  text: string;
+  skills: readonly string[];
+  from: "held" | "waiting" | null;
+  now: number;
+}): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const owed = input.from !== null
+      ? d.prepare(
+        `UPDATE task_skill_prompts SET state = 'queued', reason = NULL, skills = ?, turn_id = ?
+           WHERE task_id = ? AND session_id = ? AND state = ?`,
+      ).run(JSON.stringify(input.skills), input.turnId, input.taskId, input.sessionId, input.from)
+      : d.prepare(
+        `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+           VALUES (?, ?, 'queued', NULL, ?, ?, ?, NULL)
+         ON CONFLICT(task_id, session_id) DO NOTHING`,
+      ).run(input.taskId, input.sessionId, JSON.stringify(input.skills), input.turnId, input.now);
+    if (Number(owed.changes) !== 1 || d.prepare(`SELECT 1 FROM pending_turns WHERE id = ?`).get(input.turnId)) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const sequence = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL)`,
+    ).run(input.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(input.turnId) as unknown as PendingTurnRow;
+    d.exec("COMMIT");
+    return rowToPendingTurn(row);
+  } catch (error) {
+    try { d.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+/**
+ * Settle a prompt row that is still `from` one of the given states. A final state is written
+ * once: a row already delivered, skipped or not delivered is never moved again. True when moved.
+ */
+export function settleTaskSkillPrompt(input: {
+  taskId: string;
+  sessionId: string;
+  from: readonly TaskSkillPrompt["state"][];
+  state: "delivered" | "skipped" | "not_delivered";
+  reason: string | null;
+  at: number;
+}): boolean {
+  if (input.from.length === 0) return false;
+  const r = openDb().prepare(
+    `UPDATE task_skill_prompts SET state = ?, reason = ?, delivered_at = ?
+       WHERE task_id = ? AND session_id = ? AND state IN (${input.from.map(() => "?").join(", ")})`,
+  ).run(input.state, input.reason, input.state === "delivered" ? input.at : null, input.taskId, input.sessionId, ...input.from);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Carry a launch's prompt row to its successor session, where the shaping record is re-keyed
+ * (`rekeyTaskShaping`): the same conversation continuing is the same launch, so it is not
+ * prompted again. A row the successor already holds is from an earlier launch into it, which
+ * the record now replaces, so it goes first, with its unclaimed outbox turn.
+ */
+export function rekeyTaskSkillPrompt(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const d = openDb();
+  clearSupersededSkillPrompt(d, taskId, toSessionId);
+  const r = d.prepare(`UPDATE task_skill_prompts SET session_id = ? WHERE task_id = ? AND session_id = ?`)
+    .run(toSessionId, taskId, fromSessionId);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Carry a launch to its successor session on resume: the shaping record and the launch's
+ * after-work prompt row move together or not at all. Moved apart, a restart between them would
+ * leave the record on the successor with no prompt row there, and the same launch could be
+ * prompted again. Inside a caller's transaction this is a savepoint, so a failure undoes both
+ * moves without undoing the caller's own writes. Returns whether the record moved.
+ */
+export function rekeyTaskLaunch(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT rekey_task_launch" : "BEGIN IMMEDIATE");
+  try {
+    const moved = rekeyTaskShaping(taskId, fromSessionId, toSessionId);
+    if (moved) rekeyTaskSkillPrompt(taskId, fromSessionId, toSessionId);
+    d.exec(nested ? "RELEASE rekey_task_launch" : "COMMIT");
+    return moved;
+  } catch (error) {
+    try {
+      d.exec(nested ? "ROLLBACK TO rekey_task_launch; RELEASE rekey_task_launch" : "ROLLBACK");
+    } catch {}
     throw error;
   }
 }
@@ -14822,6 +15135,34 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
       .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
       .run(id, revision).changes === 1
   );
+}
+
+/**
+ * Retire a claimed turn whose bytes the agent took, and, for an after-work skills turn, settle
+ * its prompt row `delivered` in the same transaction. The delivery and its record therefore
+ * commit together or not at all: a confirmed delivery can never leave the row `queued`, which
+ * nothing at startup would revisit. A row a session-end notice moved to `not_delivered` first is
+ * settled too, since delivery is the fact. Returns whether the turn was retired.
+ */
+export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number): boolean {
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT retire_delivered_turn" : "BEGIN IMMEDIATE");
+  try {
+    const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
+      .run(id, revision).changes === 1;
+    if (retired && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?
+                   WHERE turn_id = ? AND state IN ('queued', 'not_delivered')`).run(deliveredAt, id);
+    }
+    d.exec(nested ? "RELEASE retire_delivered_turn" : "COMMIT");
+    return retired;
+  } catch (error) {
+    if (d.isTransaction) {
+      d.exec(nested ? "ROLLBACK TO retire_delivered_turn; RELEASE retire_delivered_turn" : "ROLLBACK");
+    }
+    throw error;
+  }
 }
 
 export function resolveUncertainPendingTurn(id: string, revision: number): boolean {

@@ -1,6 +1,7 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import type { TaskSkillPrompt } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -1874,7 +1875,12 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).strict();
 
 /** Durable task facts plus pull request references, without session-private state. */
-export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+export type McpTaskSnapshot = Task & {
+  prUrl: string | null;
+  repoPrs: TaskRepoPrSummary[];
+  /** The after-work prompt of the launch `shaping` describes, when one was written. */
+  shapingAfterWork?: TaskSkillPrompt;
+};
 
 /** Read-only task queries share validation between the MCP child and daemon. */
 export const McpListTasksSchema = z.object({

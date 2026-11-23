@@ -2,7 +2,7 @@ import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
-  MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
+  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage, idleOnlyTurn,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -18,7 +18,10 @@ import {
   createSnoozeInstructionPendingTurn,
   SNOOZE_INSTRUCTION_TURN_PREFIX,
   MESSAGE_ANSWER_TURN_PREFIX,
+  afterWorkTurnOwed,
   deleteClaimedPendingTurn,
+  retireDeliveredPendingTurn,
+  dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
   recallPendingTurn,
@@ -61,6 +64,15 @@ import {
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
+/** Why a queued after-work prompt was not delivered: task shaping was off when its turn came. */
+export const AFTER_WORK_FLAG_OFF = "Task shaping was turned off before the prompt was delivered.";
+/** Why an after-work turn was refused: a later launch of its task replaced the launch it was for. */
+export const AFTER_WORK_SUPERSEDED = "A later launch of the task replaced the launch this after-work prompt was for.";
+/**
+ * Why an after-work turn was held back, not refused: whether its launch still owns it could not be
+ * read. It stays queued, undelivered and unsettled, and is checked again (`afterWorkRecheckMs`).
+ */
+export const AFTER_WORK_UNVERIFIED = "Mission Control could not check that this after-work prompt's launch still owns it.";
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
@@ -82,6 +94,12 @@ export interface IdleSdkSender {
 
 export interface PendingTurnSubmitResult {
   ok: boolean;
+  /**
+   * A refusal that can clear without anyone acting: the outbox was still starting, or a live
+   * session could not take messages at that moment. Absent on a refusal that cannot, such as a
+   * session that is gone or has exited.
+   */
+  retryable?: boolean;
   pasted: false;
   submitVerified: false;
   delivery?: MessageSendDisposition;
@@ -100,6 +118,15 @@ interface PendingTurnDeps {
   /** Where a session's transcript is read, for noticing that a steer has been read. */
   messagesFor: (session: Session) => SessionMessages | null;
   steerReceiptPollMs: number;
+  /**
+   * Whether task shaping is on, read when an after-work turn is about to be delivered. A turn
+   * queued while it was on is dropped rather than sent once it is off, including after a restart.
+   */
+  afterWorkEnabled: () => boolean;
+  /** Whether an after-work turn's launch still owns it (`afterWorkTurnOwed`). */
+  afterWorkTurnOwed: (turnId: string) => boolean;
+  /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
+  afterWorkRecheckMs: number;
 }
 
 /**
@@ -108,6 +135,7 @@ interface PendingTurnDeps {
  * change hands within about a second of each other. Idle whenever nothing is waiting.
  */
 const DEFAULT_STEER_RECEIPT_POLL_MS = 500;
+const DEFAULT_AFTER_WORK_RECHECK_MS = 1_000;
 
 /** How far one conversation's receipt scan has read its transcript. */
 interface SteerReceiptScan {
@@ -171,6 +199,7 @@ interface ArmedDrain {
  */
 function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
   return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+    || turn.id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)
     ? "harness"
     : null;
 }
@@ -220,6 +249,8 @@ function confirmReviewSend(noteKey: string, id: string, options: Parameters<type
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
+  /** After-work turns a delivery guard held back because their launch could not be checked. */
+  private readonly unverifiedAfterWork = new Set<string>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -250,6 +281,9 @@ export class PendingTurnManager {
       interruptPane: deps.interruptPane ?? interruptPaneSession,
       messagesFor: deps.messagesFor ?? sessionMessages,
       steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
+      afterWorkEnabled: deps.afterWorkEnabled ?? (() => featureEnabled("task-shaping")),
+      afterWorkTurnOwed: deps.afterWorkTurnOwed ?? afterWorkTurnOwed,
+      afterWorkRecheckMs: deps.afterWorkRecheckMs ?? DEFAULT_AFTER_WORK_RECHECK_MS,
     };
   }
 
@@ -460,6 +494,33 @@ export class PendingTurnManager {
       delivery: "pending",
       pendingTurn,
     };
+  }
+
+  /**
+   * Queue a turn the daemon wrote. `create` inserts it, together with whatever records that it
+   * is owed, in one transaction, and answers null when it is no longer owed; nothing is queued
+   * then. Delivered like any other row, through the one drain.
+   */
+  submitDaemonTurn(
+    sessionId: string,
+    create: (noteKey: string, now: number) => PendingTurn | null,
+  ): PendingTurnSubmitResult {
+    if (!this.started) {
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "pending turns are still starting" };
+    }
+    const session = this.registry.getSession(sessionId);
+    if (!session) return { ok: false, pasted: false, submitVerified: false, error: "no such session" };
+    if (session.state === "exited") {
+      return { ok: false, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    if (!canMessage(session)) {
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    const pendingTurn = create(noteKeyFor(session), this.deps.now());
+    if (!pendingTurn) return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };
+    this.registry.refreshPendingTurns(pendingTurn.noteKey);
+    this.scheduleDrain(pendingTurn.noteKey);
+    return { ok: true, pasted: false, submitVerified: false, delivery: "pending", pendingTurn };
   }
 
   recall(sessionId: string, id: string, revision: number): PendingTurn | null {
@@ -886,6 +947,23 @@ export class PendingTurnManager {
       this.scheduleDrain(key);
       return;
     }
+    // An after-work prompt is task shaping's, and follows its flag at delivery as well as when it
+    // was written: queued while the flag was on, it is dropped, never sent, once it is off. One a
+    // later launch's shaping commit superseded is dropped the same way. Either may have happened
+    // while a delivery held it, which the delivery guards refused and released. One whose launch
+    // could not be checked is neither claimed nor dropped: it is checked again shortly.
+    const afterWorkRefusal = this.afterWorkRefusal(next.turn);
+    if (afterWorkRefusal === AFTER_WORK_UNVERIFIED) {
+      this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+      return;
+    }
+    if (afterWorkRefusal) {
+      if (dropQueuedAfterWorkTurn(next.turn.id, afterWorkRefusal)) {
+        this.registry.refreshPendingTurns(key);
+        this.scheduleDrain(key);
+      }
+      return;
+    }
     this.draining.add(key);
     let turn: PendingTurn | null = null;
     try {
@@ -912,15 +990,23 @@ export class PendingTurnManager {
       const following = current ? this.nextDelivery(current) : null;
       const retiredId = turn?.id;
       const retired = !!retiredId && !!current && !current.pendingTurns.some((row) => row.id === retiredId);
+      // A guard's held-back mark is consumed by every delivery that ends, so none outlives its turn.
+      const recheckAfterWork = !!retiredId && this.unverifiedAfterWork.delete(retiredId);
       if (retired && following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
       } else if (!retired && current) {
         // The row is still queued: a refusal, or a stage that did not finish the message.
         // Arm the escalation that is still ahead of it rather than waiting for an event a
         // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
-        // that keeps refusing cannot become a loop.
-        const escalation = this.nextEscalationAt(current);
-        if (escalation != null) this.armDrain(key, escalation);
+        // that keeps refusing cannot become a loop. The one exception is an after-work turn
+        // held back because its launch could not be checked: nothing else would ever wake it,
+        // so it is checked again on the recheck interval until the read answers.
+        if (recheckAfterWork) {
+          this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+        } else {
+          const escalation = this.nextEscalationAt(current);
+          if (escalation != null) this.armDrain(key, escalation);
+        }
       }
     }
   }
@@ -1108,6 +1194,7 @@ export class PendingTurnManager {
           "The agent became busy before delivery.",
           this.deps.now(),
         );
+        this.dropIfRefused(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
           session.id,
@@ -1146,7 +1233,8 @@ export class PendingTurnManager {
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
         }
-        deleteClaimedPendingTurn(turn.id, turn.revision);
+        // Retired with its after-work prompt row, if it has one, in one transaction.
+        retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1224,6 +1312,10 @@ export class PendingTurnManager {
       ) {
         return "The agent became busy or opened a dialog before delivery.";
       }
+      // Immediately before the paste: an after-work turn task shaping was turned off for, or a
+      // later launch superseded, while this delivery held it never reaches the agent.
+      const afterWorkRefusal = this.guardAfterWork(turn);
+      if (afterWorkRefusal) return afterWorkRefusal;
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
@@ -1279,6 +1371,7 @@ export class PendingTurnManager {
           result.error ?? "The terminal refused the message.",
           this.deps.now(),
         );
+        this.dropIfRefused(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
       return;
@@ -1370,7 +1463,60 @@ export class PendingTurnManager {
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
-    return this.registry.promptResourceBlockerForSession(current.id);
+    // At the instant the driver would take it: an after-work turn task shaping was turned off
+    // for, or a later launch superseded, while this delivery held it never reaches the agent.
+    return this.guardAfterWork(handoff.turn) ?? this.registry.promptResourceBlockerForSession(current.id);
+  }
+
+  /**
+   * Why an after-work turn must not be delivered now, or null: task shaping is off, a later
+   * launch of its task replaced the launch it was for, or whether one did could not be read
+   * (`AFTER_WORK_UNVERIFIED`, which holds the turn back rather than refusing it). Null for every
+   * other turn.
+   */
+  private afterWorkRefusal(turn: PendingTurn): string | null {
+    if (!idleOnlyTurn(turn)) return null;
+    if (!this.deps.afterWorkEnabled()) return AFTER_WORK_FLAG_OFF;
+    const owed = this.afterWorkTurnOwed(turn);
+    if (owed === null) return AFTER_WORK_UNVERIFIED;
+    return owed ? null : AFTER_WORK_SUPERSEDED;
+  }
+
+  /**
+   * `afterWorkRefusal` at a delivery guard. A turn the guard holds back because its launch could
+   * not be checked is marked here, from the guard's own answer, so the drain rechecks it however
+   * any later read turns out: nothing else would wake a quiet session's queued turn.
+   */
+  private guardAfterWork(turn: PendingTurn): string | null {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    return refusal;
+  }
+
+  /**
+   * A released after-work turn that must not be delivered leaves the outbox at once, settled with
+   * why. One whose launch still cannot be checked stays queued, marked for the drain to check
+   * again; one that is owed after all stays queued with the guard's mark, and the recheck
+   * delivers it.
+   */
+  private dropIfRefused(turn: PendingTurn): void {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    else if (refusal && dropQueuedAfterWorkTurn(turn.id, refusal)) this.unverifiedAfterWork.delete(turn.id);
+  }
+
+  /**
+   * Whether an after-work turn's launch still owns it, or null when that cannot be read. Fails
+   * closed: an unread answer is never taken as owed, because a later launch's turn would be the
+   * one to receive the earlier launch's prompt.
+   */
+  private afterWorkTurnOwed(turn: PendingTurn): boolean | null {
+    try {
+      return this.deps.afterWorkTurnOwed(turn.id);
+    } catch (error) {
+      console.warn("[pending-turns] could not check an after-work turn's launch:", error);
+      return null;
+    }
   }
 
   private async interruptAndWait(session: Session, turn: PendingTurn): Promise<void> {
@@ -1508,7 +1654,8 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    deleteClaimedPendingTurn(turn.id, turn.revision);
+    // Retired with its after-work prompt row, if it has one, in one transaction.
+    retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
     this.journalDelivered(sessionId, turn);
     this.registry.refreshPendingTurns(turn.noteKey);
   }

@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>127</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>128</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -530,10 +530,11 @@ LIMIT 20;
 
           <div class="catalog">
             <details class="family" open>
-              <summary><strong>Tasks and work episodes</strong><span>16 tables</span></summary>
+              <summary><strong>Tasks and work episodes</strong><span>17 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>tasks</code><p>The backlog and execution record: intent, harness choices, repository and worktree coordinates, current session binding, source or schedule provenance, status, and outcome.</p></div>
                 <div class="table-row"><code>task_shaping_text</code><p>The task context section the task's latest shaped launch delivered in turn one, one row per task. Written in the same transaction as the summary on <code>tasks.shaping</code>, replaced by the next launch that delivers a section and deleted by one that delivers none.</p></div>
+                <div class="table-row"><code>task_skill_prompts</code><p>Each launch's after-work skills prompt from task shaping's route stage, keyed by task and session: the skills it prompts, its state (<code>held</code>, <code>queued</code>, <code>waiting</code>, <code>delivered</code>, <code>skipped</code> or <code>not_delivered</code>) with a reason, the outbox turn it was queued as, and whether a held row's wrap-up was answered, marked in the answer's own transaction so startup releases it even when the daemon stopped first. Written once per launch, replaced in the same transaction as a later launch's shaping commit into the same session, and moved with the shaping record on resume.</p></div>
                 <div class="table-row"><code>task_repos</code><p>The secondary repositories attached to a multi-repo task, one row each, with the worktree, branch, provider and baseline commit provisioned for it. The primary repo is never in here - it stays on the tasks row - so a single-repo task has no rows at all.</p></div>
                 <div class="table-row"><code>session_work_episodes</code><p>The current unit of work associated with a live session, including branch and pull request provenance plus restart rebind state.</p></div>
                 <div class="table-row"><code>session_work_episode_prompts</code><p>Prompt timestamps for one session and episode, used to make prompting idempotent.</p></div>

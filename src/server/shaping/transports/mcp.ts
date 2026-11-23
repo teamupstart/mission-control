@@ -81,6 +81,12 @@ export function foldedContextBlock(context: ShapingContext): string {
     `- Caller: ${caller}`,
     `- This call is about: ${context.target}`,
     `- Repositories: ${repositories || "none"}`,
+    // A route request only (D13): the selected entries that reached the section for this repository.
+    ...(context.guidance
+      ? [`- Selected guidance: ${context.guidance.length > 0
+        ? context.guidance.map((entry) => `${inline(entry.shaper)} ${inline(entry.id)}`).join(", ")
+        : "none"}`]
+      : []),
   ].join("\n");
 }
 

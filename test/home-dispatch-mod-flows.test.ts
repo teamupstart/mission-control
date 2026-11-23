@@ -381,6 +381,23 @@ test("an unknown repository is asked about under Other and retried with what the
   assert.match(line, /^Started mc-new1: .+, in other\.$/);
 });
 
+test("a repository that stays unresolved is tried three times, then the refusal is shown and nothing is filed", async () => {
+  let typed = 0;
+  const { daemon, fake, filed } = world({
+    refuseRepo: ["webhooks", "one", "two"],
+    host: { answers: (q) => q.header === "Repo" ? { kind: "other", text: ["one", "two", "three"][typed++]! } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  const line = await runStartDispatchTool(fake.host, SESSION, { brief: "add retries", repo: "webhooks" });
+  assert.deepEqual(createdDrafts(daemon).map((r) => (r.body as { repo: string }).repo), ["webhooks", "one", "two"]);
+  // Asked after the first and second refusals only: the third is shown, not asked about.
+  assert.equal(fake.dialogs.filter((d) => d.header === "Repo").length, 2);
+  assert.equal(line, "unknown repository two");
+  assert.equal(fake.notices.at(-1), "unknown repository two");
+  assert.deepEqual(filed, []);
+  assert.ok(daemon.requests.every((r) => !r.path.endsWith("/confirm")));
+  assert.equal(fake.dialogs.some((d) => d.header === "Confirm"), false);
+});
+
 test("every route the flows call is on the daemon's own list and every failure reads in the mod's words", async () => {
   const down = world();
   down.daemon.setDown(true);

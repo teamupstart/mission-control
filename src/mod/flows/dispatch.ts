@@ -76,8 +76,9 @@ export function isRepoSelectorRefusal(outcome: Refused): boolean {
 
 /**
  * Creates the draft. A repository the daemon cannot resolve is asked about again, in the
- * person's words under Other, up to three times; every other refusal is returned to be shown as
- * written. `cancelled` means the person gave up at that question.
+ * person's words under Other, for three attempts in all, and the third refusal is returned to be
+ * shown as written; every other refusal is returned the same way. `cancelled` means the person
+ * gave up at that question.
  */
 export async function createDraftAsking(
   host: FlowHost,
@@ -88,6 +89,8 @@ export async function createDraftAsking(
   for (let tries = 0; tries < 3; tries += 1) {
     const created = await createDraft(host, session, attempt);
     if (created.ok || created.kind !== "refused" || !isRepoSelectorRefusal(created)) return created;
+    // The last refusal is shown as written; asking again would only discard the answer.
+    if (tries === 2) return created;
     const repo = await askText(host, "Repo", `${created.error}. ${NEEDS_REPO_QUESTION}`);
     if (repo === undefined) return { ok: false, kind: "cancelled" };
     attempt = { ...attempt, repo };

@@ -161,6 +161,44 @@ test("Pi defaults to pinned MCP and the create API rejects Pi as a resident harn
   assert.deepEqual(JSON.parse(String(result.json.error))[0].path, ["settings", "execution", "agent"]);
 });
 
+test("the profile API defaults new residents to native MCP and inherits the saved mode on a revision", async () => {
+  for (const agent of ["claude", "codex"]) {
+    const settings = body(`API ${agent}`, { execution: { agent }, loop: { spendCapUsd: null } });
+    const created = await request("POST", "/api/residents/profiles", {
+      settings: agent === "claude" ? settings : { ...settings, mcp: {} },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.json));
+    const profile = created.json as unknown as ResidentProfile;
+    assert.equal(profile.settings.mcp.nativeSources, "all");
+    const path = `/api/residents/profiles/${profile.id}`;
+    let revision = 1;
+    for (const [mcp, expectedMode] of [
+      [undefined, "all"], [{}, "all"], [{ nativeSources: "pinned" }, "pinned"],
+      [undefined, "pinned"], [{}, "pinned"], [{ nativeSources: "all" }, "all"],
+    ] as const) {
+      const result = await request("PATCH", path, { settings: { ...settings, mcp }, expectedRevision: revision });
+      assert.equal(result.status, 200, JSON.stringify(result.json));
+      revision++;
+      assert.equal(store.residentProfileRevision(profile.id, revision)?.mcp.nativeSources, expectedMode);
+    }
+    const stale = await request("PATCH", path, { settings, expectedRevision: 4 });
+    assert.equal(stale.status, 409);
+    assert.equal((stale.json.profile as ResidentProfile).settings.mcp.nativeSources, "all");
+  }
+});
+
+test("editing a stored revision that predates MCP source modes keeps it pinned", async () => {
+  const settings = body("Legacy resident");
+  const created = await request("POST", "/api/residents/profiles", { settings });
+  assert.equal(created.status, 201);
+  const profile = created.json as unknown as ResidentProfile;
+  openDb().prepare("UPDATE resident_profile_revisions SET settings_json = json_remove(settings_json, '$.mcp.nativeSources') WHERE profile_id = ? AND revision = 1")
+    .run(profile.id);
+  const saved = await request("PATCH", `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings });
+  assert.equal(saved.status, 200);
+  assert.equal((saved.json as unknown as ResidentProfile).settings.mcp.nativeSources, "pinned");
+});
+
 test("profile creation falls back to pinned when the selected harness lacks all-native MCP support", (t) => {
   const selection = HARNESS_CAPABILITIES.codex.mcpSelection;
   assert.ok(selection);

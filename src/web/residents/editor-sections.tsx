@@ -19,6 +19,7 @@ import {
   RESIDENT_MARKER_COLORS,
   RESIDENT_MARKER_LABEL_MAX,
   defaultResidentMarkerLabel,
+  newResidentMcpSettings,
   residentMarkerColor,
   residentMcpRefKey,
   type ResidentAgent,
@@ -50,6 +51,8 @@ export interface ResidentEditorSectionProps {
   draft: ResidentProfileRevision;
   update: <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]) => void;
   changeHarness: (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources) => void;
+  /** The MCP section still uses the defaults of a fresh, unseeded draft. */
+  useMcpDefault?: boolean;
   personas: readonly PersonaView[];
   disabled: boolean;
   /** Resolved by the editor using the same default ladder as launch. */
@@ -170,7 +173,7 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   );
 }
 
-function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
+function ExecutionSection({ draft, update, changeHarness, useMcpDefault, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const { agent, model, effort } = draft.execution;
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const levels = capabilitiesFor(agent).effort?.levels ?? [];
@@ -178,7 +181,9 @@ function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavail
   const pendingSources = pendingHarness && capabilitiesFor(pendingHarness).mcpSelection?.allNativeSources;
   const chooseHarness = (next: ResidentAgent): void => {
     if (next === agent) return;
-    if (draft.mcp.nativeSources === "all" && capabilitiesFor(next).mcpSelection?.allNativeSources) {
+    if (useMcpDefault) {
+      changeHarness(next, newResidentMcpSettings(next).nativeSources);
+    } else if (draft.mcp.nativeSources === "all" && capabilitiesFor(next).mcpSelection?.allNativeSources) {
       setPendingHarness(next);
     } else {
       changeHarness(next, "pinned");

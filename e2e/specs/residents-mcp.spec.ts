@@ -54,9 +54,9 @@ test.describe("Codex OAuth servers", () => {
     await profile.getByLabel("Name").fill("Codex OAuth Resident");
     await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
     await profile.getByRole("combobox", { name: "Harness" }).selectOption("codex");
-    const destination = page.getByRole("dialog", { name: "Import all native MCP sources" });
-    await expectContentClearsBorder(destination);
-    await destination.getByRole("button", { name: "Import all sources" }).click();
+    await expect(profile.getByRole("combobox", { name: "Harness" })).toHaveValue("codex");
+    await expect(page.getByRole("dialog", { name: "Import all native MCP sources" })).toHaveCount(0);
+    await capture(profile.getByRole("region", { name: "Harness, model and effort" }), "fresh-draft-codex-harness");
     const sources = profile.getByRole("region", { name: "MCP servers" });
     await expect(sources.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
     await capture(sources, "codex-new-profile-default");
@@ -649,7 +649,7 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
   await capture(dialog, "all-sources-edited-dispatch-summary");
 });
 
-test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, daemon }) => {
+test("changing the native harness of an MCP-edited draft, saved profile, or duplicate requires destination consent", async ({ dashboard: page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/residents`);
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
   const draft = page.getByRole("region", { name: "New resident profile" });
@@ -659,6 +659,12 @@ test("changing the harness of an all-native profile requires destination consent
   const allSources = { name: "All native sources (not pinned)" };
   const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
   await expect(draft.getByRole("radio", allSources)).toBeChecked();
+  await draft.getByRole("checkbox", { name: "Disable claude.ai connectors" }).check();
+  await draft.getByRole("combobox", { name: "Harness" }).selectOption("codex");
+  await expectContentClearsBorder(confirm);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(draft.getByRole("combobox", { name: "Harness" })).toHaveValue("claude");
+  await expect(draft.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toBeChecked();
   await draft.getByRole("button", { name: "Save" }).click();
 
   const saved = page.getByRole("region", { name: "Resident profile Harness Consent Resident" });
@@ -687,4 +693,10 @@ test("changing the harness of an all-native profile requires destination consent
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(harness).toHaveValue("codex");
   await expect(saved).not.toContainText("unsaved changes");
+
+  await saved.getByRole("button", { name: "Duplicate", exact: true }).click();
+  await draft.getByRole("combobox", { name: "Harness" }).selectOption("claude");
+  await expectContentClearsBorder(confirm);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(draft.getByRole("combobox", { name: "Harness" })).toHaveValue("codex");
 });

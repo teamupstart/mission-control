@@ -491,11 +491,11 @@ function validateResidentRole(settings: Pick<ResidentProfileRevision, "persona" 
 }
 
 /** Requests refuse unknown top-level sections. Only creation supplies a harness-specific MCP default. */
-const ResidentProfileRequestSections = ResidentProfileRevisionSchema.strict();
-export const ResidentProfileRevisionRequestSchema = ResidentProfileRequestSections.superRefine(validateResidentRole);
-export const NewResidentProfileSettingsSchema = ResidentProfileRequestSections
+export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict()
   .extend({ mcp: ResidentMcpInputSchema.prefault({}) })
-  .superRefine(validateResidentRole)
+  .superRefine(validateResidentRole);
+export type ResidentProfileRevisionRequest = z.infer<typeof ResidentProfileRevisionRequestSchema>;
+export const NewResidentProfileSettingsSchema = ResidentProfileRevisionRequestSchema
   .transform((settings) => ({ ...settings, mcp: newResidentMcpSettings(settings.execution.agent, settings.mcp) }));
 
 /** A profile as the catalog and the browser see it: the identity plus its current revision. */

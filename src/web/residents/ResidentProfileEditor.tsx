@@ -103,6 +103,7 @@ export function ResidentProfileEditor({
   const readOnly = profile?.builtin === true;
   const featureFlags = useContext(FeatureFlagsContext);
   const [dirty, setDirtyState] = useState(profile === null);
+  const [mcpEdited, setMcpEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The residents tour reads the open profile, then points at Duplicate and Launch.
@@ -135,8 +136,10 @@ export function ResidentProfileEditor({
     setDirty(true);
     setError(null);
   };
-  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void =>
+  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void => {
+    if (id === "mcp") setMcpEdited(true);
     editDraft((current) => ({ ...current, [id]: value }));
+  };
   const changeHarness = (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources): void =>
     editDraft((current) => ({
       ...current,
@@ -174,10 +177,9 @@ export function ResidentProfileEditor({
     setBusy(true);
     setError(null);
     try {
-      const parsed = ResidentProfileRevisionRequestSchema.parse(draft);
       const saved = base && expectedRevision !== null
-        ? await updateResidentProfile(base.id, expectedRevision, parsed)
-        : await createResidentProfile(parsed);
+        ? await updateResidentProfile(base.id, expectedRevision, draft)
+        : await createResidentProfile(draft);
       setBase(saved);
       setDraft(saved.settings);
       setDirty(false);
@@ -368,7 +370,7 @@ export function ResidentProfileEditor({
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>
-            <Body draft={draft} update={update} changeHarness={changeHarness} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+            <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
           </section>
         ))}
         {profile && <ResidentState key={profile.id} profileId={profile.id} />}

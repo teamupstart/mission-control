@@ -379,7 +379,8 @@ editor says arguments are stored and backed up as written.
 
 **All native sources puts native servers and connectors outside that boundary.** A Claude Code
 profile on [all native sources](residents.md#all-native-sources) launches without
-`strictMcpConfig` and without `disableClaudeAiConnectors`, which Dispatch shows as `MCP: all native sources (not pinned)`. Mission Control's
+`strictMcpConfig` and includes claude.ai connectors unless the profile disables them.
+Dispatch shows this mode as `MCP: all native sources (not pinned)`. Mission Control's
 own server and the profile's selected custom servers keep the boundary: the custom servers are
 still snapshotted and still reach their own processes only through the scoped launcher, as above.
 Everything else - Claude Code's user, local, project and plugin servers and the account's
@@ -389,8 +390,16 @@ an autonomous, looping run. Mission Control holds no copy of those definitions, 
 which of their values reach the agent, and does not refuse a start when one of them fails or
 needs a login.
 
-New Claude Code and Codex profiles default to all native sources. Switching a pinned profile to
-this mode or changing its native harness asks for confirmation.
+The all-native default also applies to scripts and agents calling `POST /api/residents/profiles`.
+For a new Claude Code or Codex profile, omitting `settings.mcp` or sending `"mcp": {}` selects
+all native sources without an interactive confirmation. At launch the looping resident can use
+Claude Code's configured servers and account connectors or Codex's configured servers with their
+saved OAuth permissions. To fix the server set at launch, send `"mcp": {"nativeSources": "pinned"}`.
+A revision request that omits the mode keeps the mode from its expected revision.
+
+In the editor, a fresh draft follows the selected harness's default until its MCP settings are
+edited. Switching from pinned to all native sources asks for confirmation. Changing the harness
+also asks when a saved profile, a duplicate, or a draft with edited MCP settings uses all native sources.
 
 For Codex, native mode launches app-server on the normal Codex home, so Codex loads native
 MCP definitions and presents any OAuth logins it holds. Mission Control's server and custom

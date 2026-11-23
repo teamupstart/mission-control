@@ -227,10 +227,23 @@ interface AnnounceWatch {
    * Later sightings and the grace period no longer change it: only the retry stamps it.
    */
   stamping: ReportAnnouncement | null;
+  /** How many times writing that stamp has failed. */
+  failedWrites: number;
 }
 
-/** How long a stamp whose write failed (a busy database) waits before it is written again. */
+/**
+ * How long a stamp whose write failed waits before it is written again: 5 s after the first
+ * failure, doubling each time up to a minute, so a briefly busy database costs seconds.
+ */
 const REPORT_STAMP_RETRY_MS = 5_000;
+const REPORT_STAMP_RETRY_MAX_MS = 60_000;
+/**
+ * Failed writes after which a stamp is given up, about two minutes after the first. A failure
+ * that lasts that long (a read-only state dir, a full disk) is not a busy database, and the report
+ * goes unannounced, as one does when the daemon stops past its deadline: it is still in the
+ * inbox, waiting to be read.
+ */
+const REPORT_STAMP_MAX_FAILED_WRITES = 6;
 
 const isWorking = (session: Session): boolean => reportBucket(session) === "working";
 
@@ -397,7 +410,7 @@ export class ReportManager {
   /** Wait for a report's session to stop, or for the grace period to end, then stamp it. */
   private watch(id: string, sessionId: string, working: boolean | null, delayMs = REPORT_ANNOUNCE_GRACE_MS): void {
     const timer = this.timers.set(() => this.graceEnded(id), delayMs);
-    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false, stamping: null });
+    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false, stamping: null, failedWrites: 0 });
   }
 
   /**
@@ -472,7 +485,8 @@ export class ReportManager {
    *
    * Called from the registry's event loop and from timers, so it never throws. A failed write (a
    * busy database) keeps the watch, with its wording decided, and writes the same stamp again
-   * shortly: dropping it would leave the report never announced.
+   * shortly, backing off: dropping it at once would leave the report never announced. A write
+   * still failing after `REPORT_STAMP_MAX_FAILED_WRITES` attempts is given up with one last log.
    */
   private announce(id: string, as: ReportAnnouncement): void {
     const watch = this.watches.get(id);
@@ -483,12 +497,21 @@ export class ReportManager {
          WHERE id = ? AND announced_as IS NULL AND read_at IS NULL AND superseded_by IS NULL`,
       ).run(as, this.now(), id).changes > 0;
     } catch (err) {
-      console.error(`[reports] stamping ${id} failed; trying again:`, err);
-      if (watch) {
-        this.timers.clear(watch.timer);
-        watch.stamping = as;
-        watch.timer = this.timers.set(() => this.graceEnded(id), REPORT_STAMP_RETRY_MS);
+      if (!watch) {
+        console.error(`[reports] stamping ${id} failed:`, err);
+        return;
       }
+      this.timers.clear(watch.timer);
+      watch.failedWrites += 1;
+      if (watch.failedWrites >= REPORT_STAMP_MAX_FAILED_WRITES) {
+        this.watches.delete(id);
+        console.error(`[reports] stamping ${id} failed ${watch.failedWrites} times; giving up, so it will not notify:`, err);
+        return;
+      }
+      console.error(`[reports] stamping ${id} failed; trying again:`, err);
+      watch.stamping = as;
+      const delay = Math.min(REPORT_STAMP_RETRY_MS * 2 ** (watch.failedWrites - 1), REPORT_STAMP_RETRY_MAX_MS);
+      watch.timer = this.timers.set(() => this.graceEnded(id), delay);
       return;
     }
     if (watch) this.timers.clear(watch.timer);

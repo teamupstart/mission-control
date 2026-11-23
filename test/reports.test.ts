@@ -541,6 +541,39 @@ test("a stamp whose write fails is kept and written again, from a sighting or fr
   assert.deepEqual(a.delays(), [], "both watches are done");
 });
 
+test("a stamp whose write keeps failing backs off and is given up with one last log", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  const logged = t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_stuck BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'attempt to write a readonly database'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_stuck;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-stamp-stuck");
+  a.set(session);
+  const report = await a.reports.post(session, { title: "Never stamped", body: "b" });
+  busy(true);
+  a.set({ ...session, state: "idle" });
+  // Each failure waits longer, up to a minute, then the stamp is given up: no retry left.
+  const waits: number[] = [];
+  for (let i = 0; i < 10 && a.delays().length > 0; i++) {
+    waits.push(...a.delays());
+    a.fireSetSoFar();
+  }
+  assert.deepEqual(waits, [5_000, 10_000, 20_000, 40_000, 60_000]);
+  assert.deepEqual(a.delays(), [], "the watch is gone");
+  assert.equal(logged.mock.callCount(), 6, "one line per failed write, the last saying it gave up");
+  assert.match(String(logged.mock.calls.at(-1)?.arguments[0]), /giving up/);
+  // Given up for good: the database recovering later stamps nothing, and the report still waits
+  // to be read.
+  busy(false);
+  a.set(session);
+  a.set({ ...session, state: "idle" });
+  assert.equal(a.reports.get(report.id)?.announcedAs, null);
+  assert.equal(a.reports.get(report.id)?.readAt, null);
+});
+
 test("a report whose session keeps working through the grace period is stamped working", async () => {
   const clock = { now: 1_000 };
   const a = announcer(clock);

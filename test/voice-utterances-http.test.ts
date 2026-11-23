@@ -187,6 +187,23 @@ test("a quote immediately after the address comma survives the preview and queue
   assert.equal(queued("Will").at(-1), '"ship it"');
 });
 
+test("punctuation-only messages reach the named agent and leave an unsure card open", async () => {
+  await say("Steven ask Will about the build", "unsure");
+  for (const [id, text, body] of [
+    ["spaced", "Will, ???", "???"],
+    ["adjacent", "Will,!!!", "!!!"],
+    ["plain", "Will ...", "..."],
+    ["commas", "Will, ,,,", ",,,"],
+  ] as const) {
+    await say(text, id);
+    const card = cards.at(-1);
+    assert.deepEqual([card?.id, card?.state, card?.parts[0]?.text], [id, "pending", body]);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(queued("Will").at(-1), body);
+  }
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["unsure", "unsure"]]);
+});
+
 test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const will = name("Will");

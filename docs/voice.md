@@ -24,7 +24,8 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
 over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
-descriptive only. A two-word name can also match, and a phonetic match such as “Steven” or
+descriptive only. A two-word call sign must fit before the address comma. “Release Captain, run tests”
+can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
 “Steve’s” can address Steve. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
@@ -37,7 +38,8 @@ two-word match. No model is called.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the running target receives the remaining text verbatim through the standard
-operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes.
+operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
+`Will, ???` queues `???`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest

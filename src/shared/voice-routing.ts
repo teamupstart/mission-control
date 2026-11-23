@@ -60,7 +60,7 @@ function closesWrapper(opener: string, closer: string): boolean {
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, start: number, end: number): string {
-  let rest = text.slice(end);
+  let rest = text.slice(end).trimStart();
   if (rest.startsWith(",")) {
     rest = rest.replace(/^,+/u, "");
     const address = text.slice(start, end);
@@ -74,7 +74,9 @@ function messageAfterAddress(text: string, start: number, end: number): string {
       rest = rest.slice(closer.length);
     }
   }
-  return rest.replace(/^[,\s]+/u, "");
+  // An outer separator can follow the closing quote. Commas after the separating
+  // whitespace, as in "Will, ,,,", are part of the message.
+  return rest.replace(/^,+/u, "").trimStart();
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -82,7 +84,13 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   unsureCards?: readonly VoiceCard[];
 }): Decision {
   const { text, words } = utterance;
-  const phrase = normalized(text);
+  // Keep offsets into the original capture. Name matching ignores boundary punctuation,
+  // while a message made entirely of punctuation still has a body.
+  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
+  const [firstToken, secondToken] = tokens;
+  if (!firstToken) return { kind: "ignored", reason: "no-name" };
+  const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
+  const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
   if (phrase === "cancel") return { kind: "control", command: "cancel" };
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === phrase)
@@ -90,21 +98,19 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
-  // Compare whole tokens. Keep their offsets into the original so quoting, spacing and
-  // punctuation inside the message survive the comparison.
-  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
-  const first = normalized(tokens[0]?.[0] ?? "");
-  if (!first) return { kind: "ignored", reason: "no-name" };
-  const leading = (count: number) => tokens.slice(0, count).map((m) => normalized(m[0])).join(" ");
+  const first = normalized(firstToken[0]);
+  const leadingNames = [first];
+  if (secondToken && !text.slice(firstToken.index, secondToken.index).includes(",")) {
+    leadingNames.push(first + " " + normalized(secondToken[0]));
+  }
   let count = 1;
   let match: "exact" | "phonetic" = "exact";
   let candidates: SpokenName[] = [];
   // An exact first word wins even if a longer call sign shares it.
   for (const kind of ["exact", "phonetic"] as const) {
-    for (const length of [1, 2]) {
-      if (length > tokens.length) continue;
-      const heard = leading(length);
+    for (const [index, heard] of leadingNames.entries()) {
+      const length = index + 1;
       const heardKey = kind === "phonetic" ? phoneticKey(heard) : "";
       candidates = names.filter(({ name }) => {
         if (name.split(" ").length !== length) return false;
@@ -131,9 +137,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
     return { kind: "ignored", reason: "near-miss" };
   }
-  const last = tokens[count - 1]!;
-  if (tokens.length === count) return { kind: "ignored", reason: "no-message" };
-  const body = messageAfterAddress(text, tokens[0]!.index, last.index + last[0].length);
+  const body = bodyAfter(tokens[count - 1]!);
+  if (!body) return { kind: "ignored", reason: "no-message" };
   const before = words[count - 1];
   const after = words[count];
   const pauseMs = before && after ? after.startMs - before.endMs : null;

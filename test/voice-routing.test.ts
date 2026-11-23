@@ -53,6 +53,17 @@ test("two-word call signs and a subsequent agent name", () => {
   }
 });
 
+test("a two-word call sign ends at the address comma for exact and phonetic matching", () => {
+  for (const text of ["Release, Captain needs help", "Release,Captain needs help", "Release , Captain needs help"]) {
+    assert.equal(route(text, ["Release Captain"]).kind, "ignored");
+    assert.deepEqual(route(text, ["Release Captain", "Release"]), {
+      kind: "addressed", target: agent("Release"), match: "exact", text: "Captain needs help", pauseMs: null,
+    });
+  }
+  assert.equal(route("Steven, Captain needs help", ["Steve Captain"]).kind, "ignored");
+  assert.equal(route("Steven Captain, run tests", ["Steve Captain"]).kind, "addressed");
+});
+
 test("weak spelling matches are ignored even when two names are equally close", () => {
   assert.deepEqual(route("Pat go", ["Cat"]), { kind: "ignored", reason: "near-miss", closest: "Cat" });
   for (const text of ["fill in the form", "till tomorrow"]) {
@@ -78,6 +89,7 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will"!,"ship it"', '"ship it"'],
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ["“Will,”, ???", "???"],
     ['「“Will,”」"ship it"', '"ship it"'],
   ] as const) {
     assert.deepEqual(route(text), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: null });

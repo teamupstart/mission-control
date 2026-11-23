@@ -583,6 +583,14 @@ export class ReportManager {
     }
     let taskId = report.followUpTaskId;
     if (taskId === null) {
+      // The reply route's line: a new follow-up answers only a report still waiting. A replaced
+      // version would restate what the agent has since corrected, and a report already cleared
+      // would keep its first clearing while a task ran for it. (Relaunching a recorded task, the
+      // other branch, is unaffected.)
+      if (report.supersededBy !== null) {
+        return refuse(409, `This report was replaced by ${report.supersededBy}. Follow up that version instead.`, report);
+      }
+      if (report.readAt !== null) return refuse(409, "This report has already been read.", report);
       // A follow-up stands in for a reply only when the session has ended. One that can still
       // take a message is answered with a reply, and one that is still running but cannot take
       // one is not replaced by a second session beside it.

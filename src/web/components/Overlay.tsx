@@ -102,6 +102,8 @@ export const OVERLAY_IDS = {
   // A revised plan form's earlier version, read-only. Opened from a review card inside the
   // inbox or the review modal, so it is a layer of its own above them.
   reviewEarlierVersion: "review-earlier-version",
+  // An agent report's attached document, opened from its inbox card or conversation entry.
+  reportDocument: "report-document",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

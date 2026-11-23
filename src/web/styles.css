@@ -8130,6 +8130,51 @@ a.btn {
   gap: 8px;
   margin-top: 8px;
 }
+/* A report's attached document: Open report, and Publish as scout or its published state. */
+.agent-report-document {
+  margin-top: 8px;
+}
+.agent-report-document .agent-report-actions {
+  margin-top: 4px;
+}
+.agent-report-published {
+  font-size: 12px;
+  color: var(--idle);
+}
+.agent-report-document .inbox-error ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+/* The reader for that document. Its inset is the shell's; the body is the scrolling band. */
+.report-document-reader {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.report-document-reader .modal-head {
+  flex: 0 0 auto;
+  gap: 12px;
+}
+.report-document-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.report-document-reader .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+.report-document-frame {
+  display: block;
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+}
+.report-document-reader .markdown.report-document-markdown {
+  padding: 0;
+}
 /* How the operator answers a report: a reply box, a follow-up box, or a line saying why neither. */
 .agent-report-answer {
   display: flex;

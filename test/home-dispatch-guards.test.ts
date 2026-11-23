@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 438 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 440 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -40,8 +40,9 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // which stay open so a wait can always end), the four flag-gated agent report routes
   // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
   // `GET /api/sessions/:id/reports`), the two flag-gated report answer routes
-  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), and the Stuck row's
-  // flag-gated `POST /api/sessions/:id/inbox-message`, hashed key-sorted. Any added, removed
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), the two flag-gated
+  // report document routes (`GET /api/reports/:id/document` and `POST /api/reports/:id/publish`),
+  // and the Stuck row's flag-gated `POST /api/sessions/:id/inbox-message`, hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
@@ -50,12 +51,13 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
   // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
   // reply and follow-up routes, which answer 404 with it off too, then for
-  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, and then for the Stuck
-  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off.
+  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
+  // then for the report document and Publish as scout routes, which answer 404 with it off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 438);
+  assert.equal(others.length, 440);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "70a81c9afc07bd6962c3acca699e716dca303406c83bb1eb1e4630654bde70e1");
+    "942886b7a6be16f3e87b575ff8a503bd579c1570feed58356b84ff113e82d59a");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -115,6 +115,17 @@ export const INBOX_ACTIONS = [
     spoken: null,
     clickOnly: "navigation",
   },
+  // The Stuck card's controls.
+  { id: "nudge", label: "Nudge", spoken: { named: "{name}, nudge", whileOpen: null }, clickOnly: null },
+  { id: "continue", label: "Continue", spoken: { named: "{name}, continue", whileOpen: null }, clickOnly: null },
+  { id: "mark-done", label: "Mark done", spoken: { named: "{name}, mark done", whileOpen: null }, clickOnly: null },
+  { id: "resubmit", label: "Resubmit", spoken: { named: "{name}, resubmit", whileOpen: null }, clickOnly: null },
+  { id: "push", label: "Tell it to push", spoken: { named: "{name}, push", whileOpen: null }, clickOnly: null },
+  { id: "stop", label: "Interrupt", spoken: { named: "{name}, stop", whileOpen: null }, clickOnly: null },
+  { id: "message", label: "Send", spoken: { named: "{name}, ...", whileOpen: "reply, ..." }, clickOnly: null },
+  { id: "open-session", label: "Open session", spoken: null, clickOnly: "navigation" },
+  { id: "open-run", label: "Open run", spoken: null, clickOnly: "navigation" },
+  { id: "dismiss", label: "Dismiss", spoken: null, clickOnly: "dismissal" },
 ] as const satisfies readonly InboxActionSpec[];
 
 export type InboxActionId = (typeof INBOX_ACTIONS)[number]["id"];
@@ -137,3 +148,22 @@ export function spokenHintText(action: InboxActionSpec, name: string, cardOpen =
   const named = `"${action.spoken.named.replaceAll("{name}", name)}"`;
   return cardOpen && action.spoken.whileOpen ? `${named} or "${action.spoken.whileOpen}"` : named;
 }
+
+/**
+ * The fixed messages a Stuck row sends, in the wording the operator adopted. Each is queued as
+ * daemon-written (`INBOX_MESSAGE_TURN_PREFIX`), so the agent's prompt hook never takes it for
+ * the operator's Goal.
+ */
+export const INBOX_MESSAGES = {
+  nudge:
+    "Status check from your operator: you have gone quiet. Reply with one line on what you are doing and whether anything is blocking you, then carry on. If you are waiting on a long-running command, say which one.",
+  continue:
+    "Your operator asks you to continue. Work is still open against this session. Pick it up where you stopped and carry it through. If something is blocking you, say what it is instead of stopping.",
+  push: "Push your commits. The review is waiting for a pushed head on this branch.",
+} as const;
+
+export type InboxMessageKind = keyof typeof INBOX_MESSAGES;
+export const INBOX_MESSAGE_KINDS = Object.keys(INBOX_MESSAGES) as InboxMessageKind[];
+
+/** The pending-turn id prefix of a fixed inbox message, which the outbox records as daemon-written. */
+export const INBOX_MESSAGE_TURN_PREFIX = "inbox-message:";

@@ -1200,7 +1200,9 @@ export const ReportReplySchema = z.object({
  * retry dispatches the task the first call created and reads no words.
  */
 export const ReportFollowUpSchema = z.object({
-  text: z.string().trim().max(REPORT_LIMITS.body).optional().default(""),
+  text: z.string().trim()
+    .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
+    .optional().default(""),
 });
 
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */

@@ -382,6 +382,11 @@ test("a body that is not JSON is refused, and starts no task with empty instruct
   assert.equal(garbled.body.error, "the request body is not valid JSON");
   assert.equal(f.followUpTasks().length, 0);
   assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
+  // Instructions over the cap are refused in one sentence the card prints, and file nothing.
+  const tooLong = await f.followUp(report.id, "x".repeat(4_001));
+  assert.equal(tooLong.status, 400);
+  assert.equal(tooLong.body.error, "a follow-up's instructions can be at most 4000 characters");
+  assert.equal(f.followUpTasks().length, 0);
   // An absent body still reads as {} and reaches the route, which files nothing without words.
   const empty = await f.followUpRaw(report.id, "");
   assert.equal(empty.status, 409, JSON.stringify(empty.body));

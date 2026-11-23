@@ -1,4 +1,5 @@
 import { startPi } from "./sdk-startup.ts";
+import { withWorkUnit } from "../../agent-work-unit.ts";
 import type { PiUIBridge } from "./sdk-ui.ts";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
@@ -653,7 +654,9 @@ export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
             projectTrust: resolveTrust,
             signal,
             appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],
-            toolEnv: deps.toolEnv(opts.cwd, opts.stateHome),
+            // Pi runs in this process, so the environment of the tools it runs is its launch
+            // environment: the work unit goes there. Pi has no remote MCP client of its own.
+            toolEnv: withWorkUnit(deps.toolEnv(opts.cwd, opts.stateHome), opts.workUnitId),
           });
         } catch (err) {
           throw classifyPiFailure(err, ref?.provider ?? null);

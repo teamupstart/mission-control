@@ -68,8 +68,8 @@ test("an upgraded database gains the column and the table, and an old row reads 
   assert.equal(db.getTaskShapingText("legacy"), null);
 });
 
-test("a schema 41 database upgrades to 42 with the column and the table, and a second open changes nothing", () => {
-  assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 42);
+test("a schema 41 database upgrades to the current version with the column and the table, and a second open changes nothing", () => {
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 42);
   db.upsertTask(mkTask({ id: "before-39", status: "backlog" }));
   db.closeDb();
   const old = new DatabaseSync(dbPath);
@@ -78,7 +78,7 @@ test("a schema 41 database upgrades to 42 with the column and the table, and a s
   old.exec("PRAGMA user_version = 41");
   old.close();
   const upgraded = db.openDb();
-  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 42);
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
   const columns = (upgraded.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(columns.includes("shaping"));
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_shaping_text'`).get());

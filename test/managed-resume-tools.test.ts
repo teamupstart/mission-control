@@ -450,6 +450,41 @@ fi
   }
 });
 
+// The work unit a resumed agent actually receives, through preparation and the real guard, in a
+// pane whose terminal server already holds ANOTHER unit's id (docs/work-units.md).
+for (const workUnitId of ["wu_01JD00000000000000000000AA", null] as const) test(`a resumed agent in a pane holding another WORK_UNIT_ID receives ${workUnitId ? "its own" : "none"}`, async () => {
+  const nativeId = `work-unit-resume-${workUnitId ? "own" : "none"}`;
+  const p = await prepareTerminalResume(session(nativeId), { ...context, workUnitId });
+  assert.equal(p.workUnitId, workUnitId);
+  const marker = join(home, `${nativeId}.json`);
+  const script = join(home, `${nativeId}.mjs`);
+  writeFileSync(script, `import {writeFileSync,renameSync} from 'node:fs';
+writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({workUnitId:process.env.WORK_UNIT_ID ?? null}));
+renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});`);
+  const configPath = join(p.stateHome, "launch.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, script] }));
+  p.beginLaunch();
+  // The same unambiguous inventory the real-wrapper cases use, so the guard's ps reads are quick.
+  const ps = join(home, "work-unit-ps");
+  writeFileSync(ps, `#!/bin/sh
+date='Wed Sep 30 12:34:56 2026'
+if [ "$1" = '-p' ]; then
+  printf '%s\\n' "$date"
+else
+  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
+fi
+`, { mode: 0o755 });
+  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_PS_BIN: ps, WORK_UNIT_ID: "wu_01JD00000000000000000000PN" };
+  const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (data) => { stderr += data; });
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  assert.equal(code, 0, stderr);
+  const observed = JSON.parse(readFileSync(marker, "utf8")) as { workUnitId: string | null };
+  assert.equal(observed.workUnitId, workUnitId, "the resume's own decision, never the pane's");
+});
+
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
   { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async () => {
   const nativeId = `detached-${doubleFork}-${signal}`;

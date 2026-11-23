@@ -4256,17 +4256,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const parsed = await parseBody(c, DeleteArchiveSchema);
     if (!parsed.ok) return parsed.res;
+    // A report published under this archive no longer has one once its bundle is gone: its card
+    // offers Publish as scout again rather than an Open archive that leads nowhere. Checked after
+    // every attempt, including one that failed after the bundle was already moved to the trash
+    // (a cleanup failure), and conditional and queued with that report's Publish: a bundle still
+    // present, or one a publish recreated meanwhile, keeps its key. A failure of this check is
+    // healed at the next startup and never replaces the delete's own answer.
+    const reconcileReport = () => reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
+      .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
     try {
       const result = await library.delete(c.req.param("archiveKey"), parsed.data.confirmArchiveKey);
-      // A report published under this archive no longer has one: its card offers Publish as
-      // scout again rather than an Open archive that leads nowhere. Conditional and queued with
-      // that report's Publish, so a publish that recreated the archive meanwhile keeps its key.
-      // A failure here is healed at the next startup and must not turn a completed delete into
-      // an error.
-      await reports?.reconcilePublishedArchives((key) => library.archivePresent(key), [c.req.param("archiveKey")])
-        .catch((error: unknown) => console.warn("[mission-control] could not update reports for a deleted archive:", error));
+      await reconcileReport();
       return c.json(result);
     } catch (error) {
+      await reconcileReport();
       const failure = archiveErrorStatus(error);
       return c.json({ ok: false, error: failure.message }, failure.status);
     }

@@ -68,6 +68,7 @@ export function ReportDocumentReader({
       onClose={onClose}
       className="modal report-document-reader"
       role="dialog"
+      ariaModal
       ariaLabel={`Report document: ${report.title}`}
     >
       <header className="modal-head">

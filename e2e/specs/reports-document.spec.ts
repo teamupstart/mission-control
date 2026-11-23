@@ -128,9 +128,14 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await expect(frame.getByRole("heading", { name: DOCUMENT_TITLE })).toBeVisible({ timeout: 20_000 });
   await expect(frame.getByText("The cache key ignored the lockfile")).toBeVisible();
   await expectContentClearsBorder(reader);
+  // A modal dialog: keyboard focus moves into the reader rather than staying on the inbox behind it.
+  await expect(reader).toHaveAttribute("aria-modal", "true");
+  await expect.poll(() => reader.evaluate((el) => el.contains(document.activeElement))).toBe(true);
   await capture(reader, "02-reader-stored-copy", page);
   await reader.getByRole("button", { name: "Close" }).click();
   await expect(reader).toBeHidden();
+  // And focus returns to the control that opened it.
+  await expect(card.getByRole("button", { name: "Open report" })).toBeFocused();
 
   await expect.poll(async () => (await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`))
     .reports.find((r) => r.id === posted.id)?.openedAt ?? null, { timeout: 20_000 }).not.toBeNull();

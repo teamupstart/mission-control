@@ -962,6 +962,10 @@ export class ArchiveManager {
           bytes: input.page.byteLength,
           sha256,
         }];
+        // Both times are the report's own posting time, never the clock, so publishing the same
+        // page under the same key always writes a byte-identical manifest. A republish after the
+        // bundle was removed by hand, before a reconciliation pass pruned its index row, then
+        // matches the digest the index kept, instead of reading as a rewrite of an immutable key.
         const at = new Date(input.reportCreatedAt).toISOString();
         const manifest: ArchiveManifest = {
           formatVersion: ARCHIVE_FORMAT_VERSION,
@@ -970,7 +974,7 @@ export class ArchiveManager {
           archive: {
             id: identity.archiveId,
             createdAt: at,
-            completedAt: new Date().toISOString(),
+            completedAt: at,
             captureStatus: "complete",
             title: input.title.slice(0, ARCHIVE_TEXT_LIMITS.title),
             question: null,

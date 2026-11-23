@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { REPORT_LIMITS, type ReportItem } from "../src/shared/reports.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
@@ -41,6 +41,9 @@ const PRODUCER = "00000000-0000-4000-8000-0000000000aa";
 flags.applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
 
 const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+
+// chmod cannot lock root out, so the unreadable-library cases only mean something for a user.
+const asRoot = process.getuid?.() === 0;
 
 let serial = 0;
 function setup(options: {
@@ -430,6 +433,70 @@ test("a press that finds an unverifiable bundle at its key, with no key recorded
   assert.deepEqual(bundles(), [archiveId]);
 });
 
+test("a republish after the bundle was removed by hand writes a byte-identical manifest, so the index keeps it readable", async () => {
+  const { post, publish, archives, root, reports } = setup();
+  const report = await post("same.html", STATIC_HTML, "Same page");
+  const key = (await publish(report.id)).body.archiveKey!;
+  const bundle = join(root, PRODUCER, reportArchiveId(PRODUCER, report.id, report.createdAt));
+  await archives.reconcileNow();
+  await archives.reconcileNow();
+  assert.equal(archives.detail(key)?.status, "ready");
+  const manifestBefore = readFileSync(join(bundle, "manifest.json"));
+
+  // Removed by hand, and republished before any reconciliation pass prunes its index row.
+  rmSync(bundle, { recursive: true, force: true });
+  const again = await publish(report.id);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.replayed, false);
+  assert.deepEqual(readFileSync(join(bundle, "manifest.json")), manifestBefore,
+    "the same page under the same key is the same manifest: its times are the report's, not the clock's");
+  await archives.reconcileNow();
+  await archives.reconcileNow();
+  assert.equal(archives.detail(key)?.status, "ready", "not refused as a rewrite of an immutable key");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, key);
+});
+
+test("the startup archive check reads published reports in pages, and still reaches every one", async () => {
+  const { reports } = setup();
+  const session = mkSession({ id: `s-paged-${Date.now()}`, cwd: home });
+  const ids: string[] = [];
+  for (let i = 0; i < 205; i += 1) ids.push((await reports.post(session, { title: `Paged ${i}`, body: "b" })).id);
+  const update = openDb().prepare("UPDATE reports SET published_archive_key = ? WHERE id = ?");
+  for (const id of ids) update.run(`${PRODUCER}~paged-${id}`, id);
+  const checked = new Set<string>();
+  await reports.reconcilePublishedArchives(async (key) => {
+    if (key.includes("~paged-")) checked.add(key);
+    return true;
+  });
+  assert.equal(checked.size, 205, "more than one page of published reports, every one checked");
+});
+
+test("a DELETE whose trash cleanup fails after removing the bundle still takes the report back to unpublished", { skip: asRoot }, async () => {
+  let lockTrash = false;
+  const { app, post, publish, reports, root } = setup({
+    rename: async (from, to) => {
+      await renamePath(from, to);
+      // The bundle is now in the trash; make removing it from there fail.
+      if (lockTrash && basename(dirname(to)) === ".trash") chmodSync(dirname(to), 0o555);
+    },
+  });
+  const report = await post("trash.html", STATIC_HTML, "Trash fails");
+  const key = (await publish(report.id)).body.archiveKey!;
+  lockTrash = true;
+  try {
+    const deleted = await app.request(`/api/archives/${key}`, {
+      method: "DELETE",
+      headers: { ...LOOPBACK, "content-type": "application/json" },
+      body: JSON.stringify({ confirmArchiveKey: key }),
+    });
+    assert.equal(deleted.status, 500, "the delete's own failure is still reported");
+    assert.match(((await deleted.json()) as { error: string }).error, /trashed bundle could not be removed/);
+    assert.equal(reports.get(report.id)?.publishedArchiveKey, null, "but the bundle is gone, so the report is unpublished");
+  } finally {
+    chmodSync(join(root, ".trash"), 0o700);
+  }
+});
+
 test("a Markdown document is published as the daemon's own render of the stored copy", async () => {
   const { post, publish, archivedPage } = setup();
   const markdown = "# Findings\n\n| step | result |\n| --- | --- |\n| build | failed |\n\n[Run log](https://ci.example/run/1)\n";
@@ -607,8 +674,6 @@ test("publishing while the archive manager is shutting down is refused with 503,
   assert.equal(reports.get(report.id)?.readAt, null);
 });
 
-// chmod cannot lock root out, so the unreadable-library cases only mean something for a user.
-const asRoot = process.getuid?.() === 0;
 
 test("archivePresent is false only for a real absence, and throws when the library cannot be read", { skip: asRoot }, async () => {
   const lockedParent = join(home, `locked-${Date.now()}`);

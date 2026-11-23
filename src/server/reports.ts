@@ -138,6 +138,9 @@ interface Row {
   published_archive_key: string | null;
 }
 
+/** How many published reports the startup archive check reads per page. */
+const PUBLISHED_REPORT_PAGE = 200;
+
 const nullableNumber = (value: number | null): number | null => (value === null ? null : Number(value));
 
 function fromRow(row: Row): ReportItem {
@@ -698,20 +701,36 @@ export class ReportManager {
    *
    * Each report is re-checked inside its publication queue, so a publish that lands meanwhile wins.
    */
+  /**
+   * The published reports a reconciliation checks: those recorded under `keys`, or with no keys
+   * every published report, read in bounded keyset pages so startup never loads them all at once.
+   */
+  private *publishedReports(keys?: readonly string[]): Generator<{ id: string; archiveKey: string }> {
+    if (keys) {
+      yield* openDb()
+        .prepare(`SELECT id, published_archive_key AS archiveKey FROM reports WHERE published_archive_key IN (${keys.map(() => "?").join(", ")})`)
+        .all(...keys) as Array<{ id: string; archiveKey: string }>;
+      return;
+    }
+    let after = 0;
+    for (;;) {
+      const page = openDb()
+        .prepare(`SELECT seq, id, published_archive_key AS archiveKey FROM reports
+          WHERE published_archive_key IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?`)
+        .all(after, PUBLISHED_REPORT_PAGE) as Array<{ seq: number; id: string; archiveKey: string }>;
+      for (const row of page) yield { id: row.id, archiveKey: row.archiveKey };
+      if (page.length < PUBLISHED_REPORT_PAGE) return;
+      after = Number(page[page.length - 1]!.seq);
+    }
+  }
+
   async reconcilePublishedArchives(
     exists: (key: string) => Promise<boolean>,
     keys?: readonly string[],
   ): Promise<string[]> {
     if (keys && keys.length === 0) return [];
-    const rows = (keys
-      ? openDb()
-        .prepare(`SELECT id, published_archive_key AS archiveKey FROM reports WHERE published_archive_key IN (${keys.map(() => "?").join(", ")})`)
-        .all(...keys)
-      : openDb()
-        .prepare("SELECT id, published_archive_key AS archiveKey FROM reports WHERE published_archive_key IS NOT NULL")
-        .all()) as Array<{ id: string; archiveKey: string }>;
     const cleared: string[] = [];
-    for (const { id, archiveKey } of rows) {
+    for (const { id, archiveKey } of this.publishedReports(keys)) {
       const gone = await this.inPublicationQueue(id, async () => {
         if (getRow(id)?.publishedArchiveKey !== archiveKey) return false;
         // A check that fails (the library unreadable right now) is not an absence: that key is

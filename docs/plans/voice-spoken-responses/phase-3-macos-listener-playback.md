@@ -38,7 +38,7 @@ and on Linux (the Linux follow-on).
   System Settings, under Accessibility, Read & Speak.
 - No entitlement exists for audio output under the hardened runtime, so signing does not change.
 - Inherited: contract L (the `speak` directive, the events route, the audio route, the hello's
-  `speech` part, the stop route).
+  `speech` part, the stop route), all built by Speech 1.
 
 ## 5. Implementation steps
 
@@ -60,7 +60,10 @@ and on Linux (the Linux follow-on).
 6. **Leak check.** With the real helper on a Mac, loudspeakers and the built-in or a desk
    microphone: three trials with capture forced to stay on during an audio job, then three with
    the normal pause, then the same six with a system voice. Record what the recognizer heard in
-   each. If a paused trial is heard, add a 250 millisecond delay before resuming and repeat. If
+   each. The audio job uses the Mission Control voice when Speech 2 has merged; otherwise run
+   the helper against a test daemon whose synthesizer serves a recorded WAV through Speech 1's
+   audio route. If a paused trial is heard, add a 250 millisecond delay before resuming and
+   repeat. If
    it is still heard, the helper sends `audio: false` and lists no system voices, so
    `speech-output` stays unavailable; tell the operator and record the finding in
    `docs/voice.md`.
@@ -104,5 +107,6 @@ and 4, and the `audio` flag of step 5, in the sherpa-onnx listener.
 
 - The audit note in Phase 12 about S9 moves here, and is stricter: a leak that pausing cannot
   stop leaves Ask aloud unavailable, where Phase 12 said off by default.
-- With Speech 2 unmerged, an audio job never arrives, and this phase is checked with system
-  voices and a WAV served by a test daemon.
+- The audio route is Speech 1's, so this phase does not wait for Speech 2. With Speech 2
+  unmerged no neural voice is ready, so an audio job arrives only in tests, where Speech 1's
+  audio route serves a WAV from a fake synthesizer.

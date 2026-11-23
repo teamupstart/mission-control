@@ -19,8 +19,9 @@ In scope: contract M, the speech model manifest entry, its download through Phas
 the synthesizer helper and its supervision, the real `VoiceSynthesizer`, attribution, the CI
 test, docs and tests.
 
-Not in scope: playing audio (Speech 3 and the Linux follow-on), the picker and the download row
-(Speech 4), any other model family.
+Not in scope: the audio route, which Speech 1 built and which serves what this phase
+synthesizes; playing audio (Speech 3 and the Linux follow-on); the picker and the download row
+(Speech 4); any other model family.
 
 ## 4. Repository findings and inherited contracts
 
@@ -61,7 +62,7 @@ manifest.
 2. **Download.** Drive the speech model through Phase 8's manager as a second model set, stored
    under `<state home>/voice/models/speech/<revision>/`, with its own `VoiceModelState` in
    `VoiceState.speech.model`. Routes `POST` and `DELETE /api/voice/speech/model/download`.
-   Nothing starts a download except that route.
+   Nothing starts a download except the `POST` route, which Speech 4's picker calls.
 3. **Helper.** `src/voice-speaker/synth.ts`, bundled to `dist/voice-speaker/synth.mjs`: a Node
    program that loads the addon from `dist/native/sherpa-onnx/`, loads the model directory it is
    given, and answers `synthesize { text, voice }` messages from its parent with 16-bit mono WAV
@@ -98,9 +99,13 @@ catalog is empty and nothing changes for a system voice.
   a digest mismatch, cancel, and verification at start.
 - `test/voice-synthesizer.test.ts` with a fake helper: lazy start, one restart, the idle exit,
   the 5 second failure, the cache, and shutdown.
+- `test/voice-speech-http.test.ts` gains a case: with the model `ready`, a fake helper and a
+  fake listener that plays, a sample job for a neural voice becomes `ready` with its length and
+  Speech 1's audio route returns the helper's WAV.
 - `test/voice-speech-synth.test.ts`, the Linux proof, as step 8 describes.
-- Manual check on a Mac, recorded in the pull request: download through the route, then fetch a
-  job's audio and play the file by hand.
+- Manual check on a Mac, recorded in the pull request: download through the route; then, with
+  Speech 1's fake listener standing in for a listener that plays, open a sample job for F4,
+  fetch its audio from Speech 1's audio route and play the file by hand.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and the tests.
 
 ## 8. Merge and exit criteria
@@ -120,3 +125,5 @@ Speech 4 draws the download row from `VoiceState.speech.model` and the routes he
 - If the addon does not load in the signed app, Phase 16 owns the fix, and this phase does not
   start until that phase has merged.
 - The CI change is the one the operator authorized on 2026-11-23, and no other.
+- Completion review: this phase adds no route for the listener. The index's phase table said
+  it owned the audio route; Speech 1 does.

@@ -18,7 +18,8 @@ From the interview and the plan review of 2026-11-23, recorded in full in `plan.
   accepted. The default voice is F4.
 - The default is Automatic: the Mission Control voice once downloaded, the Mac's best system
   voice until then, the on-screen card otherwise.
-- 150 MB download budget, fetched only when a Mission Control voice is chosen.
+- 150 MB download budget. The model is fetched only when the operator chooses a Mission
+  Control voice in the picker or presses Download in the same group.
 - No hosted option. No Linux system-speech floor. No talking over speech; the hotkey or a click
   cuts speech off.
 - Ask aloud moves out of Phase 12. The listener plays.
@@ -76,13 +77,13 @@ Node helper, the Swift listener, the shell and the dashboard. Four phases:
 
 | Phase | File | Delivers | Depends on | Runs on | Est. lines |
 | --- | --- | --- | --- | --- | --- |
-| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, stop, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
-| Speech 2 | `phase-2-mission-control-voices.md` | The speech model entry and download, the synthesizer helper, the audio route, attribution, the Linux CI synthesis test | Phase 8, Phase 16, Speech 1 | Astra | 450 to 600 |
+| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, the audio, events, stop and audition routes, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
+| Speech 2 | `phase-2-mission-control-voices.md` | The speech model entry and its download routes, the synthesizer helper, attribution, the Linux CI synthesis test | Phase 8, Phase 16, Speech 1 | Astra | 450 to 600 |
 | Speech 3 | `phase-3-macos-listener-playback.md` | The macOS listener plays audio and system voices and lists them; the hotkey tap stops speech; the leak check | Phase 10, Phase 11, Speech 1 | Astra | 350 to 500 |
-| Speech 4 | `phase-4-voice-picker.md` | The picker, audition, the download row, the unavailable states, docs | Speech 2, Speech 3 | Opus | 400 to 550 |
+| Speech 4 | `phase-4-voice-picker.md` | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 | Opus | 400 to 550 |
 
 "Opus" is Claude Opus 5.5 at extra-high effort, for a phase with a dashboard part. "Astra" is
-GPT-6 Astra at extra-high effort, as in the voice plan.
+GPT-6.2 Astra at extra-high effort, the model the voice plan's Astra tasks now run on.
 
 Why not fewer:
 
@@ -153,30 +154,37 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   there is none, the live job's `{ id, purpose, state, cardId }` or null, the catalog, and the
   speech model's `VoiceModelState` (`missing` until Speech 2). It travels in the existing
   `voice_state` event. No event is added.
-- The `speech-output` capability is the daemon's reading: available when a live hello says the
-  listener can play and a voice resolves. An `ask` job also needs the mode `listening`; an
-  `audition` job does not.
-- Limits: `VOICE_SPEECH_START_LIMIT_MS` 2000, `VOICE_SPEECH_END_MARGIN_MS` 1500,
-  `VOICE_SPEECH_SYSTEM_LIMIT_MS` 10000.
+- The `speech-output` capability is the daemon's reading: available when a voice resolves. A
+  voice resolves only if the live listener can speak it: a neural voice needs the hello's
+  `audio` true and the speech model `ready`, and a system voice must be listed in the hello. An
+  `ask` job also needs the mode `listening`; an `audition` job does not.
+- Limits: `VOICE_SPEECH_START_LIMIT_MS` 2000, counted from the job becoming `ready`;
+  `VOICE_SPEECH_END_MARGIN_MS` 1500, added to the audio's length and counted from `started`;
+  `VOICE_SPEECH_SYSTEM_LIMIT_MS` 10000, counted from `started`, for a system voice.
 - The hello (contract B) gains optional `speech { audio, systemVoices }`. `audio` says the
   listener can play an audio job. A system voice is `{ id, name, language, quality }` with
   quality `premium`, `enhanced` or `default`.
 - The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`, or
   `{ id, kind: "system", voiceId, text }`. While `speak` is set, `capture` is false.
-- Token routes: `GET /voice/speech/jobs/:id/audio` (a WAV file) and `POST
+- Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio`, which serves the
+  WAV the daemon holds for a `ready` or `speaking` job, and `POST
   /voice/speech/jobs/:id/events { type, outcome }`, where `type` is `started` or `ended` and
   `outcome` is `finished`, `stopped` or `failed`.
-- Dashboard routes: `POST /api/voice/speech/stop` and `POST /api/voice/speech/audition`.
+- Dashboard routes, both built by Speech 1: `POST /api/voice/speech/stop` and `POST
+  /api/voice/speech/audition`.
 - `VoiceSynthesizer { synthesize(text, voice), warm(), stop() }` in the daemon. `synthesize`
   resolves to `{ wav, durationMs }`. Speech 1 ships one that refuses every neural voice.
 - `beSpeaker(daemon, options)` in `e2e/fixtures/voice.ts`: a `beListener` that also says it can
-  play, follows the directive, and posts `started` and `ended` for each job.
+  play and lists one system voice, so a voice resolves with no model; it follows the directive
+  and posts `started` and `ended` for each job.
 
 **M. Speech model and synthesizer (Speech 2).** `VOICE_SPEECH_MODELS` in
 `src/shared/voice-models.ts`, keyed by family, with the `supertonic-3` entry; files under
 `<state home>/voice/models/speech/<revision>/`; routes `POST` and `DELETE
 /api/voice/speech/model/download`; the helper `dist/voice-speaker/synth.mjs` and its message
-protocol; `VOICE_SPEECH_NEURAL_VOICES`, the ten voices with their model indexes.
+protocol; `VOICE_SPEECH_NEURAL_VOICES`, the ten voices with their model indexes. A download
+starts only through the `POST` route. Speech 2 adds no route for the listener: the audio it
+synthesizes is served by Speech 1's audio route.
 
 Token routes live under `/voice/` and check `x-harness-token`. Dashboard routes live under
 `/api/voice/` behind the loopback gate. Both answer 404 while the `voice` flag is off, as in the
@@ -229,3 +237,32 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After the completion review: the audio route has one owner, Speech 1, in the phase table,
+  contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
+  when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
+  the Speech 4 file.
+
+## Completion review
+
+Foreman's completion review of the first handoff raised two findings. Both were accepted and
+applied across the bundle.
+
+- **Who owns the audio route.** The phase table gave the audio route to Speech 2, while
+  contract L and the Speech 1 file gave it to Speech 1. Speech 3 fetches audio and runs beside
+  Speech 2, so the owner had to be one phase that both follow. It is Speech 1: the manager
+  there holds the audio and serves it, and Speech 2 only supplies the synthesizer behind it.
+  The tables in `plan.md` and this file, contract L, contract M and the Speech 1, 2 and 3
+  files now say so.
+- **When the download starts.** The root plan said the model downloads when the operator first
+  chooses a Mission Control voice, while Speech 4 saved the choice and waited for a separate
+  Download button. Choosing a Mission Control voice now starts the download. The Download
+  button stays for someone who keeps Automatic and wants the Mission Control voice, and it
+  starts the same download. `plan.md`, contract M and the Speech 4 file and its spec now agree.
+
+The same pass fixed smaller mismatches it found: where each time limit is counted from, which
+roster names a sample uses, and the Astra model name, which the backlog had moved to GPT-6.2
+Astra. It also checked that each phase's checks can reach the state they need with only what
+earlier phases built: the fake listener lists a system voice, so Speech 1's spec can ask aloud
+with no model; Speech 2's manual check uses that fake listener to open a job; Speech 3's leak
+check says where its audio job comes from before Speech 2 merges; and Speech 4's spec plays its
+sample with a system voice, since a fixture model cannot synthesize.

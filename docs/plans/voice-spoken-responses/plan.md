@@ -164,9 +164,10 @@ is nothing to arbitrate and no click is needed first.
    needs no download, including any Enhanced or Premium voice the person has installed.
 3. **Synthesis runs in a small helper the daemon starts**, not in the daemon and not in the
    shell, so it is the same on Linux. It loads the same sherpa-onnx addon the recognizer uses.
-4. **The Supertonic model is downloaded on demand** through Phase 8's manager, 145.3 MB, when
-   the operator first chooses a Mission Control voice. Nothing is fetched when voice is merely
-   switched on.
+4. **The Supertonic model is downloaded on demand** through Phase 8's manager, 145.3 MB. The
+   download starts when the operator chooses a Mission Control voice in the picker, or presses
+   Download in the same group. Nothing is fetched when voice is switched on, when Ask aloud is
+   chosen, or by Automatic on its own.
 5. **No hosted option, no Linux system-speech floor, no Web Speech.** The on-screen card is the
    floor everywhere. The stored voice has an `engine` field, so another engine can be added
    without changing what is stored.
@@ -218,9 +219,9 @@ helper synthesizes, and the listener plays.
 
 ### Rules that keep capture correct
 
-- **A time limit on every job.** With no `started` within 2 seconds, or no `ended` within the
-  audio's length plus 1.5 seconds (10 seconds for a system voice, whose length is unknown), the
-  daemon ends the job as timed out and clears `speak`. Capture resumes. Silence is the failure
+- **A time limit on every job.** With no `started` within 2 seconds of the job being ready, or
+  no `ended` after `started` within the audio's length plus 1.5 seconds (10 seconds for a system
+  voice, whose length is unknown), the daemon ends the job as timed out and clears `speak`. Capture resumes. Silence is the failure
   mode, never a stuck microphone.
 - **An utterance captured during speech is discarded.** The utterance route ignores one
   captured while a job was live, and Recently heard lists the reason. This is a second guard
@@ -287,27 +288,34 @@ Spoken replies
 
 - **Where voices are chosen.** One select, grouped by engine. "This Mac's voices" appears only
   when the listener's hello lists system voices, so it is absent on Linux.
-- **Audition.** Play sample speaks "<name> or <name>?" with two roster names, or "Steve or
-  Stephen?" with an empty roster, through the same speech job as a real ask. Capture is paused
+- **Audition.** Play sample speaks "<name> or <name>?" with the first two roster names, or
+  "Steve or Stephen?" when the roster has fewer than two, through the same speech job as a real
+  ask. Capture is paused
   for it, so the recognizer never hears the sample and routes it. With no listener able to play,
   the button is disabled and says why.
 - **Defaults.** The stored choice is null, shown as Automatic. Automatic resolves to the default
   Mission Control voice when its model is downloaded; otherwise, on a Mac, to the best installed
   English system voice (Premium, then Enhanced, then standard); otherwise to nothing, and the
-  card is used. With no voice ready the Ask aloud choice is disabled, and the Download row
-  beneath it is the fix. Linux has no second step: until the download, the card is used.
+  card is used. With no voice ready the Ask aloud choice is disabled, and getting the Mission
+  Control voices, as the Download item below describes, is the fix. Linux has no second step:
+  until the download, the card is used.
 - **Storage.** A new field on the voice config: `speech: { voice }`, where `voice` is null or
-  `{ engine, id }` with `engine` `neural` or `system`. A follow-on phase adds it. Contract A's
+  `{ engine, id }` with `engine` `neural` or `system`. Speech 1 adds it. Contract A's
   sentence "later phases add none" is amended to allow this one field. The config is tolerant on
   read, so no migration is owed. A later per-agent voice is the same `{ engine, id }` value on a
   resident profile or a task, read before this one.
-- **A missing voice.** A chosen Mission Control voice that is not downloaded, or a chosen system
-  voice that is not installed on this Mac (after a restore on another machine, for instance),
-  speaks nothing. The picker shows the choice as unavailable with the fix: Download, or the
+- **A missing voice.** A chosen Mission Control voice that is not downloaded (its download is
+  still running, was cancelled or failed), or a chosen system voice that is not installed on
+  this Mac (after a restore on another machine, for instance), speaks nothing. The picker shows the choice as unavailable with the fix: Download, or the
   System Settings path. Only Automatic picks among the voices that are ready.
-- **Download.** The speech model is a second entry in Phase 8's manifest and manager: pinned
-  commit, size and SHA-256 per file, hashed again before it reads ready, stored under
-  `<state home>/voice/models/`. Attribution and the licence go in `NOTICE` and `docs/voice.md`.
+- **Download.** Choosing a Mission Control voice while the model is absent saves the choice and
+  starts the download. The Download button on the row starts the same download for someone who
+  stays on Automatic. The row shows progress and Cancel, and then the voice is ready. A
+  cancelled or failed download leaves the choice in place, shown as not downloaded, with
+  Download or Retry. The speech model is a second entry in Phase 8's manifest and manager:
+  pinned commit, size and SHA-256 per file, hashed again before it reads ready, stored under
+  `<state home>/voice/models/speech/`. Attribution and the licence go in `NOTICE` and
+  `docs/voice.md`.
 
 ## How it fits the existing task graph
 
@@ -370,10 +378,10 @@ The work is phased in `phased-plan.md`, with one file per phase beside it.
 
 | Phase | Delivers | Depends on |
 | --- | --- | --- |
-| Speech 1 | Contract L, the `speech` config field, the speech job and its time limits, the capture rules, the stop route, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
-| Speech 2 | The speech model entry and its download, the synthesizer helper, the audio route, attribution, a Linux CI synthesis test | 8, 16, Speech 1 |
+| Speech 1 | Contract L, the `speech` config field, the speech job and its time limits, the capture rules, the audio, events, stop and audition routes, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
+| Speech 2 | The speech model entry and its download routes, the synthesizer helper, attribution, a Linux CI synthesis test | 8, 16, Speech 1 |
 | Speech 3 | The macOS listener plays audio and system voices, lists system voices in its hello, and the hotkey tap stops speech. A leak check on a Mac with the new playback path | 10, 11, Speech 1 |
-| Speech 4 | The picker, audition, the download row, the unavailable states, docs | Speech 2, Speech 3 |
+| Speech 4 | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 |
 
 ## Adopted decisions
 
@@ -384,7 +392,7 @@ The operator decided these on 2026-11-23, on the review of this plan's first rev
 | Local neural voice family | Supertonic 3, accepting its OpenRAIL-M licence. The licence and what it restricts are shown beside the download and recorded in `NOTICE` | Pocket TTS, Kokoro, holding neural voices for a licence review, no neural voice |
 | Default voice | Automatic: the Mission Control voice once downloaded, the Mac's best system voice until then | Neural only; system voice first |
 | Which Mission Control voice is the default | F4, chosen by the operator after hearing all ten voices, each announcing its own name (model index 3) | The other nine stay in the picker |
-| Download budget | 150 MB, one family, fetched only when a Mission Control voice is chosen | 400 MB; zero |
+| Download budget | 150 MB, one family, fetched only when a Mission Control voice is chosen: by choosing one in the picker, or with the Download button in the same group for someone who stays on Automatic | 400 MB; zero |
 | A hosted option | Not offered. The stored `engine` field leaves room for one later | OpenAI through the Realtime API; another vendor; closing the door |
 | Where ask aloud is built | Moved out of Phase 12 into the speech phases. The listener plays | Phase 12's shell speech first |
 | A Linux system-speech floor | Not built. The on-screen card is the floor | A speech-dispatcher path |

@@ -39,7 +39,8 @@ voices, a second model family, any new route or stored field.
    resolves to now. Then "Mission Control voices": F1 to F5 and M1 to M5. Then "This Mac's
    voices", only when the hello lists system voices, each with its tier (Premium, Enhanced or
    none). Choosing writes `speech.voice` through the config route. Choosing Automatic writes
-   null.
+   null. Choosing a Mission Control voice while the speech model is `missing` or `failed` also
+   starts the download through the download route.
 3. **Status line.** One sentence under the select from `VoiceState.speech`: the voice that will
    speak, or the reason nothing will, in the capability's words.
 4. **Play sample.** A button that calls the audition route. While the job is live it reads Stop
@@ -47,8 +48,10 @@ voices, a second model family, any new route or stored field.
    `speech-output` is unavailable.
 5. **Download row.** While the speech model is not `ready`: "Mission Control voices are not
    downloaded", the size from the manifest, the licence name with a link to what it restricts,
-   and Download; then progress with Cancel; then the error with Retry. Choosing a Mission
-   Control voice while the model is absent keeps the choice and points at this row.
+   and Download; then progress with Cancel; then the error with Retry. The download starts in
+   two ways and no other: choosing a Mission Control voice (step 2), or pressing Download, which
+   is how someone who stays on Automatic gets the Mission Control voice. Cancel, or a failure,
+   leaves the choice in place, shown as not downloaded.
 6. **Unavailable choice.** A stored voice that is not in the catalog (a Mission Control voice
    with no model, or a system voice this Mac does not have) is shown in the select as "<name>,
    not available" and the status line names the fix: Download, or System Settings, Accessibility,
@@ -69,10 +72,13 @@ machine may name a voice that machine lacks; step 6 covers it.
 - `renderToStaticMarkup` tests: the select's groups for each catalog; the status line for each
   reason; the unavailable choice.
 - `e2e/specs/voice-picker.spec.ts`, with `beSpeaker` and the model fixture server. With no
-  model and a fake Mac hello, Automatic names the system voice; choosing F4 keeps it and the
-  status line says it is not downloaded. Download shows progress, then the voice is ready and
-  Automatic names F4. Play sample reads Stop while the fake speaker is speaking and returns
-  after `ended`; with no speaker it is disabled and says why. With a Linux hello the system
+  model and a fake Mac hello, Automatic names the system voice. Choosing F4 saves it and starts
+  the download with no further click: the row shows progress, then F4 is ready and the status
+  line names it. Cancelling a download leaves F4 chosen and shown as not downloaded, with
+  Download offered. On Automatic with no model, pressing Download starts the same download and
+  Automatic then names F4. With the fake hello's system voice chosen, which needs no synthesis,
+  Play sample reads Stop while the fake speaker is speaking and returns after `ended`; with no
+  speaker it is disabled and says why. With a Linux hello the system
   group is absent. A stored system voice the hello does not list reads "not available" with the
   fix.
 - Manual check on a signed build, recorded in the pull request: the final checklist in
@@ -81,8 +87,8 @@ machine may name a voice that machine lacks; step 6 covers it.
 
 ## 8. Merge and exit criteria
 
-A person can choose any ready voice, hear it through the same path a real ask uses, and download
-the Mission Control voices from the group. Every state in which nothing will be spoken says so
+A person can choose any ready voice and hear it through the same path a real ask uses. Choosing
+a Mission Control voice, or pressing Download, fetches the Mission Control voices. Every state in which nothing will be spoken says so
 and names the fix.
 
 ## 9. Downstream handoff
@@ -93,3 +99,5 @@ None inside this plan. A later per-agent voice reuses the select with a differen
 
 - The `speech` field is Speech 1's. This phase adds no stored field and no route.
 - The default named by Automatic is `VOICE_SPEECH_DEFAULT_NEURAL`, F4, from contract L.
+- Completion review: choosing a Mission Control voice starts the download, as the root plan
+  says. The first version of this file saved the choice and waited for the Download button.

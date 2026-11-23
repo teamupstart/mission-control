@@ -18,7 +18,7 @@ Phases 6 and 9 are merged. May run beside Phases 7, 8 and 10 to 16.
 ## 3. Scope and non-goals
 
 In scope: contract L, the `speech` config field, the job and its limits, the capture rules, the
-stop and audition routes, the `speak` directive, the hello's `speech` part, the daemon-owned
+audio, events, stop and audition routes, the `speak` directive, the hello's `speech` part, the daemon-owned
 `speech-output` capability, the asking mark and Stop on the card, the rule that enables the Ask
 aloud choice, the fixture, docs and tests.
 
@@ -50,11 +50,12 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
 2. **Hello and state.** Add the optional `speech` part to the hello schema. Add
    `VoiceState.speech` and include it in `canonicalVoiceState` and `voiceStateOff`. Compute
    `speech-output` in the state store beside `listener`, with a reason for each way it is
-   unavailable: no listener, a listener that cannot play, no voice ready.
+   unavailable: no listener, a listener that cannot speak the voice, no voice ready.
 3. **Speech manager.** `src/server/voice/speech.ts`: one live job at a time and a queue in
    opening order; `open(purpose, text, cardId)`; `stop(id)`; the events route's `started` and
-   `ended`; a timer per job that ends it as `timed-out` at the start limit, or at the audio
-   length plus the end margin, or at the system limit when the length is unknown. A job whose
+   `ended`; a timer per job that ends it as `timed-out` at the start limit after it became
+   `ready`, or, after `started`, at the audio length plus the end margin, or at the system
+   limit when the length is unknown. A job whose
    card is settled before it starts is dropped. Clocks and timers are injected, as in the state
    store.
 4. **Voice and audio.** The manager resolves the voice with `resolveSpeechVoice`. For a neural
@@ -70,17 +71,20 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    names. A null sentence opens no job. A card gets at most one ask. Muting, a pick, a cancel
    and a settled card stop the job.
 8. **Routes.** `POST /api/voice/speech/stop` stops the live job. `POST
-   /api/voice/speech/audition` opens an `audition` job for the resolved voice with two roster
-   names or "Steve or Stephen?", and answers 409 with the capability's reason when nothing can
-   speak. The two token routes of contract L.
+   /api/voice/speech/audition` opens an `audition` job for the resolved voice with the first two
+   roster names, or "Steve or Stephen?" when the roster has fewer than two, and answers 409 with
+   the capability's reason when nothing can speak. The two token routes of contract L: the
+   events route, and the audio route, which serves the WAV the manager holds for a `ready` or
+   `speaking` job and answers 404 for any other job.
 9. **Card.** `VoiceCardView` marks an `unsure` card whose id is the live job's `cardId` with
    "Asking aloud" and a Stop button. A candidate row and Cancel work as before and also stop the
    speech.
 10. **Setting.** In the "When routing is unsure" row the Ask aloud choice is disabled, with the
     capability's reason as its description, while `speech-output` is unavailable. A stored `ask`
     is kept and behaves as `show` until speech is available.
-11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`, with options to delay or withhold
-    `started` and `ended`.
+11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`. Its hello says it can play and lists
+    one system voice, so a voice resolves in this phase, where no neural voice exists. It has
+    options to delay or withhold `started` and `ended`.
 12. **Docs.** `docs/voice.md`: how ask aloud works, the capture rule, the limits, what stops
     speech.
 
@@ -98,7 +102,9 @@ runs.
   and an audition does.
 - `test/voice-speech-http.test.ts`: the directive shows `capture` false and `speak` while a job
   is live and returns to true after `ended`; a late `ended` for a timed-out job is ignored; an
-  utterance captured during the job is refused with `while-speaking`; the audition route's 409.
+  utterance captured during the job is refused with `while-speaking`; the audition route's 409;
+  the audio route serves a held job's WAV from a fake synthesizer and answers 404 once the job
+  is final.
 - `test/voice-state.test.ts`: `speech-output` for each reason; a shell's claim is dropped.
 - `renderToStaticMarkup` tests for the asking mark.
 - `e2e/specs/voice-ask-aloud.spec.ts`, with `beSpeaker`: an unsure card reads "Asking aloud",
@@ -115,8 +121,9 @@ no listener that can play, the card behaves as it did before this phase.
 
 ## 9. Downstream handoff
 
-Speech 2 replaces the refusing synthesizer and fills `catalog.neural` and `speech.model`.
-Speech 3 implements the listener side of `speak` and the events. Speech 4 writes
+Speech 2 replaces the refusing synthesizer and fills `catalog.neural` and `speech.model`; it
+adds no route for the listener. Speech 3 implements the listener side of `speak` and the events
+and fetches audio from this phase's audio route. Speech 4 writes
 `config.speech.voice` and calls the audition route. None of them changes a name in contract L.
 
 ## 10. Cross-phase audit record
@@ -126,3 +133,5 @@ Speech 3 implements the listener side of `speak` and the events. Speech 4 writes
 - Phase 12's step 5 and the Ask aloud clause of its step 6 are superseded by steps 7, 9 and 10
   here. The placement previews in that step stay with Phase 12.
 - After Speech 3: the hotkey tap calls this phase's stop route.
+- Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
+  audio without waiting for Speech 2.

@@ -145,7 +145,14 @@ if (recordDir) {
   mkdirSync(join(recordDir, "codex"), { recursive: true });
   writeFileSync(
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
-    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), residentStateDir: process.env.RESIDENT_STATE_DIR ?? null }, null, 2),
+    JSON.stringify({
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
+      // The variable a real `codex app-server` turns into the header of an MCP server whose
+      // config maps one to it (`env_http_headers`).
+      workUnitId: process.env.WORK_UNIT_ID ?? null,
+    }, null, 2),
   );
 }
 

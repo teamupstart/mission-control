@@ -353,7 +353,9 @@ export class HibernationManager {
     if (mismatch) return this.resumeFailed(taskId, mismatch);
     let session: Session;
     try {
-      session = await this.supervisor.wake(record.sessionId, record.agentSessionId);
+      // Named, because hibernating cleared the task's session pointer: the woken agent runs
+      // this task, so it carries this task's work unit.
+      session = await this.supervisor.wake(record.sessionId, record.agentSessionId, taskId);
     } catch (error) {
       return this.resumeFailed(taskId, error instanceof Error ? error.message : String(error));
     }

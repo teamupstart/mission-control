@@ -560,6 +560,71 @@ test("stopping an active core closes its pane, and stopping an inert one calls n
   assert.equal(off.fake.paneCloses, 0);
 });
 
+test("an inbox that keeps refusing the token notices once, not on every reconnect", async () => {
+  const { daemon, fake, core } = setup();
+  await core.start();
+  daemon.override("GET /dispatch/inbox", () => ({ status: 401, body: { error: "unauthorized" } }));
+  for (let i = 0; i < 4; i++) await core.tick();
+  assert.equal(fake.notices.filter((n) => /mctl doctor/.test(n)).length, 1);
+  daemon.override("GET /dispatch/inbox", () => ({ body: CANNED_INBOX }));
+  await core.tick();
+  await core.tick();
+  // A fresh refusal after a success says so again.
+  daemon.override("GET /dispatch/inbox", () => ({ status: 401, body: { error: "unauthorized" } }));
+  await core.tick();
+  assert.equal(fake.notices.filter((n) => /mctl doctor/.test(n)).length, 2);
+});
+
+test("a pane open that fails is retried on the next tick, and one that succeeded is never repeated", async () => {
+  const daemon = createFakeDaemon();
+  const fake = createFakeModHost({ daemon });
+  let failures = 1;
+  const flaky = {
+    ...fake.host,
+    paneOpen: async (opts: Parameters<typeof fake.host.paneOpen>[0]) => {
+      if (failures-- > 0) throw new Error("ui.open refused");
+      return fake.host.paneOpen(opts);
+    },
+  };
+  const core = createModCore(flaky, FACTS);
+  await core.start();
+  assert.equal(core.phase(), "active");
+  assert.equal(fake.paneOpens.length, 0);
+  assert.ok(fake.bands.at(-1));
+  await core.tick();
+  assert.equal(fake.paneOpens.length, 1);
+  await core.tick();
+  await core.tick();
+  assert.equal(fake.paneOpens.length, 1);
+});
+
+test("a session ended while a pane retry is pending starts no inbox request", async () => {
+  const held = gate();
+  const daemon = createFakeDaemon();
+  const fake = createFakeModHost({ daemon });
+  let mode: "fail" | "hold" | "ok" = "fail";
+  const host = {
+    ...fake.host,
+    paneOpen: async (opts: Parameters<typeof fake.host.paneOpen>[0]) => {
+      if (mode === "fail") throw new Error("ui.open refused");
+      if (mode === "hold") await held.opened;
+      return fake.host.paneOpen(opts);
+    },
+  };
+  const core = createModCore(host, FACTS);
+  await core.start();
+  assert.equal(core.phase(), "active");
+  const inboxRequests = () => daemon.requests.filter((r) => r.pattern === "/dispatch/inbox").length;
+  const before = inboxRequests();
+  mode = "hold";
+  const ticking = core.tick();
+  await flush();
+  core.stop();
+  held.release();
+  await ticking;
+  assert.equal(inboxRequests(), before);
+});
+
 test("a 404 that is not the flag-off answer is an error, not the flag being off", async () => {
   const { daemon, fake, core } = setup();
   await core.start();
@@ -610,41 +675,4 @@ test("the mod-calls scan ignores a path quoted in a comment and still catches a 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("a refused automatic pane open is tried again on a later poll, and polling goes on meanwhile", async () => {
-  const { fake, core } = setup();
-  const real = fake.host.paneOpen;
-  let refusals = 1;
-  fake.host.paneOpen = async (opts) => {
-    if (refusals-- > 0) throw new Error("the engine refused the open");
-    return real(opts);
-  };
-  await assert.rejects(core.start(), /refused the open/);
-  // Connected, polling and drawing, but no pane yet.
-  assert.equal(core.phase(), "active");
-  assert.equal(fake.paneOpens.length, 0);
-  assert.ok(fake.bands.some((band) => band !== undefined));
-  // The next poll opens it, unasked and unfocused; later polls do not open it again.
-  await core.tick();
-  assert.deepEqual(fake.paneOpens, [{ tab: "needs-you" }]);
-  await core.tick();
-  await core.tick();
-  assert.equal(fake.paneOpens.length, 1);
-});
-
-test("a pane open that keeps being refused is retried on every poll until it succeeds", async () => {
-  const { fake, core } = setup();
-  const real = fake.host.paneOpen;
-  let attempts = 0;
-  fake.host.paneOpen = async (opts) => {
-    attempts += 1;
-    if (attempts < 3) throw new Error("refused");
-    return real(opts);
-  };
-  await assert.rejects(core.start());
-  await assert.rejects(core.tick());
-  await core.tick();
-  assert.equal(attempts, 3);
-  assert.equal(fake.paneOpens.length, 1);
 });

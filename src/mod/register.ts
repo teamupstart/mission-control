@@ -67,13 +67,20 @@ export function register(on: EngineOn, _options: unknown): void {
       sessionId,
       cwd: e.cwd,
       modVersion: MOD_VERSION,
+      // The engine's `session.start` input carries only `cwd`, `surface` and `isInteractive`: the
+      // resume, clear, compact and fork `source` exists only on the classic command-hook event.
+      // A /clear raises `session.end` with no `session.start` after it, and a reload re-runs this
+      // hook in the same session, so "startup" is the one honest value here. The daemon uses the
+      // field for the banner (the mod builds the same lines itself) and for its own record.
       source: "startup",
       entrypoint: entrypoint ?? null,
       interactive: e.isInteractive,
     });
     core = started;
     // Not awaited past the first attempt: a daemon that is slow to answer must not hold the prompt.
-    void started.start().catch((error: unknown) => logBackgroundFailure($, "first connection", error));
+    // Every expected failure is a value inside the controller, so a throw here is a defect: leave a
+    // trace in the person's own log instead of looking like "flag off".
+    void started.start().catch((error: unknown) => $.ui.log(describeFailure("startup", error)));
     return next(e);
   });
 
@@ -113,8 +120,7 @@ export function register(on: EngineOn, _options: unknown): void {
               key: "open-needs-you",
               label: band.button.label,
               hotkey: band.button.hotkey,
-              // A refused open is logged, not left to reject unhandled in the engine.
-              onPress: () => void core?.openNeedsYou().catch((error: unknown) => $.ui.log(`mission-control: could not open the pane: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })),
+              onPress: () => void core?.openNeedsYou().catch((error: unknown) => $.ui.log(describeFailure("the 1 button", error))),
             }),
           ],
         }),
@@ -158,12 +164,6 @@ export function register(on: EngineOn, _options: unknown): void {
       return { result: FLOW_FAILED_TEXT };
     }
   });
-}
-
-/** Background work the person never asked for just now (the first connection, a scheduled poll) has no caller to tell, so a failure goes on the debug channel. */
-function logBackgroundFailure($: Engine, what: "first connection" | "poll", error: unknown): void {
-  const detail = error instanceof Error ? error.message : String(error);
-  $.ui.log(`mission-control: the ${what} failed: ${detail}`, { to: "debug" });
 }
 
 /** A command or tool the engine refused to register simply stops existing; this leaves a line on the debug channel to say why. */
@@ -326,6 +326,11 @@ async function readEnv($: Engine): Promise<DaemonEnv> {
   return out;
 }
 
+/** One line for the person's log when the controller throws, which only a defect does. */
+function describeFailure(where: string, error: unknown): string {
+  return "mission-control: " + where + " failed: " + (error instanceof Error ? error.message : String(error));
+}
+
 /** Clears the shared glance view and the status entry, and asks for a redraw. */
 function wipeGlance($: Engine, view: GlanceView): void {
   // A session that drew nothing has nothing to wipe: the inert path makes no engine call at all.
@@ -417,7 +422,7 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
     },
     clockEvery: (ms, tick) => {
       // A tick that throws (a refused pane open on a reconnect, say) is logged, not left unhandled.
-      const timer = $.clock.every(ms, () => void Promise.resolve(tick()).catch((error: unknown) => logBackgroundFailure($, "poll", error)));
+      const timer = $.clock.every(ms, () => void Promise.resolve(tick()).catch((error: unknown) => $.ui.log(describeFailure("a scheduled poll", error))));
       return () => timer.cancel();
     },
     paneOpen: async (opts: ModPaneOpen) => {
@@ -451,7 +456,8 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       // A replacement session owns the pane now: a stale close must not take it away.
       if (session.pane.owner !== null && session.pane.owner !== session.mine) return;
       session.pane.owner = null;
-      const done = $.ui.close({ id: PANE_REQUEST_ID }).catch(() => undefined);
+      // A refused close leaves a line in the person's log: the pane may still be on screen.
+      const done = $.ui.close({ id: PANE_REQUEST_ID }).catch((error: unknown) => $.ui.log(describeFailure("closing the pane", error)));
       session.pane.closing = Promise.all([session.pane.closing, done]).then(() => undefined);
     },
     // The pane's values are a convenience for drawing: a refused write never stops the glance

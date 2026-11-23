@@ -18,6 +18,9 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
+import type { ResidentRunSummary } from "@shared/residents.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
 // timer, runs the stall rules against a real clock, and folds what happened into
@@ -42,6 +45,8 @@ export interface AwaySource {
     ensembleSummaries?: EnsembleSummary[];
     pipelineCommissions?: PipelineCommission[];
     pipelineRuns?: PipelineRun[];
+    /** Live resident runs, which name a resident's alerts while the `inbox` flag is on. */
+    residentRuns?: ResidentRunSummary[];
   };
 }
 
@@ -170,6 +175,9 @@ export function startAwayWatcher(
         ensembleSummaries: snap.ensembleSummaries ?? [],
         pipelineCommissions: snap.pipelineCommissions,
         pipelineRuns: snap.pipelineRuns,
+        // Read each pass, like the browser's gate, so a toggle names the next alert alike on
+        // both sides without a restart.
+        ...(featureEnabled(INBOX_FLAG) ? { names: snap.residentRuns ?? [] } : {}),
       };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than
@@ -212,7 +220,7 @@ export function startAwayWatcher(
       if (buffer) {
         buffer = refreshAlerts(
           buffer,
-          stalls.map((st) => stuckAlert(st, snap.sessions)),
+          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names)),
         );
       }
       prev = scope;

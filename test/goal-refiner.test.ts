@@ -895,3 +895,26 @@ test("a whitespace-only reply is a failure, not an empty goal", async () => {
     setMode("good");
   }
 });
+
+test("a review-delivery prune that throws does not skip the cleanup after it on the same tick", async () => {
+  // The prune walks transcripts. If it throws, the standing-instruction and blocker prunes that
+  // follow must still run: `lastPrune` has already moved on, so a skipped one waits a full window.
+  const { r } = withSession("r-prune", "%61");
+  const calls: string[] = [];
+  r.pruneReviewDeliveries = () => {
+    calls.push("review");
+    throw new Error("transcript read failed");
+  };
+  const standing = r.pruneStandingInstructions.bind(r);
+  r.pruneStandingInstructions = (olderThan: number) => {
+    calls.push("standing");
+    return standing(olderThan);
+  };
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => calls.includes("standing"), "the standing-instruction prune after a failed review prune");
+  } finally {
+    stop();
+  }
+  assert.deepEqual(calls.slice(0, 2), ["review", "standing"]);
+});

@@ -18,11 +18,14 @@ import {
   TELEMETRY_FEATURE_GROUPS,
   TELEMETRY_METRICS,
   TELEMETRY_PROBES_METRIC,
+  TASK_OUTCOME_EVENT,
+  TASK_OUTCOMES_METRIC,
   metricsForEvent,
   promMetricName,
   telemetryCatalogProblems,
 } from "../src/shared/telemetry-catalog.ts";
-import { TELEMETRY_PROFILE_IDS } from "../src/shared/telemetry.ts";
+import { TELEMETRY_PROFILE_IDS, UNSCOPED_REF_KEYS } from "../src/shared/telemetry.ts";
+import type { TelemetryEventDefinition, TelemetryMetricDefinition } from "../src/shared/telemetry-catalog.ts";
 import {
   readMetricsPartialSuccess,
   serializeMetrics,
@@ -33,6 +36,59 @@ import {
 
 test("the registered catalog satisfies every declared rule", () => {
   assert.deepEqual(telemetryCatalogProblems(), []);
+});
+
+// ---- the one exception to hashing ----
+
+test("work_unit_id is the only unscoped ref, and every span of a session or task exports it", () => {
+  assert.deepEqual([...UNSCOPED_REF_KEYS], ["work_unit_id"]);
+  for (const event of Object.values(TELEMETRY_EVENTS)) {
+    if (!event.span) continue;
+    const correlated = event.refKeys.includes("session_id") || event.refKeys.includes("task_id");
+    assert.equal(event.span.unscopedRefAttributes?.includes("work_unit_id") ?? false, correlated, event.name);
+    assert.equal(event.span.refAttributes.includes("work_unit_id"), false, `${event.name} never hashes it`);
+  }
+});
+
+/** The shipped catalog with one event replaced, so a rule is checked against one defect. */
+function withEvent(event: TelemetryEventDefinition, metrics: Record<string, TelemetryMetricDefinition> = TELEMETRY_METRICS) {
+  return telemetryCatalogProblems({ ...TELEMETRY_EVENTS, [event.name]: event }, metrics);
+}
+
+test("the lint refuses an unscoped ref that is not on the list", () => {
+  const span = TASK_OUTCOME_EVENT.span!;
+  const problems = withEvent({
+    ...TASK_OUTCOME_EVENT,
+    refKeys: [...TASK_OUTCOME_EVENT.refKeys],
+    span: { ...span, unscopedRefAttributes: [...(span.unscopedRefAttributes ?? []), "task_id"] },
+  });
+  assert.deepEqual(problems, [
+    "event mission.task.outcome exports task_id unhashed, but only work_unit_id may be",
+  ]);
+});
+
+test("the lint refuses a session or task span that omits work_unit_id, or hashes it", () => {
+  const span = TASK_OUTCOME_EVENT.span!;
+  assert.deepEqual(withEvent({ ...TASK_OUTCOME_EVENT, span: { ...span, unscopedRefAttributes: [] } }), [
+    "event mission.task.outcome has a span and a session or task ref but does not export work_unit_id",
+  ]);
+  assert.deepEqual(withEvent({
+    ...TASK_OUTCOME_EVENT,
+    span: { ...span, refAttributes: [...span.refAttributes, "work_unit_id"] },
+  }), ["event mission.task.outcome span ref work_unit_id must be unscoped, never hashed"]);
+  assert.deepEqual(withEvent({
+    ...TASK_OUTCOME_EVENT,
+    refKeys: TASK_OUTCOME_EVENT.refKeys.filter((key) => key !== "work_unit_id"),
+  }), ["event mission.task.outcome unscoped span ref work_unit_id is not a declared ref key"]);
+});
+
+test("the lint refuses work_unit_id as a metric dimension", () => {
+  assert.ok(FORBIDDEN_METRIC_DIMENSIONS.includes("work_unit_id"));
+  const metric = { ...TASK_OUTCOMES_METRIC, dimensions: [...TASK_OUTCOMES_METRIC.dimensions, "work_unit_id"] };
+  assert.deepEqual(
+    telemetryCatalogProblems(TELEMETRY_EVENTS, { ...TELEMETRY_METRICS, [metric.name]: metric }),
+    [`metric ${metric.name} carries forbidden dimension work_unit_id`],
+  );
 });
 
 test("every feature group declares the phase that owns adding entries to it", () => {

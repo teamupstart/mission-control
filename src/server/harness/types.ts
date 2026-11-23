@@ -921,6 +921,14 @@ export interface SdkLaunchOptions {
    * caller that does not name it launches with none.
    */
   traceContext?: AgentTraceContext | null;
+  /**
+   * The work unit this launch carries (`launchWorkUnitId`, decided once by the caller), or null
+   * for none. An adapter that starts an agent process applies it through `withWorkUnit`, which
+   * also removes any `WORK_UNIT_ID` the daemon inherited; Pi, which runs in this process, puts
+   * it in the environment of the tools it runs. Optional so a direct caller that does not name
+   * it launches with none.
+   */
+  workUnitId?: string | null;
 }
 
 /** An image accompanying a turn. A PATH, because that is what an upload durably is. */
@@ -1377,4 +1385,10 @@ interface HarnessDaemonSlots {
    * shared capability declares `advisor`.
    */
   advisorEnvironment: (() => import("@shared/protocol.ts").AdvisorEnvironment) | null;
+  /**
+   * How a dispatched session's turn one reaches it on each runtime, with that path's byte
+   * ceiling: null where the path has none. Task shaping budgets its section against it, so a
+   * launch that works today still launches with a section. See `turn-one-budget.ts`.
+   */
+  turnOne: import("../turn-one-budget.ts").TurnOneDeliverySpec;
 }

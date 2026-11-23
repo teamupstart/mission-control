@@ -29,22 +29,41 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 426 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
-  // /api/shaping routes of task shaping (refreshed when one last changed) and the three
-  // flag-gated session control request routes (`POST /mcp/session-control/requests`, its
-  // `GET .../:requestId/wait`, and the dashboard's `POST .../requests/:requestId/decline`),
-  // plus the async-input lifecycle routes `POST /mcp/questions/list` and
-  // `POST /mcp/questions/:id/withdraw`,
-  // hashed key-sorted. Any added, removed
+  // The 448 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
+  // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
+  // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
+  // `POST .../requests/:requestId/decline`), the async-input lifecycle routes
+  // `POST /mcp/questions/list` and `POST /mcp/questions/:id/withdraw`, the three routes of
+  // a session awaiting a background process (the flag-gated `POST /mcp/awaiting`, and
+  // `POST /mcp/awaiting/clear` and the dashboard's `POST /api/sessions/:id/awaiting/clear`,
+  // which stay open so a wait can always end), the four flag-gated agent report routes
+  // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
+  // `GET /api/sessions/:id/reports`), the two flag-gated report answer routes
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), the two flag-gated
+  // report document routes (`GET /api/reports/:id/document` and `POST /api/reports/:id/publish`),
+  // and the Stuck row's flag-gated `POST /api/sessions/:id/inbox-message`, hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
-  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
+  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
+  // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
+  // reply and follow-up routes, which answer 404 with it off too, then for
+  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
+  // then for the report document and Publish as scout routes, which answer 404 with it off.
+  // The recurring-mission MCP routes add GET/POST /mcp/schedules and
+  // POST /mcp/schedules/preview, all answering 401 without a daemon token. Voice addressing's five
+  // routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`, `POST /voice/listener/hello`
+  // and `POST /voice/shell-report`) answer 404 with the `voice` flag off, and
+  // `POST /api/setup/install`'s refusal names the new `voice-previews` id. `GET /api/ui/config` and
+  // `GET /api/setup/checks` are unchanged: what voice adds to them is withheld with the flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 426);
+  assert.equal(others.length, 448);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "09f04de1c3db0082a899f489e78390d6f308aed4f8a24e4e27ed871c4e0e5079");
+    "c1c94c97b367d91748929ffa7a05c65bd0f5ad696d2e6383d9d3a89a00a92f29");
 });
 
 function sourceFiles(dir: string): string[] {

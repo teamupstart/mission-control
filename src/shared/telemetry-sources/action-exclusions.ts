@@ -19,6 +19,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/residents/mcp/redeem", "A resident MCP launcher redeeming its single-use ticket at process start; the launch that issued it is the action, and the answer carries secrets that must not reach any record."],
   ["POST", "/api/sessions/:id/composer-activity", "High-frequency typing/liveness signal; explicitly excluded from activity telemetry."],
   ["POST", "/api/sessions/:id/send", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/api/sessions/:id/inbox-message", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/select-option", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/submit-options", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/handoff", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

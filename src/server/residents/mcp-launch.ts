@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { WORK_UNIT_HEADER } from "@shared/work-unit.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import {
@@ -446,6 +447,15 @@ export function redeemResidentMcpTicket(
     const value = secret("header", name);
     if (value === null) return lost(name);
     headers[name] = value;
+  }
+  // A run launched before the catalog learned the work unit reference may hold it expanded to
+  // an empty `x-work-unit-id`, and would send that on every call. Left out here, whenever a
+  // start or resume redeems the server, so such a run stops sending it from its next start with
+  // no new snapshot; the stored copy is not rewritten. An empty value carries nothing whoever
+  // wrote it. A non-empty one - only an operator's own literal or default can have produced it -
+  // is sent as stored, like any configured header.
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === WORK_UNIT_HEADER && headers[name] === "") delete headers[name];
   }
   const url = new URL(transport.url);
   for (const name of transport.secretQuery) {

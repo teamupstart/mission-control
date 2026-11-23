@@ -1,4 +1,5 @@
-import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
+import { ResidentLoopControls, ResidentLoopStatusLine, type ResidentLoopFeedbackBinding } from "../../residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL } from "../../residents/loop-presentation.ts";
 import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
 import {
   PausedActivityLine,
@@ -25,6 +26,7 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
 import { openQuestionsLabel } from "../../lib/async-questions.ts";
 import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
@@ -42,6 +44,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ShapingTileFlag } from "../ShapingChip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -93,6 +96,7 @@ export function SessionTile({
   pipelineCommission = null,
   shortcutChord = null,
   resident = null,
+  residentLoopFeedback,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -159,6 +163,7 @@ export function SessionTile({
    * marker and pin come from the run's pinned revision, never the profile as it is now.
    */
   resident?: ResidentSessionMark | null;
+  residentLoopFeedback?: ResidentLoopFeedbackBinding;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
@@ -438,8 +443,8 @@ export function SessionTile({
       {resident?.loop && <span className="resident-card-loop">
         <ResidentLoopStatusLine loop={resident.loop} session={session} />
         <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
-          <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
-            {() => <ResidentLoopControls mark={resident} menu />}
+          <SessionToolbarMenu label={RESIDENT_LOOP_CONTROLS_LABEL} title={RESIDENT_LOOP_CONTROLS_LABEL} icon={<span aria-hidden>⋯</span>}>
+            {() => <ResidentLoopControls mark={resident} menu feedback={residentLoopFeedback} />}
           </SessionToolbarMenu>
         </span>
       </span>}
@@ -477,6 +482,11 @@ export function SessionTile({
           )}
         </span>
       )}
+
+      {/* A wait the session declared on its own background process: what, when it is due,
+          and how far through the window it is. Always drawn while it stands, like the blocker
+          state above, because it is why this idle card is quiet; nothing for any other card. */}
+      <AwaitingTileTrack session={session} />
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
@@ -593,6 +603,7 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <ShapingTileFlag session={session} />
         {/* Stacked pull requests: why this child is held and what moves it - the same
             component, label and actions as its merge-queue row. */}
         {session.inspector?.stack?.label && (

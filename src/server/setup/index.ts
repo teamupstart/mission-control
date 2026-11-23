@@ -21,6 +21,9 @@ import {
   SETUP_DEPENDENCY_DISPLAY_ORDER,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupFamilyFlagOn,
+  SETUP_FLAG_INPUTS,
+  setupReadingFlags,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
   type SetupDependencyId,
@@ -58,6 +61,10 @@ import { listRepos } from "../repos.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import { VOICE_REQUIRED_FLAGS } from "@shared/voice.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -485,6 +492,48 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | Setu
   }
 }
 
+function flagLabel(id: FeatureFlagId): string {
+  return FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+}
+
+/** "a", "a and b", "a, b and c". */
+function listSentence(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Whether the flags voice depends on are on. Unsatisfied, the row names which are on and which
+ * are off, and its Fix turns on exactly the ones that are off.
+ */
+export function voicePreviewsStatus(flagEnabled: (id: FeatureFlagId) => boolean): SetupProbeResult {
+  const on = VOICE_REQUIRED_FLAGS.filter((id) => flagEnabled(id));
+  const off = VOICE_REQUIRED_FLAGS.filter((id) => !flagEnabled(id));
+  const names = (ids: readonly FeatureFlagId[]) => listSentence(ids.map(flagLabel));
+  const verb = (ids: readonly FeatureFlagId[]) => (ids.length === 1 ? "is" : "are");
+  if (off.length === 0) {
+    return { status: { state: "satisfied", evidence: `${names(on)} ${verb(on)} on` } };
+  }
+  const why = on.length > 0
+    ? `${names(on)} ${verb(on)} on. ${names(off)} ${verb(off)} off.`
+    : `${names(off)} ${verb(off)} off.`;
+  // Voice needs three flags, so one, two or all three can be off here.
+  const label = off.length === 1
+    ? `Turn on ${flagLabel(off[0]!)}`
+    : off.length === VOICE_REQUIRED_FLAGS.length
+      ? "Turn on all three"
+      : "Turn on the two that are off";
+  return {
+    status: { state: "needs-setup", why, evidence: null },
+    remedy: {
+      kind: "feature-flags",
+      flags: off,
+      label,
+      note: `Turn on ${names(off)}, as switching ${off.length === 1 ? "it" : "them"} in Settings > Feature flags would.`,
+    },
+  };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-mcp-trust": async (deps) => deps.mcpTrust?.("claude") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
   "codex-mcp-trust": async (deps) => deps.mcpTrust?.("codex") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
@@ -510,6 +559,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "acli-cli": (deps) => present(acliBin(), deps, "acli"),
   "acli-auth": acliAuthStatus,
   "coderabbit-auth": codeRabbitAuthStatus,
+  "voice-previews": async (deps) => voicePreviewsStatus(deps.flagEnabled ?? featureEnabled),
 };
 
 function reasonOf(error: unknown): string {
@@ -666,13 +716,26 @@ export function defaultSetupDeps(): SetupDeps {
   };
 }
 
+/** Every flag Setup reads (`SETUP_FLAG_INPUTS`), resolved now, as a reader that does not change. */
+function flagsAsOfNow(flagOn: (id: FeatureFlagId) => boolean): (id: FeatureFlagId) => boolean {
+  const resolved = new Map(SETUP_FLAG_INPUTS.map((id) => [id, flagOn(id)] as const));
+  return (id) => resolved.get(id) ?? flagOn(id);
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
-  const scoped: SetupDeps = { ...deps };
+  // The flags are read once, before anything is probed, and that one reading decides which
+  // families are listed, what the `voice-previews` probe reports and the stamp the reading
+  // carries. Read live at each of those, a switch made while the probes run could list no Voice
+  // rows under a stamp that says Voice is on, and the dashboard would never read it again.
+  const flagEnabled = flagsAsOfNow(deps.flagEnabled ?? featureEnabled);
+  const scoped: SetupDeps = { ...deps, flagEnabled };
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
-  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
+  // A family that follows a preview flag (Voice) is neither probed nor listed while it is off.
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
+    .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled));
   const [probed, targets, environment, repositories] = await Promise.all([
     // A fresh object per check: per-check readings shared between rows key on it.
     Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
@@ -713,6 +776,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
     if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
+  const readingFlags = setupReadingFlags(flagEnabled);
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
@@ -724,5 +788,6 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
+    ...(readingFlags !== undefined ? { flagsKey: readingFlags } : {}),
   };
 }

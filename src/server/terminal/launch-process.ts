@@ -15,6 +15,15 @@ import { isResumeLeaseId, resumeLeaseRootPath } from "./resume-lease.ts";
 
 export const LAUNCH_SCRIPT_FILE = "launch-and-cleanup.sh";
 export const LAUNCH_PID_FILE = "terminal-launch.pid";
+/**
+ * Where a launch wrapper with a fallback argv writes which one it ran: `shaped` or `original`.
+ * Beside the state home rather than in it, because the wrapper removes its state home when the
+ * agent exits, and an agent that exits right after readiness would otherwise take the answer
+ * with it. The dispatcher reads it before recording what the launch delivered, then removes it.
+ */
+export function turnOneOutcomePath(stateHome: string): string {
+  return `${stateHome}.turn-one`;
+}
 export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
 
 /**
@@ -117,6 +126,51 @@ export function isMissionLaunchProcess(
   const guardTail = ` ${markers.resumeGuard} ${markers.resumeLeaseRoot}`;
   // Something must precede the guard: the runtime that runs it.
   return head.endsWith(guardTail) && head.length > guardTail.length;
+}
+
+/**
+ * The private state home of the ONE launch this process is, or null when it is not a Mission
+ * Control launch wrapper or resume guard. Every launch gets its own home (a `session-*`
+ * directory, or a resume lease's `homes/<id>`), so this names a launch exactly - unlike the
+ * checkout it runs in, which another pane can share. The same command shapes
+ * `isMissionLaunchProcess` recognizes.
+ */
+export function missionLaunchHomeOf(
+  proc: Pick<Proc, "command">,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): string | null {
+  if (!isMissionLaunchProcess(proc, markers)) return null;
+  const command = proc.command.replace(/^-/, "");
+  const suffix = `/${LAUNCH_SCRIPT_FILE}`;
+  const wrapperPrefix = `${FIXED_OS_EXECUTABLES.sh} `;
+  if (command.startsWith(wrapperPrefix) && command.endsWith(suffix)) {
+    return command.slice(wrapperPrefix.length, command.length - suffix.length);
+  }
+  // The resume guard's own form: `<runtime> <guard> <leaseRoot> <leaseId>`.
+  if (!markers.resumeLeaseRoot) return null;
+  return join(markers.resumeLeaseRoot, "homes", proc.command.slice(proc.command.lastIndexOf(" ") + 1));
+}
+
+/**
+ * The state home of the nearest Mission Control launch this process runs beneath (itself or an
+ * ancestor in the same snapshot), or null. `hasMissionLaunchAncestor`'s walk, answering WHICH
+ * launch rather than whether there is one.
+ */
+export function missionLaunchAncestorHome(
+  pid: number,
+  procs: readonly Proc[] | ReadonlyMap<number, Proc>,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): string | null {
+  const byPid = procs instanceof Map ? procs : new Map((procs as readonly Proc[]).map((p) => [p.pid, p]));
+  let current = byPid.get(pid);
+  const seen = new Set<number>();
+  while (current && !seen.has(current.pid)) {
+    const home = missionLaunchHomeOf(current, markers);
+    if (home) return home;
+    seen.add(current.pid);
+    current = byPid.get(current.ppid);
+  }
+  return null;
 }
 
 /**

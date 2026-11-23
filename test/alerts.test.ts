@@ -29,6 +29,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",
@@ -801,4 +802,55 @@ test("a parked run alerts through the stall detector, deep-linked to the run", (
   assert.match(alerts[0]?.body ?? "", /never reopened/);
   // Edge-triggered on (session, kind), so a stall that persists across polls says it once.
   assert.deepEqual(detectAlerts(after, after), []);
+});
+
+// ---- names (`inbox` flag): `AlertScope.names` makes a title use the one naming rule ----
+
+const residentNames = [
+  { taskId: "t-resident", settings: { identity: { name: "Linter watcher" }, board: { colorId: "teal" } } },
+];
+const named = (s: Session[], names?: AlertScope["names"]): AlertScope => ({ ...scope(s), ...(names ? { names } : {}) });
+const withTask = (id: string, title: string, over: Partial<Session> = {}) => mkSession({
+  id: `s-${id}`,
+  name: `${id}-session`,
+  task: { id, title } as TaskSummary,
+  ...over,
+});
+
+test("without names an alert title reads exactly as before: task title, then session name", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const plain = mkSession({ id: "bare", name: "bare-session" });
+  const titles = detectAlerts(
+    named([resident, plain]),
+    named([{ ...resident, state: "awaiting_input" }, { ...plain, state: "awaiting_input" }]),
+  ).map((a) => a.title);
+  assert.deepEqual(titles, ["Watch lint needs you", "bare-session needs you"]);
+});
+
+test("with names a resident's alert takes its resident name, and others keep task title then session name", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const task = withTask("t-plain", "Fix the parser");
+  const plain = mkSession({ id: "bare", name: "bare-session" });
+  const prev = named([resident, task, plain], residentNames);
+  const next = named(
+    [resident, task, plain].map((s) => ({ ...s, state: "awaiting_input" as SessionState })),
+    residentNames,
+  );
+  assert.deepEqual(detectAlerts(prev, next).map((a) => a.title), [
+    "Linter watcher needs you",
+    "Fix the parser needs you",
+    "bare-session needs you",
+  ]);
+});
+
+test("a stall's title names its agent by the same rule as the scope it came from", () => {
+  const resident = withTask("t-resident", "Watch lint");
+  const stall: Stall = { sessionId: resident.id, kind: "silent-working", forMs: 600_000, reason: "silent for 10m" };
+  const off = detectAlerts({ ...named([resident]), stalls: [] }, { ...named([resident]), stalls: [stall] });
+  const on = detectAlerts(
+    { ...named([resident], residentNames), stalls: [] },
+    { ...named([resident], residentNames), stalls: [stall] },
+  );
+  assert.equal(off[0]?.title, "Watch lint looks stuck");
+  assert.equal(on[0]?.title, "Linter watcher looks stuck");
 });

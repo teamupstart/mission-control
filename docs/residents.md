@@ -247,22 +247,20 @@ and count.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.
+- **Filter.** Fleet's search box matches words across each live card's name, chip, status,
+  loop details, latest message, pending questions, controls and inline action alerts. Compressed
+  cards are still searchable by their full content. The live count and the Profiles list remain
+  available while you search.
 - **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
   in the color of the Board's **Working** column; while it needs you, in the color of **Needs
   you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
   the card wears its marker color.
 - **Needs you group.** Residents that need you move to the top of the drawer, into a group
   framed in the **Needs you** color under a **Needs you** heading with how many are asking.
-  With keycaps on, the heading prints <kbd>e</kbd>. <kbd>e</kbd> opens the review queue of the
-  first fleet session asking, as it always has, and otherwise addresses the first resident in
-  this group: its review queue, with its card selected, when it asked through a review, or its
-  conversation with the cursor in the reply box when it needs you some other way, such as a menu
-  it is parked on. That holds while a conversation is open and the resident is also a row in the
-  **Needs you** rail, and a fleet session's review still comes first even when that resident is
-  the one selected. <kbd>e</kbd> passes over the resident whose conversation is already open
-  while another is asking, unless it has a review to open; when that one is the only resident
-  asking, it puts the cursor back in its reply box. The rest of the residents follow below the
-  group.
+  With keycaps on, the heading prints <kbd>e</kbd>. On the Board, this opens the
+  [attention inbox](attention-and-alerts.md) when **to answer** is visible. When a resident's
+  conversation is open, the inbox starts at that resident's first pending question if one is
+  listed. The rest of the residents follow below the group.
   A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
   shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
 - **Compressing a card.** Every card starts open. Clicking a resident's title, or
@@ -285,8 +283,8 @@ and count.
   color, with its kind as the review modal names it (input, decisions, plan or diff), its
   title and a line on what answering takes, such as a question's options. The card never
   draws the form itself.
-  Clicking a row selects the card and opens the review modal on that resident's queue, the same
-  modal <kbd>e</kbd> opens, where the question is answered, dismissed or moved to chat. A menu
+  Clicking a row selects the card and opens the review modal on that resident's queue,
+  where the question is answered, dismissed or moved to chat. A menu
   the session is parked on is one such row too, and clicking it opens the same review modal,
   which shows the menu's rows as the Conversation tab does, so pressing one answers it. Once
   nothing is left pending, the modal closes and the amber state and the visitor card clear.
@@ -415,6 +413,29 @@ read. The dashboard's Flag reply and Clear blocker always send it.
 
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
+
+### Sessions awaiting a background process
+
+While the **Awaiting background work** preview is on, sessions can declare that they are
+[idle on purpose](sessions.md#sessions-awaiting-a-background-process-preview) while a background process
+they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`, `wakeSource`,
+`expectedBy`, `referenceUrl`, `startedAt` and `overdue`) to every row of its list and accepts
+`awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one
+session returns its whole wait, Markdown details included. `control_session` adds
+`{"action":"clear_awaiting","awaitingId":"...","resolution":"..."}`, which ends the wait and
+sends the session nothing. `awaitingId` is required: pass the `id` that `read_sessions`
+returned, so a wait the session declared again since is refused with 409. Leave a wait inside
+its deadline alone: the session resumes on its own, and an overdue one is already back under the
+normal stuck-session rules.
+
+### Completing other sessions
+
+A resident with session control can finish another session the way **Complete** does from its
+card: `control_session` with `{"action":"complete","outcome":"..."}` records the target's task as
+done and closes the session. It takes the dialog's two confirmations, `satisfyDependents` and
+`confirmIncompleteScout`, only when set explicitly. See
+[Let a session steer other sessions](sessions.md#let-a-session-steer-other-sessions). Without
+session control the action is refused like every other `control_session` action.
 
 ## Lifecycle
 
@@ -638,7 +659,12 @@ preserves your model and cap until you change them; clearing a cap disables that
 future launches only. When Model is **harness default**, a capped profile cannot be saved until
 the harness settings load and its price availability is known. Pending or failed reads show
 guidance beside both fields; select an explicit priced model or clear the cap to proceed without
-that lookup, or reload to retry a failed read. GPT-6.1 Sol and Terra have verified Standard API pricing, including cached input,
+that lookup, or reload to retry a failed read. GPT-6.2 Sol and Astra support spend caps using
+verified Standard API rates, including cached input, 30-minute cache writes and long-context
+rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[Astra model reference](https://developers.openai.com/api/docs/models/gpt-6.2-astra)). These are
+Standard API-equivalent estimates, not subscription charges or Fast/Ultrafast billing.
+GPT-6.1 Sol and Terra also have verified Standard API pricing, including cached input,
 cache writes and long-context rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [Terra model reference](https://developers.openai.com/api/docs/models/gpt-6.1-terra)).
 Claude uses harness-reported costs, including for Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5;
@@ -866,6 +892,42 @@ keeps a server on the launcher.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
+
+### The work unit reference
+
+A resident run has no [work unit](work-units.md), so its launch carries no `WORK_UNIT_ID` and its
+MCP calls are never tagged with one. The pinned catalog still recognizes the reference the
+[config guide](work-units.md#mcp-servers-the-worker-calls) recommends, with the `work-unit-id`
+preview on or off, because an MCP config is usually shared and must not break a resident:
+
+- **Claude Code.** A header named `x-work-unit-id` (any case) whose whole value is
+  `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}` is dropped before expansion: not stored, not a
+  secret, not sent. Before this, it became an empty header on every call.
+- **Codex.** `env_http_headers` whose only entry maps `x-work-unit-id` to `WORK_UNIT_ID` is
+  accepted and dropped. Before this, the server was unusable ("it uses env_http_headers, which
+  residents cannot carry") and a launch that included it was refused. Any other
+  `env_http_headers` entry is still refused, as before.
+- **A literal value is not the reference.** An `x-work-unit-id` with a non-empty value an
+  operator wrote is kept and sent like any configured header.
+- **Runs launched earlier.** A run's private copy is not rewritten, but an empty
+  `x-work-unit-id` is left out whenever a start or resume redeems the server, so such a run stops
+  sending it from its next start. A non-empty stored value is sent as stored until the resident
+  is launched again. No Codex run holds the refused state: that launch never started, and
+  launching the profile again succeeds.
+
+**Sign-in.** The decision whether Claude Code may sign in to a server itself is made on the
+headers that remain once the reference is dropped. A server whose only header was the reference
+is headerless again, so it is handed to the harness exactly as it was before the reference was
+added, which by Claude Code's program text is the entry its stored sign-in is keyed by. A server
+with another header stays on the launcher, which presents no sign-in, as before. A run launched
+before this change keeps its pinned route until the resident is launched again. Whether a pinned
+resident keeps a server's sign-in once the reference is added is **not verified**: the check
+against a local OAuth fixture could not run on the machine it was attempted on (see
+[What the OAuth check found](work-units.md#what-the-oauth-check-found)). So until it is verified,
+leave the reference off a server a pinned resident signs in to with OAuth.
+
+A resident on [all native sources](#all-native-sources) reads the operator's config with the
+variable unset, like any session outside a work unit.
 
 ### Custom MCP servers
 

@@ -1,6 +1,18 @@
+import type { ReportItem } from "@shared/reports.ts";
+import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceState } from "@shared/voice.ts";
+import {
+  SHAPING_WRITE_ORDER_HEADER,
+  type ShapingConfigView,
+  type ShapingIntent,
+  type ShapingReply,
+  type ShapingRun,
+  type ShapingTestRequest,
+  type TaskShaping,
+  type TaskSkillPrompt,
+} from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -260,6 +272,24 @@ export interface CompleteTaskResult extends ActionResult {
   problems?: string[];
 }
 
+/**
+ * How a GET that may be retried came out: its value, or a failure that is `definite` when the
+ * server answered with a 4xx (asking again will not change it) and transient otherwise (a network
+ * error or a 5xx).
+ */
+export type JsonRead<T> = { ok: true; value: T } | { ok: false; definite: boolean };
+
+/** GET a JSON endpoint, saying whether a failure is worth retrying. */
+async function readJson<T>(path: string): Promise<JsonRead<T>> {
+  try {
+    const res = await actionFetch(path);
+    if (!res.ok) return { ok: false, definite: res.status >= 400 && res.status < 500 };
+    return { ok: true, value: (await res.json()) as T };
+  } catch {
+    return { ok: false, definite: false };
+  }
+}
+
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
@@ -464,6 +494,8 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+/** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
+export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -604,6 +636,19 @@ export const fetchResolvedStandingInstructions = (
   if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
+
+/** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
+export interface TaskShapingView {
+  summary: TaskShaping;
+  /** The section delivered in turn one, or null when nothing was kept. */
+  text: string | null;
+  /** The launch's after-work prompt, null until one was written. Absent from an older daemon. */
+  afterWork?: TaskSkillPrompt | null;
+}
+
+/** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
+export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
 
 /** What THIS session was actually sent at launch. `null` covers the route's 404. */
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
@@ -1922,6 +1967,18 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  /** Queue a Stuck row's fixed Nudge, Continue or push message (`inbox` flag). */
+  sendInboxMessage: (id: string, kind: InboxMessageKind) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inbox-message`, { kind }),
+  /**
+   * Open a parked run's next repair round, as the Runs page's Resubmit does with a fresh
+   * request id.
+   */
+  resubmitWorkflowRun: (runId: string) =>
+    post(`/api/workflow-runs/${encodeURIComponent(runId)}/resubmit`, {
+      requestId: crypto.randomUUID(),
+      resubmitUnchanged: false,
+    }),
   deliverPendingTurn: (id: string, turnId: string, revision: number, action: "steer" | "interrupt") =>
     post(`/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/deliver`, { revision, action }),
   reportComposerActivity: (
@@ -1985,6 +2042,9 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
+  /** End a session's declared wait. `awaitingId` refuses a wait the session re-declared since. */
+  clearAwaiting: (id: string, awaitingId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/awaiting/clear`, { awaitingId }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /** Pause one session: freeze it now, or once its current turn ends. */
   pauseSession: (id: string, mode: SessionPauseMode = "now") =>
@@ -2105,6 +2165,29 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
+  /** Reply to an agent report: delivered as the operator's message, and marks it read. */
+  replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
+  /**
+   * Start a report's follow-up task, or dispatch the one an earlier press created. A failure
+   * after the task was created still names it (`taskId`).
+   */
+  followUpReport: (id: string, text: string) =>
+    post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
+  /**
+   * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
+   * A page the archive's checker refused answers with every problem in `problems`.
+   */
+  publishReport: (id: string) =>
+    post<ActionResult & { archiveKey?: string; problems?: string[] }>(`/api/reports/${encodeURIComponent(id)}/publish`),
+  /** The stored copy of a report's attached document, as text. */
+  reportDocumentUrl: (id: string) => `/api/reports/${encodeURIComponent(id)}/document`,
+  /** Every report a session posted, every version, read or not, for its conversation. */
+  sessionReports: (id: string) =>
+    readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
    * conversation replays afterwards - `response` is the flattened string the agent reads,
@@ -2127,6 +2210,8 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
   /** Answer now: bring a snoozed question back before its time. */
   wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
+  /** One review by id, settled or not: the earlier version a revised plan form links to. */
+  review: (id: string) => readJson<ReviewItem>(`/api/reviews/${encodeURIComponent(id)}`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**
@@ -2369,6 +2454,11 @@ export const api = {
   /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
+  // --- Voice, behind its preview flag (404 while it is off) ---
+  setVoiceConfig: (patch: VoiceConfigPatch) =>
+    put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
+  setVoiceMuted: (muted: boolean) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
@@ -2524,7 +2614,13 @@ export const api = {
    * top of these for immediacy (see `useTimelineReviews`).
    */
   resolvedReviews: (id: string) =>
-    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+  /**
+   * The same history for the sessions this conversation was runtime-transferred from. Read only
+   * to draw an answer delivered here whose question a predecessor asked.
+   */
+  lineageReviews: (id: string) =>
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews?lineage=1`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

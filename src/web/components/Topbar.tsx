@@ -62,6 +62,12 @@ export interface TopbarProps {
    * Snoozed section lists them. Optional so a caller without the feature draws no segment.
    */
   snoozed?: number;
+  /**
+   * Agent reports waiting to be read (`inbox` flag). Counted apart from `inbox`, because a
+   * report asks to be read rather than answered, and opening the same inbox, whose Reports
+   * section lists them. Optional so a caller without the feature draws no segment.
+   */
+  toRead?: number;
   onOpenInbox: () => void;
   /**
    * The attention inbox cannot be shown yet: the dashboard's read of the operator's dismissals
@@ -175,7 +181,7 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
             placeholder={`Filter (${formatChord(bindings.filter)})`}
             aria-label={page === "library"
               ? "Filter Library cards"
-              : "Filter sessions by title, status, agent, or PR number"}
+              : "Filter sessions and resident cards"}
             value={filter}
             onChange={(e) => onFilterChange(e.target.value)}
             onKeyDown={(e) => {
@@ -210,6 +216,7 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         working={isTopbarItemShown(layout, "working") ? props.working : 0}
         inbox={props.inbox}
         snoozed={props.snoozed ?? 0}
+        toRead={props.toRead ?? 0}
         inboxUnavailable={props.inboxUnavailable ?? false}
         onOpenInbox={props.onOpenInbox}
         didNotStart={props.didNotStart ?? 0}
@@ -433,6 +440,7 @@ function FleetPulse({
   working,
   inbox,
   snoozed,
+  toRead,
   inboxUnavailable,
   onOpenInbox,
   didNotStart,
@@ -465,6 +473,8 @@ function FleetPulse({
   inbox: number;
   /** See `TopbarProps.snoozed`. */
   snoozed: number;
+  /** See `TopbarProps.toRead`. */
+  toRead: number;
   /** See `TopbarProps.inboxUnavailable`. */
   inboxUnavailable: boolean;
   onOpenInbox: () => void;
@@ -532,6 +542,16 @@ function FleetPulse({
           tone="neutral"
           onClick={onOpenInbox}
           tip={`${snoozed} question${snoozed === 1 ? "" : "s"} you chose Remind me later on, coming back on their own. Open the inbox to see when, or answer now`}
+        />
+      )}
+      {/* Neutral, like `snoozed`: a report is something to read, never something blocking. */}
+      {toRead > 0 && (
+        <PulseStat
+          n={toRead}
+          label="to read"
+          tone="neutral"
+          onClick={onOpenInbox}
+          tip={`${toRead} agent report${toRead === 1 ? "" : "s"} waiting to be read. Open the inbox`}
         />
       )}
       {didNotStart > 0 && (

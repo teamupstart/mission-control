@@ -173,6 +173,9 @@ routes retain their human/Foreman grammar. Delegated single-option selections re
 request id returned by the target read, so an identical option on a replacement prompt does
 not accept a stale answer. Message routes likewise reject a caller-supplied `origin: "session"`;
 only the verified internal request receives the delegated message label.
+The delegated `complete` action resolves the task from the target's live session, never from a
+caller-supplied id, and calls the dashboard's task completion and session stop routes in that
+order. It carries the completion confirmations only when the controller sets them explicitly.
 Changing the grant requires a trusted click on the desktop dashboard's session-control menu. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process
@@ -283,6 +286,20 @@ caller is the signed session that asked, never a profile or Persona id in the re
 Like every review, the answer arrives on the dashboard's loopback route. That is the same
 single-user local trust boundary described above: it keeps Mission Control's own agents and
 delegated sessions from approving a change, not arbitrary shell code running as the operator.
+
+## Agent reports
+
+An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
+session; it never names another session. Taking a report out of **to read** is the operator's:
+`POST /api/reports/:id/opened`, `POST /api/reports/:id/read`, `POST /api/reports/:id/reply` and
+`POST /api/reports/:id/follow-up` refuse the machine token, a signed agent credential, and a
+request attributed to an agent or to Foreman. That is the same single-user local trust boundary
+that review answers rely on. It keeps Mission Control's own agents, Foreman and delegated sessions
+from marking a report read, from sending a message in the operator's name, and from filing and
+dispatching a follow-up task; it does not verify that a header-less loopback
+request came from the dashboard, so shell code running as the operator can still call these
+routes. An attached document is accepted only from inside the posting session's checkout, using
+the same containment rules as the Files viewer.
 
 ## Resident MCP secrets
 
@@ -560,6 +577,31 @@ per entry, per shaper and in total, and placed in its own labelled section, whic
 cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
 or returns something else is recorded as an outcome, never an error reply.
 
+Every dispatch calls the enabled shapers after its worktrees are provisioned and before the
+worker starts, and the section is appended to the worker's first prompt after the kind
+contract. Nothing a shaper does can stop the launch: a shaper that fails, times out or answers
+something else is recorded as `degraded` and the worker starts without its text, and the
+section is cut to what the delivery path can carry, so it never makes a launch that works today
+fail. What each session received is recorded on the task and shown only for that session.
+
+**A routed skill is a name, never text.** A router supplies only a skill name and a reason id,
+both held to strict character sets, and Mission Control writes every word around them. A name
+from Mission Control's catalog is checked before it is announced, and a catalog skill the
+operator switched off never is. Any other name is announced as given and marked not verified,
+because a skill installed some other way is not inventoried. A router can therefore point the
+worker at any skill installed for its harness; the record and the viewer show each routed skill
+and who routed it, up to 32 a launch. A distinct skill routed past that limit is left out of the
+record and is never announced, so nothing reaches turn one that the record does not show. The after-work prompt Mission Control sends is its own text, delivered only
+when the session is idle, once per launch, and recorded as daemon-written, never as the
+operator's words. A name or reason id that holds a resolved credential value is dropped, never
+rewritten.
+
+**The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
+the state home can run at the next dispatch without a click, so anything that can write that
+folder can add one, worker agents included. The ownership checks, what Mission Control shows
+and records, and the full trust statement are in
+[the shaper folder](task-shaping.md#the-shaper-folder).
+
 **Remote shapers.** An `mcp` shaper reached over streamable HTTP and an `http` shaper send the
 request off the machine, so they follow the egress rule resident MCP servers follow, through
 the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
@@ -666,11 +708,6 @@ that one place and only once, so a later close never signals a group id the syst
 have given to an unrelated process. A server that stops reading its stdin while it keeps
 running loses the connection at the first write that fails, and the call answers at once. A helper that leaves the
 group on purpose is out of reach, as it is for a `command` shaper.
-
-This build only dry-runs shapers through the API: no worker receives their text yet. Calling
-them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The shapers folder is declared but not yet reachable: it answers `unavailable`
-until its phase lands, and its folder ownership rules are documented with it.
 
 **The built-in gatherer reads only named files inside the worktree.** `repository-files` runs
 in the daemon and reads the paths its options list, nothing else. Containment and size are

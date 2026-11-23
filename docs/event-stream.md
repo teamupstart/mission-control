@@ -166,3 +166,39 @@ windows through it. Identical frames are suppressed by canonical JSON. The confi
 `SHAPING_LIMITS`, 32 shapers of at most 16 KiB and 128 choices, below 560 KiB serialized at the
 maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
 folds them. See [Task shaping](task-shaping.md#settings).
+
+## Voice
+
+`voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
+`mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
+or one of them lapsed, which a daemon timer publishes with no request. The reconnect snapshot's
+`voice` field is present only while the `voice` flag is on, computed at that moment. While the
+flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
+shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are
+suppressed by a canonical form. `MissionState.voice` is the only browser owner, null before the
+snapshot and while the flag was off at connect time. `wireVoiceStateEvents` in
+`src/server/voice/state.ts` is the one bridge, wired once at daemon start. The state is a handful
+of scalars, at most seven capabilities with bounded reasons, and a roster that is empty until the
+names phase fills it. It is not a `LINE_INPUT_EVENTS` member. See [Voice addressing](voice.md).
+
+## Agent reports
+
+`report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
+report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
+never deleted and outlives the session that posted it, so a read or replaced report is upserted
+with its new state, and the dashboard drops it from its state on that frame
+(`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
+replaced report with its `supersededBy` set and then its successor.
+
+The reconnect snapshot's `reports` field holds every report waiting to be read: unread, and the
+latest of its chain. It is bounded by what the operator has not read yet. A session's whole
+history, older versions and read reports included, is read on demand from
+`GET /api/sessions/:id/reports` rather than carried here.
+
+Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
+`report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
+read, so an open window fills its Reports section and **to read** figure with no reload.
+`MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
+stage folds reports.

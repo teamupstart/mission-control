@@ -18,7 +18,7 @@ try {
     stdio: "inherit",
   });
   if (build.status !== 0) {
-    // Not process.exit: that would skip the cleanup below and leave the build folder behind.
+    // Not process.exit: that would skip the finally below and leak the temporary build.
     process.exitCode = build.status ?? 1;
   } else {
     const pluginDir = join(out, "mission-control");

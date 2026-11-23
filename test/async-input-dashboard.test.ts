@@ -27,6 +27,7 @@ import { transcriptRows } from "../src/web/lib/tools.ts";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import { SnoozeSheet } from "../src/web/components/ReviewSnooze.tsx";
 import { AskedQuestionCard, ClosedQuestionCard } from "../src/web/components/AskedQuestion.tsx";
+import { EarlierVersion, RevisionTag } from "../src/web/components/ReviewRevision.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The asynchronous input inbox, Phase 3: how the dashboard renders a question its agent filed and
@@ -258,7 +259,8 @@ test("a resident with open questions opens its review queue, not its conversatio
 
 function order(rows: ConversationRow[]): string[] {
   return rows.map((r) =>
-    r.kind === "turn" || r.kind === "tools" ? r.id : `${r.kind}:${r.kind === "episode" ? r.episode.marker : r.review.id}`);
+    r.kind === "turn" || r.kind === "tools" ? r.id
+      : `${r.kind}:${r.kind === "episode" ? r.episode.marker : r.kind === "delivered" ? r.reviewId : r.kind === "report" ? r.report.id : r.review.id}`);
 }
 
 function msg(id: string, ts: number): TranscriptMessage {
@@ -528,4 +530,92 @@ test("a paused resident's badge, card and drawer entry say it has stopped, and t
   const run = (loopState: "paused" | "waiting") => ({ loopState }) as Parameters<typeof residentEntryAmber>[0]["run"];
   assert.equal(residentEntryAmber({ run: run("paused"), session: watcher }), true);
   assert.equal(residentEntryAmber({ run: run("waiting"), session: watcher }), false, "a working resident is never amber for its questions");
+});
+
+// ---- filed plan decisions (`filed-plan-decisions`): a filed plan form is a gate ----
+
+function filedPlan(over: Partial<ReviewItem> = {}): ReviewItem {
+  return question({
+    id: "p1", kind: "plan-decisions", title: "Linter plan", body: "# Linter plan\n\nAdopt one linter.",
+    snoozable: undefined, meanwhile: undefined, ...over,
+  });
+}
+
+test("a filed plan form reads Waiting on your decisions, stopped, with no meanwhile line, even while its agent finishes its turn", () => {
+  for (const session of [working({ pendingReviews: 1, openQuestions: 0 }), stopped({ pendingReviews: 1, openQuestions: 0 }), resident({ pendingReviews: 1, openQuestions: 0 })]) {
+    assert.deepEqual(questionStatusLine(filedPlan(), session, NOW), {
+      status: "stopped", label: "Waiting on your decisions", meanwhile: null, asked: "filed 4m ago",
+    }, session.state);
+  }
+  const html = renderToStaticMarkup(createElement(ReviewCard, { review: filedPlan(), session: working({ pendingReviews: 1, openQuestions: 0 }) }));
+  assert.match(html, /class="review-wait review-wait-stopped"/);
+  assert.match(html, />Waiting on your decisions</);
+  assert.doesNotMatch(html, /Still working/);
+  assert.doesNotMatch(html, /Remind me later/, "no snooze on a plan form");
+});
+
+test("a filed plan form's session leads the inbox and its actions say the agent keeps waiting", () => {
+  const sessions = [
+    working({ id: "busy", name: "busy" }),
+    working({ id: "planner", name: "planner", pendingReviews: 1, openQuestions: 0 }),
+  ];
+  const reviews = [
+    question({ id: "a", sessionId: "busy", createdAt: NOW - 30 * MIN }),
+    filedPlan({ id: "b", sessionId: "planner", createdAt: NOW - 5 * MIN }),
+  ];
+  const fold = foldAttention({ sessions, reviews, ensembles: [] });
+  assert.deepEqual(fold.items.flatMap((item) => (item.kind === "session_reviews" ? [item.session.id] : [])), ["planner", "busy"]);
+  assert.equal(fold.total, 2, "counted in to answer from filing");
+  assert.equal(stoppedOnQuestions(working(), [filedPlan()]), true);
+  assert.equal(questionWait(filedPlan(), working()), "call");
+  assert.equal(stateDisplay(sessions[1]!).tone, "attention", "amber while its agent is still working");
+  assert.equal(stateDisplay(sessions[1]!).label, "to review");
+});
+
+test("a filed plan is drawn where it was filed as Plan filed, with an Open button and no plan body", () => {
+  assert.deepEqual(reviewEntries(filedPlan()).map((entry) => entry.kind), ["asked"]);
+  const open = renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan(), session: working(), onAnswer: () => {} }));
+  assert.match(open, /aria-label="Plan filed: Linter plan"/);
+  assert.match(open, />Plan filed</);
+  assert.match(open, />Open</);
+  assert.match(open, />Waiting on your decisions</);
+  assert.doesNotMatch(open, /Adopt one linter/);
+  const withdrawn = renderToStaticMarkup(createElement(AskedQuestionCard, {
+    review: filedPlan({ status: "withdrawn", response: "Scope changed" }), onAnswer: () => {},
+  }));
+  assert.match(withdrawn, /Withdrawn by the agent/);
+  assert.match(withdrawn, /Scope changed/);
+  const merged = renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan({ status: "orphaned", closedReason: "merged" }) }));
+  assert.match(merged, /Closed unanswered: pull request merged/);
+});
+
+test("a revised plan form is tagged Revision N beside an Earlier version control, on its card and its conversation entry", () => {
+  const revised = filedPlan({ id: "r2", title: "Linter plan, revised", revision: { number: 2, previousId: "r1" } });
+  const card = renderToStaticMarkup(createElement(ReviewCard, { review: revised, session: working({ pendingReviews: 1, openQuestions: 0 }) }));
+  const head = card.slice(card.indexOf('class="review-head"'), card.indexOf("</div>", card.indexOf('class="review-head"')));
+  assert.match(head, /<span class="kind-tag kind-revision">Revision 2<\/span>/, "in the header the modal and the inbox share");
+  assert.match(head, />Earlier version<\/button>/);
+  const entry = renderToStaticMarkup(createElement(AskedQuestionCard, { review: revised, session: working(), onAnswer: () => {} }));
+  assert.match(entry, /class="review-answer-head".*kind-revision">Revision 2<.*>Earlier version</s);
+  assert.match(renderToStaticMarkup(createElement(RevisionTag, { review: { revision: { number: 3, previousId: "r2" } } })), />Revision 3</);
+
+  // A form that revises nothing carries neither, anywhere.
+  for (const html of [
+    renderToStaticMarkup(createElement(ReviewCard, { review: filedPlan(), session: working() })),
+    renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan(), session: working() })),
+  ]) {
+    assert.doesNotMatch(html, /Revision \d|Earlier version/);
+  }
+});
+
+test("the earlier version shows its title, when it was filed, why it was withdrawn, its plan and its decisions, and offers no Submit", () => {
+  const earlier = filedPlan({ id: "r1", status: "withdrawn", response: "Revised: replaced by revision 2 of this plan.", resolvedAt: NOW });
+  const html = renderToStaticMarkup(createElement(EarlierVersion, { review: earlier }));
+  assert.match(html, /aria-label="Earlier version: Linter plan"/);
+  assert.match(html, /<h3>Linter plan<\/h3>/);
+  assert.match(html, /Filed .*Withdrawn by the agent/);
+  assert.match(html, /Reason<\/span> Revised: replaced by revision 2 of this plan\./);
+  assert.match(html, /Adopt one linter/, "the plan text");
+  for (const option of earlier.decisions![0]!.options) assert.ok(html.includes(option.label), option.label);
+  assert.doesNotMatch(html, /<button|<input|Submit|Dismiss/, "a record: nothing on it answers");
 });

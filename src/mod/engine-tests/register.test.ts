@@ -8,8 +8,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const HEALTH = (on) => JSON.stringify({ ok: true, service: 'mission-control', version: '2.3.0', capabilities: on ? ['home-dispatch-v1'] : [] })
-const registration = (minModApi) => JSON.stringify({
-  sessionId: 's1', repoRoot: '/repo', created: true, offerLauncher: false,
+const registration = (minModApi, n = 0) => JSON.stringify({
+  sessionId: 's1', repoRoot: '/repo' + n, created: true, offerLauncher: false,
   counts: { running: 0, waiting: 1 }, daemonVersion: '2.3.0', minModApi, dashboardUrl: 'http://127.0.0.1:7317/',
   banner: ['◆ Mission Control   ● Claude Code', 'Dispatch, check on and answer tasks without leaving this session', '0 running | 1 waiting on you | /mission-dispatch opens the menu'],
 })
@@ -20,15 +20,16 @@ const INBOX = JSON.stringify({
 })
 
 function world(on, { flag, minModApi = 1 }) {
-  const seen = { inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
+  const seen = { registrations: 0, inbox: INBOX, flag, urls: [], opened: [], closed: [], order: [], openArgs: [], toasts: [], statuses: [], state: {} }
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
   on('session.id', () => ({ value: seen.ids?.shift() ?? 's1' }))
   on('fs.read', async () => { if (seen.holdRead) await seen.holdRead; return { value: 'a-token' } })
-  on('http.fetch', (_, e) => {
+  on('http.fetch', async (_, e) => {
     seen.urls.push(e.url)
-    const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi) : seen.inbox)
+    if (seen.holdFirstSessionsReply && e.url.endsWith('/dispatch/sessions') && !seen.heldOnce) { seen.heldOnce = true; await seen.holdFirstSessionsReply }
+    const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi, ++seen.registrations) : seen.inbox)
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
@@ -499,32 +500,37 @@ test('a refused pane open from the band button is logged, not left unhandled', a
   const ui = await $.ui.mount(ABOVE)
   seen.failOpen = true
   await ui.press({ key: 'open-needs-you' })
-  await settle(() => logs.some((t) => /could not open the pane: /.test(t)))
-  expect(logs.some((t) => /could not open the pane: /.test(t))).toBe(true)
+  await settle(() => logs.some((t) => /the 1 button failed: /.test(t)))
+  expect(logs.some((t) => /the 1 button failed: /.test(t))).toBe(true)
   await ui.unmount()
 })
 
-test('a scheduled reconnect whose pane open is refused is logged, not left unhandled', async ($, on) => {
-  const seen = dispatchWorld(on)
-  seen.flag = false
-  const logs = []
-  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+test('a stopped session\'s late registration reply does not overwrite its replacement\'s state', async ($, on) => {
+  const seen = world(on, { flag: true })
+  let release
+  seen.holdFirstSessionsReply = new Promise((resolve) => { release = resolve })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await settle(() => seen.urls.length >= 1)
-  // The flag comes on later; the next scheduled poll reconnects and its pane open is refused.
-  seen.flag = true
-  seen.failOpen = true
-  await seen.clock.advance(5000)
-  await settle(() => logs.some((t) => /the poll failed: /.test(t)))
-  expect(logs.some((t) => /the poll failed: /.test(t))).toBe(true)
+  await settle(() => seen.urls.some((u) => u.endsWith('/dispatch/sessions')))
+  // The first session's registration reply is still held when its replacement registers.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.state.registration !== undefined)
+  expect(seen.state.registration.repoRoot).toBe('/repo1')
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.state.registration.repoRoot).toBe('/repo1')
 })
 
-test('a first connection whose pane open is refused is logged too', async ($, on) => {
-  const seen = dispatchWorld(on)
-  const logs = []
-  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
-  seen.failOpen = true
+test('a session that ends while its pane open waits for the previous close never opens', async ($, on) => {
+  const seen = world(on, { flag: true })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await settle(() => logs.some((t) => /the first connection failed: /.test(t)))
-  expect(logs.some((t) => /the first connection failed: /.test(t))).toBe(true)
+  await settle(() => seen.opened.length >= 1)
+  let release
+  seen.holdClose = new Promise((resolve) => { release = resolve })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  // The second session is waiting on the first's close; it ends before the close completes.
+  await $.session.end({ reason: 'other', sessionId: 's1' })
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.opened).toEqual(['mission'])
 })

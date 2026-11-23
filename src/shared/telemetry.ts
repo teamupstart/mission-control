@@ -17,6 +17,7 @@
 import { z } from "zod";
 import { partialPatch } from "./zod-shapes.ts";
 import type { TelemetryOrganizationStatus } from "./organizations.ts";
+import { isWorkUnitId, WORK_UNIT_SPAN_ATTRIBUTE } from "./work-unit.ts";
 
 /**
  * The domain envelope's schema revision.
@@ -198,6 +199,40 @@ export const TELEMETRY_LIMITS = {
   /** How many batches one delivery pass drains, so an overnight backlog cannot saturate. */
   deliveryBatchesPerTick: 8,
 } as const;
+
+// ---- refs exported as they are ----
+
+/**
+ * The refs a span exports UNHASHED, under their own name, to every lane. The one deliberate
+ * exception to the rule that every exported id is a per-destination `scopedRef` hash.
+ *
+ * Every other ref is hashed with the destination's salt, so two audiences cannot join their
+ * records and a holder cannot recover the internal id. A work unit id exists to be joined: it is
+ * minted for exactly that, the agent already sends it unhashed on its own MCP calls
+ * (`x-work-unit-id`, `params._meta.work_unit_id`), and other services index it under the same
+ * name. A hashed copy would match neither them nor another lane, which is the one property the id
+ * is for. It names a piece of work and embeds when it was minted - nothing about a person, a
+ * repository or content. See "Work unit id" in `docs/observability.md`.
+ *
+ * Adding a member is a privacy decision, not a catalog edit: the catalog lint refuses an
+ * unscoped ref that is not listed here, and the projection exports only a value that passes the
+ * member's own format check below.
+ */
+export const UNSCOPED_REF_KEYS = [WORK_UNIT_SPAN_ATTRIBUTE] as const;
+export type UnscopedRefKey = (typeof UNSCOPED_REF_KEYS)[number];
+
+/**
+ * The format each unscoped ref must have to be exported. Typed against the list, so a member
+ * cannot be added without one. A value that fails is dropped, never hashed in its place.
+ */
+export const UNSCOPED_REF_FORMATS: Record<UnscopedRefKey, (value: unknown) => value is string> = {
+  [WORK_UNIT_SPAN_ATTRIBUTE]: isWorkUnitId,
+};
+
+/** Whether `key` is on the unscoped list. */
+export function isUnscopedRefKey(key: string): key is UnscopedRefKey {
+  return (UNSCOPED_REF_KEYS as readonly string[]).includes(key);
+}
 
 /** The sentinel a dimension value folds into once an instrument exceeds its series budget. */
 export const TELEMETRY_OVERFLOW_VALUE = "__overflow__";

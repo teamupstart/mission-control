@@ -526,6 +526,16 @@ async function smokeSatellitePaths() {
   }
 }
 
+/** The `mod-calls` check (spec 7.10): the mod's source reaches only the daemon paths in `src/mod/allowed-calls.json`. */
+function smokeModCalls() {
+  const refused = findDisallowedModCalls(resolve("."));
+  if (refused.length > 0) {
+    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+    return;
+  }
+  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
+}
+
 /**
  * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
  * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's

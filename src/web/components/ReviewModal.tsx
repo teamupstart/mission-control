@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -24,10 +24,13 @@ import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
+import { RevisionTag } from "./ReviewRevision.tsx";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { CheckoutPathText } from "./CheckoutPathText.tsx";
 import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
 import { useNow } from "../useNow.ts";
+import { useAgentName, useAgentNamesEnabled } from "../lib/agent-names.ts";
+import { AgentName, SpokenHint } from "./AgentName.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -78,6 +81,7 @@ export function ReviewModal({
     : undefined;
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   const pending = reviews.length + (dialog ? 1 : 0);
+  const name = useAgentName(session, session.name);
   // Close automatically once the session has nothing left pending: no review and no menu.
   useEffect(() => {
     if (pending === 0) onClose();
@@ -95,7 +99,7 @@ export function ReviewModal({
       <header className="modal-head">
         <div>
           <AgentDot agent={session.agent} />
-          <strong>{session.name}</strong>
+          <AgentName view={name} />
           <span className="dim"> · {pending} pending</span>
         </div>
         <Tooltip label="Close the review queue - nothing is resolved">
@@ -132,6 +136,7 @@ export function ReviewModal({
  */
 export function ReviewCard({
   review,
+  titleRef,
   session = null,
   note: sessionNote,
   onMovedToChat,
@@ -139,12 +144,14 @@ export function ReviewCard({
   onOpenPath,
 }: {
   review: ReviewItem;
+  /** The inbox uses this to land the keyboard at a particular question. */
+  titleRef?: Ref<HTMLHeadingElement>;
   /**
    * The session that asked, live. A message-mode question (`async-input`) reads it for its status
    * line: whether the agent is still working past the question or has stopped on it. Every other
    * review ignores it.
    */
-  session?: Pick<Session, "id" | "state" | "stateConfirmed" | "task"> | null;
+  session?: Pick<Session, "id" | "name" | "state" | "stateConfirmed" | "task"> | null;
   note?: SessionNoteSummary | null;
   /** Paths in the session's checkout; a question naming one links it to Files. */
   checkoutPaths?: ReadonlySet<string> | null;
@@ -174,6 +181,11 @@ export function ReviewCard({
   // The asking session, marked when it is a resident the operator paused (`questionAgentStatus`).
   const agent = useQuestionAgent(session);
   const wait = questionWait(review, agent);
+  // Who asked, by the one naming rule: a line in the head while the `inbox` flag is on, and the
+  // name the question's spoken hints address. Nothing new is drawn with the flag off.
+  const namesOn = useAgentNamesEnabled();
+  const asker = useAgentName(session ?? { name: "" }, session?.name ?? "");
+  const question = review.kind === "input";
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -266,7 +278,9 @@ export function ReviewCard({
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
         </span>
         {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
-        <h3>{review.title}</h3>
+        {namesOn && session && <AgentName view={asker} className="review-agent" />}
+        <h3 ref={titleRef} tabIndex={titleRef ? -1 : undefined}>{review.title}</h3>
+        <RevisionTag review={review} />
         {foremanAvailable && (
           <ForemanRecommendationButton
             open={foremanOpen}
@@ -319,6 +333,8 @@ export function ReviewCard({
       {snoozing && snoozable ? (
         <SnoozeSheet review={review} wait={wait} onBack={() => setSnoozing(false)} />
       ) : decisions ? (
+        <>
+        {question && <SpokenHint action="answer-option" name={asker.name} />}
         <DecisionForm
           decisions={decisions}
           busy={busy}
@@ -359,6 +375,7 @@ export function ReviewCard({
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />
+        </>
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (
         <div className="review-actions">
           <textarea
@@ -388,6 +405,7 @@ export function ReviewCard({
               Send answer
             </button>
           </Tooltip>
+          <SpokenHint action="answer" name={asker.name} cardOpen />
         </div>
       ) : (
         <div className="review-actions">

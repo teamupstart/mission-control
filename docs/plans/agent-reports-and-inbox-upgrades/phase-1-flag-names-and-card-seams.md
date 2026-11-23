@@ -1,0 +1,135 @@
+# Phase 1: the flag, one name everywhere and the card seams
+
+Part of `docs/plans/agent-reports-and-inbox-upgrades/phased-plan.md`. Source plan: `plan.md`
+beside this file. Owns R18, R19, R24 (the order rule), R25 (the rule and its test) and R27.
+
+## 1. Outcome
+
+A new `inbox` preview flag exists in Settings. With it on, alert titles, inbox row headers, the
+review modal header and question cards name an agent by one rule, and a resident's name is drawn
+in its board colour. Later phases get a section-order rule and a place to declare card actions
+with their spoken forms.
+
+## 2. Entry criteria
+
+The planning pull request is merged. No phase dependency.
+
+## 3. Scope and non-goals
+
+In scope: the flag, the resolver, its use on existing surfaces, the order constant, the action
+and hint seam, docs and specs. Not in scope: call signs and the reference name (voice adds the
+fields), the tray (it shows counts only), the cards inside an agent's own conversation, reports
+and Stuck rows.
+
+## 4. Repository findings and contracts
+
+- Flags are declared only in `src/shared/feature-flag-registry.ts` (the `async-input` entry is
+  at `:74`). An id constant lives beside its feature (`ASYNC_INPUT_FLAG`,
+  `src/shared/async-input.ts:13`). Gates: `featureEnabled` (`src/server/feature-flags/index.ts:63`)
+  and `useFeatureFlag` (`src/web/useFeatureFlag.ts`). A flag cannot require another.
+- Names today: `sessionLabel` is private (`src/shared/alerts.ts:125`); `inboxSubject`
+  (`src/web/components/AttentionInbox.tsx:229`) uses `session.name`; so do the review modal
+  (`src/web/components/ReviewModal.tsx:98`) and the snoozed row
+  (`src/web/components/ReviewSnooze.tsx:284`). `ReviewCard` (`ReviewModal.tsx:133`) shows no
+  name and is shared by the modal, the inbox and `src/web/ensembles/EnsembleMembers.tsx`.
+- A resident session joins its run by `task.id === run.taskId`. The run carries
+  `settings.identity.name` and `settings.board.colorId` (`ResidentRunSummary`,
+  `src/shared/residents.ts:605`). The colour style is `residentAccentStyle`
+  (`src/web/residents/marker.ts:168`).
+- `detectAlerts` runs in the browser (`src/web/useNotifier.ts:120`) and in the daemon's away
+  watcher (`src/server/away/watcher.ts:204`). Both must name alike.
+- The fold's section order is implicit in push order (`src/web/lib/attention.ts:355`). It
+  produces seven kinds. Snoozed is not one of them: the inbox draws it after every fold section
+  (`src/web/components/AttentionInbox.tsx:197`).
+- `test/tooltip-coverage.test.ts` is a source scan that fails on a control with no tooltip; the
+  action test below follows it.
+
+## 5. Implementation steps
+
+1. **Flag.** `src/shared/inbox.ts` exports `INBOX_FLAG = "inbox"`. Add the registry entry: label
+   "Reports and inbox upgrades", stage `preview`, a description naming reports, Stuck rows and
+   the naming rule, and keywords.
+2. **Resolver.** `src/shared/display-name.ts`: `agentDisplayName(input)` returns
+   `{ name, source, spoken }`, ranking call sign or reference name, resident name, task title,
+   session name, then "a session". `spoken` is true only for the first two ranks. A helper builds
+   the input from a session and the resident runs.
+3. **Alerts.** `AlertScope` gains optional `names` (the resident runs). `sessionLabel` uses the
+   resolver when it is present. The browser passes it when the flag is on; the watcher passes it
+   when `featureEnabled(INBOX_FLAG)`.
+4. **Dashboard surfaces**, behind `useFeatureFlag(INBOX_FLAG)`: `inboxSubject` and the session
+   row headers, the snoozed row, the review modal header, and a name line in the `ReviewCard`
+   head. A resident's name takes its board colour.
+5. **Section order.** Add `INBOX_SECTION_ORDER` listing today's seven fold kinds in rendered
+   order: `ensemble_decision`, `session_reviews`, `session_dialog`, `pipeline_commission`,
+   `pipeline_halt`, `session_blocked`, `parked_finalization`. Make the fold emit in that order.
+   Snoozed stays where it is, drawn by the inbox after every fold section, so it is not in the
+   constant and remains the last heading. Correct the stale six-section comment.
+6. **Action seam.** In `src/shared/inbox.ts`: `InboxActionSpec { id, label, spoken, clickOnly }`
+   and the `INBOX_ACTIONS` registry. An entry has a spoken form, or a `clickOnly` reason
+   (`navigation`, `dismissal`, `disclosure`, `section-wide`). Seed it with the question card's
+   two forms from the index table. In the dashboard: `SpokenHint`, which reads a voice-hints
+   context, default off, and renders nothing; and `InboxActionButton`, which draws a control
+   from its registry entry with its hint. It takes an optional label, so one action can be drawn
+   under two labels without becoming two actions. Place the question card's hints.
+7. **Docs.** `docs/feature-flags.md` (the flag list and the Shipped flags table) and
+   `docs/attention-and-alerts.md` (the naming rule).
+
+## 6. Data and compatibility
+
+No storage. With the flag off every name is exactly what it is today, and tests pin both states.
+
+## 7. Tests and verification
+
+- `test/display-name.test.ts`: every rank, the fallbacks, `spoken`.
+- `test/alerts.test.ts`: titles with and without `names`.
+- `test/attention-inbox.test.ts`: the fold follows `INBOX_SECTION_ORDER`, and the constant holds
+  exactly the seven kinds above in that order.
+- `test/feature-flags.test.ts`: the entry is `preview` and off by default.
+- `test/inbox-actions.test.ts`: every registry entry has a spoken form or a click-only reason and
+  never both; ids are unique; a relabelled button keeps its action's id and spoken form; and a
+  source scan of the report card, report conversation entry and Stuck card files fails on a
+  button that is not an `InboxActionButton`. The scan passes on an empty file list here and
+  starts guarding each file when Phases 2, 3 and 5 add it to the list.
+- A `renderToStaticMarkup` test for the `ReviewCard` name line.
+- `e2e/specs/inbox-flag.spec.ts`, after `e2e/specs/async-input-flag.spec.ts`: the Settings row
+  appears off, and toggling it reaches a second window without a reload.
+- `e2e/specs/inbox-display-name.spec.ts`: with the flag on, a fake session whose task has a title
+  files a question; the inbox row header, the review modal header and the question card all show
+  the task title. With the flag off they show the session name. A resident shows its profile
+  name with its board colour.
+- Run `npm run typecheck`, `npm run lint`, `npm run build` and the two specs.
+
+## 8. Merge and exit criteria
+
+The flag row exists and toggles live. With the flag on, the four surfaces agree on one name; with
+it off nothing changed. The inbox's sections render in the order they do today. No new control is
+visible for the seam.
+
+## 9. Downstream handoff
+
+Later phases rely on `INBOX_FLAG`, `agentDisplayName`, `INBOX_SECTION_ORDER`, `INBOX_ACTIONS`,
+`InboxActionButton`, `SpokenHint` and `AlertScope.names`, and add to them without changing their
+shapes. Phase 5 inserts `session_stuck` directly after `session_blocked`. Phase 2 inserts
+`agent_reports` directly after `parked_finalization`, as the constant's final entry, which the
+inbox draws immediately before Snoozed. Each phase adds its actions from the index table and its
+card file to the scan. Voice fills `callSign` and `referenceName` and turns the hints on.
+
+## 10. Cross-phase audit record
+
+- Written first. Phases 2 and 5 each add one kind to `INBOX_SECTION_ORDER` at the position the
+  index's section-order table fixes; neither reorders the existing seven.
+- After Phase 2: report rows store the resolver's name at post time, so the resolver must not
+  need a live session. Its input is plain values. Confirmed.
+- After Phase 6: the report alert takes its name from the report, not from `sessionLabel`.
+  No change here.
+- Plan validation round 1: `clickOnly`, `InboxActionButton` and the scan were added so every
+  later card control is declared. The question card predates this work, so only its two spec
+  forms are declared and its file is not scanned.
+- Plan validation round 2: the `disclosure` reason and the label override were added, for the
+  report's show and hide control (Phase 2) and the follow-up's Retry label (Phase 3). The scan
+  also covers the report's conversation entry.
+- Plan validation round 3: no change here. An action a card does not draw, such as Mark done on
+  a queue-only stall, stays a declared action; the registry does not say when a card shows it.
+- Plan validation round 5: step 5 now names the seven kinds and says Snoozed is outside the
+  constant and drawn last, and the handoff states each later insertion by its neighbours, so
+  "last in the constant" cannot be read as "after Snoozed".

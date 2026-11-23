@@ -28,7 +28,13 @@ obligation:
    row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
 6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-7. **Stuck finalizations** - a promotion that stopped on an error.
+7. **Stuck** - with the `inbox` preview flag on, a session the daemon's
+   [stuck rules](#stuck-sessions) flagged, with the fix on the row. See
+   [Stuck rows](#stuck-rows).
+8. **Stuck finalizations** - a promotion that stopped on an error.
+9. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
+   on. See [Agent reports](#agent-reports) below. They are read, not answered, so they are never
+   in the **to answer** count.
 
 The count is the obligations the inbox is showing you, not its rows: a session holding three
 questions is one row and three. A row you dismissed is not in it, even while what it reports is
@@ -38,6 +44,10 @@ second notifier; [Alerts and Away mode](#alerts--away-mode) still own
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
+
+Press <kbd>e</kbd> on the Board when **to answer** is visible to open the inbox. From an open
+conversation, the same key scrolls to and focuses that session's first pending question in the
+inbox. If that session has no question listed there, the inbox opens at the top in its usual order.
 
 A question filed with [Ask without stopping](sessions.md#asking-without-stopping) is in the inbox
 and the **to answer** count like any other while it is pending. Its session turns amber, reading
@@ -55,6 +65,180 @@ while the flag was on stay answerable after it is turned off, and keep this stop
 until they are settled. The row's own
 **Dismiss** says the questions stay open and, like the cards, whether the agent keeps working or
 has stopped on them, rather than that it keeps waiting.
+
+A plan form filed with [File plan decisions](sessions.md#filed-plan-decisions) is a gate, not a
+question its agent works past. Its session is amber, reading **to review**, and the form counts in
+**to answer** from the moment it is filed, even while the agent is still finishing its turn. Its
+card reads **Waiting on your decisions**, its row is listed with the stopped sessions, and the
+"needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
+request closes it unanswered with the reason `merged`.
+
+A plan the agent [revised](sessions.md#revising-a-filed-plan) replaces its earlier card rather
+than joining it: the inbox holds one card, tagged **Revision 2** (then 3, and so on), and
+**Earlier version** beside the tag shows the form it replaced, read-only.
+
+### One name for an agent
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, one rule names an agent
+wherever the inbox and its alerts name one: alert titles (the toast and the Away digest alike),
+the inbox's row headers, a snoozed question's row, the review modal's header, and a line at the
+head of each question card. The first of these that is set wins:
+
+1. a call sign or a resident's reference name (reserved for voice, not set yet);
+2. a resident's profile name, drawn in its board colour;
+3. the task title;
+4. the session name;
+5. "a session".
+
+With the flag off every surface names an agent exactly as it did before: the inbox, the snoozed
+row and the review modal print the session name, alert titles print the task title or else the
+session name, and question cards print no name line. The tray shows counts only, so it has no
+name to change.
+
+The inbox's sections follow one fixed order, `INBOX_SECTION_ORDER` in
+`src/web/lib/attention.ts`, whatever order the fold derives them in. Later sections are inserted at
+fixed places in it rather than appended. **Reports** is its last entry, directly after **Stuck
+finalizations**, so the inbox's own **Snoozed** heading always comes right after it.
+
+### Agent reports
+
+With the **Reports and inbox upgrades** flag (`inbox`) on, an agent can post a report with the
+[`post_report`](sessions.md#agent-reports) tool when it has finished something you need to read in
+order to act. The tool returns at once and the agent carries on: a report is not a question and
+nothing waits on it.
+
+- **Reports** in the inbox lists every report waiting to be read, one row per agent, agents in
+  the order of their oldest report. A resident is one agent across all of its runs. Each report is
+  collapsed to its title, the agent's name and its age; clicking the title opens it to show the
+  body, the link and **Mark read**, and clicking it again closes it.
+- The top bar shows a separate, neutral **to read** figure, which opens the inbox. It never counts
+  toward **need you** or **to answer**, and a report never turns a session amber.
+- A report with an attached document offers **Open report**, which shows the copy stored when it
+  was posted, and **Publish as scout**, which saves that document to the scout archive only when
+  you press it and then reads **Published** with **Open archive**. See
+  [Agent reports](sessions.md#agent-reports).
+- A report stays in **to read** until you press **Mark read**, reply to it, or start a follow-up
+  task from it that is dispatched. Opening it, opening its document, publishing it, or opening
+  the inbox does not clear it; Mission
+  Control records only when you first opened it, with no visible count. A report row has no
+  **Dismiss**: one of those is how it leaves.
+- An agent that posts again with `replaces` set to its earlier report's id replaces it: the inbox
+  shows only the latest, with a note such as **updated 2 times**, and it keeps the first report's
+  place in the queue. Reports posted without `replaces` stack.
+- A report outlives its session. An exited session, or one whose pull request merged, leaves its
+  reports in **to read**, named as the agent was named when it posted.
+
+#### Answering a report
+
+An open report offers the answer its agent can take now, read from the live sessions and resident
+runs:
+
+- **The agent is running.** A reply box with **Send reply**. The reply is delivered through the
+  session's outbox as your own message, exactly like one typed in the composer: queued behind a
+  busy turn, echoed and captured the same way, and it counts toward the agent's Goal. It names the
+  report it answers and restates it, then gives your words:
+  "Reply to your report 'Build failure diagnosed' (r-42), posted 12 minutes ago", the report's
+  title and body, then what you wrote. The outbox accepting it marks the report read. If the
+  agent replaces the report while you are writing, the new version takes its place on screen
+  and keeps your words; a reply to a version that was replaced or already read is refused. A
+  session that cannot take the message refuses it, and the report stays in **to read**. A
+  resident's reply goes to whichever run of that resident is up now.
+- **A resident that is not running.** The card says "Steve isn't running" and that you can launch
+  it again from the Residents drawer. That is text, not a control.
+- **A standard session that has ended.** A box with **Start a follow-up task**, which stays
+  disabled until you write what the follow-up should do: a follow-up task is never filed without
+  your instructions. It files a new task in the repository the report recorded, with your words
+  followed by the report as its
+  intent, and dispatches it. When the report's own task can still be found, the follow-up keeps
+  its harness and model, and its kind if that is a shipping kind (ship, bugfix or document;
+  anything else becomes ship). A report from a session with no task, or whose task can no longer
+  be found, gets the Dispatch defaults instead: a ship task on the default harness and model.
+  Either way it takes your Workflow default for its kind. The old
+  session is never resumed. The new task is recorded on the report as it is created, and the
+  report is marked read only once the task has been dispatched. If the dispatch fails (a launch
+  hold, say), the card reads "Follow-up task created but not started" with **Retry**, which
+  dispatches that same task: a report has at most one follow-up task however often you press it.
+  The report follows its task however the task is started or ended. A held follow-up you later
+  start from the Backlog leaves **to read** as soon as it starts, without pressing **Retry**. A
+  follow-up task you cancel answers nothing, so the report comes back to **to read** even if the
+  follow-up had cleared it, and its card offers the instructions box again for a new follow-up.
+  Deleting a follow-up task that was already dispatched leaves its report answered, since it may
+  have done its work; deleting one that never started frees the report the same way a cancel
+  does. **Retry** never files a task: a new follow-up never starts without your words.
+  The route refuses a follow-up while the session has not ended: a running agent is replied to,
+  never replaced by a second session. The dispatch runs its launch in the background, so if that
+  launch then fails with no session (the task fails or returns to the Backlog), the report comes
+  back to **to read** with **Retry**, which relaunches the same task.
+- **A session that is still running but cannot take a message** (no pane to write to, or driven
+  by a pipeline engine). A line says so. It has not ended, so no follow-up is offered either.
+- **A report that recorded no repository.** A line saying a follow-up task cannot be started from
+  here.
+
+**Send reply**, **Start a follow-up task**, **Retry**, **Open report**, **Publish as scout** and
+**Open archive** are declared inbox actions; **Retry** is the follow-up action under another
+label, and **Open archive** is click-only navigation. A report's entry in its session's conversation says
+whether it was read, replied to or followed up (see
+[Agent reports](sessions.md#agent-reports)).
+
+Reports never enter the review channel, so they raise no `pendingReviews`, hold no completion,
+count toward no question limit, close on no merge, and Foreman never reads, answers or marks them.
+With the flag off, `post_report` is refused, the inbox has no Reports section, the top bar has no
+**to read** figure, and stored reports are kept for when it is turned on again.
+
+### Stuck rows
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, every session the daemon's
+[stuck rules](#stuck-sessions) currently flag has a row in the **Stuck** section, right after
+**Waiting on you** and before **Stuck finalizations**. The rules and their thresholds are
+unchanged; the inbox reads the same list the `stuck` alert does, polled from the daemon every few
+seconds. With stall detection off in the alerts settings there are no Stuck rows.
+
+Each row names the agent, says which rule fired and the rule's own sentence ("idle 23m with work
+unfinished"), and offers the fix in place. Only controls whose target exists are drawn:
+
+| Rule | The row shows | Controls |
+| --- | --- | --- |
+| Silent while working | the last activity line | **Nudge**, **Interrupt** |
+| Idle with work open, a task open | the open task, and any open queue items | **Continue**, **Mark done** |
+| Idle with work open, only a queue open | how many queue items are open, and that a queue's items are handled in the session | **Continue** |
+| Workflow run parked | the missing step | **Resubmit** when a resubmission can move the run (a manual or Preview run waiting for the session), **Tell it to push** when the run waits for a pushed head and the branch holds commits the remote has not seen, **Continue** when neither applies and the step is the session's own next turn (a round that resumes itself, or new work to commit), and **Open run**. A run an ensemble started that is waiting for the session can only move when that ensemble submits again, so its row says so and offers Open run without Resubmit, Continue or a push |
+| Foreman escalation unanswered | what Foreman escalated | a reply box, when the session can receive messages |
+
+Every row also has **Open session** and **Dismiss**, and a message box to the agent when the
+session can receive messages. A session that cannot, such as one driven by a pipeline engine or
+one with no pane to type into, has no message box, no reply box on an escalation, and no Nudge,
+Continue or Tell it to push, because each of those sends a message. There is no Cancel on any
+inbox card.
+
+- **Nudge**, **Continue** and **Tell it to push** queue a fixed message, through the same outbox
+  as a typed one. They are recorded as Mission Control's words rather than yours, so they never
+  become the session's Goal:
+  - Nudge: "Status check from your operator: you have gone quiet. Reply with one line on what
+    you are doing and whether anything is blocking you, then carry on. If you are waiting on a
+    long-running command, say which one."
+  - Continue: "Your operator asks you to continue. Work is still open against this session. Pick
+    it up where you stopped and carry it through. If something is blocking you, say what it is
+    instead of stopping."
+  - Tell it to push: "Push your commits. The review is waiting for a pushed head on this branch."
+- **Mark done** completes the session's task and does nothing else. Unlike the task's own
+  Complete dialog, it does not stop the session: a session in a worktree is closed by Mission
+  Control when its task completes, and any other session keeps running. A row about a queue alone
+  has no Mark done, because there is no task to complete; a queue's items are managed in the
+  session.
+- **Interrupt** stops the turn the session is in and drops the messages queued behind it, as the
+  session's own Interrupt does; if the turn had already ended, nothing is stopped and the row
+  says so. **Resubmit** opens the run's repair round, as the Runs page's Resubmit does.
+- The message box and the escalation's reply box send an ordinary message, as the session's own
+  composer does. A successful send clears the box only if nothing was typed after it started,
+  so a new draft typed while it was sending stays in the box, even one with the same words.
+
+A failed action shows its error under the row. It stays until another action on the row starts,
+including a retry of the same one, or until the row reports a different stall. A row leaves on its
+own when the daemon stops reporting the stall, which is when the session moves again. Stuck rows
+count in **to answer**, one each. A stuck session that the board also paints amber is listed under
+Stuck and not again under Waiting on you; a session with open questions keeps its question row as
+well. If you dismissed its Stuck row and the session then turns amber, it is listed under Waiting
+on you, so an amber session always has a row.
 
 ### Snoozed questions
 
@@ -86,6 +270,7 @@ back only when it reports something new, and what counts as new depends on the r
 | Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
 | Pipeline halts | the halt's class or reason changes |
 | Waiting on you | the session's state, or what it says it is waiting on, changes |
+| Stuck | a different rule fires, what it found changes (another open task, a different number of open queue items, a new round or status of the parked run, a different number of unpushed commits), or the session moved and then stalled again, or Foreman escalated again, even with the same words; minutes passing do not count |
 | Stuck finalizations | the finalization stops on a different error |
 
 A question's own **Dismiss**, on its card, is a different button: it resolves the question and
@@ -165,6 +350,12 @@ A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from t
 rules (open work and a parked run): it is waiting on someone other than you, and its blocker
 already explains the silence, with its age on the card. A blocker raises no alert of its own,
 a flagged reply is a card pill only, and neither counts as an answer you owe.
+
+A session [awaiting a background process](sessions.md#sessions-awaiting-a-background-process-preview) is
+exempt from the same two rules only until the deadline it declared. Once that passes the card
+reads Overdue and the rules apply again from that point, so a watcher that died cannot keep a
+stalled session out of the alerts. An Overdue wait raises no alert of its own; the stuck-session
+alert is the one that fires.
 
 The parked-run rule is the backstop for a review loop that quietly stopped. A run
 waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's

@@ -21,6 +21,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",
@@ -543,4 +544,106 @@ test("a blocked session raises no unfinished-work stall: its blocker explains th
   const s = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ status: "running" }), blocker });
   assert.equal(one(s, TH.unfinishedMs), null);
   assert.equal(one({ ...s, blocker: null }, TH.unfinishedMs)?.kind, "unfinished-work");
+});
+
+// ---- facts and fingerprint (the inbox's Stuck row) ----
+
+test("a silent-working stall carries its activity line and when it went quiet", () => {
+  const s = mkSession({ state: "working", lastActivity: 5 * MIN, activity: "Running npm test" });
+  const st = one(s, 30 * MIN)!;
+  assert.deepEqual(st.facts, { kind: "silent-working", activity: "Running npm test", quietSince: 5 * MIN });
+  assert.equal(st.reason, "working but silent for 25m (last: Running npm test)");
+});
+
+test("unfinished work names a task with no queue, a queue with no task, and both", () => {
+  const idle = { state: "idle" as const, lastActivity: 0 };
+  const taskOnly = one(mkSession({ ...idle, task: mkTask({ id: "t1", title: "Fix it" }) }), TH.unfinishedMs)!;
+  assert.deepEqual(taskOnly.facts, { kind: "unfinished-work", task: { id: "t1", title: "Fix it" }, queueOpen: 0 });
+  const queueOnly = one(mkSession({ ...idle, queue: mkQueue({ openCount: 3 }) }), TH.unfinishedMs)!;
+  assert.deepEqual(queueOnly.facts, { kind: "unfinished-work", task: null, queueOpen: 3 });
+  const both = one(mkSession({ ...idle, task: mkTask({ id: "t1", title: "Fix it" }), queue: mkQueue({ openCount: 2 }) }), TH.unfinishedMs)!;
+  assert.deepEqual(both.facts, { kind: "unfinished-work", task: { id: "t1", title: "Fix it" }, queueOpen: 2 });
+  // A drained queue beside an open task is not open work of its own.
+  const drained = one(mkSession({ ...idle, task: mkTask(), queue: mkQueue({ openCount: 2, drained: true }) }), TH.unfinishedMs)!;
+  assert.equal(drained.facts?.kind === "unfinished-work" && drained.facts.queueOpen, 0);
+  for (const st of [taskOnly, queueOnly, both]) assert.equal(st.reason, "idle 20m with work unfinished");
+});
+
+test("a parked run's facts say whether Resubmit can move it and how many commits are unpushed", () => {
+  const s = mkSession({ state: "idle", lastActivity: 0 });
+  const manual = one(s, TH.unfinishedMs, TH, [mkRun({ resumptionPolicy: "manual" })])!;
+  assert.deepEqual(manual.facts, {
+    kind: "workflow-parked",
+    runId: "run",
+    workflowName: "No-Mistakes Review",
+    status: "waiting_for_session",
+    round: 2,
+    resubmittable: true,
+    unpushedCommits: 0,
+    externalSource: null,
+  });
+  assert.equal(manual.reason, "idle 20m - No-Mistakes Review repair round 2 never reopened");
+  const preview = one(s, TH.unfinishedMs, TH, [mkRun({ deliveryMode: "preview" })])!;
+  assert.equal(preview.facts?.kind === "workflow-parked" && preview.facts.resubmittable, true);
+  const auto = one(s, TH.unfinishedMs, TH, [mkRun({ resumptionPolicy: "auto", deliveryMode: "live" })])!;
+  assert.equal(auto.facts?.kind === "workflow-parked" && auto.facts.resubmittable, false);
+  const external = one(s, TH.unfinishedMs, TH, [mkRun({ resumptionPolicy: "manual", externalSource: { kind: "ensemble", sourceId: "e1", createdAt: 0 } })])!;
+  assert.equal(external.facts?.kind === "workflow-parked" && external.facts.resubmittable, false);
+  assert.equal(external.facts?.kind === "workflow-parked" && external.facts.externalSource, "ensemble");
+  assert.equal(external.reason, "idle 20m - No-Mistakes Review repair round 2 never reopened");
+  const head = one(s, TH.unfinishedMs, TH, [mkRun({ status: "waiting_for_new_head", resumptionPolicy: "manual" })], observed(AHEAD))!;
+  assert.equal(head.facts?.kind === "workflow-parked" && head.facts.resubmittable, false);
+  assert.equal(head.facts?.kind === "workflow-parked" && head.facts.unpushedCommits, 2);
+  const pushed = one(s, TH.unfinishedMs, TH, [mkRun({ status: "waiting_for_new_head" })], observed({ state: "pushed", branch: "b", upstream: "origin/b" }))!;
+  assert.equal(pushed.facts?.kind === "workflow-parked" && pushed.facts.unpushedCommits, 0);
+});
+
+test("an escalation carries what Foreman escalated", () => {
+  const s = mkSession({ note: mkNote({ brief: "Approve the migration?", updatedAt: 0 }) });
+  const st = one(s, TH.escalationMs)!;
+  assert.deepEqual(st.facts, { kind: "escalated", text: "Approve the migration?" });
+  assert.equal(st.reason, "escalated to you 5m ago, still unanswered");
+  assert.deepEqual(one(mkSession({ note: mkNote() }), TH.escalationMs)!.facts, { kind: "escalated", text: null });
+});
+
+test("a fingerprint holds while minutes pass and changes when the round or the open work does", () => {
+  const idle = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ id: "t1" }) });
+  assert.equal(one(idle, 20 * MIN)!.fingerprint, one(idle, 90 * MIN)!.fingerprint);
+  assert.notEqual(one(idle, 20 * MIN)!.reason, one(idle, 90 * MIN)!.reason);
+  assert.notEqual(
+    one(idle, 20 * MIN)!.fingerprint,
+    one({ ...idle, task: mkTask({ id: "t2" }) }, 20 * MIN)!.fingerprint,
+  );
+  assert.notEqual(
+    one(idle, 20 * MIN)!.fingerprint,
+    one({ ...idle, queue: mkQueue({ openCount: 1 }) }, 20 * MIN)!.fingerprint,
+  );
+  const parked = mkSession({ state: "idle", lastActivity: 0 });
+  const round = (n: number, now: number) => one(parked, now, TH, [mkRun({ round: n })])!.fingerprint;
+  assert.equal(round(2, 20 * MIN), round(2, 60 * MIN));
+  assert.notEqual(round(2, 20 * MIN), round(3, 20 * MIN));
+  // A silent session's age is left out: the same quiet stretch read later is the same row.
+  const silentAt = mkSession({ state: "working", lastActivity: 0, activity: "Running npm test" });
+  assert.equal(one(silentAt, 30 * MIN)!.fingerprint, one(silentAt, 90 * MIN)!.fingerprint);
+});
+
+test("a session that moved and then stalled again is a new episode, with the same facts", () => {
+  // Silent again with the same activity line: it spoke at 40m, so this is a different stall.
+  const silent = (spokeAt: number) =>
+    one(mkSession({ state: "working", lastActivity: spokeAt, activity: "Running npm test" }), spokeAt + 30 * MIN)!;
+  assert.equal(silent(0).reason, silent(40 * MIN).reason);
+  assert.notEqual(silent(0).fingerprint, silent(40 * MIN).fingerprint);
+  // Idle again on the same open task after a turn of work.
+  const idle = (spokeAt: number) =>
+    one(mkSession({ state: "idle", lastActivity: spokeAt, task: mkTask({ id: "t1" }) }), spokeAt + 30 * MIN)!;
+  assert.notEqual(idle(0).fingerprint, idle(60 * MIN).fingerprint);
+  // Foreman escalates the same text again: a new note, a new row.
+  const escalated = (at: number) =>
+    one(mkSession({ note: mkNote({ brief: "Approve the migration?", updatedAt: at }) }), at + TH.escalationMs)!;
+  assert.deepEqual(escalated(0).facts, escalated(30 * MIN).facts);
+  assert.notEqual(escalated(0).fingerprint, escalated(30 * MIN).fingerprint);
+  assert.equal(
+    one(mkSession({ note: mkNote({ brief: "Approve?", updatedAt: 0 }) }), TH.escalationMs)!.fingerprint,
+    one(mkSession({ note: mkNote({ brief: "Approve?", updatedAt: 0 }) }), 60 * MIN)!.fingerprint,
+  );
 });

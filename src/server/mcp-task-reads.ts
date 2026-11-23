@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { McpListTasks, McpTaskSnapshot } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskAfterWorkForReads, taskShapingForReads } from "./shaping/reads.ts";
 import { listTasks, primaryRepoPrForTask } from "./db.ts";
 
 const CursorSchema = z.object({
@@ -25,7 +26,14 @@ export function taskReadSnapshot(task: Task): McpTaskSnapshot {
   // taskReposByTask already load extraRepos' PR bindings from work_episode_prs.
   // The callback supplies only live review feedback, never the attached PR URLs;
   // omit that session-private feedback while preserving the durable PR projection.
-  return { ...task, prUrl, repoPrs: taskRepoPrSummaries(task, { ...primary, prUrl }, () => null) };
+  const shown = taskShapingForReads(task);
+  const afterWork = taskAfterWorkForReads(shown);
+  return {
+    ...shown,
+    ...(afterWork ? { shapingAfterWork: afterWork } : {}),
+    prUrl,
+    repoPrs: taskRepoPrSummaries(task, { ...primary, prUrl }, () => null),
+  };
 }
 
 /** Reads durable rows, including completed tasks no longer in the Registry. */

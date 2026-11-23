@@ -27,7 +27,7 @@ test("marker-shaped human text needs a recorded wake in this conversation, and a
   assert.equal(attributeTranscript("other", [sent], null, undefined, { ...conversation, key: "other" })[0]!.origin, undefined);
   const [real, human] = attributeTranscript("session", [sent, copied], null, undefined, conversation);
   assert.equal(real!.origin, "resident");
-  assert.equal(real!.presentation?.displayText, settings.loop.prompt);
+  assert.deepEqual(real!.presentation, { kind: "resident", displayText: settings.loop.prompt });
   assert.equal(human!.origin, undefined, "a text-keyed live injection cannot swallow a human repeat");
   assert.equal(human!.presentation, undefined);
   assert.equal(attributeTranscript("session", [copied], null, undefined, conversation)[0]!.origin, undefined, "paging past the genuine wake cannot move attribution");

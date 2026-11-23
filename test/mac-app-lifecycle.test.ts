@@ -609,20 +609,12 @@ test("a real command with no caller deadline is not killed at the old two-second
 test("a real command reads output past the old 8MB cap, and refuses past its own with a named error", async () => {
   // `launchctl dumpstate` is 6.5MB on a developer Mac and grows with its job count; the old 8MB
   // cap would have made a larger host's dump fail as a "time limit" it never hit.
-  //
-  // What is measured is the output cap, not the time limit, so both reads get a budget far above
-  // the 15 second default and inside the suite's 120 second test timeout. Piping 129MB through
-  // `tr` and buffering it is CPU-bound: on a loaded machine (a full suite beside other worktrees'
-  // suites) the default killed the command first, and the test then saw the time-limit error
-  // instead of the size error it asserts. Measured on a 12-core Mac: three CPU-bound processes
-  // per core already failed the default; with nine per core this read took 58 seconds.
-  const budget = 90_000;
   const nineMegabytes = 9 * 1024 * 1024;
-  const read = await realMacAppOps().run("/bin/sh", ["-c", `head -c ${nineMegabytes} /dev/zero | tr '\\0' x`], budget);
+  const read = await realMacAppOps().run("/bin/sh", ["-c", `head -c ${nineMegabytes} /dev/zero | tr '\\0' x`]);
   assert.equal(read.code, 0);
   assert.equal(read.stdout.length, nineMegabytes);
   await assert.rejects(
-    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`], budget),
+    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`]),
     {message: "macOS launch state was larger than this inspection reads (sh)."},
   );
 });

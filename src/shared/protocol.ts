@@ -156,6 +156,8 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  CODERABBIT_COMMAND_HELP,
+  isCodeRabbitCommand,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -4931,7 +4933,11 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
-  config: UiConfigSchema,
+  /**
+   * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
+   * voice surface, so the response is the one an install without voice gave.
+   */
+  config: UiConfigSchema.omit({ voice: true }).extend({ voice: VoiceUiConfigSchema.optional() }),
 });
 export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
 
@@ -6454,9 +6460,11 @@ const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
  * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
  * only completion kind that could have written one refused before deciding, because its
  * capability shipped `available: false`. Nothing stored names it, so the union stays closed
- * over exactly the two shapes that are written.
+ * over the shapes that are written. `no_change` retains positive Git absence proof.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("no_change"), headOid: CommitOidSchema, treeOid: CommitOidSchema,
+    baseOid: CommitOidSchema, baseRef: z.string().min(1).max(400) }),
   z.object({ kind: z.literal("none") }),
   z.object({
     kind: z.literal("pull_request"),
@@ -7723,6 +7731,10 @@ export const WorkflowCommandArgvSchema = z
     { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
   );
 
+export const CodeRabbitCommandSchema = WorkflowCommandArgvSchema.refine(isCodeRabbitCommand, {
+  message: CODERABBIT_COMMAND_HELP,
+});
+
 /** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
@@ -7735,6 +7747,7 @@ export const CodeRabbitTuningSchema = z.object({
   kind: z.literal("coderabbit"),
   baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
   severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+  command: CodeRabbitCommandSchema.optional(),
 }).strict();
 
 export const WorkflowCommandOverrideSchema = z.object({
@@ -7942,6 +7955,7 @@ export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
   baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
   empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  command: CodeRabbitCommandSchema.optional(),
   timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
 });
 export const CodeRabbitReviewSummarySchema = z.object({
@@ -9098,6 +9112,22 @@ export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
     message: "resumedAt must be after sleepStartedAt",
   });
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
+
+// MCP reuses the wire fields with repository omission and established policy defaults.
+// The daemon parses the complete HTTP schemas above, including cross-field refinements,
+// after the MCP process has supplied its checkout path.
+const McpScheduleFields = {
+  template: z.object({
+    ...ScheduleTemplateSchema.shape,
+    repoRoot: ScheduleTemplateSchema.shape.repoRoot.default(".").describe(
+      "Absolute local checkout path. Omit to use the calling session's working directory.",
+    ),
+  }),
+  overlapPolicy: ScheduleDefinitionSchema.shape.overlapPolicy.default("skip-active"),
+  missedPolicy: ScheduleDefinitionSchema.shape.missedPolicy.default("coalesce-latest"),
+};
+export const McpCreateScheduleSchema = CreateScheduleSchema.extend(McpScheduleFields);
+export const McpSchedulePreviewSchema = z.object({ ...SchedulePreviewSchema.shape, ...McpScheduleFields });
 
 /** Pause or resume. The service recomputes the cursor from the correct anchor. */
 export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });

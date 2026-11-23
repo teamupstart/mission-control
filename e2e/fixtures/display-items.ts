@@ -22,3 +22,12 @@ import type { DisplayItemId } from "../../src/web/lib/board-card.ts";
 export function displayItemsShowing(...ids: readonly DisplayItemId[]): string[] {
   return UI_CONFIG_DEFAULTS.hiddenDisplayItems.filter((hidden) => !ids.includes(hidden));
 }
+
+/**
+ * The shipped hidden-items list with some more ids hidden. The mirror of `displayItemsShowing`:
+ * a spec that hides two cells says only that, instead of sending a literal that would also turn
+ * ON every item that ships hidden.
+ */
+export function displayItemsHiding(...ids: readonly DisplayItemId[]): string[] {
+  return [...UI_CONFIG_DEFAULTS.hiddenDisplayItems.filter((hidden) => !ids.includes(hidden)), ...ids];
+}

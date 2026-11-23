@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 
 // Repository standing instructions reaching a real launch, on every one of the five shipped
@@ -189,7 +189,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}`, homeBackend: isTerminalBackendId(selectedBackend) ? selectedBackend : "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}`, homeBackend: isTerminalBackendId(selectedBackend) ? selectedBackend : "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (session, text) => {
       pasted = text;

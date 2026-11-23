@@ -51,7 +51,8 @@ test("pane agent buffers every split of both paste markers until Enter submits t
       assert.deepEqual(agent.turns, [], `start split ${start}, end split ${end}`);
       agent.write(END.slice(end));
       assert.deepEqual(agent.turns, [], "closing a paste must not submit it");
-      assert.equal(agent.screen(), "\r\n> first\nsecond");
+      // Drawn as Claude draws a pending multi-line paste, which is what `injectPrompt` verifies a submit by.
+      assert.equal(agent.screen(), "\r\n> [Pasted text #1 +1 lines]");
       agent.write("\r");
       assert.deepEqual(agent.turns, ["first\nsecond"]);
       agent.write("next\r");
@@ -68,6 +69,19 @@ test("pane agent accepts markers arriving one byte at a time", () => {
   }
   agent.write("\n");
   assert.deepEqual(agent.turns, ["first\nsecond"]);
+  assert.equal(agent.screen(), "[took 12 chars]\r\n\r\n> ", "a submitted paste leaves the composer");
+});
+
+test("pane agent numbers each paste in a turn and starts again after a submission", () => {
+  const agent = paneAgent();
+  agent.write(`${START}one\ntwo${END} ${START}three\nfour${END}`);
+  assert.equal(agent.screen(), "\r\n> [Pasted text #2 +2 lines]");
+  agent.write("\r");
+  agent.write(`${START}five\nsix${END}`);
+  assert.equal(agent.screen(), "[took 18 chars]\r\n\r\n> [Pasted text #1 +1 lines]");
+  agent.write("single line");
+  agent.write("\r");
+  assert.deepEqual(agent.turns, ["one\ntwo three\nfour", "five\nsixsingle line"]);
 });
 
 test("pane agent preserves complete pastes, ordinary input, tabs and backspace", () => {

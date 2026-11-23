@@ -18,7 +18,7 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
@@ -294,7 +294,7 @@ interface DispatchResolution {
  */
 export class Dispatcher {
   private readonly teardown: typeof teardownWorktree;
-  /** Each task's current dispatch attempt; see `commitShaping`. */
+  /** Each task's current dispatch attempt; see `bindLaunch`. */
   private readonly dispatchAttempts = new Map<string, symbol>();
   private readonly worktrees: WorktreeManager;
   private readonly legacy: LegacyTreehouseService;
@@ -991,7 +991,7 @@ export class Dispatcher {
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.
       // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
-      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
+      // ask-channel redirect, terminal home, `waitForLaunchedSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if (runtime === "sdk") {
         const embeddedSession = await this.dispatchEmbedded(
@@ -1015,13 +1015,13 @@ export class Dispatcher {
           shaping.summary ? sdkSessionId : null,
           currentAttempt,
           workUnitId,
+          // Turn one IS the start on this runtime, so the launch reached its worker the moment
+          // `supervisor.start` returned, and binding the task to it records that delivery.
+          (session) => this.bindLaunch(taskId, attempt, shaping, session),
         );
         // A later attempt took the task while this driver started: `dispatchEmbedded` stopped
         // the worker, and nothing of this attempt is recorded or reported as a launch.
         if (!currentAttempt() || embeddedSession === null) return;
-        // Turn one IS the start on this runtime, so the launch reached its worker the moment
-        // `supervisor.start` returned - cancelled underneath or not.
-        this.commitShaping(taskId, attempt, shaping, embeddedSession);
         observeDispatchFinished({
           taskId,
           workUnitId,
@@ -1175,9 +1175,31 @@ export class Dispatcher {
       this.patch(taskId, homeRecord(home));
       if (await settled()) return;
 
-      let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
+      // Only the worker this spawn started: matched by the terminal resource or launch wrapper
+      // the spawn returned, never by the checkout alone, which a cancelled attempt's worker can
+      // still share while it waits to be retired. A home that names neither cannot tell its own
+      // worker from that one, so it binds nothing and its terminal is left standing.
+      if (!spawnHasLaunchIdentity(home)) {
+        throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
+      }
+      // Each session whose most recent identity check threw, so a timeout can name a failure that
+      // still stands instead of blaming the agent. A later check that completes clears it.
+      const checkFailures = new Map<string, string>();
+      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS, {
+        onCheckSettled: (sessionId, error) => {
+          if (error === null) checkFailures.delete(sessionId);
+          else checkFailures.set(sessionId, error instanceof Error ? error.message : String(error));
+        },
+      });
       if (!discovered) {
-        throw new Error("agent session never appeared (the launch may have exited immediately)");
+        // Only a session still live in this checkout: one that left took its failure with it.
+        const standing = [...checkFailures].find(([sessionId]) => {
+          const session = this.registry.getSession(sessionId);
+          return session !== undefined && session.state !== "exited" && session.cwd === wt.path;
+        })?.[1];
+        throw new Error(standing
+          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${standing})`
+          : "agent session never appeared (the launch may have exited immediately)");
       }
       if (await settled()) return;
       if (home.terminalResourceId?.startsWith("emulator:")) {
@@ -1294,13 +1316,12 @@ export class Dispatcher {
       } else if (outcome !== "shaped") {
         delivered = launchUnconfirmed(shaping);
       }
-      this.commitShaping(taskId, attempt, delivered, deliverySession.id);
-
       if (await settled()) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
       // and nothing more. Provenance lives in the work-episode bindings used by
-      // `bindTaskToWorkEpisode` and `mergedPrFor`.
-      this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      // `bindTaskToWorkEpisode` and `mergedPrFor`. Written with this launch's shaping record
+      // and delivery id, in one transaction (`bindLaunch`).
+      this.bindLaunch(taskId, attempt, delivered, deliverySession.id);
       launchSucceeded = true;
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
       observeDispatchFinished({
@@ -2172,6 +2193,12 @@ export class Dispatcher {
     currentAttempt: () => boolean = () => true,
     /** The launch's one work unit decision, from the top of `dispatch`. */
     workUnitId: string | null = null,
+    /**
+     * Binds the task to the started session, with this launch's shaping record and delivery id
+     * in the same transaction (`bindLaunch`). Turn one IS the start on this runtime, so the
+     * binding is where its delivery is recorded.
+     */
+    bind: (sessionId: string) => void = (id) => this.patch(taskId, { status: "running", sessionId: id }),
   ): Promise<string | null> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -2297,7 +2324,7 @@ export class Dispatcher {
     // The launch snapshot for this runtime was written by `supervisor.start`, which is the
     // only caller that sees what the driver reported back. See the terminal arm below for the
     // same record on the path where the argv settles the question synchronously.
-    this.patch(taskId, { status: "running", sessionId: session.id });
+    bind(session.id);
     // Both orders are covered on purpose. If the driver has already bound, the episode
     // exists and this binds it; if it has not, `applyDriverBinding` binds it when it does,
     // because the task now records this session id. Neither can be relied on alone.
@@ -2461,7 +2488,7 @@ export class Dispatcher {
       // Listen BEFORE typing - the hook can land before the next line runs.
       const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal, sessionId)
         : null;
 
       let sent: Awaited<ReturnType<typeof injectPrompt>>;
@@ -2606,20 +2633,27 @@ export class Dispatcher {
   }
 
   /**
-   * Settle this launch's shaping record once its turn one reached the worker, naming the
-   * session it reached. Runs whether or not shaping ran, so a launch that no shaper applied
-   * to - or that ran with the flag off - clears the record an earlier launch left. A commit
-   * that fails is logged by the registry and never fails the launch.
+   * Bind the task to the session its turn one reached, `running` on it, and settle this
+   * launch's shaping record and delivery id in the same transaction (`commitTaskShaping`), so
+   * no stop between them leaves the record and the binding out of step. Runs whether or not
+   * shaping ran, so a launch that no shaper applied to - or that ran with the flag off - clears
+   * the record an earlier launch left and binds under its own delivery id. A commit that fails
+   * is logged by the registry and never fails the launch: the binding still lands, under this
+   * delivery's id, so the record an earlier delivery left is never read as this one's.
    */
-  private commitShaping(taskId: string, attempt: symbol, shaping: LaunchShaping, sessionId: string): void {
-    // Only the current attempt, and only while its worker is the task's: still dispatching (the
-    // terminal arm commits before it records the session) or running on this session (the
-    // embedded arm). A cancelled launch whose driver was stopped, or one a requeue replaced
-    // while it waited, must not overwrite or clear the record its successor delivered.
-    if (this.dispatchAttempts.get(taskId) !== attempt) return;
+  private bindLaunch(taskId: string, attempt: symbol, shaping: LaunchShaping, sessionId: string): void {
+    const fields = { status: "running" as const, sessionId };
+    // Only the current attempt, and only while its worker is the task's: still dispatching, or
+    // already running on this session. A cancelled launch whose driver was stopped, or one a
+    // requeue replaced while it waited, must not overwrite or clear the record its successor
+    // delivered; it binds as it always did, with no record.
     const task = this.registry.getTask(taskId);
-    if (!task || (task.status !== "dispatching" && task.sessionId !== sessionId)) return;
-    this.registry.commitTaskShaping(taskId, sessionId, shaping.summary, shaping.section);
+    if (this.dispatchAttempts.get(taskId) !== attempt || !task || (task.status !== "dispatching" && task.sessionId !== sessionId)) {
+      this.patch(taskId, fields);
+      return;
+    }
+    this.registry.commitTaskShaping(taskId, sessionId, shaping.summary, shaping.section, { ...task, ...fields, updatedAt: Date.now() });
+    this.announcePatch(task, fields);
   }
 
   /**
@@ -2806,18 +2840,23 @@ export class Dispatcher {
     const cur = this.registry.getTask(taskId);
     if (!cur) return;
     this.registry.upsertTask({ ...cur, ...fields, updatedAt: Date.now() });
+    this.announcePatch(cur, fields);
+  }
+
+  /** What a patch of `fields` onto `cur` sets off beyond the row, however it was written. */
+  private announcePatch(cur: Task, fields: Partial<Task>): void {
     // The one transition worth announcing: this task now has a session to be named on.
     // Read off the BEFORE and AFTER rather than off `fields`, so a patch that merely
     // restates the id it already had stays silent and the notification means "newly
     // bound" exactly once.
     if (cur.sessionId === null && typeof fields.sessionId === "string") {
-      this.notifySessionBound(taskId);
+      this.notifySessionBound(cur.id);
     }
     // The other transition with a consequence beyond this row: the launch started. Read here
     // rather than at each launch arm, because there are several - terminal, embedded, managed
     // pipeline host - and an arm that forgot would leave its retried failure on the board.
     if (cur.status === "dispatching" && fields.status === "running") {
-      this.settleEarlierLaunchFailures(taskId);
+      this.settleEarlierLaunchFailures(cur.id);
     }
   }
 
@@ -3658,8 +3697,11 @@ export async function spawnManagedResume(
   return { ...result.value, resumeLeaseId: input.prepared.lease.id, launchOutcome: "launched" };
 }
 
-/** Shared backend mechanics. Resource ownership stays with the ordinary or managed caller. */
-async function spawnWrappedUniquely(
+/**
+ * Shared backend mechanics. Resource ownership stays with the ordinary or managed caller.
+ * Exported for the tests that pin what a spawn returns for discovery to find its worker by.
+ */
+export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,
@@ -3671,7 +3713,9 @@ async function spawnWrappedUniquely(
   const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
-      launchStateHome: first.backend.axis === "emulator" ? stateHome : undefined,
+      // On every axis: the wrapper always runs from this home, so a pane whose address the
+      // backend could not report is still found by the launch it descends from.
+      launchStateHome: stateHome,
       launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   if (first.outcomeUnknown || name === unique) throw new TerminalLaunchError(first.error, first.outcomeUnknown ?? false);
@@ -3682,7 +3726,7 @@ async function spawnWrappedUniquely(
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
-      launchStateHome: retry.backend.axis === "emulator" ? stateHome : undefined,
+      launchStateHome: stateHome,
       launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   throw new TerminalLaunchError(retry.error, retry.outcomeUnknown ?? false);

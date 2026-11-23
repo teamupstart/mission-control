@@ -1816,6 +1816,13 @@ export const TaskShapingSchema = z.object({
   at: z.number().int().nonnegative(),
   /** The session the record was delivered to. The engine leaves it unset; Phase 2 sets it. */
   sessionId: z.string().min(1).max(256).optional(),
+  /**
+   * The turn-one delivery the record describes: the id written to the task's binding
+   * (`Task.shapingDelivery`) in the same transaction as this record. The engine leaves it unset;
+   * the commit stamps it. A record from an earlier delivery carries an earlier id, so it is told
+   * apart from this one even when both name the same session.
+   */
+  deliveryId: z.string().min(1).max(64).optional(),
   durationMs: z.number().int().nonnegative(),
   entries: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
@@ -1838,24 +1845,35 @@ export const TaskShapingSchema = z.object({
 });
 export type TaskShaping = z.output<typeof TaskShapingSchema>;
 
+/** What the reader rule reads of a task: its record and its binding, the session and the delivery. */
+export interface ShapingBinding {
+  shaping?: TaskShaping | null;
+  sessionId: string | null;
+  shapingDelivery?: string | null;
+}
+
 /**
- * The one reader rule for a task's shaping record: it counts only while it names the session
- * the task is executing on now. A record left by an earlier launch, including one whose
- * successor's commit failed, describes a session this task no longer shows, so every reader -
- * task reads, the shaping route, the board and rail markers, the chip and the viewer - sees
- * nothing rather than another launch's context or `degraded`.
+ * The one reader rule for a task's shaping record: it counts only while it describes the
+ * delivery the task is bound to now - it names the session the task is executing on, and
+ * carries the delivery id that binding was written with (`Task.shapingDelivery`). A record left
+ * by an earlier launch describes a session this task no longer shows; one left by an earlier
+ * delivery to the SAME session, such as a handover back to the agent it already ran on whose
+ * own commit failed, carries an earlier delivery id. Every reader - task reads, the shaping
+ * route, MCP, the board and rail markers, the chip and the viewer - sees nothing for either,
+ * rather than another delivery's context or `degraded`. A record or a binding without a
+ * delivery id never counts.
  */
-export function currentShaping(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShaping | null {
+export function currentShaping(task: ShapingBinding): TaskShaping | null {
   const record = task.shaping;
-  if (!record || !record.sessionId || !task.sessionId) return null;
-  return record.sessionId === task.sessionId ? record : null;
+  if (!record?.sessionId || !record.deliveryId || !task.sessionId || !task.shapingDelivery) return null;
+  return record.sessionId === task.sessionId && record.deliveryId === task.shapingDelivery ? record : null;
 }
 
 /**
  * A task as a read returns it: `shaping` kept only while `currentShaping` shows it, and absent
- * otherwise, so no read carries a record that describes another session.
+ * otherwise, so no read carries a record that describes another delivery.
  */
-export function withCurrentShaping<T extends { shaping?: TaskShaping | null; sessionId: string | null }>(task: T): T {
+export function withCurrentShaping<T extends ShapingBinding>(task: T): T {
   if (task.shaping === undefined || currentShaping(task)) return task;
   const { shaping: _stale, ...rest } = task;
   return rest as T;
@@ -1873,10 +1891,8 @@ export interface ShapingInProgress {
  * unpersisted `shapingContext` mark that rides `task_upsert` - and `currentShaping(task)`
  * otherwise. `state` is always `shaping`, `ok` or `degraded`; null when there is nothing to show.
  */
-export function shapingView(task: {
-  shaping?: TaskShaping | null;
+export function shapingView(task: ShapingBinding & {
   shapingContext?: { startedAt: number } | null;
-  sessionId: string | null;
 }): ShapingInProgress | TaskShaping | null {
   if (task.shapingContext) return { state: "shaping", startedAt: task.shapingContext.startedAt };
   return currentShaping(task);
@@ -1913,7 +1929,7 @@ export interface TaskShapingRead {
  * only while it names the record's session.
  */
 export function taskShapingRead(
-  task: { shaping?: TaskShaping | null; sessionId: string | null },
+  task: ShapingBinding,
   afterWork: TaskSkillPrompt | null = null,
 ): TaskShapingRead | null {
   const record = currentShaping(task);

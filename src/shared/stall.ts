@@ -154,8 +154,11 @@ export type StallFacts =
     text: string | null;
   };
 
-/** Terminal task states - work that is over, however it ended. */
+/** Open work that needs completion, rather than a resident's standing role. */
 function taskOpen(s: Session): boolean {
+  // A resident keeps its task running between iterations. That alone is not a stall;
+  // explicit queue work and parked workflows still count in workOutstanding.
+  if (s.task?.kind === "resident") return false;
   const st = s.task?.status;
   return st !== undefined && (st === "backlog" || isActiveTask(st));
 }

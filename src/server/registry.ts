@@ -26,14 +26,7 @@ import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES, SESSION_AWAITING_LIMITS } from "@shared/types.ts";
 import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
-import {
-  forgetSupersededShaping,
-  hasSupersededShaping,
-  noteSupersededShaping,
-  sessionShapingForReads,
-  supersededShapingFor,
-  taskShapingForReads,
-} from "./shaping/reads.ts";
+import { sessionShapingForReads, taskShapingForReads } from "./shaping/reads.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -152,7 +145,7 @@ import type { DiscoveredSession, DiscoveryAdmission, DiscoveryAdmit } from "./di
 import { getTerminalsConfig } from "./terminals-config.ts";
 import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
-import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
+import { launchedSessionMatcher, spawnHasLaunchIdentity, verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
   RuntimeMetaRead,
   SdkEvent,
@@ -344,9 +337,9 @@ import {
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
   rekeyTaskLaunch as dbRekeyTaskLaunch,
-  clearTaskShapingFor as dbClearTaskShapingFor,
   openDb,
   taskShapingRecord as dbTaskShapingRecord,
+  taskShapingState as dbTaskShapingState,
   storedTaskWorkUnitId,
   inTransaction,
   upsertUsageCell,
@@ -608,6 +601,13 @@ const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+
+/**
+ * How often a launch's discovery wait re-checks the sessions in its checkout (ms), for a check
+ * that came back undecided on a session no later sweep will change. See
+ * `waitForLaunchedSessionAtCwd`.
+ */
+const LAUNCH_RECHECK_MS = 500;
 /**
  * How long a FINISHED, session-less queue is kept before it's pruned.
  *
@@ -1506,7 +1506,7 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(featureEnabled(VOICE_FLAG) ? { voice: voiceStateStore.state() } : {}),
+      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1649,6 +1649,19 @@ export class Registry extends EventEmitter {
     if (key === this.lastVoice) return;
     this.lastVoice = key;
     this.emitEvent({ type: "voice_state", state });
+  }
+
+  /**
+   * The voice state a connecting window is handed, published first when it differs from the last
+   * frame. A lapse is published by a timer, and a snapshot taken after the lapse but before that
+   * timer fires computes the lapsed state already; without this the next frame, a fresh hello's
+   * `listening`, would match the stale `lastVoice` and be dropped, leaving that window on
+   * `unavailable`. Publishing keeps every follower and `lastVoice` on the state just handed out.
+   */
+  private voiceStateForSnapshot(): VoiceState {
+    const state = voiceStateStore.state();
+    this.emitVoiceState(state);
+    return state;
   }
 
   /**
@@ -2309,7 +2322,8 @@ export class Registry extends EventEmitter {
     // shaping record, and none while the flag is off. Memory may still hold an earlier launch's
     // (see `withShaping`).
     // A session's task card is gated the same way.
-    const e: ServerEvent = event.type === "task_upsert" && (event.task.shaping !== undefined || event.task.shapingContext !== undefined)
+    const e: ServerEvent = event.type === "task_upsert"
+      && (event.task.shaping !== undefined || event.task.shapingContext !== undefined || event.task.shapingDelivery !== undefined)
       ? { ...event, task: taskShapingForReads(event.task) }
       : event.type === "session_upsert" && event.session.task?.shaping !== undefined
         ? { ...event, session: sessionShapingForReads(event.session) }
@@ -7933,9 +7947,6 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
-    // The row just persisted, so the database is taking writes again: settle a superseded
-    // shaping record a failed clean-up left on disk (see `hideSupersededShaping`).
-    if (hasSupersededShaping()) this.retryShapingClear(task.id);
   }
 
   /**
@@ -8021,26 +8032,31 @@ export class Registry extends EventEmitter {
   /**
    * A task with its shaping record and "Shaping context" mark applied.
    *
-   * The record is owned by `commitTaskShaping`, never by the caller: a writer that built its
-   * row from a snapshot taken before the latest commit would otherwise publish the superseded
-   * record, and `upsertTask` does not write the column, so memory and disk would disagree. The
-   * in-memory value carries forward; a task not in memory reads the stored one. Both keys are
-   * absent when there is nothing to show, so an unshaped task's payload is unchanged.
+   * The record and its delivery id (`shapingDelivery`) are owned by `commitTaskShaping`, never
+   * by the caller: a writer that built its row from a snapshot taken before the latest commit
+   * would otherwise publish the superseded pair, and `upsertTask` writes neither column, so
+   * memory and disk would disagree. The in-memory values carry forward; a task not in memory
+   * reads the stored ones. Every key is absent when there is nothing to show, so an unshaped
+   * task's payload is unchanged.
    */
   private withShaping(task: Task, previous: Task | undefined): Task {
     // A record re-keyed inside a caller's transaction is read back from the database here, at
     // the first publish after that commit: memory is never told about a write that could still
     // roll back (see `carryShapingToSuccessor`).
     const carried = this.carriedShaping.delete(task.id);
-    const shaping = previous && !carried ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
+    const owned = previous && !carried ? previous : dbTaskShapingState(task.id);
+    const shaping = owned.shaping ?? null;
+    const delivery = owned.shapingDelivery ?? null;
     // Set by a dispatch or a handover for exactly as long as its step runs, and cleared in that
     // step's `finally`, so it needs no status of its own: a handed-over task is still `backlog`.
     const startedAt = this.shapingStartedAt.get(task.id) ?? null;
-    if (!shaping && startedAt === null && task.shaping === undefined && task.shapingContext === undefined) return task;
-    const { shaping: _record, shapingContext: _mark, ...rest } = task;
+    if (!shaping && !delivery && startedAt === null && task.shaping === undefined
+      && task.shapingContext === undefined && task.shapingDelivery === undefined) return task;
+    const { shaping: _record, shapingContext: _mark, shapingDelivery: _binding, ...rest } = task;
     return {
       ...rest,
       ...(shaping ? { shaping } : {}),
+      ...(delivery ? { shapingDelivery: delivery } : {}),
       ...(startedAt !== null ? { shapingContext: { startedAt } } : {}),
     };
   }
@@ -8061,38 +8077,67 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Settle a launch's shaping record once its turn one reached the worker: the summary,
-   * stamped here with `sessionId`, the session it was delivered to, and the delivered text, in
-   * one transaction. A null summary clears both. A commit that fails is logged and keeps a
-   * record naming an earlier session, which `currentShaping` then shows nowhere; one naming
-   * `sessionId` itself is hidden (`hideSupersededShaping`), whether or not this launch was
-   * shaped. It never throws: a launch that reached its worker is not failed by its own bookkeeping.
+   * Settle a turn-one delivery once it reached the worker: its shaping record and the task's
+   * binding, in one transaction. The delivery gets a fresh id. The summary is stamped with
+   * `sessionId`, the session it was delivered to, and that id, and written with the delivered
+   * text; a null summary clears the record. The id is written to the task's binding
+   * (`shapingDelivery`) whether or not there is a record, and `binding` - the row naming the
+   * receiving session, a launch's or a handover's - is written in the same transaction, so no
+   * stop between them leaves the record and the binding out of step. Without `binding`, the task
+   * row as it stands is the binding.
+   *
+   * A commit that fails is logged, and the delivery binds under its own id all the same: the
+   * binding row is written on its own, carrying the id, in one write. The record an earlier
+   * delivery left then carries an id the binding does not, so `currentShaping` rejects it even
+   * when it names this same session, with no clean-up that must succeed and nothing a restart
+   * forgets. Returns whether the record was committed. A commit failure never throws - a launch
+   * that reached its worker is not failed by its own bookkeeping - but a binding that cannot be
+   * written at all throws, as `upsertTask` does, and leaves the task as it was in memory and on
+   * disk alike. Memory takes the new id only once it is on disk.
    */
-  commitTaskShaping(taskId: string, sessionId: string, unstamped: TaskShaping | null, text: string): boolean {
-    const summary = unstamped ? { ...unstamped, sessionId } : null;
+  commitTaskShaping(
+    taskId: string,
+    sessionId: string,
+    unstamped: TaskShaping | null,
+    text: string,
+    binding: Task | null = null,
+  ): boolean {
+    const deliveryId = randomUUID();
+    const summary = unstamped ? { ...unstamped, sessionId, deliveryId } : null;
+    const current = this.tasks.get(taskId);
+    const bound = binding ?? current ?? null;
+    let displaced: string[] = [];
+    let committed = true;
     try {
-      // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
-      // prompt an earlier launch into this session left.
-      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId);
-      // This commit settled the row, so no earlier clean-up may touch it now.
-      forgetSupersededShaping(taskId);
+      inTransaction(() => {
+        // Named explicitly, so a launch that no shaper applied to still supersedes the after-work
+        // prompt an earlier launch into this session left.
+        (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text, Date.now(), sessionId, deliveryId);
+        if (bound) displaced = dbUpsertTask(bound);
+      });
+    } catch (error) {
+      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
+      committed = false;
+    }
+    // The binding still has to land: without the record, under the delivery's own id, in one write.
+    // A write that throws here leaves memory as it was, matching the row, which it left as it was.
+    if (bound && !committed) displaced = dbUpsertTask(bound, { shapingDelivery: deliveryId });
+    if (current) {
+      // Only now that the delivery id is on disk: bound under it from here on, with its record,
+      // or keeping the earlier record when this one could not be written, whose id is not this
+      // delivery's. Live readers never move ahead of what durable readers see.
+      const { shaping: _previous, shapingDelivery: _binding, ...rest } = current;
+      const record = committed ? summary : current.shaping ?? null;
+      this.tasks.set(taskId, { ...rest, ...(record ? { shaping: record } : {}), shapingDelivery: deliveryId });
+    }
+    if (committed) {
       // An earlier launch's after-work turn may have just left this session's outbox.
       const delivered = this.sessions.get(sessionId);
       if (delivered) this.refreshPendingTurns(noteKeyFor(delivered));
-    } catch (error) {
-      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
-      this.hideSupersededShaping(taskId, sessionId);
-      return false;
     }
-    const current = this.tasks.get(taskId);
-    if (!current) return true;
-    if (JSON.stringify(current.shaping ?? null) === JSON.stringify(summary)) return true;
-    const { shaping: _previous, ...rest } = current;
-    const next: Task = summary ? { ...rest, shaping: summary } : rest;
-    this.tasks.set(taskId, next);
-    this.emitEvent({ type: "task_upsert", task: next });
-    if (next.sessionId) this.resyncSessionTask(next.sessionId);
-    return true;
+    // Published as `upsertTask` publishes, with the record and id just set carried over it.
+    if (bound) this.publishTask(bound, displaced, false);
+    return committed;
   }
 
   /**
@@ -8125,41 +8170,8 @@ export class Registry extends EventEmitter {
     return { ...record, sessionId: toSessionId };
   }
 
-  /**
-   * After a failed commit: a record left by an earlier delivery to the SAME session (a handover
-   * back to the session it already ran on) would read as this delivery's context. Drop it from
-   * what readers see now, and try once more to clear it on disk; a reader never shows context
-   * this delivery did not receive.
-   */
-  private hideSupersededShaping(taskId: string, sessionId: string): void {
-    const current = this.tasks.get(taskId);
-    if (current?.shaping?.sessionId !== sessionId) return;
-    // Memory drops it now. On disk it is cleared only while it still names this session, and a
-    // clear that fails too is retried after the task's next persisted write - the handover's
-    // own, a moment later - so a restart does not read the earlier delivery back as this one's.
-    noteSupersededShaping(taskId, sessionId);
-    this.retryShapingClear(taskId);
-    const { shaping: _stale, ...rest } = current;
-    this.tasks.set(taskId, rest);
-    this.emitEvent({ type: "task_upsert", task: rest });
-    this.resyncSessionTask(sessionId);
-  }
-
-  /** Try once more to clear a superseded record whose on-disk clear is still pending. */
-  private retryShapingClear(taskId: string): void {
-    const sessionId = supersededShapingFor(taskId);
-    if (sessionId === undefined) return;
-    try {
-      (this.shapingClearer ?? dbClearTaskShapingFor)(taskId, sessionId);
-      forgetSupersededShaping(taskId);
-    } catch (error) {
-      console.warn(`[shaping] could not clear task ${taskId}'s superseded shaping record yet:`, error);
-    }
-  }
-
-  /** Test seams for a commit, or a clean-up, that fails. Production always takes the database functions. */
+  /** Test seam for a commit that fails. Production always takes the database function. */
   shapingCommitter: typeof dbCommitTaskShaping | null = null;
-  shapingClearer: typeof dbClearTaskShapingFor | null = null;
 
   /**
    * Carry a task's shaping record to the session that continues its conversation. Called where
@@ -8324,8 +8336,6 @@ export class Registry extends EventEmitter {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
     dbDeleteTask(id);
-    // Its row and record are gone, so a clean-up still pending for it has nothing left to clear.
-    forgetSupersededShaping(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
@@ -8347,6 +8357,88 @@ export class Registry extends EventEmitter {
    */
   waitForSessionAtCwd(cwd: string, timeoutMs: number): Promise<Session | null> {
     return this.waitForSessionAtCwdMatching(cwd, timeoutMs, () => true);
+  }
+
+  /**
+   * Resolve the session at `cwd` that THIS spawn started, once discovery has bound it, or null
+   * on timeout. `waitForSessionAtCwd` answers "some agent is here", which is the wrong question
+   * whenever two launches share a checkout: a cancelled launch and its replacement can both be
+   * live in one worktree, and the replacement would take whichever process the map yields first
+   * - typing its turn one into a worker the old attempt is about to retire.
+   *
+   * A session qualifies only by carrying the identity the spawn returned
+   * (`launchedSessionMatcher`): the terminal resource it opened, or the launch wrapper it
+   * descends from. When the spawn returned no identity at all this resolves null at once. When
+   * a worker appeared is no evidence of whose it is - a cancelled launch's agent can be
+   * discovered late - so a home that cannot name its worker never binds one.
+   *
+   * Every live session at `cwd` is checked on each sighting and again every
+   * `LAUNCH_RECHECK_MS`. A check can come back undecided - the wrapper's record or the process
+   * table could not be read - and an unchanged session produces no further sighting to retry
+   * on. One session is never checked twice at once. A session is resolved only if, re-read once
+   * its check settles, it is still live and still at `cwd`.
+   *
+   * A check that throws (an unreadable state home, a failed `ps`) leaves that session undecided
+   * and is retried like any other. `onCheckSettled` hears how each check of each session ended:
+   * the error it threw, or null when it completed. A caller that times out can then name a
+   * failure that is still current, rather than one a later check of the same session got past.
+   *
+   * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
+   * `matches` defaults to `launchedSessionMatcher(home)`.
+   */
+  waitForLaunchedSessionAtCwd(
+    cwd: string,
+    home: SpawnedHome,
+    timeoutMs: number,
+    {
+      matches = launchedSessionMatcher(home),
+      onCheckSettled,
+    }: {
+      matches?: (session: Session) => Promise<boolean>;
+      onCheckSettled?: (sessionId: string, error: unknown) => void;
+    } = {},
+  ): Promise<Session | null> {
+    if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
+    return new Promise<Session | null>((resolve) => {
+      let settled = false;
+      const checking = new Set<string>();
+      const finish = (session: Session | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(recheck);
+        unsub();
+        resolve(session);
+      };
+      const consider = (s: Session): void => {
+        if (settled || s.cwd !== cwd || s.state === "exited" || checking.has(s.id)) return;
+        checking.add(s.id);
+        void matches(s).then(
+          (ok) => {
+            if (settled) return;
+            onCheckSettled?.(s.id, null);
+            if (!ok) return;
+            const current = this.sessions.get(s.id);
+            // It may have exited, or moved to another checkout, while its identity was read;
+            // a later sighting at `cwd` can still qualify.
+            if (current && current.state !== "exited" && current.cwd === cwd) finish(current);
+          },
+          (error: unknown) => {
+            if (!settled) onCheckSettled?.(s.id, error ?? new Error("the identity check failed"));
+          },
+        ).finally(() => checking.delete(s.id));
+      };
+      const scan = (): void => {
+        for (const s of this.sessions.values()) consider(s);
+      };
+      const timer = unref(setTimeout(() => finish(null), timeoutMs));
+      const recheck = unref(setInterval(scan, LAUNCH_RECHECK_MS));
+      // Subscribed before the scan, so a sighting between the two is not lost.
+      const unsub = this.subscribe((e) => {
+        if (e.type === "session_upsert") consider(e.session);
+      });
+      scan();
+    });
   }
 
   /**
@@ -8382,11 +8474,16 @@ export class Registry extends EventEmitter {
    *
    * Subscribe BEFORE typing, then await this after: the hook can beat the caller's next
    * line, and a check-after-the-fact would miss it and re-type over a live prompt.
+   *
+   * With `sessionId`, only that session's transition counts. Another worker in the same
+   * checkout - a cancelled launch still finishing its own turn - is no evidence that the
+   * prompt typed into this one landed.
    */
   waitForPromptAcceptedAtCwd(
     cwd: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    sessionId?: string,
   ): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
@@ -8405,7 +8502,8 @@ export class Registry extends EventEmitter {
 
       timer = unref(setTimeout(() => finish(false), timeoutMs));
       unsub = this.subscribe((e) => {
-        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working") {
+        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working" &&
+          (sessionId === undefined || e.session.id === sessionId)) {
           finish(true);
         }
       });
@@ -8534,7 +8632,8 @@ export class Registry extends EventEmitter {
           // Present only when the session emits one, so every other card's payload is what it
           // was before work units existed.
           ...(workUnitId ? { workUnitId } : {}),
-          ...(shaping ? { shaping } : {}),
+          // The binding rides with the record, so the card's readers check one against the other.
+          ...(shaping ? { shaping, ...(t.shapingDelivery ? { shapingDelivery: t.shapingDelivery } : {}) } : {}),
         }
       : null;
   }

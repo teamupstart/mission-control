@@ -1,4 +1,4 @@
-import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
@@ -1022,10 +1022,11 @@ function readCommandArgv(
   id: string,
   column: string,
   raw: string | null,
+  schema = CommandArgvJsonSchema,
 ): string[] | null {
   if (raw === null) return null;
   try {
-    return parseJson(table, id, column, raw, CommandArgvJsonSchema, COMMAND_ARGV_JSON_BYTES);
+    return parseJson(table, id, column, raw, schema, COMMAND_ARGV_JSON_BYTES);
   } catch (error) {
     diagnose(error);
     return null;
@@ -1119,10 +1120,8 @@ function parseWorkflowCommandRow(
   return {
     slot: row.slot,
     defaultCommand: readCommandArgv(
-      "workflow_commands",
-      row.slot,
-      "default_command_json",
-      row.default_command_json,
+      "workflow_commands", row.slot, "default_command_json", row.default_command_json,
+      row.slot === "coderabbit" ? CodeRabbitCommandSchema : CommandArgvJsonSchema,
     ),
     maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
     timeoutMs: readCommandTimeoutMs(row.timeout_ms),
@@ -3804,7 +3803,11 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
-    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+    const validRecipe = key === "coderabbit"
+      ? (next.defaultCommand === null || CodeRabbitCommandSchema.safeParse(next.defaultCommand).success)
+        && next.overrides.every((rule) => rule.command.length === 0 && CodeRabbitTuningSchema.safeParse(rule.review).success)
+      : next.overrides.every((rule) => !rule.review && rule.command.length > 0);
+    if (!validRecipe) {
       return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
     }
     // Refused here as well as at the route, because the store is the boundary a future

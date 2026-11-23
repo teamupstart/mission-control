@@ -98,6 +98,99 @@ test("a human copying a resident wake keeps human attribution after reload", asy
   await capture(page, "copied-wake-human");
 });
 
+async function launchBoardSearchResident(page: Page, daemon: DaemonHandle): Promise<Locator> {
+  const name = "Board watcher";
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name }, persona: { personaId: personas.find((p) => p.name === "Code Risk Reviewer")!.id },
+    board: { label: "ZXQ" }, workspace: { defaultRepoRoot: daemon.repo },
+    execution: { model: "claude-fable-5" }, loop: { delaySeconds: 3600, minDelaySeconds: 60, maxDelaySeconds: 3600 },
+  } });
+  await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await page.reload();
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "board-card-filter" });
+  await expect.poll(() => live(daemon)?.loop_state, { timeout: 60_000 }).toBe("waiting");
+
+  return page.locator(".tile").filter({ has: page.getByRole("button", { name: `Open ${name}`, exact: true }) });
+}
+
+test("the fleet filter searches the resident chip and loop text on the Board", async ({ dashboard: page, daemon }) => {
+  const card = await launchBoardSearchResident(page, daemon);
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await expect(card).toContainText("ZXQ");
+  await expect(card).toContainText("iteration 1");
+  await page.locator(".filter-box").click();
+  await filter.fill("zxq iteration");
+  await expect(card).toBeVisible();
+  await capture(page, "filtered-board-resident-card");
+  await filter.fill("backstop: unavailable.");
+  await expect(card).toBeVisible();
+  await filter.fill("zxq absent");
+  await expect(card).toHaveCount(0);
+  await filter.press("Escape");
+  await expect(card).toBeVisible();
+});
+
+async function boardResidentControlsSearch(page: Page, daemon: DaemonHandle) {
+  const card = await launchBoardSearchResident(page, daemon);
+  await request(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
+  });
+  const unrelated = page.getByRole("button", { name: "Open Fleet neighbour", exact: true });
+  await expect(unrelated).toBeVisible({ timeout: 60_000 });
+  const controls = card.getByRole("button", { name: "Resident controls", exact: true });
+  await controls.click();
+  return { card, unrelated, controls, menu: page.getByRole("menu", { name: "Resident controls", exact: true }) };
+}
+
+test("the fleet filter searches the Board resident's conditional control label", async ({ dashboard: page, daemon }) => {
+  const { card, unrelated, controls, menu } = await boardResidentControlsSearch(page, daemon);
+  await menu.getByRole("menuitem", { name: "Pause", exact: true }).click();
+  const resume = menu.getByRole("menuitem", { name: "Resume", exact: true });
+  await expect(resume).toBeVisible();
+
+  await page.locator(".filter-box").click();
+  await page.getByRole("textbox", { name: /Filter sessions/ }).fill("Resume");
+  await expect(card).toBeVisible();
+  await expect(unrelated).toHaveCount(0);
+  await controls.click();
+  await expect(resume).toBeVisible();
+  await capture(page, "filtered-board-resident-resume");
+});
+
+test("the fleet filter searches the Board resident's action alert", async ({ dashboard: page, daemon }) => {
+  const { card, unrelated, controls, menu } = await boardResidentControlsSearch(page, daemon);
+  const path = "**/api/residents/runs/*/run-now";
+  const message = "Wake quota unavailable";
+  const runNow = menu.getByRole("menuitem", { name: "Run now", exact: true });
+  const alert = menu.getByRole("alert");
+  await page.route(path, (route) => route.fulfill({ status: 503, json: { error: message } }), { times: 1 });
+  await runNow.click();
+  await expect(alert).toHaveText(message);
+
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("wake quota");
+  await expect(card).toBeVisible();
+  await expect(unrelated).toHaveCount(0);
+  await filter.fill("quota neighbour");
+  await expect(card).toHaveCount(0);
+  await filter.fill("wake quota");
+  await expect(card).toBeVisible();
+  await controls.click();
+  await expect(alert).toHaveText(message);
+  await capture(page, "filtered-board-resident-alert");
+
+  const [retry] = await Promise.all([page.waitForResponse(path), runNow.click()]);
+  expect(retry.ok()).toBe(true);
+  await expect(card).toHaveCount(0);
+  await page.locator(".filter-box").click();
+  await filter.press("Escape");
+  await expect(card).toBeVisible();
+  await controls.click();
+  await expect(alert).toHaveCount(0);
+});
+
 for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loop, guardrail, Pause, Resume, Run now and Restart on new profile`, async ({ dashboard: page, daemon }) => {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   const persona = personas.find(p => p.name === "Code Risk Reviewer")!;
@@ -366,7 +459,7 @@ test("Open new session reaches the replacement even when the fleet filter hides 
   const rows = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /wrangler|watcher/i });
   await expect(rows).toHaveCount(2);
   await page.keyboard.press("/");
-  const filter = page.getByRole("textbox", { name: "Filter sessions by title, status, agent, or PR number" });
+  const filter = page.getByRole("textbox", { name: "Filter sessions and resident cards" });
   await filter.fill("Original wrangler");
   await expect(rows).toHaveCount(1);
   await rows.first().click();

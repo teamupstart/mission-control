@@ -2,14 +2,14 @@
 // listener's hello and the shell report under the token, the snapshot field and `voice_state`
 // frames, and every route answering 404 with the flag off.
 import assert from "node:assert/strict";
-import { after, beforeEach, test } from "node:test";
+import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig } = await import("../src/server/db.ts");
+const { closeDb, getAppConfig, deleteAppConfig, openDb } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -103,6 +103,66 @@ test("PUT accepts the cancel window's limits, 1 and 30 seconds, and persists eac
   }
 });
 
+test("a stored voice config this build cannot read reads as the defaults and is left as stored", async () => {
+  // Out of range for this build's schema: a newer build with a wider bound could have written it.
+  const unreadable = JSON.stringify({ muted: true, cancelWindow: { enabled: true, seconds: 999 }, whenUnsure: "guess" });
+  openDb().prepare("INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(APP_CONFIG_ENTRIES.voice.key, unreadable);
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args); };
+  try {
+    const response = await json("/api/voice/config");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS }, "every field reads as its default");
+    assert.equal(voiceStateStore.state().mode, "unavailable", "the state still computes, from the defaults");
+  } finally {
+    console.warn = warn;
+  }
+  assert.ok(warned.some((args) => String(args[0]).includes("[voice] stored config does not parse")), "the fallback is logged");
+  const stored = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.voice.key) as { value: string };
+  assert.equal(stored.value, unreadable, "a read never rewrites the stored value");
+});
+
+test("PUT /api/ui/config saves ui.voice and reads it back; an unknown placement is refused and changes nothing", async () => {
+  const saved = await json("/api/ui/config", "PUT", { voice: { confirmation: "toast", indicators: ["status-line", "topbar"] } });
+  assert.equal(saved.status, 200);
+  const expected = { confirmation: "toast", indicators: ["status-line", "topbar"] };
+  assert.deepEqual((await saved.json() as { config: { voice: unknown } }).config.voice, expected);
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, expected);
+
+  for (const body of [{ voice: { confirmation: "banner", indicators: ["status-line"] } }, { voice: { confirmation: "pill" } }]) {
+    const refused = await json("/api/ui/config", "PUT", body);
+    assert.equal(refused.status, 400, JSON.stringify(body));
+  }
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, expected, "the saved value is unchanged");
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as { voice: unknown }).voice, expected);
+});
+
+test("with the flag off GET /api/ui/config has no voice field and a ui.voice write is refused; the stored value returns with the flag", async () => {
+  const kept = { confirmation: "popover", indicators: ["edge"] };
+  assert.equal((await json("/api/ui/config", "PUT", { voice: kept })).status, 200);
+  setFlag("voice", false);
+
+  const read = await (await json("/api/ui/config")).json() as { config: Record<string, unknown> };
+  assert.equal("voice" in read.config, false, "the response is the one an install without voice gave");
+  const refused = await json("/api/ui/config", "PUT", { voice: { confirmation: "toast", indicators: [] } });
+  assert.equal(refused.status, 404);
+  assert.deepEqual(await refused.json(), { error: "This feature is disabled.", feature: "voice" });
+  const mixed = await json("/api/ui/config", "PUT", { richText: false, voice: { confirmation: "toast", indicators: [] } });
+  assert.equal(mixed.status, 404, "a patch naming voice is refused whole");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { richText: boolean }).richText, true, "nothing in it was saved");
+  // Other UI settings still save, and their answer carries no voice field either.
+  const other = await json("/api/ui/config", "PUT", { richText: false });
+  assert.equal(other.status, 200);
+  assert.equal("voice" in (await other.json() as { config: Record<string, unknown> }).config, false);
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as { voice: unknown }).voice, kept, "the stored value is kept");
+
+  setFlag("voice", true);
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, kept);
+  await json("/api/ui/config", "PUT", { richText: true });
+});
+
 test("PUT refuses an empty patch, an unknown field and an out-of-range value, writing nothing", async () => {
   for (const body of [{}, { loudness: 11 }, { cancelWindow: { seconds: 0 } }, { cancelWindow: { seconds: 31 } }, { whenUnsure: "guess" }, { decisionProvider: "acme" }]) {
     const response = await json("/api/voice/config", "PUT", body);
@@ -140,6 +200,27 @@ test("a hello makes voice listen, mute mutes it, and every change reaches the ev
   await json("/api/voice/mute", "POST", { muted: false });
   assert.equal(frames.at(-1)?.mode, "listening");
   assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
+});
+
+test("a window that connects after a lapse but before its timer fires still sees the listener come back", async () => {
+  // Mocked time: the hello's lapse passes while its timer has not fired, which is the window a
+  // late timer leaves on a busy daemon.
+  mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  try {
+    voiceStateStore.reset();
+    await hello();
+    // The store's own reading: a frame may not be sent, if the last test already left `listening`.
+    assert.equal(voiceStateStore.state().mode, "listening");
+    mock.timers.setTime(1_000_000 + 30_001);
+    const snapshot = registry.snapshot().voice;
+    assert.equal(snapshot?.mode, "unavailable", "the snapshot is computed now, so the lapse already shows");
+    assert.equal(frames.at(-1)?.mode, "unavailable", "and it is published, so lastVoice matches what was handed out");
+    await hello();
+    assert.equal(frames.at(-1)?.mode, "listening", "the returning listener reaches the window that connected in between");
+  } finally {
+    voiceStateStore.reset();
+    mock.timers.reset();
+  }
 });
 
 test("a hello with an unknown major version is refused with 409 and the state says why", async () => {

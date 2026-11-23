@@ -1,15 +1,14 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { handOver, hasTmux, PANE_AGENT_DAEMON, paneSession, sessionIdle, startPaneAgent } from "../fixtures/pane-agent.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
@@ -190,55 +189,7 @@ test("a routed skill reaches turn one, the after-work skill is prompted once the
   await expect(viewer).toBeHidden();
 });
 
-interface TaskRow { id: string; status: string; sessionId: string | null }
 interface ShapingRead { summary: { at: number; sessionId: string }; afterWork: { state: string; createdAt: number } | null }
-
-/**
- * An agent in a real tmux pane that a task can be handed to: `pane-agent.mjs` under a link
- * named `claude`, found by discovery, in whole-turn mode so every submission's text is logged.
- * Only a discovered terminal agent can take a handover, so this is the one way to reach it.
- */
-function startPaneAgent(daemon: DaemonHandle): { id: string; turns: () => string[]; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-route-handover-"));
-  const bin = join(dir, "fake-bin");
-  mkdirSync(bin);
-  symlinkSync(execPath, join(bin, "claude"));
-  const agent = fileURLToPath(new URL("../fixtures/pane-agent.mjs", import.meta.url));
-  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
-  const log = join(dir, "turns.jsonl");
-  const name = `mc-e2e-route-${process.pid}-${Date.now()}`;
-  // tmux runs this through a shell: every argument is quoted, so a path with spaces stays one.
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  const run = (paneId: string) => ["env", `PANE_AGENT_TURNS=${log}`, join(bin, "claude"), agent, daemon.baseURL, token, paneId, daemon.repo, dir]
-    .map(quote).join(" ");
-  const tmux = (args: string[]) => execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
-  tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
-  const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
-  tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
-  return {
-    id,
-    turns: () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { text: string }).text) : []),
-    // By pane id: a handover renames the session after its task.
-    cleanup: () => {
-      spawnSync("tmux", ["kill-pane", "-t", id], { stdio: "ignore" });
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-async function idleSession(daemon: DaemonHandle, sessionId: string): Promise<void> {
-  await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
-    .find((session) => session.id === sessionId)?.state, { timeout: 60_000 }).toBe("idle");
-}
-
-/** Hand a backlog task to the running agent, as the board's drop onto an idle agent does. */
-async function handOver(daemon: DaemonHandle, taskId: string, sessionId: string): Promise<void> {
-  await api(daemon, `/api/tasks/${taskId}/assign`, { sessionId, overrideDisabled: true, overridePauseHold: true, confirmReset: true });
-  await expect.poll(async () => {
-    const task = (await api<TaskRow[]>(daemon, "/api/tasks")).find((entry) => entry.id === taskId);
-    return task?.status === "running" && task.sessionId === sessionId;
-  }, { timeout: 60_000 }).toBe(true);
-}
 
 /** The person submits the work: the after-work step starts. Returns the binding, removed before the next handover. */
 async function submitWork(daemon: DaemonHandle, versionId: string, sessionId: string, requestId: string): Promise<string> {
@@ -269,6 +220,12 @@ test("an after-work prompt queued while task shaping is on is never delivered on
     .find((session) => session.id === sessionId)?.state, { timeout: 60_000 }).toBe("working");
   await expect.poll(() => recordedUserTurns(daemon).some((turn) => turn.includes("## Skills for this task")), { timeout: 30_000 }).toBe(true);
 
+  // A binding is keyed by the conversation (`noteKeyFor`), and one made before the agent reports
+  // its conversation id is paused as `conversation_changed` the moment that id arrives, so the
+  // submit below would meet an inactive binding. Wait for the id, as the idle waits elsewhere do.
+  await expect.poll(async () => (await api<Array<{ id: string; agentSessionId: string | null }>>(daemon, "/api/sessions"))
+    .find((session) => session.id === sessionId)?.agentSessionId ?? null, { timeout: 30_000 }).not.toBeNull();
+
   // The work is submitted while the turn is still running: the prompt waits in the outbox.
   const versionId = await publishedWorkflow(daemon);
   const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
@@ -298,24 +255,17 @@ test("an after-work prompt queued while task shaping is on is never delivered on
 });
 
 test.describe("handed over to a running agent", () => {
-  // Discovery on and brisk, for this block's daemon only: a discovered terminal agent is the only
-  // kind a task can be handed to. Skipped without tmux, which CI installs for this suite.
-  test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
-  test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is not installed on this machine");
+  // A discovered terminal agent is the only kind a task can be handed to; see `fixtures/pane-agent.ts`.
+  test.use(PANE_AGENT_DAEMON);
+  test.skip(!hasTmux(), "tmux is not installed on this machine");
 
   test("a task handed to the same agent twice gets its own after-work prompt for each launch", async ({ daemon }) => {
     await registerShapers(daemon, [
       { id: "skill-router", label: "Skill router", stage: "route", args: ["route", "wrap-notes:after-work"] },
     ]);
-    const pane = startPaneAgent(daemon);
+    const pane = startPaneAgent(daemon, { prefix: "mc-e2e-route", turns: true });
     try {
-      let sessionId = "";
-      await expect.poll(async () => {
-        const sessions = await api<Array<{ id: string; state: string; terminals?: Array<{ paneId?: string }> }>>(daemon, "/api/sessions");
-        const ours = sessions.find((session) => session.terminals?.some((terminal) => terminal.paneId === pane.id));
-        sessionId = ours?.state === "idle" ? ours.id : "";
-        return sessionId;
-      }, { timeout: 30_000 }).not.toBe("");
+      const sessionId = await paneSession(daemon, pane);
 
       const intent = "Tidy the retry worker's logging.";
       const task = await api<{ id: string }>(daemon, "/api/tasks", {
@@ -332,7 +282,7 @@ test.describe("handed over to a running agent", () => {
       await expect.poll(() => launches().length, { timeout: 60_000 }).toBe(1);
       const first = (await shaping()).summary;
       expect(first.sessionId).toBe(sessionId);
-      await idleSession(daemon, sessionId);
+      await sessionIdle(daemon, sessionId);
       const firstBinding = await submitWork(daemon, versionId, sessionId, "e2e-route-handover-1");
       await expect.poll(() => prompts().length, { timeout: 60_000 }).toBe(1);
       await expect.poll(async () => (await shaping()).afterWork?.state, { timeout: 30_000 }).toBe("delivered");
@@ -340,7 +290,7 @@ test.describe("handed over to a running agent", () => {
       // Back to the backlog and handed to the SAME agent again: a second launch into one session.
       await api(daemon, `/api/workflow-bindings/${firstBinding}`, undefined, "DELETE");
       await api(daemon, `/api/tasks/${task.id}/requeue`, {});
-      await idleSession(daemon, sessionId);
+      await sessionIdle(daemon, sessionId);
       await handOver(daemon, task.id, sessionId);
       await expect.poll(() => launches().length, { timeout: 60_000 }).toBe(2);
       const second = (await shaping()).summary;
@@ -349,7 +299,7 @@ test.describe("handed over to a running agent", () => {
       expect((await shaping()).afterWork, "the earlier launch's prompt is not this launch's record").toBeNull();
 
       // Its own after-work prompt, after its own turn one, and recorded as its own.
-      await idleSession(daemon, sessionId);
+      await sessionIdle(daemon, sessionId);
       await submitWork(daemon, versionId, sessionId, "e2e-route-handover-2");
       await expect.poll(() => prompts().length, { timeout: 60_000 }).toBe(2);
       const turns = pane.turns();
@@ -359,6 +309,78 @@ test.describe("handed over to a running agent", () => {
         const read = await shaping();
         return read.afterWork && read.afterWork.createdAt >= second.at ? read.afterWork.state : null;
       }, { timeout: 30_000 }).toBe("delivered");
+    } finally {
+      pane.cleanup();
+    }
+  });
+
+  test("a handover back to the same agent whose record cannot be written shows no earlier context, even after a restart", async ({ dashboard, daemon }) => {
+    await registerShapers(daemon, [
+      { id: "guidance-service", label: "Guidance service", stage: "select", args: ["ok"] },
+    ]);
+    await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+    const pane = startPaneAgent(daemon, { prefix: "mc-e2e-stale-record", turns: true });
+    try {
+      const sessionId = await paneSession(daemon, pane);
+      // A title no other spec's agent carries: discovery sees every tmux pane on the machine, and
+      // a handover renames the session after its task.
+      const title = "Refuse a stale handover record";
+      const task = await api<{ id: string }>(daemon, "/api/tasks", {
+        repoRoot: daemon.repo, title, intent: "Keep the ledger retry quiet.", kind: "ship", agent: "claude", workflowId: null, backlog: true,
+      });
+      const shapingRoute = async () => (await fetch(`${daemon.baseURL}/api/tasks/${task.id}/shaping`)).status;
+      const taskRead = async () => (await api<Array<{ id: string; sessionId: string | null; shaping?: unknown }>>(daemon, "/api/tasks"))
+        .find((entry) => entry.id === task.id);
+      const detail = dashboard.locator(".console-detail");
+      const contextChip = detail.getByRole("button", { name: /^Context/ });
+      const openSession = async () => {
+        await dashboard.reload();
+        await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
+        await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: title }).click();
+        await expect(detail).toContainText(title, { timeout: 30_000 });
+      };
+
+      // The first handover's context chip is shown for the session it reached.
+      await handOver(daemon, task.id, sessionId);
+      await expect.poll(shapingRoute, { timeout: 30_000 }).toBe(200);
+      await openSession();
+      await expect(contextChip).toBeVisible({ timeout: 30_000 });
+      await shoot(dashboard, "same-session-handover-before", detail);
+
+      // Back to the backlog, then handed to the SAME agent while SQLite refuses the new record.
+      await api(daemon, `/api/tasks/${task.id}/requeue`, {});
+      await sessionIdle(daemon, sessionId);
+      withDaemonDb(daemon, (db) => db.exec(
+        `CREATE TRIGGER e2e_refuse_shaping BEFORE UPDATE OF shaping ON tasks WHEN NEW.id = '${task.id}'
+         BEGIN SELECT RAISE(ABORT, 'disk refused the shaping record'); END;`,
+      ));
+      await handOver(daemon, task.id, sessionId);
+      // The earlier delivery's record is still on disk, naming this same session, under an id the
+      // binding no longer carries. Nothing has cleared it.
+      const row = withDaemonDb(daemon, (db) => db.prepare(
+        `SELECT session_id, shaping_delivery, json_extract(shaping, '$.sessionId') AS recordSession,
+                json_extract(shaping, '$.deliveryId') AS recordDelivery FROM tasks WHERE id = ?`,
+      ).get(task.id) as { session_id: string; shaping_delivery: string; recordSession: string; recordDelivery: string });
+      expect(row.session_id).toBe(sessionId);
+      expect(row.recordSession, "the earlier record still names this session").toBe(sessionId);
+      expect(row.shaping_delivery, "but the binding carries this delivery's id").not.toBe(row.recordDelivery);
+      expect(await shapingRoute()).toBe(404);
+      expect((await taskRead())?.shaping).toBeUndefined();
+      await openSession();
+      await expect(contextChip).toHaveCount(0);
+
+      // The daemon restarts with nothing in memory and nothing left to retry.
+      await daemon.crash();
+      withDaemonDb(daemon, (db) => db.exec("DROP TRIGGER e2e_refuse_shaping"));
+      await daemon.restart();
+      await expect.poll(async () => (await api<Array<{ id: string }>>(daemon, "/api/sessions")).some((session) => session.id === sessionId),
+        { timeout: 60_000 }).toBe(true);
+      expect((await taskRead())?.sessionId).toBe(sessionId);
+      expect(await shapingRoute(), "the route serves no earlier delivery's text").toBe(404);
+      expect((await taskRead())?.shaping, "task reads carry no earlier record").toBeUndefined();
+      await openSession();
+      await expect(contextChip, "the session shows no earlier context chip").toHaveCount(0);
+      await shoot(dashboard, "same-session-handover-after-restart", detail);
     } finally {
       pane.cleanup();
     }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import {
+  CodeRabbitCommandSchema,
   PersonaGuidanceSchema,
   PersonaProvenanceSchema,
   PublishedWorkflowGraphSchema,
@@ -86,7 +87,10 @@ export const SettingsBackupWorkflowCommandSchema = z.object({
   revision: z.number().int().positive(),
   createdAt: timestamp,
   updatedAt: timestamp,
-}).strict();
+}).strict().refine((value) => value.slot !== "coderabbit" || value.defaultCommand === null
+  || CodeRabbitCommandSchema.safeParse(value.defaultCommand).success, {
+  path: ["defaultCommand"], message: "Invalid default CodeRabbit command",
+});
 
 export const SettingsBackupWorkflowDefinitionSchema = z.object({
   id,

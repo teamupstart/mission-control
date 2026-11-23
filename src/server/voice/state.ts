@@ -66,8 +66,11 @@ export class VoiceStateStore {
       shellMicrophone: report?.microphone ?? null,
     });
     const capabilities: VoiceCapabilities = report ? knownVoiceCapabilities(report.capabilities) : {};
-    // `listener` is the daemon's own reading while it has one: a live hello, or a hello it
-    // refused, which is how the state says why a listener that is running cannot be heard.
+    // `listener` is the daemon's own reading and nobody else's: a shell's claim about it is
+    // dropped, or a report could say a listener runs while `reasons` says none has said hello.
+    // It is present for a live hello, or for a hello the daemon refused, which is how the state
+    // says why a listener that is running cannot be heard; otherwise it is absent.
+    delete capabilities.listener;
     if (hello) capabilities.listener = { available: true, reason: null };
     else if (refused) capabilities.listener = { available: false, reason: refused.reason };
     return {

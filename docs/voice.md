@@ -57,7 +57,9 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-Nothing draws either yet.
+Nothing draws either yet. Like every voice surface it is behind the flag: with
+`voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
+flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
 ## The voice state
 
@@ -82,8 +84,9 @@ in the order they are listed:
 
 The state also carries `capabilities`, `hotkeyError`, `model` and `roster`. The capabilities and
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
-absent and `hotkeyError` is null. `listener` is the daemon's own reading: available while a hello
-is live, and unavailable with the reason while a hello was refused for its protocol version.
+absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
+hello is live, unavailable with the reason while a hello was refused for its protocol version, and
+absent otherwise; a shell report's `listener` entry is dropped.
 `model` reads `missing` and `roster` is empty until later phases drive them.
 
 ### Routes

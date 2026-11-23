@@ -45,6 +45,10 @@ what interrupts you. Escape closes it, like every overlay. Per-session entry poi
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
 
+Press <kbd>e</kbd> on the Board when **to answer** is visible to open the inbox. From an open
+conversation, the same key scrolls to and focuses that session's first pending question in the
+inbox. If that session has no question listed there, the inbox opens at the top in its usual order.
+
 A question filed with [Ask without stopping](sessions.md#asking-without-stopping) is in the inbox
 and the **to answer** count like any other while it is pending. Its session turns amber, reading
 **waiting on your answer**, only once the agent has stopped with it still open; a resident keeps
@@ -341,6 +345,10 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 (the "died with work unfinished" case); a session idle that long with a **workflow run
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
+
+A resident's standing task stays open between iterations and does not count as unfinished
+work. Its scheduled waits therefore do not produce a Stuck row. An open queue, a parked
+workflow, an unanswered escalation, or a silent active turn can still flag a resident.
 
 A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from the two idle
 rules (open work and a parked run): it is waiting on someone other than you, and its blocker

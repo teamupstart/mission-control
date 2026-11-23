@@ -7,7 +7,7 @@ import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { Persona } from "../src/shared/workflow.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 
 // A dispatch Persona: the Library Persona an ordinary task names under Advanced, delivered to
 // the launched agent as part of its standing instructions.
@@ -349,7 +349,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (session, text) => {
       pasted = text;

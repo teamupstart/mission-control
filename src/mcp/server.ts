@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { McpCreateScheduleSchema, McpSchedulePreviewSchema } from "@shared/protocol.ts";
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
 import { MEANWHILE_MAX_CHARS } from "@shared/async-input.ts";
@@ -790,6 +792,57 @@ server.registerTool(
     }
   },
 );
+
+// Schedules use the existing daemon service, never local timers or direct database writes.
+const scheduleToolGuidance =
+  "Requires the Recurring missions through MCP preview flag (mcp-schedules). " +
+  "Use five-field cron and an explicit IANA time zone; runs must be at least an hour apart. " +
+  "A due run files a backlog task, not an immediate agent launch. Foreman's existing gates govern execution. " +
+  "Mission Control must be running; missed runs follow missedPolicy on wake or restart. ";
+
+async function scheduleRequest(path: string, method: string, body?: unknown) {
+  try {
+    const res = await http(path, method, body, false, AbortSignal.timeout(30_000));
+    if (res.status === 404 && !res.headers.get("content-type")?.includes("application/json")) {
+      return textResult("This daemon does not support recurring missions through MCP. Update or restart Mission Control; no schedule was created.", true);
+    }
+    if (!res.ok) return textResult(`Schedule request failed (${res.status}): ${await res.text()}`, true);
+    return textResult(JSON.stringify(await res.json(), null, 2));
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}. If creating a schedule, check list_schedules before retrying; the outcome may be unknown.`, true);
+  }
+}
+
+server.registerTool("create_schedule", {
+  title: "Create a recurring mission",
+  description: scheduleToolGuidance +
+    "Save a recurring task template with its name, cadence and task intent. Preview first with preview_schedule. " +
+    "Enabled by default; enabled:false saves paused. Defaults: skip active work, coalesce missed runs to the latest, " +
+    "manual completion, inherited kind agent and no after-work workflow. Choose auto-on-conclusion for runs " +
+    "Foreman may complete without a merged PR. Returns the durable schedule, canonical repository and nextRunAt. " +
+    "Use list_schedules to inspect saved missions and the Missions dashboard to edit, pause or archive them.",
+  inputSchema: McpCreateScheduleSchema,
+}, async (input) => scheduleRequest("/mcp/schedules", "POST", {
+  ...input, template: { ...input.template, repoRoot: resolve(input.template.repoRoot) },
+}));
+
+server.registerTool("preview_schedule", {
+  title: "Preview a recurring mission",
+  description: scheduleToolGuidance +
+    "Validate the exact unsaved definition and enumerate its next occurrences without writing a schedule or task. " +
+    "Returns UTC instants, offsets, DST shifts and collisions; optional standby simulation uses the same missed-run policy as execution.",
+  inputSchema: McpSchedulePreviewSchema,
+}, async (input) => scheduleRequest("/mcp/schedules/preview", "POST", {
+  ...input, template: { ...input.template, repoRoot: resolve(input.template.repoRoot) },
+}));
+
+server.registerTool("list_schedules", {
+  title: "List recurring missions",
+  description: "Read-only: list saved, non-archived recurring missions, including paused missions, task templates, " +
+    "schedule ids, nextRunAt and health. Requires the Recurring missions through MCP preview flag (mcp-schedules). " +
+    "Use this to check whether a mission already exists before creating one or retrying an uncertain create.",
+  inputSchema: {},
+}, async () => scheduleRequest("/mcp/schedules", "GET"));
 
 /** Saved task facts only: never resolve another session's private state. */
 function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {

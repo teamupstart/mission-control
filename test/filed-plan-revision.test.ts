@@ -11,8 +11,10 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // forms are valid targets (an open filed plan form of the same session, or one its own agent
 // withdrew, decided from the mode stored on the row now), every refusal and that it writes
 // nothing, the atomic replacement of an open form through the one agent-withdrawal writer,
-// numbering, and the link surviving a restart. docs/plans/filed-plan-decisions/phase-2-revised-forms.md
-// is the specification these pin.
+// numbering, and the link surviving a restart. These pin the revised-form contract the approved
+// goal sets (docs/plans/filed-plan-decisions/plan.md) and docs/sessions.md describes under
+// "Revising a filed plan"; docs/plans/filed-plan-decisions/phase-2-revised-forms.md is the route
+// the implementation took, for context.
 
 const home = mkdtempSync(join(tmpdir(), "mission-filed-plan-revision-"));
 process.env.MISSION_HOME = home;

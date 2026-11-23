@@ -7,14 +7,15 @@
 // holds a completion, never counts toward the open-question limit, and Foreman never reads it.
 // It lives in its own table (`reports`) and outlives the session that posted it.
 
-import { DECISION_CONTEXT_MAX_CHARS } from "./decision-asks.ts";
-
 /** Bounds on what one report may carry. */
 export const REPORT_LIMITS = {
   /** One line: the inbox row's heading and, in a later phase, the notification text. */
   title: 200,
-  /** Markdown, the same budget a question's context has. */
-  body: DECISION_CONTEXT_MAX_CHARS,
+  /**
+   * Markdown. The report contract's own number, not borrowed from the question limit: a change
+   * to how much context a question may carry must not silently change what a report may say.
+   */
+  body: 4000,
   url: 2000,
   /** A checkout-relative path to the attached document. */
   path: 1024,

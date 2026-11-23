@@ -1,4 +1,5 @@
 import type { ReportItem } from "@shared/reports.ts";
+import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -84,9 +85,9 @@ export interface MissionState {
   restoringSessions: RestoringSession[];
   reviews: ReviewItem[];
   /**
-   * Agent reports this window has been told about: those waiting to be read at connect time, and
-   * every report upserted since, read or replaced ones included, so a surface that has a report
-   * open sees it change. The attention fold leaves out what is no longer waiting to be read.
+   * Agent reports waiting to be read: the snapshot's, kept current by `report_upsert`. A report
+   * that is read or replaced leaves (`withReportUpserted`), so this never grows past what the
+   * inbox can show. A session's full history is read from `GET /api/sessions/:id/reports`.
    */
   reports: ReportItem[];
   tasks: Task[];
@@ -281,7 +282,7 @@ export function useEventStream(): MissionState {
     new Map(),
   );
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
-  const [reports, setReports] = useState<Map<string, ReportItem>>(new Map());
+  const [reports, setReports] = useState<ReadonlyMap<string, ReportItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
@@ -541,7 +542,7 @@ export function useEventStream(): MissionState {
           });
           break;
         case "report_upsert":
-          setReports((prev) => new Map(prev).set(msg.report.id, msg.report));
+          setReports((prev) => withReportUpserted(prev, msg.report));
           break;
         case "task_upsert":
           setTasks((prev) => new Map(prev).set(msg.task.id, msg.task));

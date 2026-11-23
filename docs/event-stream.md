@@ -172,7 +172,9 @@ folds them. See [Task shaping](task-shaping.md#settings).
 `report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
 report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
 never deleted and outlives the session that posted it, so a read or replaced report is upserted
-with its new state and the attention fold leaves it out. Replacing a report sends two frames, the
+with its new state, and the dashboard drops it from its state on that frame
+(`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
 replaced report with its `supersededBy` set and then its successor.
 
 The reconnect snapshot's `reports` field holds every report waiting to be read: unread, and the

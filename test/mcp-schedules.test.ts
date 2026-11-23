@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -141,4 +142,43 @@ test("MCP recurring missions use the existing durable scheduler", async (t) => {
     await call("create_schedule", definition,
       /Could not reach Mission Control:.*check list_schedules before retrying; the outcome may be unknown\./);
   });
+});
+
+test("stalled schedule requests time out without retrying and preserve unknown-outcome guidance", { timeout: 30_000 }, async (t) => {
+  const requests: string[] = [];
+  const server = createServer((req) => {
+    requests.push(`${req.method} ${req.url}`);
+    req.resume(); // Accept the request, but deliberately never send a response.
+  });
+  const client = new Client({ name: "schedule-timeout-test", version: "1" });
+  t.after(async () => {
+    await client.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  // Accelerate only the child's 30-second deadline, keeping the real fetch/abort path.
+  const preload = "data:text/javascript," + encodeURIComponent(
+    "const timeout = AbortSignal.timeout; AbortSignal.timeout = ms => timeout(ms === 30_000 ? 1_000 : ms);",
+  );
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--import", preload, "--import", fileURLToPath(import.meta.resolve("tsx")), fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
+    cwd: repo,
+    env: { ...process.env, TSX_TSCONFIG_PATH: fileURLToPath(new URL("../tsconfig.json", import.meta.url)), MISSION_HOME: home, MISSION_API_TOKEN: ensureToken(), MISSION_PORT: String(address.port) } as Record<string, string>,
+    stderr: "pipe",
+  });
+  await client.connect(transport);
+  const definition = { name: "Stalled audit", expression: "0 9 * * *", timezone: "UTC", template: {
+    title: "Audit dependencies", intent: "Report dependency issues and verify findings.",
+  } };
+  await Promise.all(["create_schedule", "preview_schedule", "list_schedules"].map(async (name) => {
+    const result = await client.callTool({ name, arguments: name === "list_schedules" ? {} : definition }, undefined, { timeout: 10_000 });
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /TimeoutError.*check list_schedules before retrying; the outcome may be unknown/);
+  }));
+  assert.deepEqual(requests.sort(), ["GET /mcp/schedules", "POST /mcp/schedules", "POST /mcp/schedules/preview"],
+    "each tool sends one request and never retries an uncertain outcome");
 });

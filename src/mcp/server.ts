@@ -802,7 +802,7 @@ const scheduleToolGuidance =
 
 async function scheduleRequest(path: string, method: string, body?: unknown) {
   try {
-    const res = await http(path, method, body);
+    const res = await http(path, method, body, false, AbortSignal.timeout(30_000));
     if (res.status === 404 && !res.headers.get("content-type")?.includes("application/json")) {
       return textResult("This daemon does not support recurring missions through MCP. Update or restart Mission Control; no schedule was created.", true);
     }

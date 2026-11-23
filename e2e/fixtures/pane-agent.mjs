@@ -62,6 +62,8 @@ const PASTE_END = `${ESC}[201~`;
 const SCROLLBACK = 20;
 
 let composer = "";
+/** A trailing marker prefix held until the next stdin chunk (at most five characters). */
+let pendingMarker = "";
 const history = [];
 /** Inside a bracketed paste, which only whole-turn mode distinguishes. */
 let pasting = false;
@@ -119,6 +121,18 @@ process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
+  chunk = pendingMarker + chunk;
+  pendingMarker = "";
+  // A read can end anywhere inside either marker. Keep the longest possible prefix out
+  // of the composer until the next read completes it or proves it is ordinary input.
+  for (let length = Math.min(chunk.length, PASTE_START.length - 1); length > 0; length--) {
+    const suffix = chunk.slice(-length);
+    if (PASTE_START.startsWith(suffix) || PASTE_END.startsWith(suffix)) {
+      pendingMarker = suffix;
+      chunk = chunk.slice(0, -length);
+      break;
+    }
+  }
   // Bracketed-paste markers are stripped rather than rendered: `PaneWrite.paste` wraps the
   // body in them, and a real composer treats them as framing, not as content.
   if (TURNS) {

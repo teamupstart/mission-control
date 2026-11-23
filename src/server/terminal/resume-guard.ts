@@ -1,8 +1,8 @@
 import { createConnection } from "node:net";
 import type { TerminalEnvironmentPatch } from "./environment-handoff.ts";
 import { spawn } from "node:child_process";
-import { isAbsolute, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import { WORK_UNIT_ENV_VAR } from "@shared/work-unit.ts";
 import { run } from "../util/exec.ts";
 import { claimResumeLease, completeResumeLease, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
@@ -68,18 +68,42 @@ async function processInventory() {
   return parseResumeProcesses(result.stdout, result.childPid);
 }
 
-/** Replace this short-lived reader with the original wrapper, preserving its PID, tty and argv. */
-async function execWithAgentEnvironment(): Promise<never> {
+async function readEnvironmentPatch(path: string): Promise<TerminalEnvironmentPatch> {
+  const cwd = process.cwd();
+  const directory = dirname(path);
+  process.chdir(directory);
+  try {
+    // Connect relative to the directory we checked. A late pane must not follow a
+    // replacement in shared /tmp after the original private directory was removed.
+    const stat = statSync(".");
+    if (process.cwd() !== directory || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) {
+      throw new Error("Unavailable environment handoff");
+    }
+    const socket = createConnection(basename(path));
+    socket.setTimeout(5_000, () => socket.destroy(new Error("Environment handoff timed out")));
+    socket.setEncoding("utf8");
+    let payload = "";
+    for await (const chunk of socket) payload += chunk;
+    return JSON.parse(payload);
+  } finally {
+    process.chdir(cwd);
+  }
+}
+
+/** Replace this short-lived reader with the original wrapper, preserving its PID, cwd, tty and argv. */
+async function execWithAgentEnvironment(): Promise<void> {
   const [socketPath, command, ...args] = process.argv.slice(3);
   if (!socketPath || !command || !process.execve) throw new Error("Unavailable environment handoff");
-  const socket = createConnection(socketPath);
-  socket.setTimeout(5_000, () => socket.destroy(new Error("Environment handoff timed out")));
-  socket.setEncoding("utf8");
-  let payload = "";
-  for await (const chunk of socket) payload += chunk;
-  const patch: TerminalEnvironmentPatch = JSON.parse(payload);
-  const env = { ...process.env, ...patch.set };
-  for (const name of patch.unset) delete env[name];
+  const env = { ...process.env };
+  try {
+    const patch = await readEnvironmentPatch(socketPath);
+    Object.assign(env, patch.set);
+    for (const name of patch.unset) delete env[name];
+  } catch {
+    console.error("Mission Control could not read the terminal environment handoff. It expired or is unavailable. Start a new launch.");
+    process.exitCode = 1;
+    return;
+  }
   delete env.ELECTRON_RUN_AS_NODE;
   return process.execve(command, [command, ...args], env);
 }
@@ -90,6 +114,8 @@ try {
   else process.exitCode = await main();
 } catch {
   // Config, bearer values and the agent argv must never enter a launch error.
-  console.error("Mission Control refused the managed resume. Recheck its managed launch status before trying again.");
+  console.error(process.argv[2] === "--with-agent-environment"
+    ? "Mission Control could not execute the terminal launch command."
+    : "Mission Control refused the managed resume. Recheck its managed launch status before trying again.");
   process.exitCode = 1;
 }

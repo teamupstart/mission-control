@@ -1585,7 +1585,7 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
       await held;
       const lease = createResumeLease(managedResumeRoot(), resumeConversation(source), new Set(), source.id);
       return {
-        cwd: source.cwd!, argv: [], wrappedArgv: [], stateHome: lease.home, lease,
+        cwd: source.cwd!, argv: [], wrappedArgv: [], managed: true, stateHome: lease.home, lease,
         descriptor: null, requiredTools: [], instrumented: false,
         workUnitId: null, conversationKey: source.agentSessionId!,
         beginLaunch: () => beginResumeLaunch(lease),

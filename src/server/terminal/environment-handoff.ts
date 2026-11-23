@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../agent-subprocess-env.ts";
 import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { resolveOwnedRuntime } from "../../shared/owned-runtime.mjs";
 import { resumeGuardPath } from "../resume-guard-path.ts";
+import { RESUME_START_MS } from "./resume-lease.ts";
 
 /** Only selected, isolated overrides cross the socket. The wrapper owns its state and loopback credentials. */
 export interface TerminalEnvironmentPatch {
@@ -33,22 +34,23 @@ function terminalEnvironmentPatch(launch: { cwd: string; stateHome: string }, na
 export async function terminalEnvironmentArgv(argv: string[], launch: { cwd: string; stateHome: string }, named?: NamedAgentEnvironment) {
   if (!named) return { argv, dispose() {} };
   const patch = terminalEnvironmentPatch(launch, named);
-  const uid = process.getuid!();
-  const directory = join("/tmp", `mission-agent-env-${uid}`);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
-  const stat = lstatSync(directory);
-  if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
-    throw new Error("Terminal environment directory is not private.");
-  }
+  // mkdtemp exclusively creates a 0700 directory for this launch, even in shared /tmp.
+  const directory = realpathSync(mkdtempSync("/tmp/mission-agent-env-"));
   const path = join(directory, randomUUID());
+  const removeDirectory = () => {
+    try { rmdirSync(directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("Could not remove the terminal environment handoff directory.");
+    }
+  };
   const server = createServer();
   let used = false;
   const dispose = () => {
     clearTimeout(timer);
     if (server.listening) server.close();
   };
-  // Reclaim a handoff even if the terminal accepted the command but never ran it.
-  const timer = setTimeout(dispose, 120_000).unref();
+  // A delayed pane has the same start window as the managed resume lease.
+  const timer = setTimeout(dispose, RESUME_START_MS).unref();
   server.on("connection", (socket) => {
     if (used) { socket.destroy(); return; }
     used = true;
@@ -64,8 +66,10 @@ export async function terminalEnvironmentArgv(argv: string[], launch: { cwd: str
     });
   } catch (error) {
     dispose();
+    removeDirectory();
     throw error;
   }
+  server.once("close", removeDirectory);
   server.unref();
   const runtime = resolveOwnedRuntime({ executable: process.execPath, kind: process.versions.electron ? "electron" : "node" });
   return { argv: ["/usr/bin/env", ...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),

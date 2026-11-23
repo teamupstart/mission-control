@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,7 @@ import { tokenPath } from "../src/shared/harness-runtime.mjs";
 import { agentEnvironmentPresence, launchAgentEnvironment, saveAgentEnvironment } from "../src/server/agent-environment.ts";
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { isolatedAgentArgv } from "../src/server/agent-subprocess-env.ts";
-import { beginResumeLaunch, createResumeLease, resumeLeaseRoot, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
+import { beginResumeLaunch, createResumeLease, RESUME_START_MS, resumeLeaseRoot, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
 import { terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 
@@ -142,4 +142,41 @@ test("terminal handoff enforces SDK isolation before either launch command execu
       await promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: pane });
     });
   }
+
+  await t.test("concurrent handoffs use separate private directories and remove them after use or disposal", async (t) => {
+    const start = () => terminalEnvironmentArgv(["/bin/pwd", "-P"], { cwd: dir, stateHome: dir }, named);
+    const first = await start();
+    t.after(first.dispose);
+    const second = await start();
+    t.after(second.dispose);
+    const socketDir = (argv: string[]) => dirname(argv[argv.indexOf("--with-agent-environment") + 1]!);
+    const firstDir = socketDir(first.argv);
+    const secondDir = socketDir(second.argv);
+    assert.notEqual(firstDir, secondDir);
+    for (const path of [firstDir, secondDir]) {
+      const stat = lstatSync(path);
+      assert.ok(stat.isDirectory());
+      assert.equal(stat.uid, process.getuid!());
+      assert.equal(stat.mode & 0o777, 0o700);
+    }
+    first.dispose();
+    const result = await promisify(execFile)(second.argv[0]!, second.argv.slice(1), { cwd: dir });
+    assert.equal(result.stdout.trim(), realpathSync(dir), "the command starts in the pane's original working directory");
+    assert.equal(existsSync(firstDir), false);
+    assert.equal(existsSync(secondDir), false);
+  });
+
+  await t.test("a pane starting after expiry gets a fixed handoff diagnostic and never runs the agent", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const marker = join(dir, "expired-agent-started");
+    const handoff = await terminalEnvironmentArgv(["/usr/bin/touch", marker], { cwd: dir, stateHome: dir }, named);
+    t.after(handoff.dispose);
+    t.mock.timers.tick(RESUME_START_MS);
+    await assert.rejects(promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1)), (error: Error & { code?: number; stderr?: string }) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr?.trim(), "Mission Control could not read the terminal environment handoff. It expired or is unavailable. Start a new launch.");
+      return true;
+    });
+    assert.equal(existsSync(marker), false);
+  });
 });

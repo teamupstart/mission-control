@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -13,7 +13,7 @@ const cwd = join(home, "checkout");
 mkdirSync(cwd);
 process.env.MISSION_HOME = join(home, "state");
 process.env.PI_CODING_AGENT_DIR = join(home, "pi");
-process.env.MISSION_PI_BIN = join(home, "terminal-agent");
+process.env.MISSION_CLAUDE_BIN = join(home, "terminal-agent");
 process.env.SHELL = join(home, "login-shell");
 delete process.env.MISSION_PI_SDK_MODULE;
 const token = "MC_TEST_ROTATING_TOKEN";
@@ -117,19 +117,19 @@ test("Pi's launched bash tool observes shell-only selection and rotation after S
 
 test("launchPreparedResume reads the rotated shell at launch and publishes the newly missing name", async () => {
   writeProfile(false);
-  writeFileSync(process.env.MISSION_PI_BIN!, "#!/bin/sh\n" + probe, { mode: 0o700 });
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\n" + probe, { mode: 0o700 });
   const paneEnv = { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) };
-  const source = { id: "terminal-source", agentSessionId: "native-env", agent: "pi", cwd,
+  const source = { id: "terminal-source", agentSessionId: "native-env", agent: "claude", cwd,
     runtime: "terminal", permissionMode: null } as const;
   for (const phase of ["initial", "rotated"] as const) {
-    const prepared = await prepareTerminalResume(source, { managed: false, requiredTools: [], extraDirs: [] });
+    const prepared = await prepareTerminalResume(source, { managed: true, requiredTools: [], extraDirs: [] });
     if (phase === "rotated") writeProfile(true);
     const result = await launchPreparedResume({ name: "env-resume", prepared }, async ({ argv, stateHome }) => {
       // Model the discovery event while this lease is still live. On normal exit the
       // guard removes its home and Registry can no longer attribute the launch to it.
       const registry = new Registry();
       const id = "proc:env-resume-" + phase;
-      registry.applyDiscovery([{ syntheticId: id, agent: "pi", name: "pi", nameSource: "process",
+      registry.applyDiscovery([{ syntheticId: id, agent: source.agent, name: source.agent, nameSource: "process",
         cwd, gitBranch: null, repoRoot: cwd, gitRoot: cwd, pid: 123, tty: "ttys123", terminals: [],
         startedAt: 1, missionLaunched: true, missionLaunchHome: stateHome }]);
       assert.deepEqual(registry.getSession(id)?.missingEnvironment, phase === "rotated" ? [removable] : []);
@@ -138,4 +138,24 @@ test("launchPreparedResume reads the rotated shell at launch and publishes the n
     });
     assert.equal(result.value, phase);
   }
+});
+
+test("an unmanaged terminal resume skips the configured environment lookup and launches without its credentials", async () => {
+  const source = { id: "external-terminal", agentSessionId: "external-native", agent: "claude", cwd,
+    runtime: "terminal", permissionMode: null } as const;
+  const marker = join(home, "unmanaged-shell-probed");
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, `#!/bin/sh\ntest -z "\${${token}+x}\${${removable}+x}"\n`, { mode: 0o700 });
+  const prepared = await prepareTerminalResume(source, { managed: false, requiredTools: [], extraDirs: [] });
+  // The guard may discover system executables through this shell. Record only a probe for configured names.
+  writeFileSync(process.env.SHELL!, [
+    "#!/bin/sh", `case "$2" in *${token}*) touch "${marker}" ;; esac`,
+    `export ${token}=profile-example`, 'exec /bin/sh -c "$2"',
+  ].join("\n"), { mode: 0o700 });
+  const result = await launchPreparedResume({ name: "external-resume", prepared }, async ({ argv }) => {
+    assert.deepEqual(argv, prepared.wrappedArgv);
+    await promisify(execFile)(argv[0]!, argv.slice(1), { cwd, env: { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) } });
+    return { outcome: "launched", value: null };
+  });
+  assert.equal(result.outcome, "launched");
+  assert.equal(existsSync(marker), false, "launch must not even probe the profile");
 });

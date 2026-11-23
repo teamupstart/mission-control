@@ -45,6 +45,7 @@ export interface PreparedResume {
   cwd: string;
   argv: string[];
   wrappedArgv: string[];
+  managed: boolean;
   resident?: boolean;
   stateHome: string;
   lease: ResumeLease;
@@ -151,7 +152,8 @@ export async function prepareTerminalResume(session: ResumeSource, context: Resu
     // This tiny shell holds no config or credential. The guard claims before reading either.
     const command = resumeGuardArgv(runtime.command, guard, lease);
     writeFileSync(wrapper, `#!/bin/sh\n${runtime.env.ELECTRON_RUN_AS_NODE ? "export ELECTRON_RUN_AS_NODE=1\n" : ""}exec ${shellCommand(command)}\n`, { mode: 0o700 });
-    return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper], resident: context.resident, stateHome: lease.home,
+    return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper],
+      managed: context.managed, resident: context.resident, stateHome: lease.home,
       lease, descriptor, requiredTools, instrumented, workUnitId, conversationKey: session.agentSessionId, dispose,
       beginLaunch: () => { beginResumeLaunch(lease); preparing.delete(lease.id); } };
   } catch (error) {

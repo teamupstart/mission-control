@@ -142,7 +142,7 @@ async function openChecked(path: Buffer, directory = false) {
       process.platform === "linux" &&
       !(await readlink(`/proc/self/fd/${fd.fd}`, { encoding: "buffer" })).equals(path)
     )
-      unavailable();
+      throw new RepositoryCaptureChanged();
     return fd;
   } catch (error) {
     await fd.close();
@@ -217,10 +217,14 @@ export async function workingFile(
       }
     }
     if (!st.isFile()) unavailable();
-    const fd = await openChecked(path);
+    const fd = await openChecked(path).catch(error => {
+      if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? ""))
+        throw new RepositoryCaptureChanged();
+      throw error;
+    });
     try {
       const stat = await fd.stat();
-      if (!stat.isFile() || st.dev !== stat.dev || st.ino !== stat.ino) unavailable();
+      if (!stat.isFile() || st.dev !== stat.dev || st.ino !== stat.ino) throw new RepositoryCaptureChanged();
       return { data: await fd.readFile({ signal }), mode: stat.mode & 0o100 ? "100755" : "100644" };
     } finally {
       await fd.close();

@@ -30,6 +30,7 @@ import {
   digestSchema,
   unavailable,
   verifyDirectory,
+  type Manifest,
 } from "./format.ts";
 import { locatorFor, RepositoryOwnership } from "./ownership.ts";
 import { seal, sampleCheckoutBoundary, type RepositoryCaptureInput } from "./seal.ts";
@@ -54,6 +55,17 @@ const markerSchema = z.strictObject({
 type Marker = z.infer<typeof markerSchema>;
 type Namespace = Marker["kind"] | "digests";
 type ActiveRequestLookup = (workloadId: string) => RepositoryMaterializationRequest | null;
+
+// Only flat artifact files may be removed or displaced, even in a digest directory we own.
+function publishedFiles(path: string) {
+  if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) unavailable();
+  const files = readdirSync(path);
+  for (const file of files) {
+    if ((file !== "manifest.json" && !oid.safeParse(file).success) || !lstatSync(join(path, file)).isFile())
+      unavailable();
+  }
+  return files;
+}
 
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
   private static readonly services = new Map<string, WorkflowRepositoryArtifactService>();
@@ -183,10 +195,21 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     if (!existsSync(intent)) return;
     if (!lstatSync(intent).isFile()) unavailable();
     const digest = digestSchema.parse(readFileSync(intent, "utf8"));
-    if (existsSync(join(pending, "artifact")) || this.ownership.hasArtifact(digest)) return;
     const root = this.namespace("digests", false);
     if (!root) return;
     const path = join(root, digest);
+    if (this.ownership.hasArtifact(digest)) {
+      if (!lstatSync(join(pending, "previous"), { throwIfNoEntry: false })) return;
+      // A replacement interrupted on either side of its final rename can restore the
+      // existing holders' verified bytes. Recovery never attaches the incoming submission.
+      const published = lstatSync(path, { throwIfNoEntry: false });
+      const replacement = published ? path : join(pending, "artifact");
+      await verifyDirectory(replacement, digest, AbortSignal.timeout(600_000));
+      if (!published) renameSync(replacement, path);
+      this.ownership.verified(digest);
+      return;
+    }
+    if (existsSync(join(pending, "artifact"))) return;
     if (!existsSync(path)) return;
     await verifyDirectory(path, digest, AbortSignal.timeout(600_000));
     if (!this.ownership.cleanup(digest, () => renameSync(path, join(pending, "artifact")))) unavailable();
@@ -208,23 +231,40 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         const pending = this.marked("pending", candidate.id, candidate.nonce);
         const src = join(pending, "artifact");
         const dest = join(this.namespace("digests"), digestSchema.parse(candidate.digest));
-        const existing = existsSync(dest);
-        const manifest = await verifyDirectory(
-          existing ? dest : src,
-          candidate.digest,
-          AbortSignal.timeout(600_000),
-        );
+        const existing = lstatSync(dest, { throwIfNoEntry: false });
+        const signal = AbortSignal.timeout(600_000);
+        let manifest: Manifest;
+        let replace = false;
+        try {
+          manifest = await verifyDirectory(existing ? dest : src, candidate.digest, signal);
+        } catch (error) {
+          if (!existing || signal.aborted || !isArtifactIntegrityFailure(error) ||
+            !this.ownership.hasArtifact(candidate.digest)) throw error;
+          this.ownership.unavailable(candidate.digest);
+          manifest = await verifyDirectory(src, candidate.digest, signal);
+          replace = true;
+        }
         writeFileSync(join(pending, "promotion.tmp"), candidate.digest, { mode: 0o600 });
         renameSync(join(pending, "promotion.tmp"), join(pending, "promotion"));
         const snapshot = this.ownership.attach(submissionId, candidate.digest, manifest, () => {
-          if (!existing) renameSync(src, dest);
+          if (replace) {
+            const previous = join(pending, "previous");
+            publishedFiles(dest);
+            renameSync(dest, previous);
+            try {
+              renameSync(src, dest);
+            } catch (error) {
+              renameSync(previous, dest);
+              throw error;
+            }
+          } else if (!existing) renameSync(src, dest);
         });
         try {
           this.remove("pending", candidate.id, candidate.nonce);
-        } catch {
+        } catch (error) {
           this.candidates.delete(candidate.id);
           this.live.delete(candidate.id);
-          workflowLog("warn", { event: "repository_promoted", error: "pending_cleanup" });
+          workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) });
         }
         return snapshot;
       }),
@@ -332,7 +372,8 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             if (kind === "pending") await this.recoverPromotion(path);
             rmSync(path, { recursive: true });
             deleted++;
-          } catch {
+          } catch (error) {
+            workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });
             orphans++;
           }
         }
@@ -346,18 +387,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             this.ownership.cleanup(row.digest, () => {
               if (!root || !present.has(row.digest)) return;
               const path = join(root, row.digest);
-              if (realpathSync(path) !== path || !lstatSync(path).isDirectory()) unavailable();
-              // Published artifacts are flat. Never walk an unexpected directory, even at a
-              // formerly owned digest path. Partial unlink failures leave the row retryable.
-              const files = readdirSync(path);
-              for (const file of files) {
-                if (
-                  (file !== "manifest.json" && !oid.safeParse(file).success) ||
-                  !lstatSync(join(path, file)).isFile()
-                )
-                  unavailable();
-              }
-              for (const file of files) unlinkSync(join(path, file));
+              for (const file of publishedFiles(path)) unlinkSync(join(path, file));
               rmdirSync(path);
             })
           )

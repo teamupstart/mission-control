@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RepositoryViewFieldsSchema } from "@shared/repository-access.ts";
 import type { WorkflowStore } from "../store.ts";
+import { workflowErrorCode, workflowLog } from "../log.ts";
 import { digestSchema, sha256, type Manifest, unavailable } from "./format.ts";
 
 const metadata = RepositoryViewFieldsSchema.omit({
@@ -176,7 +177,7 @@ export class RepositoryOwnership {
     this.store.transact((db) =>
       db
         .prepare(
-          "UPDATE workflow_repository_artifacts SET verified_at=?, verification_error=NULL WHERE digest=?",
+          "UPDATE workflow_repository_artifacts SET state='ready', verified_at=?, verification_error=NULL WHERE digest=? AND state IN ('ready','failed')",
         )
         .run(Date.now(), digest),
     );
@@ -200,7 +201,8 @@ export class RepositoryOwnership {
         return false;
       try {
         remove();
-      } catch {
+      } catch (error) {
+        workflowLog("warn", { event: "repository_digest_cleanup", error: workflowErrorCode(error) });
         db.prepare(
           `UPDATE workflow_repository_artifacts SET state='cleanup_pending',cleanup_attempted_at=?,
           cleanup_error='deletion_failed' WHERE digest=?`,

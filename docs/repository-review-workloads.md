@@ -55,7 +55,8 @@ Capture reads index entries and Git's nonignored untracked enumeration with opti
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
-If a symlink disappears or changes type while its target is being read, stable capture retries.
+If a file or symlink disappears or is replaced between inspection and opening it, stable
+capture reads the submission again.
 Status classifications come from comparing the layers. This avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.
 
@@ -69,7 +70,12 @@ after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` mak
 claim active and the submission running in one transaction. Multiple submissions can
 independently own the same bytes. Verification marks a missing or corrupt digest as failed
 for all its claims. A transient read error leaves the digest ready so any holder can retry.
-In either case the submission can still resume or retry. Each lease reconstructs a private loose Git object store
+In either case the submission can still resume or retry.
+Promoting a fresh, verified copy of the same digest can repair its existing claims. The
+service replaces only a digest directory it owns and whose contents match the flat file
+layout. If publication is interrupted, reconciliation verifies the replacement bytes before
+restoring access for existing holders.
+Each lease reconstructs a private loose Git object store
 from verified files, along with the layer descriptor used by the MCP. This works after both
 the checkout and its Git common directory have disappeared.
 
@@ -82,7 +88,8 @@ candidate identifies a rename interrupted before database commit. Periodic maint
 skips live candidates and leases. Reconciliation inspects existing directories and leaves
 unused artifact storage absent. Its failures log `repository_reconcile_failed` independently
 of Workflow retention results. Artifact operation logs record the underlying error code
-or class. Callers receive `artifact_unavailable`. Unknown filesystem entries are counted for investigation.
+or class, including failures to clean up a digest or an abandoned candidate or lease.
+Callers receive `artifact_unavailable`. Unknown filesystem entries are counted for investigation.
 The cleanup transaction rechecks ownership before removing digest files.
 
 For truncated history, the materializer supplies a `shallow` file containing exactly the

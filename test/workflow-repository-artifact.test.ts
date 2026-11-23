@@ -25,6 +25,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
+import { RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
 import { captureStableWorkflowContext } from "../src/server/workflows/context.ts";
@@ -266,8 +267,13 @@ test("startup removes only marked abandoned candidates and releases stranded pro
   mkdirSync(unowned);
   symlinkSync(f.checkout, join(f.root, "pending", randomUUID()));
   assert.ok(existsSync(join(f.root, "digests", pending.digest)));
+  const warnings = t.mock.method(console, "warn", () => {});
   const result = await f.service.reconcile();
   assert.equal(result.orphans, 2);
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]).sort(), [
+    "[workflow] event=repository_orphan_cleanup error=ENOENT",
+    "[workflow] event=repository_orphan_cleanup error=artifact_unavailable",
+  ]);
   assert.ok(existsSync(unowned) && existsSync(f.checkout));
   assert.ok(!existsSync(join(f.root, "pending", pending.id)));
   assert.ok(!existsSync(join(f.root, "digests", pending.digest)));
@@ -308,6 +314,8 @@ test("transient verification I/O errors preserve ready claims and both submissio
   f.store.commitRepositoryCaptureActivation(second);
   assert.equal(first.digest, second.digest);
   const manifest = realpathSync(join(f.root, "digests", first.digest, "manifest.json"));
+  const candidate = await f.prepare();
+  const incoming = f.submission();
   const before = f.service.activeSnapshot(first.submissionId)!.artifact;
   const fs = (await import("node:fs/promises")).default;
   const { syncBuiltinESMExports } = await import("node:module");
@@ -320,6 +328,7 @@ test("transient verification I/O errors preserve ready claims and both submissio
     syncBuiltinESMExports();
     try {
       await assert.rejects(f.service.verify(first, signal), { code: "artifact_unavailable" });
+      await assert.rejects(f.service.promote(candidate, incoming), { code: "artifact_unavailable" });
     } finally {
       failRead.mock.restore();
       syncBuiltinESMExports();
@@ -327,6 +336,7 @@ test("transient verification I/O errors preserve ready claims and both submissio
     assert.deepEqual(f.service.activeSnapshot(first.submissionId)?.artifact, before);
     assert.deepEqual(f.service.activeSnapshot(second.submissionId)?.artifact, before);
   }
+  await f.service.discard(candidate);
   for (const snapshot of [second, first]) {
     const lease = await f.service.materialize(f.request(snapshot), signal);
     assert.equal(lease.identity.digest, first.digest);
@@ -414,6 +424,112 @@ test("activation rolls back both writes and corruption and namespace substitutio
   renameSync(artifact + "-saved", artifact);
   await f.service.reconcile();
   assert.ok(!existsSync(artifact));
+});
+
+test("promotion repairs an owned corrupt digest from verified bytes and preserves both claims", async (t) => {
+  const f = fixture(t);
+  f.write("a", "submitted bytes");
+  const first = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(first);
+  const digestDir = join(f.root, "digests", first.digest);
+  const object = f.git("hash-object", "a");
+  const path = join(digestDir, object);
+  const valid = readFileSync(path);
+  rmSync(path);
+  writeFileSync(path, "corrupt", { mode: 0o400 });
+  await assert.rejects(f.service.verify(first, signal));
+
+  const invalid = await f.prepare();
+  rmSync(join(f.root, "pending", invalid.id, "artifact", object));
+  const id = f.submission();
+  await assert.rejects(f.service.promote(invalid, id));
+  assert.equal(readFileSync(path, "utf8"), "corrupt");
+  await f.service.discard(invalid);
+
+  const candidate = await f.prepare();
+  const unknown = join(digestDir, "foreign");
+  mkdirSync(unknown);
+  await assert.rejects(f.service.promote(candidate, id));
+  assert.ok(lstatSync(unknown).isDirectory());
+  rmSync(unknown, { recursive: true });
+  const second = await f.service.promote(candidate, id);
+  assert.equal(second.digest, first.digest);
+  f.store.commitRepositoryCaptureActivation(second);
+  assert.deepEqual(readFileSync(path), valid);
+  for (const claim of [first, second]) {
+    const lease = await f.service.materialize(f.request(claim), signal);
+    assert.equal(lease.descriptor.worktree.find(entry => entry.path === "a")?.blob, object);
+    await lease.release();
+    await f.service.release(claim.submissionId);
+  }
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  await f.service.reconcile();
+});
+
+for (const published of [false, true]) {
+  test(`interrupted digest replacement recovers ${published ? "after" : "before"} the final rename`, async (t) => {
+    const f = fixture(t);
+    f.write("file", "intact bytes");
+    const holder = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(holder);
+    const dest = join(f.root, "digests", holder.digest);
+    rmSync(join(dest, "manifest.json"));
+    await assert.rejects(f.service.verify(holder, signal));
+    const candidate = interruptedCapture(f);
+    assert.equal(candidate.digest, holder.digest);
+    const pending = join(f.root, "pending", candidate.id);
+    writeFileSync(join(pending, "promotion"), holder.digest);
+    renameSync(dest, join(pending, "previous"));
+    if (published) renameSync(join(pending, "artifact"), dest);
+
+    assert.equal((await f.service.reconcile()).orphans, 0);
+    assert.equal(existsSync(pending), false);
+    assert.deepEqual(f.db.prepare(
+      "SELECT submission_id, state FROM workflow_repository_snapshot_claims WHERE digest=?",
+    ).all(holder.digest).map(row => [row.submission_id, row.state]), [[holder.submissionId, "active"]]);
+    const lease = await f.service.materialize(f.request(holder), signal);
+    assert.equal(lease.descriptor.worktree.find(entry => entry.path === "file")?.blob, f.git("hash-object", "file"));
+    await lease.release();
+    await f.service.release(holder.submissionId);
+    await f.service.reconcile();
+  });
+}
+
+test("promotion preserves an unowned corrupt directory at the candidate digest", async (t) => {
+  const f = fixture(t);
+  const candidate = await f.prepare();
+  const dest = join(f.root, "digests", candidate.digest);
+  mkdirSync(dest, { recursive: true });
+  writeFileSync(join(dest, "manifest.json"), "unowned", { mode: 0o400 });
+  await assert.rejects(f.service.promote(candidate, f.submission()), { code: "artifact_unavailable" });
+  await f.service.discard(candidate);
+  assert.equal(readFileSync(join(dest, "manifest.json"), "utf8"), "unowned");
+  assert.equal((await f.service.reconcile()).orphans, 1);
+});
+
+test("cleanup records a retry and logs the filesystem code when unlink fails", async (t) => {
+  const f = fixture(t);
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  await f.service.release(snapshot.submissionId);
+  const warnings = t.mock.method(console, "warn", () => {});
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const unlink = t.mock.method(fs, "unlinkSync", () => {
+    throw Object.assign(new Error("private path"), { code: "EBUSY" });
+  });
+  syncBuiltinESMExports();
+  try {
+    await f.service.reconcile();
+  } finally {
+    unlink.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(f.service.artifacts()[0]?.cleanupError, "deletion_failed");
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
+    "[workflow] event=repository_digest_cleanup error=EBUSY",
+  ]);
+  await f.service.reconcile();
+  assert.deepEqual(f.service.artifacts(), []);
 });
 
 test("capture discards stale candidates on retry and on boundary exceptions", async () => {
@@ -742,24 +858,34 @@ test("stable submission retries an index-only edit across the outer evidence bou
   await f.service.reconcile();
 });
 
-for (const replace of [false, true]) {
-  test(`stable capture retries a symlink ${replace ? "replaced" : "removed"} between lstat and readlinkat`, async (t) => {
+for (const [initial, replacement] of [
+  ["symlink", "removed"], ["symlink", "file"],
+  ["file", "removed"], ["file", "file"], ["file", "symlink"],
+] as const) {
+  test(`stable capture retries a ${initial} changed to ${replacement} after lstat`, async (t) => {
     const f = fixture(t);
-    const link = join(f.checkout, "racing-link");
-    symlinkSync("old-target", link);
-    f.git("add", "racing-link");
-    f.git("commit", "-qm", "link");
+    const path = join(f.checkout, "racing-entry");
+    if (initial === "symlink") symlinkSync("old-target", path);
+    else f.write("racing-entry", "original");
+    f.git("add", "racing-entry");
+    f.git("commit", "-qm", "original");
     let reads = 0;
-    let changed = false;
+    let swapped = false;
+    let retries = 0;
     const fs = (await import("node:fs/promises")).default;
     const { syncBuiltinESMExports } = await import("node:module");
     const original = fs.lstat;
     const inspect = t.mock.method(fs, "lstat", async (...args: Parameters<typeof original>) => {
       const stat = await original(...args);
-      if (reads === 1 && !changed && String(args[0]).endsWith("/racing-link") && stat.isSymbolicLink()) {
-        rmSync(link);
-        if (replace) f.write("racing-link", "new regular file");
-        changed = true;
+      if (reads === 1 && !swapped && String(args[0]).endsWith("/racing-entry")) {
+        swapped = true;
+        if (replacement === "removed") rmSync(path);
+        else {
+          const next = join(f.checkout, ".git", "replacement");
+          if (replacement === "symlink") symlinkSync("new-target", next);
+          else writeFileSync(next, "new regular file");
+          renameSync(next, path);
+        }
       }
       return stat;
     });
@@ -767,20 +893,32 @@ for (const replace of [false, true]) {
     try {
       const stable = await captureStableWorkflowContext(async () => ++reads, async () => false, {
         sampleBoundary: () => f.service.sampleBoundary(f.checkout, signal),
-        prepare: () => f.prepare(),
+        prepare: () => f.prepare().catch(error => {
+          assert.ok(error instanceof RepositoryCaptureChanged);
+          retries++;
+          throw error;
+        }),
         stillCurrent: candidate => f.service.stillCurrent(candidate, signal),
         discard: candidate => f.service.discard(candidate),
       });
-      assert.ok(changed && stable);
+      assert.ok(swapped && stable);
+      assert.equal(retries, 1);
       assert.equal(stable.captured, 2);
       assert.deepEqual(readdirSync(join(f.root, "pending")), [stable.candidate.id]);
       const snapshot = await f.service.promote(stable.candidate, f.submission());
       f.store.commitRepositoryCaptureActivation(snapshot);
       const lease = await f.service.materialize(f.request(snapshot), signal);
-      const entry = lease.descriptor.worktree.find(e => e.path === "racing-link");
+      const entry = lease.descriptor.worktree.find(e => e.path === "racing-entry");
       assert.ok(entry);
-      assert.equal(entry.blob, replace ? f.git("hash-object", "racing-link") : null);
-      assert.ok(entry.classifications.includes(replace ? "unstaged" : "deleted"));
+      if (replacement === "removed") {
+        assert.equal(entry.blob, null);
+        assert.ok(entry.classifications.includes("deleted"));
+      } else {
+        assert.equal(entry.kind, replacement);
+        assert.ok(entry.classifications.includes("unstaged") && entry.blob);
+        assert.equal(readFileSync(join(f.root, "digests", snapshot.digest, entry.blob), "utf8"),
+          replacement === "symlink" ? "blob 10\0new-target" : "blob 16\0new regular file");
+      }
       await lease.release();
       await f.service.release(snapshot.submissionId);
       await f.service.reconcile();

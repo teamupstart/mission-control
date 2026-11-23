@@ -139,6 +139,30 @@ test("PUT /api/ui/config saves ui.voice and reads it back; an unknown placement 
   assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as { voice: unknown }).voice, expected);
 });
 
+test("with the flag off GET /api/ui/config has no voice field and a ui.voice write is refused; the stored value returns with the flag", async () => {
+  const kept = { confirmation: "popover", indicators: ["edge"] };
+  assert.equal((await json("/api/ui/config", "PUT", { voice: kept })).status, 200);
+  setFlag("voice", false);
+
+  const read = await (await json("/api/ui/config")).json() as { config: Record<string, unknown> };
+  assert.equal("voice" in read.config, false, "the response is the one an install without voice gave");
+  const refused = await json("/api/ui/config", "PUT", { voice: { confirmation: "toast", indicators: [] } });
+  assert.equal(refused.status, 404);
+  assert.deepEqual(await refused.json(), { error: "This feature is disabled.", feature: "voice" });
+  const mixed = await json("/api/ui/config", "PUT", { richText: false, voice: { confirmation: "toast", indicators: [] } });
+  assert.equal(mixed.status, 404, "a patch naming voice is refused whole");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { richText: boolean }).richText, true, "nothing in it was saved");
+  // Other UI settings still save, and their answer carries no voice field either.
+  const other = await json("/api/ui/config", "PUT", { richText: false });
+  assert.equal(other.status, 200);
+  assert.equal("voice" in (await other.json() as { config: Record<string, unknown> }).config, false);
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as { voice: unknown }).voice, kept, "the stored value is kept");
+
+  setFlag("voice", true);
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, kept);
+  await json("/api/ui/config", "PUT", { richText: true });
+});
+
 test("PUT refuses an empty patch, an unknown field and an out-of-range value, writing nothing", async () => {
   for (const body of [{}, { loudness: 11 }, { cancelWindow: { seconds: 0 } }, { cancelWindow: { seconds: 31 } }, { whenUnsure: "guess" }, { decisionProvider: "acme" }]) {
     const response = await json("/api/voice/config", "PUT", body);

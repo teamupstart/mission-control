@@ -56,12 +56,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // then for the report document and Publish as scout routes, which answer 404 with it off, and
   // then for voice addressing's five routes (`GET` and `PUT /api/voice/config`,
   // `POST /api/voice/mute`, `POST /voice/listener/hello` and `POST /voice/shell-report`), which
-  // answer 404 with the `voice` flag off, `GET /api/ui/config` gaining `ui.voice`, and
-  // `POST /api/setup/install`'s refusal naming the new `voice-previews` id.
+  // answer 404 with the `voice` flag off, and `POST /api/setup/install`'s refusal naming the new
+  // `voice-previews` id. `GET /api/ui/config` is unchanged: `ui.voice` is withheld with the flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 445);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "077aa6fefddcb209b1e9ad010dc0401819db3f9a96cc9d589f623f672bf33f2b");
+    "45aa0396099a30e034a76ba6f5522fa3d36f71fdb3cf0cbd6c200d191ac46e41");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -57,7 +57,9 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-Nothing draws either yet.
+Nothing draws either yet. Like every voice surface it is behind the flag: with
+`voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
+flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
 ## The voice state
 

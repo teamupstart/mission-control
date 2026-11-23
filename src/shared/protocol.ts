@@ -4931,7 +4931,11 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
-  config: UiConfigSchema,
+  /**
+   * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
+   * voice surface, so the response is the one an install without voice gave.
+   */
+  config: UiConfigSchema.omit({ voice: true }).extend({ voice: VoiceUiConfigSchema.optional() }),
 });
 export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
 

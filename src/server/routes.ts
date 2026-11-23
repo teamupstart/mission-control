@@ -6,6 +6,7 @@ import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIO
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes } from "./voice/routes.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -8976,6 +8977,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/ui/config", async (c) => {
     const parsed = await parseBody(c, UiConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    // `ui.voice` is behind its flag like the voice routes: with it off a write is refused, and
+    // nothing in the patch is saved.
+    if (parsed.data.voice !== undefined && !featureEnabled(VOICE_FLAG)) {
+      return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    }
     setUiConfig(parsed.data);
     return c.json(uiConfigView());
   });

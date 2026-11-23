@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { UiConfig, UiConfigPatch } from "@shared/protocol.ts";
+import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -64,6 +64,15 @@ function commit(next: UiConfig): void {
   emit();
 }
 
+/**
+ * The daemon's config as this window keeps it. `voice` is withheld while the `voice` flag is off
+ * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
+ * so the record it draws from stays whole.
+ */
+function withHeldFields(config: UiConfigView["config"]): UiConfig {
+  return { ...config, voice: config.voice ?? current.voice };
+}
+
 /** The live config. Safe to read at module load and outside React. */
 export function uiConfig(): UiConfig {
   return current;
@@ -114,10 +123,10 @@ export async function hydrateUiConfig(): Promise<void> {
         return;
       }
     } else {
-      commit(view.config);
+      commit(withHeldFields(view.config));
     }
   } else {
-    commit(view.config);
+    commit(withHeldFields(view.config));
   }
   hydrated = true;
   emit();

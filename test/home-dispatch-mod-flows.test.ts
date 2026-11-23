@@ -8,7 +8,7 @@ import { runDispatchCommand, runLauncher } from "../src/mod/flows/command.ts";
 import { PANE_WIDER_NOTICE } from "../src/mod/flows/command.ts";
 import { createFlowGate } from "../src/mod/flows/gate.ts";
 import { FLOW_FAILED_TEXT, reportFlowFailure } from "../src/mod/flows/failure.ts";
-import { DESCRIBE_NOTICE, EXPIRED_NOTICE } from "../src/mod/flows/dispatch.ts";
+import { DESCRIBE_NOTICE, EXPIRED_NOTICE, isRepoSelectorRefusal } from "../src/mod/flows/dispatch.ts";
 import { START_DISPATCH_DESCRIPTION, intentNudge, runStartDispatchTool } from "../src/mod/flows/tool.ts";
 import type { ModAskAnswer, ModAskQuestion } from "../src/mod/host.ts";
 import {
@@ -1082,4 +1082,25 @@ test("a flow failure after its session ended is logged but not announced to the 
   // A session that is still there is told, as before.
   reportFlowFailure(fake.host, (text) => logged.push(text), new Error("boom"), { live: () => true });
   assert.deepEqual(fake.notices, [FLOW_FAILED_TEXT]);
+});
+
+test("only the daemon's own repository sentences start the repo retry; any other 400 is shown as written", async () => {
+  const refused = (error: string) => ({ ok: false, kind: "refused", status: 400, error, body: {} }) as const;
+  // The three sentences drafts.ts builds.
+  assert.equal(isRepoSelectorRefusal(refused("unknown repository webhooks")), true);
+  assert.equal(isRepoSelectorRefusal(refused("not a repository: /tmp/x")), true);
+  assert.equal(isRepoSelectorRefusal(refused("webhooks matches /work/webhooks, /old/webhooks")), true);
+  assert.equal(isRepoSelectorRefusal(refused("my repo matches /a/my repo, /b/my repo")), true);
+  // Unrelated refusals that merely contain the word.
+  assert.equal(isRepoSelectorRefusal(refused("branch name matches a protected pattern")), false);
+  assert.equal(isRepoSelectorRefusal(refused("the title matches /etc/passwd style paths")), false);
+  assert.equal(isRepoSelectorRefusal({ ...refused("webhooks matches /a, /b"), status: 409 }), false);
+
+  // End to end: an unrelated 400 is shown on the first try, with no Repo dialog and one draft attempt.
+  const { daemon, fake } = world();
+  daemon.override("POST /dispatch/drafts", () => ({ status: 400, body: { error: "branch name matches a protected pattern" } }));
+  const line = await runStartDispatchTool(fake.host, SESSION, { brief: "add retries" });
+  assert.equal(line, "branch name matches a protected pattern");
+  assert.equal(fake.dialogs.some((d) => d.header === "Repo"), false);
+  assert.equal(createdDrafts(daemon).length, 1);
 });

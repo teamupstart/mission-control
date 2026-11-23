@@ -89,7 +89,11 @@ const baseName = (path: string): string => path.split("/").filter(Boolean).at(-1
 /** The repository answers 400 with `unknown repository {name}` or `{name} matches {a}, {b}` (7.20). */
 export function isRepoSelectorRefusal(outcome: Refused): boolean {
   return outcome.status === 400
-    && (outcome.error.startsWith("unknown repository ") || / matches /.test(outcome.error) || outcome.error.startsWith("not a repository: "));
+    && (outcome.error.startsWith("unknown repository ")
+      || outcome.error.startsWith("not a repository: ")
+      // The daemon's ambiguity sentence is `{name} matches {path}, {path}`: a name (no slash), then at least
+      // two absolute paths (it is only said when more than one repository matches).
+      || /^[^/\n]+ matches \/.+, \//.test(outcome.error));
 }
 
 /**

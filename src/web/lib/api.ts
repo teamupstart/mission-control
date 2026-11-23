@@ -1,3 +1,4 @@
+import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
@@ -1962,6 +1963,18 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  /** Queue a Stuck row's fixed Nudge, Continue or push message (`inbox` flag). */
+  sendInboxMessage: (id: string, kind: InboxMessageKind) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inbox-message`, { kind }),
+  /**
+   * Open a parked run's next repair round, as the Runs page's Resubmit does with a fresh
+   * request id.
+   */
+  resubmitWorkflowRun: (runId: string) =>
+    post(`/api/workflow-runs/${encodeURIComponent(runId)}/resubmit`, {
+      requestId: crypto.randomUUID(),
+      resubmitUnchanged: false,
+    }),
   deliverPendingTurn: (id: string, turnId: string, revision: number, action: "steer" | "interrupt") =>
     post(`/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/deliver`, { revision, action }),
   reportComposerActivity: (

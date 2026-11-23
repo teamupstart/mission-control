@@ -41,8 +41,9 @@ export function useStalls(): Stall[] | undefined {
       if (!alive || !next) return;
       // `forMs` climbs every tick, so it is deliberately not part of the signature:
       // comparing on it would re-render on each poll for a stall nothing changed
-      // about. The alert engine edge-triggers on (session, kind) anyway.
-      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}`).join("|");
+      // about. The alert engine edge-triggers on (session, kind) anyway. The fingerprint is in
+      // it because a Stuck row draws the facts, which can change while the sentence does not.
+      const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint ?? ""}`).join("|");
       if (sig === seen.current) return;
       seen.current = sig;
       setStalls(next.length > 0 ? next : NONE);

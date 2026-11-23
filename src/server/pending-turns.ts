@@ -44,6 +44,7 @@ import {
   stampReviewDeliveryHandoff,
 } from "./review-deliveries.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
+import { INBOX_MESSAGES, INBOX_MESSAGE_TURN_PREFIX, type InboxMessageKind } from "@shared/inbox.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { isReviewMessageTurn } from "@shared/review-message-envelope.ts";
 import {
@@ -195,16 +196,19 @@ interface ArmedDrain {
  */
 /**
  * Who WROTE a queued row, when it was not the operator. Every row is the operator's words
- * except two the daemon composes: a snoozed question's "carry on" instruction, and the answer
- * to a message-mode question (`async-input`), whoever gave it. Those are reserved and recorded
+ * except three the daemon composes: a snoozed question's "carry on" instruction, the answer
+ * to a message-mode question (`async-input`), whoever gave it, and a Stuck row's fixed
+ * Nudge, Continue or push message (`inbox`). Those are reserved and recorded
  * as `harness` authorship like any other daemon-typed text, so the agent's prompt hook does not
  * take them for the human's Goal and the scout trail does not archive them as something the
  * operator said. Authorship changes nothing about escalation: `nextDelivery` steers and
  * interrupts these rows on the same clock as an operator message.
  */
 function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
-  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
+  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX)
+    || turn.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX)
     || turn.id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)
+    || turn.id.startsWith(INBOX_MESSAGE_TURN_PREFIX)
     ? "harness"
     : null;
 }
@@ -401,7 +405,23 @@ export class PendingTurnManager {
     if (session) this.scheduleDrain(noteKeyFor(session));
   }
 
+  /** Queue one message in the operator's words. */
   submit(sessionId: string, text: string): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, text, "");
+  }
+
+  /**
+   * Queue a Stuck row's fixed Nudge, Continue or push message (`inbox`). The manager chooses
+   * both the words and the turn id, so the row is always recorded as daemon-written
+   * (`daemonAuthorOf`): a caller asks for a kind and cannot send other words under that
+   * authorship, or these words as the operator's.
+   */
+  submitInboxMessage(sessionId: string, kind: InboxMessageKind): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, INBOX_MESSAGES[kind], INBOX_MESSAGE_TURN_PREFIX);
+  }
+
+  /** The one queueing path both kinds of message share; `idPrefix` is the authorship mark. */
+  private queueMessage(sessionId: string, text: string, idPrefix: string): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -427,7 +447,7 @@ export class PendingTurnManager {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
     }
     const pendingTurn = createPendingTurn({
-      id: this.deps.id(),
+      id: `${idPrefix}${this.deps.id()}`,
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),

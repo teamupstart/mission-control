@@ -128,6 +128,7 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
 import { foldAttention, foldWhileDismissalsUnknown } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -2918,6 +2919,12 @@ export function App(): React.JSX.Element {
   // inbox and the count after a reload, which is the pop-back dismissing exists to prevent. Reports
   // are never dismissed, so they are still folded and counted (`foldWhileDismissalsUnknown`).
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
+  // contract, which the session detail reads so its send composer gives way to that box.
+  const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
+  const noteInboxReplyBox = useCallback((sessionId: string, present: boolean) => {
+    setInboxReplyBoxes((boxes) => withInboxReplyBox(boxes, sessionId, present));
+  }, []);
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
@@ -2934,10 +2941,14 @@ export function App(): React.JSX.Element {
             // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
             // read figure, whatever the window was told before the flag went off.
             ...(inboxNames ? { reports } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on.
+            ...(inboxNames && stalls ? { stalls } : {}),
           }),
     [
       sessions,
       answerableReviews,
+      inboxNames,
+      stalls,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,
@@ -4643,6 +4654,7 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentRuns}>
+      <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -5333,6 +5345,7 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onReplyBox={noteInboxReplyBox}
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
                 />
@@ -5527,6 +5540,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </InboxReplyBoxesContext.Provider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>

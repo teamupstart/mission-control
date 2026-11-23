@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
 import { attentionDismissalKeys, foldAttention, foldWhileDismissalsUnknown, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
+import type { Stall } from "../src/shared/stall.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
 import { mkReport, mkReportControls } from "./helpers/report-fixture.ts";
 import {
@@ -46,6 +47,19 @@ function review(over: Partial<ReviewItem> & { id: string; sessionId: string }): 
     response: null,
     createdAt: 1000,
     resolvedAt: null,
+    ...over,
+  };
+}
+
+/** A stall as the daemon serves it: an idle session with an open task, by default. */
+function stall(sessionId: string, over: Partial<Stall> = {}): Stall {
+  return {
+    sessionId,
+    kind: "unfinished-work",
+    forMs: 21 * 60_000,
+    reason: "idle 21m with work unfinished",
+    facts: { kind: "unfinished-work", task: { id: "t-1", title: "Fix it" }, queueOpen: 0 },
+    fingerprint: '{"kind":"unfinished-work","task":{"id":"t-1","title":"Fix it"},"queueOpen":0}',
     ...over,
   };
 }
@@ -392,6 +406,7 @@ test("the inbox renders every item kind the fold can produce", () => {
     "session_dialog",
     "pipeline_halt",
     "session_blocked",
+    "session_stuck",
     "parked_finalization",
     "agent_reports",
   ]) {
@@ -452,6 +467,12 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
     "agent-report-body",
     "agent-report-link",
     "agent-report-actions",
+    // The Stuck card's own classes (`StuckCard.tsx`).
+    "inbox-stuck",
+    "inbox-stuck-reason",
+    "inbox-actions",
+    "inbox-message",
+    "inbox-message-input",
   ]) {
     assert.ok(css.includes(`.${cls}`), `${cls} has no rule in styles.css`);
   }
@@ -459,7 +480,7 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
 
 test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they are derived in", () => {
   // R24: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts,
-  // Waiting on you, Stuck finalizations, Reports. Stuck is inserted by a later phase at its place.
+  // Waiting on you, Stuck, Stuck finalizations, Reports.
   assert.deepEqual([...INBOX_SECTION_ORDER], [
     "ensemble_decision",
     "session_reviews",
@@ -467,6 +488,7 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
     "pipeline_commission",
     "pipeline_halt",
     "session_blocked",
+    "session_stuck",
     "parked_finalization",
     "agent_reports",
   ]);
@@ -497,8 +519,10 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
       }),
       mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" }),
       mkSession({ id: "s-pipe", name: "Pipe", task: mkTaskSummary({ id: "pipeline-task", kind: "pipeline" }) }),
+      mkSession({ id: "s-quiet", name: "Quiet", state: "idle" }),
     ],
     reviews: [review({ id: "r-1", sessionId: "s-ask" })],
+    stalls: [stall("s-quiet")],
     ensembles: [
       mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" }),
       mkEnsembleSummary({ id: "run-decide", status: "awaiting_decision" }),
@@ -508,6 +532,99 @@ test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they ar
     reports: [mkReport({ id: "r-1" })],
   });
   assert.deepEqual(result.items.map((item) => item.kind), [...INBOX_SECTION_ORDER]);
+});
+
+// ---- Stuck rows (`inbox` flag) ----
+
+test("a stall becomes one Stuck row, counted once, directly between Waiting on you and Stuck finalizations", () => {
+  const order = [...INBOX_SECTION_ORDER] as string[];
+  // Placed by its neighbours, which is how the plan fixes it.
+  assert.equal(order.indexOf("session_stuck"), order.indexOf("session_blocked") + 1);
+  assert.equal(order.indexOf("parked_finalization"), order.indexOf("session_stuck") + 1);
+  const result = foldAttention({
+    sessions: [
+      mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" }),
+      mkSession({ id: "s-quiet", name: "Quiet", state: "idle" }),
+    ],
+    reviews: [],
+    ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })],
+    stalls: [stall("s-quiet")],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["blocked:s-amber", "stuck:s-quiet", "finalization:run-stuck"]);
+  assert.equal(result.total, 3);
+});
+
+test("without stalls, as with the flag off, the fold draws no Stuck rows", () => {
+  const sessions = [mkSession({ id: "s-quiet", state: "idle" })];
+  assert.deepEqual(foldAttention({ sessions, reviews: [], ensembles: [] }).items, []);
+  assert.deepEqual(foldAttention({ sessions, reviews: [], ensembles: [], stalls: [] }).items, []);
+});
+
+test("a stuck session that is also amber is drawn under Stuck and not again under Waiting on you", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-1", state: "awaiting_input" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("s-1", { kind: "escalated", reason: "escalated to you 6m ago, still unanswered", facts: { kind: "escalated", text: "Approve?" }, fingerprint: "e" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_stuck"]);
+  assert.equal(result.total, 1);
+});
+
+test("a session with questions keeps its question row beside its Stuck row", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-1", state: "idle" })],
+    reviews: [review({ id: "r-1", sessionId: "s-1" })],
+    ensembles: [],
+    stalls: [stall("s-1")],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_reviews", "session_stuck"]);
+  assert.equal(result.total, 2);
+});
+
+test("a stall for a session that is gone or leaving draws no row", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-exit", state: "exited" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("s-exit"), stall("s-missing")],
+  });
+  assert.deepEqual(result.items, []);
+});
+
+test("a dismissed Stuck row stays dismissed while minutes pass and returns when its facts change", () => {
+  const sessions = [mkSession({ id: "s-1", state: "idle" })];
+  const first = foldAttention({ sessions, reviews: [], ensembles: [], stalls: [stall("s-1")] });
+  const keys = attentionDismissalKeys(first.items[0]!);
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0]!.itemId, "stuck:s-1");
+  const dismissed = new Map(keys.map((key) => [key.itemId, key.occurrence]));
+  const later = stall("s-1", { forMs: 55 * 60_000, reason: "idle 55m with work unfinished" });
+  const held = foldAttention({ sessions, reviews: [], ensembles: [], stalls: [later], dismissed });
+  assert.deepEqual(held.items, []);
+  assert.equal(held.total, 0);
+  // Dismissed while the session is not amber, nothing else draws it either.
+  // Dismissed and then amber (a permission prompt after a dismissed escalation, say): the stall
+  // no longer claims it, so the backstop draws it under Waiting on you and to answer counts it.
+  const amber = [mkSession({ id: "s-1", state: "awaiting_input" })];
+  const amberFold = foldAttention({ sessions: amber, reviews: [], ensembles: [], stalls: [later], dismissed });
+  assert.deepEqual(amberFold.items.map((item) => item.id), ["blocked:s-1"]);
+  assert.equal(amberFold.total, 1);
+  const changed = stall("s-1", { facts: { kind: "unfinished-work", task: { id: "t-2", title: "Other" }, queueOpen: 0 }, fingerprint: "other" });
+  assert.deepEqual(
+    foldAttention({ sessions, reviews: [], ensembles: [], stalls: [changed], dismissed }).items.map((item) => item.id),
+    ["stuck:s-1"],
+  );
+});
+
+test("Stuck rows lead with the longest stuck", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "a", state: "idle" }), mkSession({ id: "b", state: "idle" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("a", { forMs: 21 * 60_000 }), stall("b", { forMs: 40 * 60_000 })],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["stuck:b", "stuck:a"]);
 });
 
 // ---- agent reports (`inbox` flag) ----

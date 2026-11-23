@@ -792,14 +792,6 @@ export class Dispatcher {
         taskHasRepository(provisioned) && (this.deps.headlessModeEnabled ?? (() => featureEnabled(HEADLESS_MODE_FLAG_ID)))()
           ? resolveRepoTaskSkills(provisioned.kind, repoSkillWorktrees)
           : null;
-      // D14 needs to know WHICH attached worktree contributed a skill, and the reader's record
-      // names a repository by folder (or by root when two share one), which two worktrees of one
-      // repository share. So each worktree is asked on its own, only when some skill was included.
-      const ownTaskSkillWorktrees = repoSkills && repoSkills.blocks.length > 0
-        ? repoSkillWorktrees
-          .filter((repo) => resolveRepoTaskSkills(provisioned.kind, [repo]).blocks.length > 0)
-          .map((repo) => repo.worktreePath)
-        : [];
       // Turn one up to and including the kind contract. The task context section, when this
       // launch is shaped, follows it through `withTaskContext` below, and the repository task
       // skills come last: kind contract, task context, repository task skill.
@@ -959,8 +951,8 @@ export class Dispatcher {
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
         agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
         currentAttempt, workUnitId,
-        // D14: the worktrees whose own task skill for this kind turn one carries.
-        repositoryTaskSkillWorktrees: ownTaskSkillWorktrees,
+        // D14 must use the same resolution as turn one, even if skill files change afterward.
+        repositoryTaskSkillWorktrees: repoSkills?.contributingWorktreePaths ?? [],
       });
       // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
       // a later attempt that owns it now: this one launches nothing and tears nothing down.

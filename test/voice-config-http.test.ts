@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig } = await import("../src/server/db.ts");
+const { closeDb, getAppConfig, deleteAppConfig, openDb } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -101,6 +101,42 @@ test("PUT accepts the cancel window's limits, 1 and 30 seconds, and persists eac
     assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.voice) as typeof VOICE_CONFIG_DEFAULTS).cancelWindow, { enabled: true, seconds });
     assert.deepEqual((await (await json("/api/voice/config")).json() as { config: typeof VOICE_CONFIG_DEFAULTS }).config.cancelWindow, { enabled: true, seconds });
   }
+});
+
+test("a stored voice config this build cannot read reads as the defaults and is left as stored", async () => {
+  // Out of range for this build's schema: a newer build with a wider bound could have written it.
+  const unreadable = JSON.stringify({ muted: true, cancelWindow: { enabled: true, seconds: 999 }, whenUnsure: "guess" });
+  openDb().prepare("INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(APP_CONFIG_ENTRIES.voice.key, unreadable);
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args); };
+  try {
+    const response = await json("/api/voice/config");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS }, "every field reads as its default");
+    assert.equal(voiceStateStore.state().mode, "unavailable", "the state still computes, from the defaults");
+  } finally {
+    console.warn = warn;
+  }
+  assert.ok(warned.some((args) => String(args[0]).includes("[voice] stored config does not parse")), "the fallback is logged");
+  const stored = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.voice.key) as { value: string };
+  assert.equal(stored.value, unreadable, "a read never rewrites the stored value");
+});
+
+test("PUT /api/ui/config saves ui.voice and reads it back; an unknown placement is refused and changes nothing", async () => {
+  const saved = await json("/api/ui/config", "PUT", { voice: { confirmation: "toast", indicators: ["status-line", "topbar"] } });
+  assert.equal(saved.status, 200);
+  const expected = { confirmation: "toast", indicators: ["status-line", "topbar"] };
+  assert.deepEqual((await saved.json() as { config: { voice: unknown } }).config.voice, expected);
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, expected);
+
+  for (const body of [{ voice: { confirmation: "banner", indicators: ["status-line"] } }, { voice: { confirmation: "pill" } }]) {
+    const refused = await json("/api/ui/config", "PUT", body);
+    assert.equal(refused.status, 400, JSON.stringify(body));
+  }
+  assert.deepEqual((await (await json("/api/ui/config")).json() as { config: { voice: unknown } }).config.voice, expected, "the saved value is unchanged");
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as { voice: unknown }).voice, expected);
 });
 
 test("PUT refuses an empty patch, an unknown field and an out-of-range value, writing nothing", async () => {

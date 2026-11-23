@@ -242,6 +242,22 @@ test("a shell report cannot claim the listener: that capability is the daemon's 
   assert.equal(state.mode, "listening");
 });
 
+test("a lapsing shell report ends a call's auto-mute at the 15 second boundary, and the timer publishes it", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  h.store.acceptShellReport({ ...REPORT, callActive: true });
+  assert.equal(h.store.state().mode, "auto-muted");
+  assert.equal(h.published.at(-1)?.mode, "auto-muted", "the report publishes at once");
+  const before = h.published.length;
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS - 1);
+  assert.equal(h.store.state().mode, "auto-muted", "still muted one millisecond before the boundary");
+  assert.equal(h.published.length, before, "nothing is published before it");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "listening", "the lapse timer publishes the change, with no request");
+  assert.equal(h.published.length, before + 1);
+  assert.equal(h.store.state().mode, "listening", "at the boundary the call is no longer known");
+});
+
 test("a shell report saying the microphone is denied makes voice unavailable", () => {
   const h = harness();
   h.store.acceptHello(HELLO);

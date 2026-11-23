@@ -204,8 +204,8 @@ the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, an
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
 
 A resident's task takes no call sign: the resident answers to its profile's names, and the roster
-would leave a call sign out while its card printed it. An update that gives one a call sign is
-refused (`taskKindTakesCallSign` in `src/shared/voice-names.ts`), and the display name never
+would leave a call sign out while its card printed it. Creating or updating one with a call sign
+is refused (`taskKindTakesCallSign` in `src/shared/voice-names.ts`), and the display name never
 calls a resident by one.
 
 ### Reference names
@@ -373,7 +373,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   task still waiting for its first launch, a session exiting, a hibernated task, the 24-hour and
   name-reuse removals, an evicted task, and the `voice_roster` frames from the real Registry.
 - `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
-  one refused on a resident's task.
+  one refused on a resident's task, created or updated.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
 - `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
   resident never named by its task's call sign.

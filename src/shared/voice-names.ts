@@ -94,7 +94,7 @@ export function taskSpokenNameKey(taskId: string): string {
  * Whether a task of this kind can carry a call sign. A resident is addressed by its profile's
  * reference name or name, so its task cannot: the roster would leave the call sign out while the
  * agent's card printed it, naming the agent something the operator cannot say. The roster, the
- * card's name and the edit that would set one all ask this.
+ * card's name, and the create and the edit that would set one, all ask this.
  */
 export function taskKindTakesCallSign(kind: TaskKind): boolean {
   return kind !== "resident";

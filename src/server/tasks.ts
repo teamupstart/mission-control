@@ -3394,6 +3394,11 @@ export class TaskManager {
     ) {
       throw new TaskKindBacklogError(refusal);
     }
+    // The rule `update` holds, held here too, where every creator arrives, the resident launch
+    // included: the dispatch and MCP schemas refuse a resident kind before it gets this far.
+    if (input.callSign && !taskKindTakesCallSign(input.kind)) {
+      throw new TaskKindBacklogError(RESIDENT_CALL_SIGN_REFUSAL);
+    }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     // The ONE place an omitted agent becomes a real one, so every creator - the dispatch

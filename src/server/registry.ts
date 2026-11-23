@@ -1,5 +1,7 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { reportToRead, type ReportItem } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
@@ -940,6 +942,12 @@ export class Registry extends EventEmitter {
   private emitting = false;
   private emitQueue: ServerEvent[] = [];
   private reviews = new Map<string, ReviewItem>();
+  /**
+   * Agent reports waiting to be read, by id: a cache and a notifier for `ReportManager`, which
+   * owns the table. Bounded by what the operator has not read: a report leaves when it is read
+   * or replaced. Never touched by eviction - a report outlives its session.
+   */
+  private reports = new Map<string, ReportItem>();
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
@@ -1419,6 +1427,7 @@ export class Registry extends EventEmitter {
     sessions: Session[];
     restoringSessions: RestoringSession[];
     reviews: ReviewItem[];
+    reports?: ReportItem[];
     tasks: Task[];
     personas: PersonaView[];
     sessionActions: SessionAction[];
@@ -1449,6 +1458,8 @@ export class Registry extends EventEmitter {
       sessions: [...this.sessions.values()].map(sessionShapingForReads),
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
+      // Behind its flag, like the routes: with it off no window is handed a report.
+      ...(featureEnabled(INBOX_FLAG) ? { reports: [...this.reports.values()] } : {}),
       // Memory keeps an earlier launch's record so a later publish can carry it forward; what
       // leaves the daemon carries only the record of the session the task is on now.
       tasks: [...this.tasks.values()].map(taskShapingForReads),
@@ -7670,6 +7681,22 @@ export class Registry extends EventEmitter {
         console.error(`[registry] could not end the wait of session ${review.sessionId} for its question:`, err);
       }
     }
+  }
+
+  /**
+   * Adopt `ReportManager`'s current state of one report and tell every window, while the `inbox`
+   * flag is on. A read or replaced report leaves the cache; its event still goes out, so a
+   * window drops it from the inbox.
+   */
+  upsertReport(report: ReportItem): void {
+    if (reportToRead(report)) this.reports.set(report.id, report);
+    else this.reports.delete(report.id);
+    if (featureEnabled(INBOX_FLAG)) this.emitEvent({ type: "report_upsert", report });
+  }
+
+  /** Every report waiting to be read, as the snapshot carries them. */
+  reportsToRead(): ReportItem[] {
+    return [...this.reports.values()];
   }
 
   getReview(id: string): ReviewItem | undefined {

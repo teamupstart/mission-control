@@ -2148,6 +2148,10 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
    * conversation replays afterwards - `response` is the flattened string the agent reads,

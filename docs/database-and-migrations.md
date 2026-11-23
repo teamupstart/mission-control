@@ -23,6 +23,17 @@ snapshot; terminal statusLine and SDK usage reports update the same record. Expi
 remain available as explicitly historical UI data and are excluded from current quota. This is
 independent of the usage ledger and never contributes dollars or tokens.
 
+`reports` (schema 46) holds every [agent report](sessions.md#agent-reports), one row per posted
+report, never deleted. It is created in `migrate()`, so an older database gains an empty table on
+its next open. `seq` is the number in the public id `r-<seq>`, assigned by AUTOINCREMENT so no
+number is handed out twice. Each row copies its author's display name, resident profile, task and
+repository at post time, so a report can be drawn after its session is gone; nothing prunes it on
+eviction. A replacement points at its chain's first report (`root_id`) and sets the replaced
+row's `superseded_by`. `read_at` and `read_by` are written once, by `ReportManager.markRead` in
+`src/server/reports.ts`, the table's only writer. `follow_up_task_id`, `announced_as`,
+`announced_at` and `published_archive_key` stay null until later phases write them. An attached
+document is copied to `<state home>/reports/<id>/`, outside the database.
+
 `session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
 per note key, the same key that carries notes, goals, invites and standing instructions across
 restarts, with the bound `task_id` recorded for reference. It is created in `migrate()`, so a

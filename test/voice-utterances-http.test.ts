@@ -35,8 +35,8 @@ const post = (path: string, body: unknown = {}, auth?: string) => app.request(pa
   headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth } : {}) },
   body: JSON.stringify(body) });
 const capture = (text: string, id = String(randomUUID())) => ({ id, text, backend: "fluidaudio", capturedAt: Date.now() });
-const utterancePath = (revision: string) => "/voice/utterances?revision=" + encodeURIComponent(revision);
-const say = (text: string, id?: string) => post(utterancePath(voiceStateStore.directive().revision), capture(text, id), token);
+const utterancePath = (revision = voiceStateStore.directive().revision) => "/voice/utterances?revision=" + encodeURIComponent(revision);
+const say = (text: string, id?: string) => post(utterancePath(), capture(text, id), token);
 const readHeard = async () => (await (await app.request("/api/voice/heard", { headers: { host: "localhost" } })).json() as { entries: HeardEntry[] }).entries;
 const act = (id: string, action: string, body?: unknown) => post(`/api/voice/cards/${id}/${action}`, body);
 const name = (name: string): SpokenName => ({ key: "task:" + name, name, kind: "session", taskId: name,
@@ -60,8 +60,8 @@ afterEach(() => { registry.voiceRouter!.reset(); });
 after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
 
 test("token and schema gates, muted drop, and push-to-talk acceptance", async () => {
-  assert.equal((await post("/voice/utterances", capture("Steve hello"))).status, 401);
-  assert.equal((await post("/voice/utterances", { ...capture("Steve hello"), words: [{ text: "x", startMs: 3, endMs: 1 }] }, token)).status, 400);
+  assert.equal((await post(utterancePath(), capture("Steve hello"))).status, 401);
+  assert.equal((await post(utterancePath(), { ...capture("Steve hello"), words: [{ text: "x", startMs: 3, endMs: 1 }] }, token)).status, 400);
   await post("/api/voice/mute", { muted: true });
   assert.deepEqual(await (await say("Steve muted words")).json(), { accepted: false });
   assert.deepEqual(await readHeard(), []);
@@ -102,6 +102,26 @@ test("a delayed capture from before mute cannot reach Recently heard, cards or t
   assert.deepEqual(queued("Steve"), [...beforeQueue, "post-mute message"]);
 });
 
+test("a cancel retried after toggling voice cannot dismiss a new card", async () => {
+  await say("Steve old message", "old");
+  await say("Steve cancel this one", "cancelled");
+  const cancel = capture("cancel", "original-cancel");
+  await post(utterancePath(), cancel, token);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions.map((action) => action.id), ["old"]);
+
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.deepEqual(await readHeard(), []);
+  await say("Will check the new build", "new");
+  // A duplicate id is harmless even when submitted under the current directive.
+  assert.deepEqual(await (await post(utterancePath(), cancel, token)).json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["new", "pending"]]);
+  assert.deepEqual((await readHeard()).map((entry) => entry.id), ["new"]);
+  await say("cancel", "fresh-cancel");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");
@@ -115,7 +135,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(1);
   await Promise.resolve();
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
-  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["pending", "pending", "cancelled", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
@@ -153,7 +173,7 @@ test("window off queues immediately and an addressed stop interrupts the session
   assert.ok(queued("Steve").includes("ship   it!"));
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
-  assert.deepEqual(cards.map((c) => c.state), ["sent", "sent"]);
+  assert.deepEqual(cards.map((c) => c.state), ["queued", "sent"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
@@ -208,6 +228,23 @@ test("a quote immediately after the address comma survives the preview and queue
   assert.equal(cards[0]?.parts[0]?.text, '"ship it"');
   assert.equal((await act("quote", "send-now")).status, 200);
   assert.equal(queued("Will").at(-1), '"ship it"');
+});
+
+test("punctuation-only messages reach the named agent and leave an unsure card open", async () => {
+  await say("Steven ask Will about the build", "unsure");
+  for (const [id, text, body] of [
+    ["spaced", "Will, ???", "???"],
+    ["adjacent", "Will,!!!", "!!!"],
+    ["plain", "Will ...", "..."],
+    ["commas", "Will, ,,,", ",,,"],
+  ] as const) {
+    await say(text, id);
+    const card = cards.at(-1);
+    assert.deepEqual([card?.id, card?.state, card?.parts[0]?.text], [id, "pending", body]);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(queued("Will").at(-1), body);
+  }
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["unsure", "unsure"]]);
 });
 
 test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
@@ -279,6 +316,24 @@ test("ignored, pending and cancelled captures leave no transcript in the daemon 
   }
 });
 
+test("Recently heard measures the pause between aligned words and leaves unclear timings empty", async (t) => {
+  voiceStateStore.useRoster(() => [name("Release"), name("Build Captain")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  for (const [text, labels, pause] of [
+    ["Release , run tests", ["Release", ",", "run", "tests"], 150],
+    ["Build Captain , run tests", ["Build", "Captain,", "run", "tests"], 50],
+    ["Release, run tests", ["Other", "run"], null],
+    ["Release, run tests", ["Release", ",", "tests"], null],
+    ["Build Captain, run tests", ["Other", "Captain", "run"], null],
+    ["Release, ???", ["Release", "???"], null],
+  ] as const) {
+    const words = labels.map((label, i) => ({ text: label, startMs: 100 * i, endMs: 100 * i + 50 }));
+    assert.deepEqual(await (await post(utterancePath(), { ...capture(text), words }, token)).json(), { accepted: true });
+    const [entry] = await readHeard();
+    assert.deepEqual([entry?.outcome, entry?.pauseMs], ["pending", pause], text);
+  }
+});
+
 
 test("the downstream say fixture establishes a listener and posts contiguous or supplied word timings", async (t) => {
   const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");
@@ -328,4 +383,15 @@ test("Recently heard keeps the refusal reasons from the queue and interrupt adap
   assert.deepEqual((await readHeard()).map(({ outcome, detail }) => [outcome, detail]), [
     ["failed", "this session has no live embedded driver"], ["failed", "Queue full."],
   ]);
+});
+
+test("a busy session's accepted turn stays queued on its card and in Recently heard", async () => {
+  registry.applyDriverEvent("sdk:Bill", { kind: "state", state: "working", activity: "Running tests" });
+  await say("Bill, review the logs", "busy");
+  assert.equal((await act("busy", "send-now")).status, 200);
+  const session = registry.getSession("sdk:Bill")!;
+  assert.equal(session.state, "working");
+  assert.ok(session.pendingTurns.some((turn) => turn.text === "review the logs" && turn.claimedAt === null));
+  assert.deepEqual(cards.map((card) => card.state), ["pending", "queued"]);
+  assert.equal((await readHeard())[0]?.outcome, "queued");
 });

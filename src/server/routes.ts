@@ -9307,7 +9307,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submit(target.sessionId, text);
-      return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Queue refused the message." };
+      return result.ok ? "queued" : { outcome: "failed", detail: result.error || "Queue refused the message." };
     },
   }, (card) => registry.emitVoiceCard(card));
 

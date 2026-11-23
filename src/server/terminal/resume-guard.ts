@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { WORK_UNIT_ENV_VAR } from "@shared/work-unit.ts";
 import { run } from "../util/exec.ts";
-import { claimResumeLease, completeResumeLease, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
+import { claimResumeLease, completeResumeLease, readResumeEnvironmentSocket, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
 import { parseResumeProcesses, resumeDescendantsExited } from "./resume-processes.ts";
 
 const inventoryOptions = { timeoutMs: 5_000, env: { ...process.env, LC_ALL: "C", LANG: "C" } };
@@ -33,9 +33,6 @@ async function main(): Promise<number> {
   for (const key of ["FLEET_HOME", "HARNESS_HOME", "MISSION_SESSION_ID", "FLEET_SESSION_ID", "HARNESS_SESSION_ID",
     "MISSION_AGENT_SESSION_ID", "MISSION_API_TOKEN", "MISSION_SCOUT_SUBMISSION_CREDENTIAL", WORK_UNIT_ENV_VAR])
     delete env[key];
-  Object.assign(env, input.env);
-  // Node mode belongs to this guard, never the independent agent it launches.
-  delete env.ELECTRON_RUN_AS_NODE;
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
   const before = await processInventory();
   // The terminal signals the foreground group, including both guard and agent. Stay alive
@@ -45,6 +42,15 @@ async function main(): Promise<number> {
   const stayAlive = () => {};
   for (const signal of terminalSignals) process.on(signal, stayAlive);
   try {
+    const socketPath = readResumeEnvironmentSocket(lease);
+    if (socketPath && !await applyEnvironmentPatch(socketPath, env)) {
+      // We own the claim and have not spawned an agent or any agent descendants.
+      completeResumeLease(lease, process.pid, startMs);
+      return 1;
+    }
+    // The prepared isolation and launch identities remain authoritative for the child.
+    Object.assign(env, input.env);
+    delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(executable, input.argv.slice(1), { cwd: input.cwd, env, stdio: "inherit" });
     const code = await new Promise<number>((resolve) => {
       child.once("error", () => resolve(127));
@@ -90,17 +96,24 @@ async function readEnvironmentPatch(path: string): Promise<TerminalEnvironmentPa
   }
 }
 
-/** Replace this short-lived reader with the original wrapper, preserving its PID, cwd, tty and argv. */
-async function execWithAgentEnvironment(): Promise<void> {
-  const [socketPath, command, ...args] = process.argv.slice(3);
-  if (!socketPath || !command || !process.execve) throw new Error("Unavailable environment handoff");
-  const env = { ...process.env };
+async function applyEnvironmentPatch(socketPath: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   try {
     const patch = await readEnvironmentPatch(socketPath);
     Object.assign(env, patch.set);
     for (const name of patch.unset) delete env[name];
   } catch {
     console.error("Mission Control could not read the terminal environment handoff. It expired or is unavailable. Start a new launch.");
+    return false;
+  }
+  return true;
+}
+
+/** Replace the dispatch reader with the original wrapper, preserving its PID, cwd, tty and argv. */
+async function execWithAgentEnvironment(): Promise<void> {
+  const [socketPath, command, ...args] = process.argv.slice(3);
+  if (!socketPath || !command || !process.execve) throw new Error("Unavailable environment handoff");
+  const env = { ...process.env };
+  if (!await applyEnvironmentPatch(socketPath, env)) {
     process.exitCode = 1;
     return;
   }

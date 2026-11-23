@@ -371,6 +371,12 @@ const TelemetryIdentitySchema = z.object({
   epoch: z.number().int().min(1),
 });
 
+// Earlier preview builds allowed CODEX_HOME. Preserve the other names on read and restore.
+const StoredAgentEnvironmentSchema = AgentEnvironmentConfigSchema.extend({
+  names: z.array(z.string()).transform((names) => names.filter((name) => name !== "CODEX_HOME"))
+    .pipe(AgentEnvironmentConfigSchema.shape.names),
+}).default({ names: [] });
+
 const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number() });
 
 /**
@@ -380,7 +386,7 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
-  agentEnvironment: { ...wholeEntry("agentEnvironment", AgentEnvironmentConfigSchema.default({ names: [] }), "setting", "agent-environment"), optionalInSnapshot: true },
+  agentEnvironment: { ...wholeEntry("agentEnvironment", StoredAgentEnvironmentSchema, "setting", "agent-environment"), optionalInSnapshot: true },
   featureFlags: { ...wholeEntry("featureFlags", FeatureFlagsConfigSchema, "setting", "feature-flags"), optionalInSnapshot: true },
   // Task shaping: registered shapers, stored choices, order, caller identity and budgets.
   // Backed up whole because it holds no secret text. A credential-bearing header holds only a

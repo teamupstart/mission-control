@@ -45,6 +45,7 @@ function writeProfile(rotated: boolean): void {
     `export ${token}=${rotated ? "replacement-example" : "initial-example"}`,
     rotated ? `unset ${removable}` : `export ${removable}=available`,
     `export ${unlisted}=unlisted-example`,
+    "export NODE_OPTIONS=--fixture-agent-only",
     'exec /bin/sh -c "$2"',
   ].join("\n"), { mode: 0o700 });
 }
@@ -131,7 +132,16 @@ function discoverTerminalResume(id: string, stateHome: string) {
 
 test("launchPreparedResume invokes the caller's resolver once at launch and publishes the newly missing name", async (t) => {
   writeProfile(false);
-  writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\n" + probe, { mode: 0o700 });
+  // Node rejects this option on startup. The shell agent can observe it only if the
+  // checked guard and its Node helpers start with their original environment.
+  saveAgentEnvironment([token, removable, "NODE_OPTIONS"]);
+  const inherited = process.env.NODE_OPTIONS;
+  delete process.env.NODE_OPTIONS;
+  t.after(() => {
+    if (inherited !== undefined) process.env.NODE_OPTIONS = inherited;
+    saveAgentEnvironment([token, removable]);
+  });
+  writeFileSync(process.env.MISSION_CLAUDE_BIN!, '#!/bin/sh\n[ "$NODE_OPTIONS" = "--fixture-agent-only" ] || exit 42\n' + probe, { mode: 0o700 });
   const paneEnv = { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home) };
   const source = { id: "terminal-source", agentSessionId: "native-env", agent: "claude", cwd,
     runtime: "terminal", permissionMode: null } as const;

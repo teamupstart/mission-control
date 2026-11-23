@@ -1,7 +1,7 @@
-import { terminalEnvironmentArgv } from "./environment-handoff.ts";
+import { openTerminalEnvironmentHandoff } from "./environment-handoff.ts";
 import type { PreparedResume } from "../harness/resume.ts";
 import { TerminalLaunchError } from "./launch-error.ts";
-import { resumeLeaseStatus } from "./resume-lease.ts";
+import { resumeLeaseStatus, writeResumeEnvironmentSocket } from "./resume-lease.ts";
 import {
   expectTerminalLaunchWorkUnit,
   settleTerminalLaunchWorkUnit,
@@ -34,7 +34,7 @@ export async function launchPreparedResume<T>(
   if (resumeLeaseStatus(prepared.lease).state !== "preparing") {
     throw new TerminalLaunchError("Managed resume launch was already attempted; recheck its status", true);
   }
-  let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
+  let handoff: Awaited<ReturnType<typeof openTerminalEnvironmentHandoff>> | undefined;
   let attempted = false;
   // The resume's work unit decision, handed over before the pane exists so the registry can
   // install it as the resumed session's launch record when it first sees the agent beneath this
@@ -45,14 +45,17 @@ export async function launchPreparedResume<T>(
   try {
     prepared.beginLaunch();
     const named = await prepared.resolveNamedEnvironment?.();
-    handoff = await terminalEnvironmentArgv(prepared.wrappedArgv, prepared, named);
+    if (named) {
+      handoff = await openTerminalEnvironmentHandoff(prepared, named);
+      writeResumeEnvironmentSocket(prepared.lease, handoff.path);
+    }
     attempted = true;
     expected = expectTerminalLaunchWorkUnit(prepared.stateHome, prepared.workUnitId, prepared.conversationKey, named?.missing);
     const result = await launch({ name: input.name, cwd: prepared.cwd,
-      argv: handoff.argv, stateHome: prepared.stateHome });
+      argv: prepared.wrappedArgv, stateHome: prepared.stateHome });
     if (result.outcome === "launched") settleTerminalLaunchWorkUnit(expected, "succeeded");
     if (result.outcome === "refused") {
-      handoff.dispose();
+      await handoff?.dispose();
       settleTerminalLaunchWorkUnit(expected, "not-started");
     }
     if (result.outcome === "refused" && !prepared.dispose()) return { ...result, outcome: "unknown" };
@@ -60,7 +63,7 @@ export async function launchPreparedResume<T>(
   } catch (error) {
     const definite = !attempted || (error instanceof TerminalLaunchError && !error.outcomeUnknown);
     if (definite) {
-      handoff?.dispose();
+      await handoff?.dispose();
       settleTerminalLaunchWorkUnit(expected, "not-started");
     }
     let revoked = false;

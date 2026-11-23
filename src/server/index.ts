@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
@@ -1106,6 +1107,7 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingHandoffs = stopTerminalEnvironmentHandoffs();
   stopFeatureFlags();
   stopAwaitingFlag();
   stopAutomatedDeliveries();
@@ -1195,6 +1197,7 @@ async function shutdown(): Promise<void> {
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
+  await stoppingHandoffs;
   // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
   // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
   // See `http-shutdown.ts`.

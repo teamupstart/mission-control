@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test, type TestContext } from "node:test";
@@ -125,3 +126,28 @@ test("fresh resident terminal dispatch skips named shell lookups, variable injec
   (t) => checkTerminalDispatch(t, "resident"));
 test("clearing the enabled list gives the next dispatched agent no named environment or missing-name warning",
   (t) => checkTerminalDispatch(t, "cleared"));
+
+test("an accepted dispatch that expires before its pane starts releases only its unused state home", async (t) => {
+  const { spawnUniquely } = await import("../src/server/dispatcher.ts");
+  const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  const { createDisposableAgentStateHome, cleanupDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  process.env.MISSION_RESUME_GUARD = join(dir, "expiry-guard.mjs");
+  await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: process.env.MISSION_RESUME_GUARD,
+    bundle: true, platform: "node", format: "esm" });
+  const stateHome = createDisposableAgentStateHome();
+  t.after(() => cleanupDisposableAgentStateHome(stateHome));
+  const marker = join(dir, "late-dispatch-started");
+  let command: readonly string[] = [];
+  const mux = fakeMultiplexer({ sessions: {
+    names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
+    async spawnDetached({ argv, name }) { command = argv; return { ...OK, session: name }; },
+  } });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await spawnUniquely("delayed", "1", dir, "/usr/bin/touch", [marker], stateHome, "tmux", {}, null,
+    { extraEnv: { LISTED: "fixture" }, missing: [] }, fakeTerminals(mux, fakeEmulator()));
+  assert.ok(existsSync(stateHome));
+  t.mock.timers.tick(RESUME_START_MS);
+  assert.equal(existsSync(stateHome), false);
+  await assert.rejects(promisify(execFile)(command[0]!, command.slice(1)), { code: 1, stderr: /handoff.*expired/ });
+  assert.equal(existsSync(marker), false);
+});

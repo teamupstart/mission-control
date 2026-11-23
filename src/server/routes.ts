@@ -9277,13 +9277,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(saved);
   });
 
-  app.get("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) =>
-    c.json({ variables: await agentEnvironmentPresence() }));
+  app.get("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) => {
+    const view = await agentEnvironmentPresence();
+    return c.json(view, view.variables === null ? 409 : 200);
+  });
   app.put("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) => {
     const parsed = await parseBody(c, AgentEnvironmentConfigSchema);
     if (!parsed.ok) return c.json({ error: "Enter up to 32 unique, non-reserved variable names." }, 400);
-    saveAgentEnvironment(parsed.data.names);
-    return c.json({ variables: await agentEnvironmentPresence() });
+    const saved = saveAgentEnvironment(parsed.data.names);
+    const view = await agentEnvironmentPresence(saved);
+    return c.json(view, view.variables === null ? 409 : 200);
   });
   app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
   app.put("/api/feature-flags", async (c) => {

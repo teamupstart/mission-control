@@ -7,21 +7,26 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { build } from "esbuild";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 import { AgentEnvironmentConfigSchema } from "../src/shared/protocol.ts";
 import { tokenPath } from "../src/shared/harness-runtime.mjs";
 import { agentEnvironmentPresence, launchAgentEnvironment, saveAgentEnvironment } from "../src/server/agent-environment.ts";
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { isolatedAgentArgv } from "../src/server/agent-subprocess-env.ts";
-import { beginResumeLaunch, createResumeLease, RESUME_START_MS, resumeLeaseRoot, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
-import { terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
+import { beginResumeLaunch, createResumeLease, RESUME_START_MS, resumeLeaseRoot, writeResumeEnvironmentSocket, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
+import { openTerminalEnvironmentHandoff, stopTerminalEnvironmentHandoffs, terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 
 test("names reject assignments, duplicates, object keys, launcher identities and state credentials", () => {
   for (const name of ["TOKEN=example", "__proto__", "constructor", "MISSION_API_TOKEN", "FLEET_HOME",
-    "HARNESS_PORT", "PATH", "WORK_UNIT_ID", "TMUX_PANE", "RESIDENT_STATE_DIR"]) {
+    "HARNESS_PORT", "CODEX_HOME", "PATH", "WORK_UNIT_ID", "TMUX_PANE", "RESIDENT_STATE_DIR"]) {
     assert.equal(AgentEnvironmentConfigSchema.safeParse({ names: [name] }).success, false, name);
   }
   assert.equal(AgentEnvironmentConfigSchema.safeParse({ names: ["TOKEN", "TOKEN"] }).success, false);
+});
+
+test("a stored list from before CODEX_HOME was reserved retains its other valid names", () => {
+  assert.deepEqual(APP_CONFIG_ENTRIES.agentEnvironment.schema.parse({ names: ["SERVICE", "CODEX_HOME"] }), { names: ["SERVICE"] });
 });
 
 test("Agent environment accepts 32 unique names and rejects a 33rd", () => {
@@ -36,11 +41,13 @@ test("each launch reads selected names afresh, prefers the daemon and omits its 
   const shell = join(dir, "shell");
   const previous = { ...process.env };
   t.after(() => {
-    for (const name of ["SHELL", "SERVICE_OVERRIDE", "CREDENTIAL_ALIAS"]) {
+    for (const name of ["SHELL", "SHELL_ONLY", "MISSING_NAME", "SERVICE_OVERRIDE", "CREDENTIAL_ALIAS"]) {
       if (previous[name] === undefined) delete process.env[name];
       else process.env[name] = previous[name];
     }
   });
+  delete process.env.SHELL_ONLY;
+  delete process.env.MISSING_NAME;
   process.env.SHELL = shell;
   process.env.SERVICE_OVERRIDE = "daemon-choice";
   process.env.CREDENTIAL_ALIAS = "prefix-test-daemon-bearer";
@@ -54,7 +61,7 @@ test("each launch reads selected names afresh, prefers the daemon and omits its 
   applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: true });
   assert.equal(await launchAgentEnvironment(true), undefined);
   const view = await agentEnvironmentPresence();
-  assert.deepEqual(view, [
+  assert.deepEqual(view.variables, [
     { name: "SHELL_ONLY", present: true, source: "loginShell" },
     { name: "SERVICE_OVERRIDE", present: true, source: "daemon" },
     { name: "MISSING_NAME", present: false, source: null },
@@ -75,7 +82,7 @@ test("each launch reads selected names afresh, prefers the daemon and omits its 
     process.env.SERVICE_OVERRIDE = "";
     saveAgentEnvironment(["SERVICE_OVERRIDE"]);
     assert.deepEqual(await launchAgentEnvironment(), { extraEnv: { SERVICE_OVERRIDE: "shell-choice" }, missing: [] });
-    assert.deepEqual(await agentEnvironmentPresence(), [{ name: "SERVICE_OVERRIDE", present: true, source: "loginShell" }]);
+    assert.deepEqual((await agentEnvironmentPresence()).variables, [{ name: "SERVICE_OVERRIDE", present: true, source: "loginShell" }]);
   });
 });
 
@@ -113,19 +120,21 @@ test("terminal handoff enforces SDK isolation before either launch command execu
   `);
   const agent = [process.execPath, probe];
   const pane = { ...process.env, MISSING_NAME: "stale", TMUX_PANE: "%real" };
-  // Check on entry as well as inside the agent. A guard that repairs its child's env could
-  // otherwise pass while its own process and any helpers it starts receive the credential.
+  // Check dispatch wrapper entry as well as the final agent, before the wrapper can repair its environment.
   const checkEntry = 'if [ -n "${MISSION_API_TOKEN:-}${MISSION_SCOUT_SESSION_LOCATOR:-}" ] || [ "${MISSION_PORT:-}" = spoofed-port ]; then exit 42; fi; exec "$@"';
 
   for (const kind of ["dispatch wrapper", "managed resume guard"] as const) {
     await t.test(kind, async (t) => {
       let stateHome: string;
-      let argv: string[];
       let launchFile: string;
+      let paneCommand: string[];
       if (kind === "dispatch wrapper") {
         stateHome = mkdtempSync(join(dir, "dispatch-"));
-        argv = isolatedAgentArgv(agent, { stateHome });
+        const argv = isolatedAgentArgv(agent, { stateHome });
         launchFile = argv[1]!;
+        const handoff = await terminalEnvironmentArgv(["/bin/sh", "-c", checkEntry, "entry-check", ...argv], { cwd: dir, stateHome }, named);
+        t.after(handoff.dispose);
+        paneCommand = handoff.argv;
       } else {
         const root = resumeLeaseRoot(dir);
         t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -134,19 +143,21 @@ test("terminal handoff enforces SDK isolation before either launch command execu
         launchFile = join(stateHome, "launch.json");
         writeResumeRecord(launchFile, { argv: agent, env: { MISSION_HOME: stateHome }, cwd: dir });
         beginResumeLaunch(lease);
-        argv = [process.execPath, guard, root, lease.id];
+        const handoff = await openTerminalEnvironmentHandoff({ cwd: dir, stateHome }, named);
+        t.after(handoff.dispose);
+        writeResumeEnvironmentSocket(lease, handoff.path);
+        paneCommand = [process.execPath, guard, root, lease.id];
       }
-      const handoff = await terminalEnvironmentArgv(["/bin/sh", "-c", checkEntry, "entry-check", ...argv], { cwd: dir, stateHome }, named);
-      t.after(handoff.dispose);
-      assert.ok(!handoff.argv.join(" ").includes(secret));
+      assert.ok(!paneCommand.join(" ").includes(secret));
       assert.ok(!readFileSync(launchFile, "utf8").includes(secret));
-      await promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: pane });
+      await promisify(execFile)(paneCommand[0]!, paneCommand.slice(1), { env: pane });
     });
   }
 
   await t.test("a terminal handoff delivers the credential once and rejects the same argv before a second agent starts", async (t) => {
     const starts = join(dir, "agent-starts");
-    const handoff = await terminalEnvironmentArgv([...agent, starts], { cwd: dir, stateHome: dir }, named);
+    const unused = t.mock.fn();
+    const handoff = await terminalEnvironmentArgv([...agent, starts], { cwd: dir, stateHome: dir }, named, unused);
     t.after(handoff.dispose);
     const launch = () => promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: { TMUX_PANE: "%real" } });
 
@@ -154,6 +165,8 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     assert.equal(readFileSync(starts, "utf8"), "started\n");
     await assert.rejects(launch(), { code: 1, stderr: /could not read the terminal environment handoff/ });
     assert.equal(readFileSync(starts, "utf8"), "started\n", "reusing the handoff must never enter the agent");
+    await handoff.dispose();
+    assert.equal(unused.mock.callCount(), 0, "consumption transfers cleanup ownership to the wrapper");
   });
 
   await t.test("concurrent handoffs use separate private directories and remove them after use or disposal", async (t) => {
@@ -192,4 +205,15 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     });
     assert.equal(existsSync(marker), false);
   });
+});
+
+test("shutdown removes pending handoff sockets and directories and refuses new handoffs", async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "terminal-environment-stop-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const start = () => openTerminalEnvironmentHandoff({ cwd, stateHome: cwd }, { extraEnv: {}, missing: ["MISSING"] });
+  const pending = await Promise.all([start(), start()]);
+  for (const { path } of pending) assert.ok(lstatSync(path).isSocket());
+  await stopTerminalEnvironmentHandoffs();
+  for (const { path } of pending) assert.equal(existsSync(dirname(path)), false);
+  await assert.rejects(start(), /stopping/);
 });

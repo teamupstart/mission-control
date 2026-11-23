@@ -3691,7 +3691,8 @@ export async function spawnUniquely(
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
     const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
-    const handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named);
+    const handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named,
+      () => cleanupDisposableAgentStateHome(effectiveStateHome));
     try {
       return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
     } catch (error) {

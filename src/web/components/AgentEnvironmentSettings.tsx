@@ -15,23 +15,32 @@ export function AgentEnvironmentSettings() {
       if (!current) return;
       if (!result) { setError("Could not read agent environment settings."); return; }
       setVariables(result.variables);
-      setDraft(result.variables.map((v) => v.name).join("\n"));
+      setDraft(result.names.join("\n"));
     });
     return () => { current = false; };
   }, []);
 
   async function save() {
-    const config = AgentEnvironmentConfigSchema.safeParse({ names: draft.split(/\s+/).filter(Boolean) });
+    const config = AgentEnvironmentConfigSchema.safeParse({ names: draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
     if (!config.success) {
-      setError("Enter up to 32 unique variable names. Assignments and reserved names are unavailable.");
+      setError("Enter up to 32 unique variable names, one per line. Assignments and reserved names are unavailable.");
       return;
     }
     setError("");
     setSaving(true);
     const result = await api.setAgentEnvironment(config.data.names);
+    if (result.status === 409) {
+      const current = await fetchAgentEnvironment();
+      setVariables(current?.variables ?? null);
+      setDraft((current?.names ?? result.names ?? []).join("\n"));
+      setError(current ? "Another save changed the variable names. Showing the current settings." : "Could not read agent environment settings.");
+    } else if (result.ok && result.variables && result.names) {
+      setVariables(result.variables);
+      setDraft(result.names.join("\n"));
+    } else {
+      setError("Could not save agent environment settings.");
+    }
     setSaving(false);
-    if (result.ok && result.variables) setVariables(result.variables);
-    else setError("Could not save agent environment settings.");
   }
 
   return (

@@ -3637,7 +3637,7 @@ export const WorktreeClaimVariableNameSchema = z
 const reservedAgentVariables = new Set([
   ...Object.getOwnPropertyNames(Object.prototype), "WORK_UNIT_ID", "TMUX_PANE", "WEZTERM_PANE",
   "ITERM_SESSION_ID", "TERM_PROGRAM", "TRACEPARENT", "TRACESTATE", "RESIDENT_STATE_DIR",
-  "GOCACHE", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "ELECTRON_RUN_AS_NODE",
+  "GOCACHE", "CODEX_HOME", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "ELECTRON_RUN_AS_NODE",
 ]);
 
 export const AgentEnvironmentConfigSchema = z.object({

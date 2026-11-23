@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator } from "@playwright/test";
@@ -6,7 +6,7 @@ import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
-test.use({ daemonEnv: { SHELL: fileURLToPath(new URL("../fixtures/agent-environment-shell.sh", import.meta.url)) } });
+test.use({ daemonEnv: { E2E_NEWER_NAME: "fixture", SHELL: fileURLToPath(new URL("../fixtures/agent-environment-shell.sh", import.meta.url)) } });
 
 test("named login-shell variables reach both SDK processes and a missing name warns on the session", async ({ daemon, dashboard: page }) => {
   test.setTimeout(150_000);
@@ -16,7 +16,7 @@ test("named login-shell variables reach both SDK processes and a missing name wa
   await page.getByRole("button", { name: "Agent environment: off" }).click();
   await page.goto(daemon.baseURL + "/#/settings/harnesses");
   const panel = page.getByRole("region", { name: "Agent environment" });
-  await panel.getByRole("textbox").fill("E2E_LISTED_TOKEN\nE2E_ABSENT_TOKEN");
+  await panel.getByRole("textbox").fill(" E2E_LISTED_TOKEN  \n\n E2E_ABSENT_TOKEN ");
   const save = panel.getByRole("button", { name: "Save variable names" });
   await expect(save).toHaveAccessibleDescription("Apply these names to future agent launches");
   await save.click();
@@ -25,7 +25,7 @@ test("named login-shell variables reach both SDK processes and a missing name wa
   await expect(panel.getByRole("listitem")).toHaveText([
     "E2E_LISTED_TOKEN Present (login shell)", "E2E_ABSENT_TOKEN Absent",
   ]);
-  expect(await (await page.request.get(endpoint)).json()).toEqual({ variables: [
+  expect(await (await page.request.get(endpoint)).json()).toEqual({ names: ["E2E_LISTED_TOKEN", "E2E_ABSENT_TOKEN"], revision: expect.any(String), variables: [
     { name: "E2E_LISTED_TOKEN", present: true, source: "loginShell" },
     { name: "E2E_ABSENT_TOKEN", present: false, source: null },
   ] });
@@ -107,7 +107,9 @@ test.describe("Agent environment Settings failures", () => {
 
   for (const scenario of [
     { title: "an invalid draft", draft: "AN_ASSIGNMENT=invalid", sendsPut: false,
-      error: "Enter up to 32 unique variable names. Assignments and reserved names are unavailable.", image: "invalid-draft.png" },
+      error: "Enter up to 32 unique variable names, one per line. Assignments and reserved names are unavailable.", image: "invalid-draft.png" },
+    { title: "two names on one line", draft: "VALID_NAME ANNOTATION", sendsPut: false,
+      error: "Enter up to 32 unique variable names, one per line. Assignments and reserved names are unavailable.", image: "one-per-line.png" },
     { title: "a failed save", draft: "E2E_REPLACEMENT_NAME", sendsPut: true,
       error: "Could not save agent environment settings.", image: "failed-save.png" },
   ]) {
@@ -134,6 +136,28 @@ test.describe("Agent environment Settings failures", () => {
     });
   }
 
+  test("a later save supersedes an in-flight status probe and the first tab shows the committed names", async ({ daemon, dashboard: page }) => {
+    const endpoint = daemon.baseURL + "/api/agent-environment";
+    await page.goto(daemon.baseURL + "/#/settings/harnesses");
+    const panel = page.getByRole("region", { name: "Agent environment" });
+    const names = panel.getByRole("textbox");
+    await expect(names).toHaveValue(savedName);
+    await names.fill("E2E_DELAYED_NAME");
+    const first = page.waitForResponse((res) => res.url() === endpoint && res.request().method() === "PUT");
+    await panel.getByRole("button", { name: "Save variable names" }).click();
+    await expect.poll(() => existsSync(join(daemon.recordDir, "probe-started"))).toBe(true);
+    const newer = await page.request.put(endpoint, { data: { names: ["E2E_NEWER_NAME"] } });
+    await expect(newer).toBeOK();
+    const committed = await newer.json();
+    writeFileSync(join(daemon.recordDir, "probe-release"), "");
+    const superseded = await first;
+    expect(superseded.status()).toBe(409);
+    expect(await superseded.json()).toEqual({ names: ["E2E_NEWER_NAME"], revision: committed.revision, variables: null });
+    await expect(names).toHaveValue("E2E_NEWER_NAME");
+    await expect(panel.getByRole("listitem")).toHaveText(["E2E_NEWER_NAME Present (daemon)"]);
+    await expectError(panel, "Another save changed the variable names. Showing the current settings.", "superseded-save.png");
+  });
+
   test("the API rejects an unknown field on a valid names list without echoing its value", async ({ daemon, request }) => {
     const endpoint = daemon.baseURL + "/api/agent-environment";
     const valid = { names: ["E2E_REPLACEMENT_NAME"] };
@@ -141,8 +165,10 @@ test.describe("Agent environment Settings failures", () => {
     const invalid = await request.put(endpoint, { data: { ...valid, value: extraValue } });
     expect(invalid.status()).toBe(400);
     expect(await invalid.text()).not.toContain(extraValue);
-    expect(await (await request.get(endpoint)).json()).toEqual({ variables: [{ name: savedName, present: true, source: "loginShell" }] });
+    expect(await (await request.get(endpoint)).json()).toEqual({ names: [savedName], revision: expect.any(String), variables: [{ name: savedName, present: true, source: "loginShell" }] });
     await expect(await request.put(endpoint, { data: valid })).toBeOK();
-    expect((await request.put(endpoint, { data: { names: ["MISSION_API_TOKEN"] } })).status()).toBe(400);
+    for (const reserved of ["MISSION_API_TOKEN", "CODEX_HOME"]) {
+      expect((await request.put(endpoint, { data: { names: [reserved] } })).status()).toBe(400);
+    }
   });
 });

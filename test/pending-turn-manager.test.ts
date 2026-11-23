@@ -3588,3 +3588,63 @@ test("the outbox records an after-work prompt delivered when it retires the turn
   assert.ok(getTaskSkillPrompt(taskId, id)?.deliveredAt);
   manager.stop();
 });
+
+test("a delivered turn whose retire fails is retired again, and its after-work row settled, without sending it again", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retire-retry";
+  registry.registerSdkSession({ id, agent: "claude", name: "retire-retry", cwd: "/repo/retire-retry", agentSessionId: "conversation:retire-retry" });
+  const taskId = "task-retire-retry";
+  const sent: string[] = [];
+  let retires = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true,
+    retireDelivered: (turnId, revision, at) => {
+      retires += 1;
+      if (retires === 1) throw new Error("disk I/O error");
+      return db.retireDeliveredPendingTurn(turnId, revision, at);
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => db.queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(retires, 1);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "queued", "the failed retire changed nothing yet");
+  await until(() => retires === 2, "the retire to be tried again", 3_000);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, []);
+  await tick(20);
+  assert.equal(sent.length, 1, "the prompt is never sent twice");
+  manager.stop();
+});
+
+test("marking an uncertain after-work turn sent settles its prompt row delivered in the same transaction", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const d = db.openDb();
+  const taskId = "task-uncertain-sent";
+  const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:s-uncertain:1`;
+  db.queueTaskSkillPromptTurn({ taskId, sessionId: "s-uncertain", noteKey: "note:s-uncertain", turnId, text: "/wrap-notes", skills: ["wrap-notes"], from: null, now: 1 });
+  // The daemon stopped after the agent took the turn and before its retire committed.
+  d.prepare(`UPDATE pending_turns SET state = 'sending', claimed_at = 2 WHERE id = ?`).run(turnId);
+  db.recoverSendingPendingTurns(3);
+  const row = d.prepare(`SELECT state, revision FROM pending_turns WHERE id = ?`).get(turnId) as { state: string; revision: number };
+  assert.equal(row.state, "uncertain", "never resent on its own");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "queued");
+  assert.equal(db.resolveUncertainPendingTurn(turnId, row.revision, 40), true);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "delivered");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.deliveredAt, 40);
+});

@@ -73,6 +73,8 @@ function setup(options: {
   flag?: { on: boolean; listeners: Set<() => void> };
   /** Collects what the prompter schedules, with its delay, so a test runs it when it chooses. */
   scheduled?: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
+  /** Sessions a durable signal says are owed a prompt, as the workflow manager reports them. */
+  owed?: () => Array<{ sessionId: string; submittedAt: number }>;
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -94,6 +96,7 @@ function setup(options: {
       ? { onFlagsChanged: (listener: () => void) => { options.flag!.listeners.add(listener); return () => { options.flag!.listeners.delete(listener); }; } }
       : {}),
     now: () => ++now,
+    ...(options.owed ? { owedSessions: options.owed } : {}),
     ...(options.scheduled
       ? { schedule: (fn: () => void, ms: number) => {
           const entry = { fn, ms, cancelled: false };
@@ -877,4 +880,47 @@ test("retiring a delivered after-work turn settles its row in the same transacti
   const row = db.getTaskSkillPrompt(taskId, "s-retire");
   assert.equal(row?.state, "delivered");
   assert.equal(row?.deliveredAt, 60);
+});
+
+test("a first prompt a restart lost is written at start for a running submission, once, and never for a later launch", () => {
+  // The submission was activated, its prompt failed before writing a row, and the daemon stopped.
+  const first = setup();
+  const lost = nextTask();
+  first.registry.launch(lost, "s-lost");
+  const later = nextTask();
+  first.registry.launch(later, "s-later");
+  const done = nextTask();
+  first.registry.launch(done, "s-done");
+  assert.equal(first.prompts.prompt("s-done").kind, "queued", "one already prompted before the restart");
+  first.prompts.stop();
+
+  const recordAt = (taskId: string) => first.registry.getTask(taskId)!.shaping!.at;
+  const owed = [
+    { sessionId: "s-lost", submittedAt: recordAt(lost) + 10 },
+    // The task was launched again into this session after the submission it is running.
+    { sessionId: "s-later", submittedAt: recordAt(later) - 1 },
+    { sessionId: "s-done", submittedAt: recordAt(done) + 10 },
+    // A session still being restored at start is prompted when it is registered.
+    { sessionId: "s-restored", submittedAt: Number.MAX_SAFE_INTEGER },
+  ];
+  const after = setup({ owed: () => owed });
+  after.prompts.stop();
+  after.registry.tasks = first.registry.tasks;
+  after.registry.sessions = new Map(first.registry.sessions);
+  const restoredTask = nextTask();
+  const restored = new Map(after.registry.sessions);
+  after.registry.launch(restoredTask, "s-restored");
+  const restoredSession = after.registry.sessions.get("s-restored")!;
+  after.registry.sessions = restored;
+  after.prompts.start();
+
+  assert.equal(db.getTaskSkillPrompt(lost, "s-lost")?.state, "queued", "the lost prompt is written at start");
+  assert.equal(db.getTaskSkillPrompt(later, "s-later"), null, "a later launch is not prompted for earlier work");
+  assert.deepEqual(after.queued.map((q) => q.sessionId), ["s-lost"], "and the one already prompted is not sent again");
+  after.registry.sessions.set("s-restored", restoredSession);
+  after.registry.emit("event", { type: "session_upsert", session: restoredSession });
+  assert.equal(db.getTaskSkillPrompt(restoredTask, "s-restored")?.state, "queued");
+  after.registry.emit("event", { type: "session_upsert", session: restoredSession });
+  assert.equal(after.queued.length, 2, "prompted once when it arrives, not on every update");
+  after.prompts.stop();
 });

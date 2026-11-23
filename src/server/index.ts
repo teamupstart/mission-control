@@ -351,6 +351,8 @@ const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
   outbox: pendingTurns,
   // `workflows` is constructed below; this is read only when a prompt is written, long after.
   workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+  // Read at start and when task shaping is turned on again, after `workflows` exists.
+  owedSessions: () => workflows.afterWorkOwedSessions(),
 });
 wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);

@@ -65,6 +65,15 @@ export interface AfterWorkSkillsDeps {
    * this way, so a daemon that keeps running never leaves it held. Defaults to an unref'd timer.
    */
   schedule?: (fn: () => void, ms: number) => () => void;
+  /**
+   * Sessions whose work a durable signal says is complete, read at start and when task shaping
+   * is turned on again: a workflow submission that is running, and when it was submitted. Each
+   * is prompted once its session is registered, so a first prompt lost to a database error and
+   * a restart is written then - but only for a launch no newer than the submission, so a later
+   * launch into the same session is never prompted for an earlier launch's work. The
+   * once-per-launch guard makes one already prompted a no-op.
+   */
+  owedSessions?: () => ReadonlyArray<{ sessionId: string; submittedAt: number }>;
   /** A catalog skill's checked invocation for a live session. */
   catalogCommand?: (session: Session, id: string) => RequiredSkillCommand;
   /** The catalog id behind a routed name, or null for a name Mission Control does not ship. */
@@ -170,6 +179,8 @@ export class AfterWorkSkills {
    * all holding was for, and a row held after the answer would never be released.
    */
   private readonly owedPrompts = new Map<string, { hold: boolean }>();
+  /** Sessions `owedSessions` named that were not registered yet, with their submission time. */
+  private readonly owedAtStart = new Map<string, number>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -177,6 +188,7 @@ export class AfterWorkSkills {
       enabled: () => featureEnabled("task-shaping"),
       onFlagsChanged: (listener) => onFeatureFlagsChanged(() => listener()),
       now: Date.now,
+      owedSessions: () => [],
       schedule: (fn, ms) => {
         const timer = setTimeout(fn, ms);
         timer.unref?.();
@@ -195,7 +207,14 @@ export class AfterWorkSkills {
         if (event.type === "session_remove") this.sessionEnded(event.id);
         // A session that changes may be able to take its waiting prompt now: the outbox has
         // started, or it can receive messages again.
-        else if (event.type === "session_upsert") this.pendingChanged(event.session.id);
+        else if (event.type === "session_upsert") {
+          const submittedAt = this.owedAtStart.get(event.session.id);
+          if (submittedAt !== undefined) {
+            this.owedAtStart.delete(event.session.id);
+            this.promptOwed(event.session.id, submittedAt);
+          }
+          this.pendingChanged(event.session.id);
+        }
         else if (event.type === "task_upsert") this.follow(event.task);
         else if (event.type === "task_remove") this.shapingSessions.delete(event.id);
       }),
@@ -251,6 +270,16 @@ export class AfterWorkSkills {
    * still releases them, whatever the answer said), and prompts waiting on the outbox.
    */
   private recover(): void {
+    // A first prompt a durable signal says is owed, which a restart may have lost before it
+    // wrote its row. Prompting is once per launch, so one already written stays as it is.
+    try {
+      for (const { sessionId, submittedAt } of this.deps.owedSessions()) {
+        if (this.deps.registry.getSession(sessionId)) this.promptOwed(sessionId, submittedAt);
+        else this.owedAtStart.set(sessionId, submittedAt);
+      }
+    } catch (error) {
+      console.warn("[shaping] could not read the sessions owed an after-work prompt:", error);
+    }
     try {
       for (const sessionId of listAnsweredHeldTaskSkillPromptSessions()) this.heldCheck.add(sessionId);
     } catch (error) {
@@ -266,11 +295,29 @@ export class AfterWorkSkills {
     for (const sessionId of [...this.waiting]) this.retry(sessionId);
   }
 
+  /** Prompt a session a durable signal says is owed, when its current launch predates the signal. */
+  private promptOwed(sessionId: string, submittedAt: number): void {
+    try {
+      const taskId = this.deps.registry.getSession(sessionId)?.task?.id;
+      const task = taskId ? this.deps.registry.getTask(taskId) : undefined;
+      const record = task ? currentShaping(task) : null;
+      if (!record || record.sessionId !== sessionId || record.at > submittedAt) return;
+    } catch (error) {
+      // Unread, it is neither prompted (it might be a later launch) nor given up: the session's
+      // next update checks it again.
+      console.warn(`[shaping] could not check session ${sessionId}'s owed after-work prompt:`, error);
+      this.owedAtStart.set(sessionId, submittedAt);
+      return;
+    }
+    this.prompt(sessionId);
+  }
+
   stop(): void {
     for (const off of this.unsubscribe.splice(0)) off();
     for (const retry of this.retries.values()) retry.cancel();
     this.retries.clear();
     this.owedPrompts.clear();
+    this.owedAtStart.clear();
   }
 
   /**
@@ -516,6 +563,7 @@ export class AfterWorkSkills {
     this.clearRetry(`held:${sessionId}`);
     this.clearRetry(`prompt:${sessionId}`);
     this.owedPrompts.delete(sessionId);
+    this.owedAtStart.delete(sessionId);
     this.heldCheck.delete(sessionId);
     try {
       for (const row of listOpenTaskSkillPrompts(sessionId)) {

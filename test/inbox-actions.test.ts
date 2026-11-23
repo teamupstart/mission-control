@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createElement, type ReactElement } from "react";
+import { createElement, isValidElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   INBOX_ACTIONS,
@@ -88,6 +88,56 @@ test("a relabelled button keeps its action's id and spoken form", () => {
     action: "answer", name: "Steve", tooltip: "Send it", onClick: () => undefined,
   }));
   assert.doesNotMatch(off, /spoken-hint/);
+});
+
+type DrawnButton = ReactElement<{
+  onClick: () => void;
+  disabled: boolean;
+  "data-inbox-action": string;
+  children: string;
+}>;
+
+/** The first `<button>` in an element tree that names an inbox action, wherever it sits. */
+function findActionButton(node: unknown): DrawnButton | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findActionButton(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement<{ children?: unknown; "data-inbox-action"?: string }>(node)) return null;
+  if (node.type === "button" && node.props["data-inbox-action"] !== undefined) return node as DrawnButton;
+  return findActionButton(node.props.children);
+}
+
+/**
+ * The `<button>` an `InboxActionButton` draws, found anywhere in the element tree it returns, so
+ * the test depends on there being an action button and not on how the markup around it is nested.
+ * Called as a function, as `ensemble-compare.test.ts` does for its rationale links: the
+ * repository's tests render without a DOM, so the click is the button's own `onClick` prop, the one
+ * React binds. Children that are components (`Tooltip`, `SpokenHint`) are not rendered, only walked.
+ */
+function drawnButton(props: Parameters<typeof InboxActionButton>[0]): DrawnButton {
+  const button = findActionButton(InboxActionButton(props));
+  assert.ok(button, "InboxActionButton draws a <button> that names its action");
+  return button;
+}
+
+test("clicking an inbox action button runs the action it was given, once, under either label", () => {
+  for (const label of [undefined, "Retry"]) {
+    let calls = 0;
+    const button = drawnButton({
+      action: "answer", name: "Steve", tooltip: "Send it", onClick: () => { calls++; }, ...(label ? { label } : {}),
+    });
+    assert.equal(button.props.children, label ?? "Send answer");
+    assert.equal(button.props["data-inbox-action"], "answer");
+    assert.equal(button.props.disabled, false);
+    button.props.onClick();
+    assert.equal(calls, 1, `the ${label ?? "default"} label's click runs its handler exactly once`);
+  }
+  // Disabled reaches the button itself, so the browser withholds the click.
+  assert.equal(drawnButton({ action: "answer", name: "Steve", tooltip: "t", onClick: () => undefined, disabled: true }).props.disabled, true);
 });
 
 // ---- the question card: a name line and its hints ----

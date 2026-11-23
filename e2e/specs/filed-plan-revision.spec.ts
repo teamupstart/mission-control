@@ -97,8 +97,11 @@ async function openInbox(page: Page): Promise<Locator> {
   return inbox;
 }
 
-test("a revised plan replaces its card, is tagged Revision 2, and shows the earlier version read-only", async ({ dashboard: page, daemon }) => {
-  test.setTimeout(150_000);
+/**
+ * Both flags on, a dispatched SDK session, a filed plan, then its revision naming the open form,
+ * filed the way the MCP tool files them. The revision is filed without withdrawing the first form.
+ */
+async function fileRevision(daemon: DaemonHandle): Promise<{ session: Session; first: Filed; revised: Filed }> {
   await setFlag(daemon, "async-input", true);
   await setFlag(daemon, "filed-plan-decisions", true);
   const task = await api<Task>(daemon, "/api/tasks", {
@@ -122,6 +125,12 @@ test("a revised plan replaces its card, is tagged Revision 2, and shows the earl
     revises: first.id,
   }));
   expect(revised.wait).toBe("message");
+  return { session, first, revised };
+}
+
+test("a revised plan replaces its card, is tagged Revision 2, and shows the earlier version read-only", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const { session, first, revised } = await fileRevision(daemon);
   const reviews = await api<ReviewItem[]>(daemon, "/api/reviews");
   expect(reviews.find((r) => r.id === revised.id)?.revision).toEqual({ number: 2, previousId: first.id });
   expect(reviews.find((r) => r.id === first.id)?.status).toBe("withdrawn");
@@ -183,4 +192,34 @@ test("a revised plan replaces its card, is tagged Revision 2, and shows the earl
   await expect(modal).toBeVisible();
   await expect(modal.locator(".kind-revision")).toHaveText(/Revision 2/i);
   await expect(modal.getByRole("button", { name: "Earlier version" })).toBeVisible();
+});
+
+test("when the earlier version cannot be read, its view says so and offers nothing to answer", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  const { first } = await fileRevision(daemon);
+  // The daemon's read of the replaced form fails; every other request reaches it as usual.
+  let failedReads = 0;
+  await page.route(`**/api/reviews/${first.id}`, async (route) => {
+    failedReads += 1;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "read failed" }) });
+  });
+
+  const inbox = await openInbox(page);
+  const card = inbox.locator("section.review").first();
+  await expect(card.locator(".kind-revision")).toHaveText(/Revision 2/i);
+  await card.getByRole("button", { name: "Earlier version" }).click();
+  const earlier = page.getByRole("dialog", { name: "Earlier version" });
+  await expect(earlier).toBeVisible();
+  await expect(earlier).toContainText("The earlier version could not be read.");
+  await expect(earlier).not.toContainText("Loading the earlier version");
+  await expect(earlier.getByRole("heading", { name: FIRST_TITLE })).toHaveCount(0);
+  await expect(earlier.getByRole("button", { name: /Submit/ })).toHaveCount(0);
+  await expect(earlier.getByRole("radio")).toHaveCount(0);
+  expect(failedReads).toBeGreaterThan(0);
+  await expectContentClearsBorder(earlier);
+  await capture(earlier, "04-earlier-version-unreadable", page);
+  // Closing it leaves the inbox and the revised card as they were.
+  await page.keyboard.press("Escape");
+  await expect(earlier).toBeHidden();
+  await expect(card.locator(".kind-revision")).toHaveText(/Revision 2/i);
 });

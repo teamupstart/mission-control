@@ -409,6 +409,22 @@ test("every target that is not this session's open or agent-withdrawn filed plan
   assert.match(await wrongKind.text(), /only kind 'plan-decisions' can revise an earlier form/);
 });
 
+test("a blank or whitespace-only revises is refused by the wire schema and files nothing", async () => {
+  flags(true);
+  const { registry, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const open = await file(app, d.cwd);
+  for (const revises of ["", "   ", "\t\n"]) {
+    const before = reviewCount();
+    const res = await postPlan(app, d.cwd, { revises });
+    assert.equal(res.status, 400, JSON.stringify(revises));
+    assert.match(await res.text(), /revises/, "the refusal names the field");
+    assert.equal(reviewCount(), before, `nothing filed for ${JSON.stringify(revises)}`);
+  }
+  assert.equal(registry.getReview(open.id)?.status, "pending", "the open form is untouched");
+  assert.deepEqual(registry.outstandingReviews(d.syntheticId).map((r) => r.id), [open.id]);
+});
+
 test("only the agent's own withdrawal makes a settled form a valid target; every other way a filed form closes does not", async () => {
   flags(true);
   const { registry, reviews, app } = fleet();

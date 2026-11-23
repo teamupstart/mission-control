@@ -247,6 +247,7 @@ import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
+import { configuredTerminalDeps } from "./terminals-config.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
@@ -5927,7 +5928,7 @@ export class TaskManager {
       if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
       return;
     }
-    const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
+    const alive = await homeAlive(t.homeName, configuredTerminalDeps, t.homeBackend ?? null, t.terminalResourceId);
     if (alive === false) return;
     const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (!stopped.asked || !stopped.ok) {
@@ -7513,7 +7514,7 @@ export class TaskManager {
       }
     }
     const alive = embedded ?? (
-      t.homeName ? await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId) : null
+      t.homeName ? await homeAlive(t.homeName, configuredTerminalDeps, t.homeBackend ?? null, t.terminalResourceId) : null
     );
     if (alive !== false) {
       if (t.status === "dispatching") {

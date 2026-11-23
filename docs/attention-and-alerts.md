@@ -354,7 +354,8 @@ is unchanged, and with the flag off the group is hidden and the switches are not
 
 **A report notification** is named by the agent's display name and worded by what the agent did
 after posting. An agent calls `post_report` mid-turn, so the daemon waits up to 20 seconds: if
-the session is seen working and then stops in that time, or leaves, the notification reads
+the session is seen working and then stops in that time, is seen stopped or blocked on you (a
+confirmed idle state, an open question, a menu), or leaves, the notification reads
 **Steve's back: Build failure diagnosed**, and otherwise, when the time is up, **Steve posted a
 report: Build failure diagnosed**. A session that reports no working state at all, such as one
 without hooks, gives no evidence that it stopped: while it is still present when the time is up,

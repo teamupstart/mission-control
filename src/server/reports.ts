@@ -208,9 +208,11 @@ const REAL_TIMERS: ReportTimers = {
 
 /**
  * A report waiting for its announce stamp. `working` is what the session was last seen doing:
- * `true` once it has been seen working, `false` when it had not been seen working at post time
- * (an uninstrumented session, whose state says nothing), and `null` for a report found unstamped
- * at startup, whose session has not been seen at all yet.
+ * `true` once it has been seen working; `false` when what it was seen doing says nothing (an
+ * unconfirmed idle state, as an uninstrumented session always reads); and `null` when its state
+ * is to be read at the next sighting - a report found unstamped at startup, whose session has not
+ * been seen yet, or one posted while the session was in a state that does say something but not
+ * working (confirmed idle, or blocked on you).
  */
 interface AnnounceWatch {
   sessionId: string;
@@ -224,6 +226,17 @@ interface AnnounceWatch {
 }
 
 const isWorking = (session: Session): boolean => reportBucket(session) === "working";
+
+/**
+ * Whether a session's state says nothing about stopping: unconfirmed and idle, as an
+ * uninstrumented session always reads. Blocked on you (a menu, an open question) is evidence of
+ * stopping whatever the hooks say, and a confirmed state is evidence either way.
+ */
+const saysNothing = (session: Session): boolean => !session.stateConfirmed && reportBucket(session) === "idle";
+
+/** How a watch starts from what its session is seen doing: see `AnnounceWatch.working`. */
+const watchStart = (session: Session): boolean | null =>
+  isWorking(session) ? true : saysNothing(session) ? false : null;
 
 export interface ReportManagerOptions {
   /** The state home documents are copied under. Defaults to the daemon's. */
@@ -354,7 +367,6 @@ export class ReportManager {
     }
     if (event.type !== "session_upsert") return;
     const working = isWorking(event.session);
-    const confirmed = event.session.stateConfirmed;
     for (const [id, watch] of this.watches) {
       if (watch.sessionId !== event.session.id) continue;
       // Found at startup and first seen idle with an unconfirmed state (uninstrumented, or
@@ -362,7 +374,7 @@ export class ReportManager {
       // same no-evidence case as a post whose session was never seen working. A session blocked
       // on you (a visible menu, an open question) has stopped whatever its hooks say, and reads
       // as back below.
-      if (watch.working === null && !confirmed && reportBucket(event.session) === "idle") {
+      if (watch.working === null && saysNothing(event.session)) {
         if (watch.deadlinePassed) this.announce(id, "working");
         else watch.working = false;
         continue;
@@ -394,8 +406,7 @@ export class ReportManager {
     if (gone) this.announce(id, "back");
     // An unconfirmed state is no evidence the session stopped.
     else if (watch.working === null) {
-      const noEvidence = !session.stateConfirmed && reportBucket(session) === "idle";
-      this.announce(id, isWorking(session) || noEvidence ? "working" : "back");
+      this.announce(id, isWorking(session) || saysNothing(session) ? "working" : "back");
     }
     else this.announce(id, "working");
   }
@@ -524,7 +535,9 @@ export class ReportManager {
     if (superseded) this.registry.upsertReport(superseded);
     this.registry.upsertReport(created);
     const live = this.registry.getSession(session.id) ?? session;
-    this.watch(created.id, session.id, isWorking(live));
+    // Posted mid-turn, so the state now is either working, no evidence, or one that says the
+    // session has stopped (confirmed idle, or blocked on you), read the same way a restart reads it.
+    this.watch(created.id, session.id, watchStart(live));
     return created;
   }
 

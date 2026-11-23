@@ -534,6 +534,30 @@ test("a session that leaves after posting is back; one never seen working is ann
   assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
 });
 
+test("a report posted while its session's state says it is not working, but says something, is read as a restart is", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Blocked on you when it posts (a question open, confirmed), then still not working: it stopped.
+  const asking = working("s-post-blocked", { state: "awaiting_review", pendingReviews: 1 });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Blocked", body: "b" });
+  a.set({ ...asking, state: "idle", pendingReviews: 0 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Confirmed idle when it posts (a hook already said the turn ended), then idle again: back.
+  const done = working("s-post-confirmed-idle", { state: "idle" });
+  a.set(done);
+  const posted = await a.reports.post(done, { title: "Done", body: "b" });
+  a.set({ ...done, activity: "idle" });
+  assert.equal(a.reports.get(posted.id)?.announcedAs, "back");
+  // Confirmed idle at the post, then working: it kept going, and the grace period decides.
+  const busy = working("s-post-idle-then-busy", { state: "idle" });
+  a.set(busy);
+  const kept = await a.reports.post(busy, { title: "Kept going", body: "b" });
+  a.set({ ...busy, state: "working" });
+  a.fireAll();
+  assert.equal(a.reports.get(kept.id)?.announcedAs, "working");
+});
+
 test("a report read or replaced before its stamp is never stamped", async () => {
   const clock = { now: 1_000 };
   const a = announcer(clock);

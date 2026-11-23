@@ -66,7 +66,9 @@ A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utte
 `x-harness-token`. Send the directive revision under which the segment was captured. The daemon
 returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
-Use a fresh id per capture and epoch milliseconds for `capturedAt`.
+Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
+A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
+underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 
@@ -82,10 +84,12 @@ can address Release Captain, while “Release, Captain needs help” can address
 “Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
-a candidate when exactly one option across all open unsure cards matches. Multiple matches
+a candidate when exactly one option matches across open unsure cards captured by the time
+the name was spoken. Multiple matches
 leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
-no matching option records `no-message`.
+no matching option records `no-message`. This includes “Release Captain” when both Release
+and Release Captain are on the roster.
 Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
 
@@ -93,15 +97,19 @@ During the cancel window, the message stays in memory. At the deadline, or immed
 the window off, the daemon submits the remaining text verbatim to the running target’s operator
 queue. The card and Recently heard show `queued` when the queue accepts the message.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
-`Will, ???` queues `???`.
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
-pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
+“Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest action that
+is still pending and was opened by the time the cancel was spoken. The daemon uses capture
+timestamps when listener requests arrive out of order. For equal timestamps, the last action
+opened wins. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
 Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
-`GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
+`GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
+time with the latest arrival first for ties. Entries include
 ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
 card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview

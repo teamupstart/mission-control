@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { VoiceRouter } from "../src/server/voice/router.ts";
+import { RecentlyHeard, VoiceRouter } from "../src/server/voice/router.ts";
 import { voiceStateOff } from "../src/shared/voice.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { VoiceCard, VoiceUtterance } from "../src/shared/voice-routing.ts";
@@ -24,6 +24,21 @@ test("Recently heard retains the newest 50 reasons and clears in memory", async 
   assert.equal(entries[2]?.rule, "no-name");
   router.heard.clear();
   assert.deepEqual(router.heard.list(), []);
+});
+
+test("Recently heard retains the 50 newest capture times and breaks ties by latest arrival", () => {
+  const heard = new RecentlyHeard();
+  const record = (id: string, time: number) => heard.record({
+    id, time, text: "hello", outcome: "ignored", rule: "no-name", matchedName: null, pauseMs: null, detail: "",
+  });
+  for (let time = 1; time <= 50; time++) record(String(time), time);
+  record("too-old", 0);
+  assert.equal(heard.list().at(-1)?.id, "1");
+  record("tie", 25);
+  const ids = heard.list().map((entry) => entry.id);
+  assert.equal(ids.length, 50);
+  assert.equal(ids.at(-1), "2");
+  assert.deepEqual(ids.slice(24, 28), ["26", "tie", "25", "24"]);
 });
 
 test("a rejected delivery marks the card and Recently heard failed and cannot deliver twice", async (t) => {

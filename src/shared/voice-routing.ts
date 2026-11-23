@@ -9,7 +9,8 @@ const WordTiming = z.object({
 }).strict().refine((word) => word.endMs >= word.startMs);
 
 export const VoiceUtteranceSchema = z.object({
-  id: z.string().min(1).max(128),
+  id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._~-]+$/u, "Use URL-unreserved characters for the capture ID.")
+    .refine((id) => id !== "." && id !== "..", "A capture ID cannot be a dot segment."),
   text: z.string().min(1).max(16_384).refine((text) => text.trim().length > 0),
   words: z.array(WordTiming).max(4096).default([]),
   capturedAt: z.number().int().nonnegative(),
@@ -81,23 +82,22 @@ function closesWrapper(opener: string, closer: string): boolean {
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, start: number, end: number): string {
-  let rest = text.slice(end).trimStart();
-  if (rest.startsWith(",")) {
-    rest = rest.replace(/^,+/u, "");
-    const address = text.slice(start, end);
-    const opening = address.match(/^[\p{Ps}\p{Pi}"']+/u)?.[0] ?? "";
-    const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
-    // Wrappers already closed before the comma belong to the address token itself.
-    const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
-    for (const opener of [...opening].reverse().slice(closed)) {
-      const closer = rest.match(/^[\p{Pe}\p{Pf}"']/u)?.[0];
-      if (!closer || !closesWrapper(opener, closer)) break;
-      rest = rest.slice(closer.length);
-    }
+  const rest = text.slice(end).trimStart();
+  if (!rest.startsWith(",")) return rest;
+  let bodyStart = 1;
+  const address = text.slice(start, end);
+  const opening = address.match(/^[\p{Ps}\p{Pi}"']+/u)?.[0] ?? "";
+  const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
+  // Wrappers already closed before the comma belong to the address token itself.
+  const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
+  for (const opener of [...opening].reverse().slice(closed)) {
+    const closer = rest.slice(bodyStart).match(/^[\p{Pe}\p{Pf}"']/u)?.[0];
+    if (!closer || !closesWrapper(opener, closer)) break;
+    bodyStart += closer.length;
   }
-  // An outer separator can follow the closing quote. Commas after the separating
-  // whitespace, as in "Will, ,,,", are part of the message.
-  return rest.replace(/^,+/u, "").trimStart();
+  // An inner comma in “Will,” may be followed by one outer address separator.
+  if (bodyStart > 1 && rest[bodyStart] === ",") bodyStart++;
+  return rest.slice(bodyStart).trimStart();
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -120,6 +120,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
+  if (names.some(({ name }) => name === phrase)) return { kind: "ignored", reason: "no-message" };
   const leadingNames = namesStartingAt(text, firstToken, secondToken);
   let count = 1;
   let match: "exact" | "phonetic" = "exact";

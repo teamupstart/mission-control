@@ -115,8 +115,25 @@ test("ranges are canonical half-open intervals including empty diff sides", () =
     }).success,
     false,
   );
+});
+test("audit metadata accepts a valid query record and rejects an added quote", () => {
+  const audit = RepositoryQueryAuditMetadataSchema.parse({
+    operationId: "90d7de2f-f72b-41ad-a17a-b4453366dd16",
+    workloadId: "workload",
+    attemptId: "attempt",
+    snapshotDigest: "a".repeat(64),
+    operation: "glob",
+    inputHash: "b".repeat(64),
+    status: "ok",
+    code: null,
+    bytes: 128,
+    items: 0,
+    durationMs: 1,
+    truncated: false,
+    handles: [],
+  });
   assert.equal(
-    RepositoryQueryAuditMetadataSchema.safeParse({ quote: "secret" }).success,
+    RepositoryQueryAuditMetadataSchema.safeParse({ ...audit, quote: "secret" }).success,
     false,
   );
 });

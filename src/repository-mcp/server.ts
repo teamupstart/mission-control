@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   REPOSITORY_OPERATION_IDS,
+  type RepositoryOperation,
   RepositoryOperationSchemas,
   RepositoryViewDescriptorSchema,
   RepositoryBudgetsSchema,
@@ -59,10 +60,20 @@ const server = new Server(
   { name: "repository", version: "1.0.0" },
   { capabilities: { tools: {} } },
 );
+const descriptions: Record<RepositoryOperation, string> = {
+  read: "Read lines or base64-encoded bytes from a worktree or index path, starting at a zero-based offset.",
+  search: "Find literal text in worktree files matching a glob and return matching lines with optional surrounding context.",
+  glob: "List worktree paths matching a glob, including each entry's kind and binary flag.",
+  git_status: "List captured status classifications such as staged, unstaged, or untracked for paths matching a glob.",
+  git_diff: "Compare a captured pair of layers and return patch hunks or change metadata, optionally limited to specific paths.",
+  git_show: "Show a retained commit's message, tree, and parents. Request a patch to include its changes against its first parent, or an empty tree for a root commit.",
+  git_log: "List retained commits reachable from the selected revision, optionally filtered by path.",
+  git_blame: "Show which commit last changed each requested line of a file at a retained revision. Line numbers start at one and the end is exclusive.",
+};
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: REPOSITORY_OPERATION_IDS.map((operation) => ({
     name: operation,
-    description: `Read-only captured repository operation: ${operation}`,
+    description: descriptions[operation],
     inputSchema: z.toJSONSchema(RepositoryOperationSchemas[operation], {
       io: "input",
     }) as Tool["inputSchema"],

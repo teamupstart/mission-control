@@ -56,9 +56,10 @@ export async function smokeRepositoryMcp(
       gitBinary: "git",
       workloadId: "smoke",
       attemptId: "smoke",
-      budgets: {},
+      budgets: { attemptMs: 30000 },
       auditPath,
-      deadline: Date.now() + 30000,
+      // A distant workflow deadline must still allow the shorter attempt to run.
+      deadline: Date.now() + 2 ** 32,
     }),
   );
   const transport = new StdioClientTransport({

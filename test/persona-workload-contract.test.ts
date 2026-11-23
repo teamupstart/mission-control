@@ -379,7 +379,7 @@ async function capabilityFixture(
 for (const provider of ["codex", "claude"] as const) {
   test(`${provider} rejects an unverified CLI build before starting a review session`, async (t) => {
     const fixture = await capabilityFixture(t, provider, { version: "unverified fixture build" });
-    await assert.rejects(fixture.run, /Unverified repository tool isolation build/);
+    await assert.rejects(fixture.run, { reason: "unverified_build" });
     assert.deepEqual(await fixture.launches(), ["version"]);
   });
 }
@@ -389,7 +389,7 @@ test("Codex refuses an extra enabled MCP server before starting a review session
     version: "codex-cli 0.166.0",
     servers: [{ name: "repository", enabled: true }, { name: "other", enabled: true }],
   });
-  await assert.rejects(fixture.run, /Unexpected MCP server/);
+  await assert.rejects(fixture.run, { reason: "tool_inventory" });
   assert.deepEqual(await fixture.launches(), ["version", "mcp list"]);
 });
 
@@ -398,7 +398,7 @@ test("Claude rejects an unexpected tool at initialization even when the provider
     version: "2.1.319 (Claude Code)",
     tools: [...REPOSITORY_TOOL_NAMES, "StructuredOutput", "Bash"],
   });
-  await assert.rejects(fixture.run, /Repository capability mismatch/);
+  await assert.rejects(fixture.run, { reason: "tool_inventory" });
   assert.deepEqual(await fixture.launches(), ["version", "session", "init"]);
 });
 
@@ -407,6 +407,27 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   for await (const value of source) values.push(value);
   return values;
 }
+
+test("env-node provider launchers use the configured Node and report a body-free capability failure", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "provider-launcher-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binary = join(root, "codex.mjs");
+  const nodeBinary = join(root, "runtime");
+  // The recording shim distinguishes the configured runtime even on hosts with /usr/bin/node.
+  await writeFile(nodeBinary, `#!/bin/sh\necho "$2" >> "$1.calls"\nexec "${process.execPath}" "$@"\n`, { mode: 0o700 });
+  await writeFile(binary, "#!/usr/bin/env node\nconsole.log('unknown build with arbitrary output');\n", { mode: 0o700 });
+  const f = executor(REPOSITORY_PROVIDERS.codex, { nodeBinary, providerBinary: async () => binary });
+  const events = await collect(f.instance.dispatch(request(), new AbortController().signal));
+  const terminal = events.at(-1)!;
+  assert.equal(terminal.type, "terminal");
+  if (terminal.type === "terminal")
+    assert.deepEqual(terminal.result, {
+      status: "failed", code: "capability_mismatch", capabilityReason: "unverified_build",
+    });
+  assert.equal(await readFile(binary + ".calls", "utf8"), "--version\n");
+  assert.ok(!JSON.stringify(events).includes("arbitrary output"));
+  assert.equal(f.released, 1);
+});
 
 // Run the same cited read through the executor, varying only the shutdown seal.
 async function dispatchCitedRead(

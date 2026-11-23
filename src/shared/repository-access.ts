@@ -361,6 +361,7 @@ export const RepositoryCursorMetadataSchema = z.strictObject({
   inputHash: sha,
   policyVersion: z.literal(1),
   position: count,
+  scanIndex: count.optional(),
 });
 export const RepositoryResultSchema = z.strictObject({
   operationId: z.string().uuid(),
@@ -370,7 +371,7 @@ export const RepositoryResultSchema = z.strictObject({
   bytes: count,
   itemCount: count,
   truncated: z.boolean(),
-  limit: z.enum(["bytes", "items"]).nullable(),
+  limit: z.enum(["bytes", "items", "time"]).nullable(),
   nextCursor: z.string().nullable(),
   historyTruncated: z.boolean(),
   items: z
@@ -493,6 +494,8 @@ export const PersonaWorkloadVerdictSchema = z
   );
 // Append only: Phase 4 adds inspector_verdict at this discriminator, without a transport bump.
 export const PERSONA_WORKLOAD_RESULT_KINDS = ["persona_verdict"] as const;
+const capabilityReason = z.enum(["unverified_build", "tool_inventory", "unsupported_effort"]);
+export type RepositoryCapabilityReason = z.infer<typeof capabilityReason>;
 export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("completed"),
@@ -510,6 +513,7 @@ export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
   }),
   z.strictObject({
     status: z.literal("failed"),
+    capabilityReason: capabilityReason.optional(),
     usage: boundedRecord(
       z.string().max(100),
       z.number().nonnegative().finite(),

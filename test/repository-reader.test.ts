@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   unlink,
   mkdtemp,
+  readFile,
   writeFile,
   mkdir,
   rename,
@@ -302,6 +303,99 @@ test("read refuses an allowed blob stored only in an external Git alternate", as
   assert.equal(audit?.operationId, result.operationId);
   assert.equal(audit.code, "unavailable");
   assert.deepEqual(audit.handles, []);
+});
+test("search skips oversized and non-UTF-8 files while diff describes them without handles", async (t) => {
+  const f = await fixture(t);
+  const paths = ["a-large", "b-latin1", "c-text"];
+  await writeFile(join(f.root, paths[0]!), Buffer.alloc(1048577, 65));
+  await writeFile(join(f.root, paths[1]!), Buffer.from([0xe9, 0x0a]));
+  await writeFile(join(f.root, paths[2]!), "needle\n");
+  f.git("add", "--", ...paths);
+  f.view.worktreeTree = f.git("write-tree", "--missing-ok");
+  f.view.worktree = paths.map((path) => ({
+    path, kind: "file", binary: false, blob: f.git("rev-parse", ":" + path), classifications: ["staged"],
+  }));
+  const reader = f.make({ budgets: REPOSITORY_DEFAULT_BUDGETS });
+  const search = await reader.query("search", { query: "needle", caseSensitive: true });
+  assert.equal(search.status, "ok");
+  assert.deepEqual(search.items.map((item) => item.text), ["needle"]);
+  const diff = await reader.query("git_diff", { pair: "index_worktree" });
+  assert.equal(diff.status, "ok");
+  assert.deepEqual(diff.items.map((item) => [item.path, item.metadata?.kind]), [
+    ["a-large", "oversized"], ["b-latin1", "binary"], ["c-text", undefined],
+  ]);
+  assert.match(diff.items[2]!.text!, /\+needle/);
+  for (const record of f.audit) assert.deepEqual(record.handles.map((h) => h.path), ["c-text"]);
+  f.view.worktree[0]!.blob = "f".repeat(40);
+  assert.equal((await f.make().query("search", { query: "needle", caseSensitive: true })).code, "unavailable");
+});
+
+// Delay one known object until the call times out. Count actual Git reads across pages.
+async function pauseObjectRead(root: string, type: "blob" | "commit", oid: string) {
+  const gitBinary = join(root, "pausing-git");
+  await writeFile(gitBinary, [
+    "#!/bin/sh", 'echo "$*" >> "$0.calls"', 'case " $* " in',
+    `  *" cat-file ${type} ${oid} "*) if [ -f "$0.pause" ]; then exec sleep 10; fi;;`,
+    'esac', 'exec git "$@"',
+  ].join("\n"), { mode: 0o700 });
+  await writeFile(gitBinary + ".pause", "");
+  return {
+    gitBinary,
+    resume: () => unlink(gitBinary + ".pause"),
+    reads: async (object: string) => (await readFile(gitBinary + ".calls", "utf8"))
+      .split("\n").filter((line) => line.endsWith(`cat-file ${type} ${object}`)).length,
+  };
+}
+
+test("search resumes a timed empty page at the next file, then paginates within its matches", async (t) => {
+  const f = await fixture(t);
+  const first = f.view.worktree[0]!;
+  await writeFile(join(f.root, "last"), "found one\nfound two\n");
+  f.git("add", "last");
+  const last = f.git("rev-parse", ":last");
+  f.view.worktree.push({ ...first, path: "last", blob: last });
+  const gate = await pauseObjectRead(f.root, "blob", last);
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500, callItems: 1 } });
+  const query = { query: "found", caseSensitive: true };
+  const empty = await reader.query("search", query);
+  assert.equal(empty.status, "ok");
+  assert.equal(empty.limit, "time");
+  assert.ok(empty.nextCursor);
+  assert.deepEqual(empty.items, []);
+  assert.deepEqual(f.audit[0]!.handles, []);
+  await gate.resume();
+  const hit = await reader.query("search", { ...query, cursor: empty.nextCursor });
+  assert.equal(hit.limit, "items");
+  assert.ok(hit.nextCursor);
+  const end = await reader.query("search", { ...query, cursor: hit.nextCursor });
+  assert.equal(end.nextCursor, null);
+  assert.deepEqual([...hit.items, ...end.items].map((item) => item.text), ["found one", "found two"]);
+  assert.equal(await gate.reads(first.blob!), 1);
+});
+
+test("path-filtered log preserves earlier commits on timeout and resumes at the interrupted revision", async (t) => {
+  const f = await fixture(t);
+  const parent = f.view.retainedRevisions[0]!;
+  await writeFile(join(f.root, "src/a.txt"), "change\n");
+  f.git("add", "src/a.txt");
+  f.git("rm", "--cached", ".env");
+  f.git("commit", "-qm", "change");
+  const head = f.git("rev-parse", "HEAD");
+  f.view.head = head;
+  f.view.retainedRevisions.unshift({ id: head, tree: f.git("rev-parse", "HEAD^{tree}"), parents: [parent.id] });
+  f.view.retainedCommitCount = 2;
+  const gate = await pauseObjectRead(f.root, "commit", parent.id);
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500 } });
+  const query = { path: "src/a.txt" };
+  const page = await reader.query("git_log", query);
+  assert.equal(page.limit, "time");
+  assert.ok(page.nextCursor);
+  assert.deepEqual(page.items.map((item) => item.metadata?.revision), [head]);
+  await gate.resume();
+  const end = await reader.query("git_log", { ...query, cursor: page.nextCursor });
+  assert.equal(end.nextCursor, null);
+  assert.deepEqual(end.items.map((item) => item.metadata?.revision), [parent.id]);
+  assert.equal(await gate.reads(head), 1);
 });
 test("audit failure, cancellation and attempt limits never return evidence", async (t) => {
   const f = await fixture(t);

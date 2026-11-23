@@ -76,10 +76,14 @@ compares retained parent entries and includes deletions; a boundary remains expl
 
 Per-attempt defaults are 128 calls, 32 MiB of serialized successful results and 15 minutes;
 per-call defaults are 1 MiB, 100 items and 10 seconds. Blob/command buffering is also bounded
-at 1 MiB, so an oversized individual object produces `budget_exhausted`, even for a small
-requested window. A result that cannot fit one item fails explicitly. Partial pages carry a
+at 1 MiB. A direct read of a larger blob returns `budget_exhausted`, even for a small
+requested window. Search skips oversized, binary and invalid UTF-8 blobs. Diffs report
+those paths as metadata. A missing allowed blob still fails the query. A result that
+cannot fit one item fails explicitly. Partial pages carry a
 limit and HMAC cursor bound to the snapshot, operation, normalized request and policy. Cursors
-cannot cross attempts. Failed, denied, cancelled and omitted items never mint handles.
+cannot cross attempts. When a call times out after making progress, search resumes at the
+interrupted file and line, and log resumes at the interrupted revision. A time-limited
+page can have zero matches and a continuation cursor. Failed, denied, cancelled and omitted items never mint handles.
 Each admitted call uses one audit slot, including a call cancelled before it reads anything.
 Once the call budget is full, queued requests return `budget_exhausted` before admission.
 
@@ -122,6 +126,9 @@ Native inventories are not a stable SDK API. These adapters therefore fail close
 executable is a verified build: `codex-cli 0.166.0` or `2.1.319 (Claude Code)`. This exact allowlist,
 rather than an assumed minimum version, is a deliberate Phase 1 deviation. An upgrade requires
 rerunning the executable probe and updating the allowlist after its isolation assertions pass.
+An unsupported build, tool inventory or effort returns `capability_mismatch` with a closed
+reason code. Script-based CLI launchers resolve `env node` through a private link to the
+configured Node runtime.
 There is no prompt-only, direct-file, or repeated-session fallback. Unsupported Claude `xhigh`
 effort fails rather than silently changing the resolved execution.
 

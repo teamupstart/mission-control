@@ -1,8 +1,8 @@
 import { FIXED_OS_EXECUTABLES } from "../../executables/catalog.ts";
 import { openRepositoryAuditJournal } from "./audit-journal.ts";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   PersonaWorkloadRequestSchema,
@@ -19,7 +19,7 @@ import type {
   RepositoryArtifactMaterializer,
   RepositoryViewLease,
 } from "./contracts.ts";
-import { REPOSITORY_PROVIDERS, type RepositoryProvider } from "./providers.ts";
+import { REPOSITORY_PROVIDERS, RepositoryCapabilityError, type RepositoryProvider } from "./providers.ts";
 
 interface Job {
   request: PersonaWorkloadRequest;
@@ -225,12 +225,20 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       ]);
       if (Object.keys(auth).some((k) => !allowed.has(k)))
         throw Error("Unexpected provider credential family");
+      let providerPath = "/usr/bin:/bin";
+      if (isAbsolute(this.options.nodeBinary)) {
+        // Resolve env-node launchers without exposing every executable next to the host's Node.
+        const bin = join(root, "bin");
+        await mkdir(bin);
+        await symlink(this.options.nodeBinary, join(bin, "node"));
+        providerPath = bin + ":" + providerPath;
+      }
       const env = {
         ...auth,
         HOME: cwd,
         CODEX_HOME: cwd,
         CLAUDE_CONFIG_DIR: cwd,
-        PATH: "/usr/bin:/bin",
+        PATH: providerPath,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       };
       result = { status: "failed", code: "provider_unavailable" };
@@ -288,8 +296,9 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         },
         usage: output.usage,
       });
-    } catch {
-      /* Keep infrastructure diagnostics typed and free of provider/repository bodies. */
+    } catch (error) {
+      if (error instanceof RepositoryCapabilityError)
+        result = { status: "failed", code: "capability_mismatch", capabilityReason: error.reason };
     } finally {
       clearTimeout(timer);
       clearInterval(auditTimer);

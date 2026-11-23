@@ -6,6 +6,7 @@ import {
   REPOSITORY_OPERATION_IDS,
   PersonaWorkloadProviderResultSchema,
   type PersonaWorkloadRequest,
+  type RepositoryCapabilityReason,
 } from "@shared/repository-access.ts";
 import { providerJsonSchema } from "../../llm/json-schema.ts";
 import { validateLlmImages } from "../../llm/images.ts";
@@ -25,6 +26,11 @@ export interface RepositoryProviderResult {
 export type RepositoryProvider = (
   launch: RepositoryProviderLaunch,
 ) => Promise<RepositoryProviderResult>;
+export class RepositoryCapabilityError extends Error {
+  constructor(readonly reason: RepositoryCapabilityReason) {
+    super(reason);
+  }
+}
 export const REPOSITORY_TOOL_NAMES = REPOSITORY_OPERATION_IDS.map(
   (name) => `mcp__repository__${name}`,
 );
@@ -109,7 +115,7 @@ async function verifyProviderBuild(launch: RepositoryProviderLaunch) {
     stdout.trim() !==
     VERIFIED_PROVIDER_BUILDS[launch.request.execution.provider]
   )
-    throw Error("Unverified repository tool isolation build");
+    throw new RepositoryCapabilityError("unverified_build");
 }
 function toml(value: unknown): string {
   if (
@@ -135,13 +141,16 @@ async function verifyCodexMcpInventory(launch: RepositoryProviderLaunch) {
     launch,
     1048576,
   );
-  const servers = z
-    .array(z.object({ name: z.string().max(200), enabled: z.boolean() }))
-    .max(64)
-    .parse(JSON.parse(stdout));
-  const enabled = servers.filter((s) => s.enabled !== false);
+  let servers;
+  try {
+    servers = z.array(z.object({ name: z.string().max(200), enabled: z.boolean() }))
+      .max(64).parse(JSON.parse(stdout));
+  } catch {
+    throw new RepositoryCapabilityError("tool_inventory");
+  }
+  const enabled = servers.filter((s) => s.enabled);
   if (enabled.length !== 1 || enabled[0]?.name !== "repository")
-    throw Error("Unexpected MCP server");
+    throw new RepositoryCapabilityError("tool_inventory");
 }
 export async function runCodexRepositoryWorkload(
   launch: RepositoryProviderLaunch,
@@ -191,7 +200,7 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
 ) => {
   await verifyProviderBuild(launch);
   if (launch.request.execution.effort === "xhigh")
-    throw Error("Unsupported Claude effort");
+    throw new RepositoryCapabilityError("unsupported_effort");
   const images = validateLlmImages(launch.request.images);
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -254,16 +263,17 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
         if (
           frame.tools.some((name) => !expected.has(name)) ||
           REPOSITORY_TOOL_NAMES.some((name) => !frame.tools.includes(name)) ||
+          frame.mcp_servers.length !== 1 ||
           frame.mcp_servers.some(
             (server) =>
               server.name !== "repository" || server.status !== "connected",
           )
         )
-          throw Error("Repository capability mismatch");
+          throw new RepositoryCapabilityError("tool_inventory");
         ready = true;
       }
       if (frame.type === "result") {
-        if (!ready) throw Error("Repository MCP was not verified");
+        if (!ready) throw new RepositoryCapabilityError("tool_inventory");
         if (
           frame.subtype !== "success" ||
           frame.is_error ||

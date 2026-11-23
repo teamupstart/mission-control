@@ -30,11 +30,12 @@ const LaunchSchema = z.strictObject({
 const launch = LaunchSchema.parse(
   JSON.parse(await readFile(process.env.REPOSITORY_MCP_DESCRIPTOR!, "utf8")),
 );
-if (launch.deadline <= Date.now()) throw Error("Expired repository workload");
+const remaining = Math.min(launch.deadline - Date.now(), launch.budgets.attemptMs);
+if (remaining <= 0) throw Error("Expired repository workload");
 const controller = new AbortController();
 const timer = setTimeout(() => {
   shutdown();
-}, launch.deadline - Date.now());
+}, remaining);
 let auditHealthy = true,
   auditCount = 0;
 const auditHash = createHash("sha256");

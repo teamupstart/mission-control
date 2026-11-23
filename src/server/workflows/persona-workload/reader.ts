@@ -39,6 +39,11 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 type Item = RepositoryResult["items"][number] & {
   range?: RepositoryEvidenceHandle["range"];
 };
+// Search resumes at a worktree entry and line; log resumes at a retained revision.
+interface ScanPosition {
+  index: number;
+  position: number;
+}
 export interface RepositoryReaderOptions {
   view: RepositoryViewDescriptor;
   objectDirectory: string;
@@ -117,14 +122,24 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       mode: match[1]!,
     };
   };
-  const textBlob = async (id: string, signal: AbortSignal): Promise<string> => {
-    const data = await blob(id, signal);
-    if (data.includes(0)) throw new Refusal("unavailable");
+  const scanBlob = async (id: string, signal: AbortSignal): Promise<{ text: string; kind?: undefined } | { kind: "binary" | "oversized" }> => {
+    let data: Buffer;
     try {
-      return decoder.decode(data);
-    } catch {
-      throw new Refusal("unavailable");
+      data = await blob(id, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof Refusal && error.code === "budget_exhausted")
+        return { kind: "oversized" };
+      throw error;
     }
+    if (data.includes(0)) return { kind: "binary" };
+    let text: string;
+    try {
+      text = decoder.decode(data);
+    } catch {
+      return { kind: "binary" };
+    }
+    return { text: scrubSecrets(text) };
   };
   const metadata = async (
     revision: string,
@@ -201,18 +216,13 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         };
         continue;
       }
-      const oldBytes = a ? await blob(a.id, signal) : Buffer.alloc(0);
-      const newBytes = b ? await blob(b.id, signal) : Buffer.alloc(0);
-      let old: string, next: string;
-      try {
-        if (oldBytes.includes(0) || newBytes.includes(0)) throw Error("binary");
-        old = scrubSecrets(decoder.decode(oldBytes));
-        next = scrubSecrets(decoder.decode(newBytes));
-      } catch {
+      const left = a ? await scanBlob(a.id, signal) : { text: "" };
+      const right = b ? await scanBlob(b.id, signal) : { text: "" };
+      if (left.kind || right.kind) {
         yield {
           path,
           metadata: {
-            kind: "binary",
+            kind: left.kind ?? right.kind!,
             oldObject: a?.id ?? null,
             newObject: b?.id ?? null,
           },
@@ -220,6 +230,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         continue;
       }
       // Bounded full-file replacement hunks avoid configurable Git content drivers.
+      const old = left.text, next = right.text;
       const lines = (text: string) =>
         text.length ? text.replace(/\n$/, "").split("\n") : [];
       const oldLines = lines(old),
@@ -281,6 +292,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
     operation: RepositoryOperation,
     input: unknown,
     signal: AbortSignal,
+    scan: ScanPosition,
   ): AsyncGenerator<Item> {
     switch (operation) {
       case "read": {
@@ -354,9 +366,10 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       case "search": {
         const r = RepositoryOperationSchemas.search.parse(input);
         allow(r.glob);
-        let scanned = 0;
-        for (const e of view.worktree) {
-          if (++scanned % 64 === 0)
+        const needle = r.caseSensitive ? r.query : r.query.toLowerCase();
+        for (; scan.index < view.worktree.length; scan.index++, scan.position = 0) {
+          const e = view.worktree[scan.index]!;
+          if (scan.index % 64 === 0)
             await new Promise<void>((resolve) => setImmediate(resolve));
           signal.throwIfAborted();
           if (
@@ -367,16 +380,17 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
             !e.blob
           )
             continue;
-          const lines = scrubSecrets(await textBlob(e.blob, signal)).split(
-            "\n",
-          );
+          const content = await scanBlob(e.blob, signal);
+          if (content.kind) continue;
+          const lines = content.text.split("\n");
           if (lines.at(-1) === "") lines.pop();
-          for (let i = 0; i < lines.length; i++)
-            if (
-              (r.caseSensitive ? lines[i]! : lines[i]!.toLowerCase()).includes(
-                r.caseSensitive ? r.query : r.query.toLowerCase(),
-              )
-            ) {
+          for (; scan.position < lines.length; scan.position++) {
+            const i = scan.position;
+            if (i && i % 4096 === 0) {
+              await new Promise<void>((resolve) => setImmediate(resolve));
+              signal.throwIfAborted();
+            }
+            if ((r.caseSensitive ? lines[i]! : lines[i]!.toLowerCase()).includes(needle)) {
               const start = Math.max(0, i - r.context),
                 end = Math.min(lines.length, i + r.context + 1);
               yield {
@@ -389,6 +403,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
                 },
               };
             }
+          }
         }
         return;
       }
@@ -433,9 +448,10 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
           reachable.add(id);
           todo.push(...rev.parents);
         }
-        for (const rev of view.retainedRevisions.filter((r) =>
-          reachable.has(r.id),
-        )) {
+        for (; scan.index < view.retainedRevisions.length; scan.index++) {
+          signal.throwIfAborted();
+          const rev = view.retainedRevisions[scan.index]!;
+          if (!reachable.has(rev.id)) continue;
           if (r.path) {
             const current = await treeEntry(rev.tree, r.path, signal);
             const parents = rev.parents.filter((id) =>
@@ -589,7 +605,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       if (!parsed.success) throw new Refusal("invalid_request");
       const { cursor, ...shape } = parsed.data;
       inputHash = hash(shape);
-      let offset = 0;
+      let offset = 0, scanIndex = 0;
       if (cursor) {
         try {
           if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cursor)) throw Error();
@@ -610,65 +626,77 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
           )
             throw Error();
           offset = c.position;
+          scanIndex = c.scanIndex ?? 0;
         } catch {
           throw new Refusal("invalid_cursor");
         }
       }
+      const timeout = AbortSignal.timeout(Math.max(0, Math.min(
+        budgets.callMs, budgets.attemptMs - (Date.now() - started),
+      )));
       const signal = AbortSignal.any([
         options.signal,
         ...(callSignal ? [callSignal] : []),
-        AbortSignal.timeout(
-          Math.min(budgets.callMs, budgets.attemptMs - (Date.now() - started)),
-        ),
+        timeout,
       ]);
       let position = 0;
-      let more = false;
-      for await (const candidate of collect(operation, shape, signal)) {
-        if (position % 64 === 0)
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        signal.throwIfAborted();
-        if (position < offset) {
+      const scanning = operation === "search" || operation === "git_log";
+      const scan = { index: scanIndex, position: offset };
+      try {
+        for await (const candidate of collect(operation, shape, signal, scan)) {
+          if (position % 64 === 0)
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          signal.throwIfAborted();
+          if (!scanning && position < offset) {
+            position++;
+            continue;
+          }
+          const { range, ...item } = candidate;
+          const evidenceHandleId = range && item.path ? randomUUID() : undefined;
+          if (evidenceHandleId) item.evidenceHandleId = evidenceHandleId;
+          const size = Buffer.byteLength(JSON.stringify(item));
+          if (result.items.length >= budgets.callItems) {
+            result.limit = "items";
+            break;
+          }
+          if (
+            result.bytes + size >
+            Math.min(budgets.callBytes, budgets.attemptBytes - bytesServed) - 2048
+          ) {
+            result.limit = "bytes";
+            break;
+          }
+          result.bytes += size;
+          if (range && item.path && evidenceHandleId) {
+            handles.push({
+              evidenceHandleId,
+              snapshotDigest: view.snapshotDigest,
+              workloadId: options.workloadId,
+              attemptId: options.attemptId,
+              operationId,
+              operation,
+              itemOrdinal: result.items.length,
+              path: item.path,
+              policyVersion: 1,
+              truncated: false,
+              range,
+            });
+          }
+          result.items.push(item);
           position++;
-          continue;
         }
-        const { range, ...item } = candidate;
-        const evidenceHandleId = range && item.path ? randomUUID() : undefined;
-        if (evidenceHandleId) item.evidenceHandleId = evidenceHandleId;
-        const size = Buffer.byteLength(JSON.stringify(item));
-        if (result.items.length >= budgets.callItems) {
-          result.limit = "items";
-          more = true;
-          break;
-        }
-        if (
-          result.bytes + size >
-          Math.min(budgets.callBytes, budgets.attemptBytes - bytesServed) - 2048
-        ) {
-          result.limit = "bytes";
-          more = true;
-          break;
-        }
-        result.bytes += size;
-        if (range && item.path && evidenceHandleId) {
-          handles.push({
-            evidenceHandleId,
-            snapshotDigest: view.snapshotDigest,
-            workloadId: options.workloadId,
-            attemptId: options.attemptId,
-            operationId,
-            operation,
-            itemOrdinal: result.items.length,
-            path: item.path,
-            policyVersion: 1,
-            truncated: false,
-            range,
-          });
-        }
-        result.items.push(item);
-        position++;
+      } catch (error) {
+        if (!scanning || !timeout.aborted || options.signal.aborted || callSignal?.aborted ||
+            Date.now() - started >= budgets.attemptMs ||
+            (scan.index === scanIndex && scan.position === offset))
+          throw error;
+        // Only a call timeout is resumable. Repository errors and cancellations fail closed.
+        if (error !== timeout.reason && !(error instanceof Refusal && error.code === "timeout"))
+          throw error;
+        result.limit = "time";
       }
-      if (more) {
-        if (position === offset) throw new Refusal("budget_exhausted");
+      if (result.limit) {
+        if (result.limit !== "time" && !result.items.length) throw new Refusal("budget_exhausted");
         result.truncated = true;
         for (const h of handles) h.truncated = true;
         const body = Buffer.from(
@@ -678,7 +706,8 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
             operation,
             inputHash,
             policyVersion: 1,
-            position,
+            position: scanning ? scan.position : position,
+            ...(scanning ? { scanIndex: scan.index } : {}),
           }),
         ).toString("base64url");
         result.nextCursor =

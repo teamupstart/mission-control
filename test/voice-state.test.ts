@@ -6,8 +6,10 @@ import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
+  VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
+  VoiceShellReportSchema,
   voiceCapable,
   voiceMode,
   voiceStateOff,
@@ -19,6 +21,7 @@ import {
   type VoiceState,
 } from "../src/shared/voice.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
+import { voiceMicrophoneSetupStatus } from "../src/shared/voice-models.ts";
 
 const base: VoiceModeInputs = {
   enabled: true, reasons: [], muted: false, callActive: false, autoMuteDuringCalls: true, pushToTalk: false,
@@ -265,11 +268,55 @@ test("a shell report saying the microphone is denied makes voice unavailable", (
   assert.deepEqual(h.store.state().reasons, ["microphone"]);
 });
 
-test("the model is missing and the roster empty until later phases drive them", () => {
+test("with no model manager the model reads as nothing known, and the roster is empty until Phase 2", () => {
   const h = harness();
   h.store.acceptHello(HELLO);
-  assert.deepEqual(h.store.state().model, { status: "missing" });
+  assert.deepEqual(h.store.state().model, VOICE_MODEL_STATE_NONE);
   assert.deepEqual(h.store.state().roster, []);
+});
+
+test("the microphone reading is the latest report's, a denial from either source wins, and it outlives a lapse", () => {
+  const h = harness();
+  assert.equal(h.store.microphoneReading(), null, "nothing has reported yet");
+  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  assert.deepEqual(h.store.microphoneReading(), { permission: "granted", source: "listener" });
+  h.advance(1000);
+  h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "not-determined" }));
+  assert.deepEqual(h.store.microphoneReading(), { permission: "not-determined", source: "shell" }, "the newer reading");
+  h.advance(1000);
+  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  h.advance(1000);
+  h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "granted" }));
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a denial wins");
+  h.advance(VOICE_HELLO_LAPSE_MS * 2);
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a lapse does not change macOS's answer");
+  h.store.acceptShellReport(VoiceShellReportSchema.parse({}));
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a report with no permission says nothing");
+});
+
+test("a shell's microphone denial wins over a later listener grant", () => {
+  // The reverse of the order above: the desktop app says denied first, then a listener says
+  // granted. The newer reading does not override a denial; the Setup row still reports the shell's.
+  const h = harness();
+  h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "denied" }));
+  h.advance(1000);
+  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "shell" });
+  assert.deepEqual(voiceMicrophoneSetupStatus(h.store.microphoneReading()), {
+    state: "needs-setup",
+    why: "macOS denied the microphone to Mission Control.",
+    evidence: "As the desktop app reports",
+  });
+});
+
+test("the listener's devices are offered only while its hello is live", () => {
+  const h = harness();
+  assert.equal(h.store.listenerDevices(), null);
+  const devices = [{ id: "usb-1", name: "Desk microphone", builtIn: false }];
+  h.store.acceptHello({ ...HELLO, devices });
+  assert.deepEqual(h.store.listenerDevices(), devices);
+  h.advance(VOICE_HELLO_LAPSE_MS);
+  assert.equal(h.store.listenerDevices(), null);
 });
 
 test("canonicalVoiceState ignores key order and nothing else", () => {

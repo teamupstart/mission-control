@@ -1,7 +1,9 @@
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
 import {
   knownVoiceCapabilities,
   VOICE_FLAG,
+  VOICE_MODEL_STATE_NONE,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_MAJOR,
   VOICE_LISTENER_PROTOCOL_VERSION,
@@ -13,18 +15,23 @@ import {
   voiceUnavailableReasons,
   type VoiceCapabilities,
   type VoiceConfig,
+  type VoiceInputDevice,
   type VoiceListenerHello,
+  type VoiceModelState,
   type VoiceShellReport,
   type VoiceState,
 } from "@shared/voice.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
+import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 
 /** What the store reads. The defaults are the daemon's; a test hands in its own. */
 export interface VoiceStateDeps {
   now(): number;
   enabled(id: FeatureFlagId): boolean;
   config(): VoiceConfig;
+  /** The speech model's state (contract H's manager). Absent, the model reads as nothing known. */
+  model?(): VoiceModelState;
   /** Schedules the recompute that publishes a lapse. Unref'd, so it never holds the process. */
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
@@ -47,6 +54,11 @@ export class VoiceStateStore {
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; report: VoiceShellReport } | null = null;
+  /**
+   * The last microphone permission each source reported, kept past its lapse: whether macOS
+   * allows the microphone does not change because a listener stopped, and the Setup row reads it.
+   */
+  private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private timer: unknown = null;
 
@@ -85,9 +97,29 @@ export class VoiceStateStore {
       reasons,
       capabilities,
       hotkeyError: report?.hotkeyError ?? null,
-      model: { status: "missing" },
+      model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
       roster: [],
     };
+  }
+
+  /**
+   * The microphone permission the `voice-microphone` Setup row reports: the latest reading from a
+   * listener's hello or the shell's report, except that a denial from either wins, as it does for
+   * the `microphone` reason. Null until one of them has said anything.
+   */
+  microphoneReading(): VoiceMicrophoneReading | null {
+    const readings = Object.values(this.microphone).filter((entry) => entry !== undefined);
+    const denied = readings.find((entry) => entry.reading.permission === "denied");
+    if (denied) return { ...denied.reading };
+    const latest = readings.sort((a, b) => b.at - a.at)[0];
+    return latest ? { ...latest.reading } : null;
+  }
+
+  /** The input devices the live listener listed, or null with no live hello. */
+  listenerDevices(): VoiceInputDevice[] | null {
+    const now = this.deps.now();
+    if (!this.hello || now - this.hello.at >= VOICE_HELLO_LAPSE_MS) return null;
+    return this.hello.hello.devices.map((device) => ({ ...device }));
   }
 
   /**
@@ -107,13 +139,16 @@ export class VoiceStateStore {
     }
     this.hello = { at, hello };
     this.refused = null;
+    this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
     this.publish();
     return { ok: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION };
   }
 
   /** Take the shell's report. The latest one wins whole. */
   acceptShellReport(report: VoiceShellReport): void {
-    this.report = { at: this.deps.now(), report };
+    const at = this.deps.now();
+    this.report = { at, report };
+    if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     this.publish();
   }
 
@@ -138,6 +173,7 @@ export class VoiceStateStore {
     this.hello = null;
     this.refused = null;
     this.report = null;
+    this.microphone = {};
     this.disarm();
   }
 
@@ -175,6 +211,7 @@ export const voiceStateStore = new VoiceStateStore({
   now: () => Date.now(),
   enabled: featureEnabled,
   config: getVoiceConfig,
+  model: () => voiceModelManager.state(),
 });
 
 /**
@@ -188,15 +225,20 @@ export const voiceStateStore = new VoiceStateStore({
 export function wireVoiceStateEvents(
   emit: (state: VoiceState) => void,
   store: VoiceStateStore = voiceStateStore,
+  models: VoiceModelManager = voiceModelManager,
 ): () => void {
   const stopStore = store.onChange(emit);
-  const stopFlags = onFeatureFlagsChanged(() => { store.publish(); });
-  const stopConfig = onVoiceConfigChanged(() => { store.publish(); });
+  const stopModels = models.onChange(() => { store.publish(); });
+  const stopFlags = onFeatureFlagsChanged(() => { models.sync(); store.publish(); });
+  const stopConfig = onVoiceConfigChanged(() => { models.sync(); store.publish(); });
+  models.sync();
   store.publish();
   return () => {
     stopStore();
+    stopModels();
     stopFlags();
     stopConfig();
     store.reset();
+    void models.stop();
   };
 }

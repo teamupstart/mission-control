@@ -636,6 +636,7 @@ export function SettingsPage({
             <UpdateSettingsPanel />
             <SetupPanel
               state={setup}
+              voice={voice}
               jumpAnchor={unhandledJump?.anchor ?? null}
               jumpRequestId={unhandledJump?.id ?? null}
             />

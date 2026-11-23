@@ -794,8 +794,12 @@ been answered, sent automatically, chosen on the Ship it? card or skipped, so th
 reaches the session first; an unanswered card keeps it held. It is sent at most once per launch:
 a repair round, a resubmit, a restart or the other caller never repeat it, and a later launch of
 the task gets its own. Each launch's prompt is recorded in `task_skill_prompts`, keyed by task
-and session, as `held`, `queued`, `delivered`, `skipped` or `not_delivered` with a reason, and
-read as `shaping.afterWork`. A later launch of the task into the same session, such as a
+and session, as `held`, `queued`, `waiting`, `delivered`, `skipped` or `not_delivered` with a
+reason, and
+read as `shaping.afterWork`. A refusal from the outbox that can clear, such as an outbox still
+starting or a session that cannot take messages for a moment, leaves the prompt `waiting`, and
+it is tried again when that session next changes or the daemon next starts. Only a refusal that
+cannot clear, a session that ended, or skills that do not resolve end it `not_delivered`. A later launch of the task into the same session, such as a
 handover back to the agent it ran on, replaces that row in the same transaction as its own
 shaping commit, together with the earlier prompt's outbox turn while nothing has claimed it, and
 each launch's outbox turn carries its own id, so an earlier launch's prompt never reads as, or

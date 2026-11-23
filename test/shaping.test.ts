@@ -104,7 +104,7 @@ test("registry data is append-only tuples, unique, and disjoint from its tombsto
   assert.deepEqual(registry.SHAPING_STAGES, ["gather", "select", "route"]);
   assert.deepEqual(registry.SHAPING_LIFECYCLE_POINTS, ["task-start", "during", "after-work"]);
   assert.deepEqual(registry.SHAPING_SKILL_STATES, ["announced", "superseded", "unavailable", "unsupported", "dropped"]);
-  assert.deepEqual(registry.SHAPING_PROMPT_STATES, ["held", "queued", "delivered", "skipped", "not_delivered"]);
+  assert.deepEqual(registry.SHAPING_PROMPT_STATES, ["held", "queued", "delivered", "skipped", "not_delivered", "waiting"]);
   assert.deepEqual(registry.SHAPING_TRANSPORTS, ["command", "mcp", "http", "builtin"]);
   assert.deepEqual(registry.SHAPING_BUILTINS, [{ id: "repository-files", stages: ["gather"] }]);
   assert.deepEqual(registry.SHAPING_OUTCOMES, ["ok", "degraded", "failed", "timed_out", "invalid", "unavailable"]);

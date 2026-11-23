@@ -274,6 +274,8 @@ export function afterWorkPromptWords(prompt: TaskSkillPrompt | null, name: strin
       return "Prompt queued: it goes to the session when the current turn ends.";
     case "held":
       return "Prompt held until Foreman's wrap-up is answered.";
+    case "waiting":
+      return `Prompt waiting for the session to take it${prompt.reason ? `: ${prompt.reason}` : "."}`;
     case "skipped":
       return `Not prompted: ${prompt.reason ?? "no skill was left to prompt."}`;
     case "not_delivered":

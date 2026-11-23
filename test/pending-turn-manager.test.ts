@@ -3199,7 +3199,7 @@ test("a queued after-work prompt is dropped, never sent, when task shaping is of
     const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}task-${name}:${id}:1`;
     // Queued while task shaping was on, as the after-work prompter queues it.
     const queued = manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
-      taskId: `task-${name}`, sessionId: id, noteKey, turnId, text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], fromHeld: false, now,
+      taskId: `task-${name}`, sessionId: id, noteKey, turnId, text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
     }));
     assert.equal(queued.pendingTurn?.id, turnId);
     shaping = enabled;

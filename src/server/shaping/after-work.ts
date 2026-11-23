@@ -6,6 +6,8 @@ import {
   getTaskSkillPrompt,
   insertTaskSkillPrompt,
   listOpenTaskSkillPrompts,
+  listWaitingTaskSkillPromptSessions,
+  markTaskSkillPromptWaiting,
   queueTaskSkillPromptTurn,
   settleTaskSkillPrompt,
   taskSkillPromptForTurn,
@@ -114,6 +116,9 @@ export class AfterWorkSkills {
   private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">>
     & Pick<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">;
   private unsubscribe: Array<() => void> = [];
+  /** Sessions with a prompt the outbox refused for a reason that can clear, tried again as they change. */
+  private readonly waiting = new Set<string>();
+  private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
     this.deps = {
@@ -130,8 +135,18 @@ export class AfterWorkSkills {
       this.deps.registry.onTurnDelivered((event) => this.delivered(event)),
       this.deps.registry.subscribe((event) => {
         if (event.type === "session_remove") this.sessionEnded(event.id);
+        // A session that changes may be able to take its waiting prompt now: the outbox has
+        // started, or it can receive messages again.
+        else if (event.type === "session_upsert" && this.waiting.has(event.session.id)) this.retry(event.session.id);
       }),
     ];
+    // Waiting rows a restart left behind are tried again once the outbox is up.
+    try {
+      for (const sessionId of listWaitingTaskSkillPromptSessions()) this.waiting.add(sessionId);
+    } catch (error) {
+      console.warn("[shaping] could not read the after-work prompts that are waiting:", error);
+    }
+    for (const sessionId of [...this.waiting]) this.retry(sessionId);
   }
 
   stop(): void {
@@ -157,26 +172,48 @@ export class AfterWorkSkills {
    */
   release(sessionId: string): void {
     try {
-      if (!this.deps.enabled()) return;
-      for (const row of listOpenTaskSkillPrompts(sessionId)) {
-        if (row.state !== "held") continue;
-        const session = this.deps.registry.getSession(sessionId);
-        if (!session) {
-          this.settle(row.taskId, sessionId, ["held"], "not_delivered", SESSION_ENDED);
-          continue;
-        }
-        // The launch the row was held for, which is still the task's current one: a later
-        // launch's shaping commit removes the row it supersedes.
-        const task = this.deps.registry.getTask(row.taskId);
-        const record = task ? currentShaping(task) : null;
-        if (!record || record.sessionId !== sessionId) {
-          this.settle(row.taskId, sessionId, ["held"], "not_delivered", SUPERSEDED);
-          continue;
-        }
-        this.queue(session, row.taskId, row.skills, true, record.at);
-      }
+      this.resume(sessionId, "held");
     } catch (error) {
       console.warn(`[shaping] could not release session ${sessionId}'s after-work skills:`, error);
+    }
+  }
+
+  /** Try a session's waiting prompts again, once at a time. Never throws. */
+  private retry(sessionId: string): void {
+    if (this.retrying) return;
+    this.retrying = true;
+    try {
+      this.resume(sessionId, "waiting");
+      if (!listOpenTaskSkillPrompts(sessionId).some((row) => row.state === "waiting")) this.waiting.delete(sessionId);
+    } catch (error) {
+      console.warn(`[shaping] could not retry session ${sessionId}'s after-work skills:`, error);
+    } finally {
+      this.retrying = false;
+    }
+  }
+
+  /** Queue the session's rows that are still `from`: held behind a wrap-up, or waiting on the outbox. */
+  private resume(sessionId: string, from: "held" | "waiting"): void {
+    if (!this.deps.enabled()) return;
+    for (const row of listOpenTaskSkillPrompts(sessionId)) {
+      if (row.state !== from) continue;
+      const session = this.deps.registry.getSession(sessionId);
+      if (!session) {
+        // A waiting row stays owed while its session is not registered: at startup sessions are
+        // still being restored, and its arrival tries again. A session that ends settles it then.
+        if (from === "waiting") continue;
+        this.settle(row.taskId, sessionId, [from], "not_delivered", SESSION_ENDED);
+        continue;
+      }
+      // The launch the row was written for, which is still the task's current one: a later
+      // launch's shaping commit removes the row it supersedes.
+      const task = this.deps.registry.getTask(row.taskId);
+      const record = task ? currentShaping(task) : null;
+      if (!record || record.sessionId !== sessionId) {
+        this.settle(row.taskId, sessionId, [from], "not_delivered", SUPERSEDED);
+        continue;
+      }
+      this.queue(session, row.taskId, row.skills, from, record.at);
     }
   }
 
@@ -207,11 +244,17 @@ export class AfterWorkSkills {
         ? { kind: "held" }
         : { kind: "none", why: "already" };
     }
-    return this.queue(session, task.id, names, false, record.at);
+    return this.queue(session, task.id, names, null, record.at);
   }
 
   /** Resolve, render and queue. A row that cannot be queued ends `not_delivered`, with why. */
-  private queue(session: Session, taskId: string, names: readonly string[], fromHeld: boolean, launchAt: number): AfterWorkOutcome {
+  private queue(
+    session: Session,
+    taskId: string,
+    names: readonly string[],
+    from: "held" | "waiting" | null,
+    launchAt: number,
+  ): AfterWorkOutcome {
     const resolved: ResolvedSkill[] = [];
     const problems: string[] = [];
     for (const name of names) {
@@ -221,7 +264,7 @@ export class AfterWorkSkills {
     }
     const write = (reason: string): AfterWorkOutcome => {
       const bounded = reason.slice(0, SHAPING_LIMITS.reasonChars);
-      if (fromHeld) this.settle(taskId, session.id, ["held"], "not_delivered", bounded);
+      if (from !== null) this.settle(taskId, session.id, [from], "not_delivered", bounded);
       else insertTaskSkillPrompt({ taskId, sessionId: session.id, state: "not_delivered", reason: bounded, skills: names, now: this.deps.now() });
       return { kind: "not_delivered", reason: bounded };
     };
@@ -229,8 +272,16 @@ export class AfterWorkSkills {
     if (!text) return write(`No skill resolved. ${problems.join(" ")}`.trim());
     const turnId = afterWorkTurnId(taskId, session.id, launchAt);
     const submitted = this.deps.outbox.submitDaemonTurn(session.id, (noteKey, now) => queueTaskSkillPromptTurn({
-      taskId, sessionId: session.id, noteKey, turnId, text, skills: resolved.map((skill) => skill.name), fromHeld, now,
+      taskId, sessionId: session.id, noteKey, turnId, text, skills: resolved.map((skill) => skill.name), from, now,
     }));
+    if (!submitted.ok && submitted.retryable) {
+      // A refusal that can clear, such as the outbox still starting: kept owed, and tried again
+      // when the session next changes or the daemon next starts, never given up on.
+      const reason = `Waiting for the session to take the prompt: ${submitted.error ?? "unknown error"}.`.slice(0, SHAPING_LIMITS.reasonChars);
+      markTaskSkillPromptWaiting({ taskId, sessionId: session.id, from, skills: names, reason, now: this.deps.now() });
+      this.waiting.add(session.id);
+      return { kind: "waiting", reason };
+    }
     if (!submitted.ok) return write(`The session could not take the prompt: ${submitted.error ?? "unknown error"}.`);
     return submitted.pendingTurn ? { kind: "queued" } : { kind: "none", why: "already" };
   }
@@ -266,7 +317,7 @@ export class AfterWorkSkills {
   private sessionEnded(sessionId: string): void {
     try {
       for (const row of listOpenTaskSkillPrompts(sessionId)) {
-        this.settle(row.taskId, sessionId, [row.state as "held" | "queued"], "not_delivered", SESSION_ENDED);
+        this.settle(row.taskId, sessionId, [row.state], "not_delivered", SESSION_ENDED);
       }
     } catch (error) {
       console.warn(`[shaping] could not close session ${sessionId}'s after-work prompts:`, error);

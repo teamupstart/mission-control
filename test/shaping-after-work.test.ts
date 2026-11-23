@@ -67,6 +67,8 @@ function setup(options: {
   catalog?: Record<string, string>;
   /** Catalog ids whose live check fails, with the sentence `requiredSkillCommand` would give. */
   refused?: Record<string, string>;
+  /** The outbox refuses while this returns a refusal, as a starting outbox or a busy pane does. */
+  outboxRefusal?: () => { error: string; retryable: boolean } | null;
 } = {}) {
   const registry = new FakeRegistry();
   const queued: Queued[] = [];
@@ -75,6 +77,8 @@ function setup(options: {
     registry,
     outbox: {
       submitDaemonTurn(sessionId, create) {
+        const refusal = options.outboxRefusal?.();
+        if (refusal) return { ok: false, retryable: refusal.retryable, pasted: false, submitVerified: false, error: refusal.error };
         const turn = create(`note:${sessionId}`, now);
         if (turn) queued.push({ sessionId, turn });
         return { ok: true, pasted: false, submitVerified: false, delivery: "pending", ...(turn ? { pendingTurn: turn } : {}) };
@@ -457,4 +461,75 @@ test("a resume moves the launch's record and its prompt row together, or neither
   assert.equal(db.taskShapingRecord(taskId)?.sessionId, "s2");
   assert.equal(db.getTaskSkillPrompt(taskId, "s1"), null);
   assert.equal(db.getTaskSkillPrompt(taskId, "s2")?.state, "held");
+});
+
+test("an outbox refusal that can clear keeps the prompt waiting, and it is sent once the session can take it", () => {
+  let refusal: { error: string; retryable: boolean } | null = { error: "pending turns are still starting", retryable: true };
+  const { registry, queued, prompts } = setup({ outboxRefusal: () => refusal });
+  const taskId = nextTask();
+  registry.launch(taskId, "s1");
+  const outcome = prompts.prompt("s1");
+  assert.equal(outcome.kind, "waiting");
+  assert.equal(queued.length, 0);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "waiting");
+  assert.match(db.getTaskSkillPrompt(taskId, "s1")?.reason ?? "", /pending turns are still starting/);
+  // The other caller, a repair round or a resubmit cannot queue a second one in the meantime.
+  assert.deepEqual(prompts.prompt("s1"), { kind: "none", why: "already" });
+  // A change to the session while the outbox still refuses keeps it waiting.
+  registry.emit("event", { type: "session_upsert", session: registry.getSession("s1") });
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "waiting");
+  // Once the outbox takes it, the next change to the session sends it, once.
+  refusal = null;
+  registry.emit("event", { type: "session_upsert", session: registry.getSession("s1") });
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.turn.text.split("\n")[0], "/retro");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "queued");
+  registry.emit("event", { type: "session_upsert", session: registry.getSession("s1") });
+  assert.equal(queued.length, 1, "a later change sends nothing more");
+  prompts.stop();
+});
+
+test("a waiting prompt survives a restart and is sent when the daemon starts again", () => {
+  const before = setup({ outboxRefusal: () => ({ error: "this session cannot receive messages", retryable: true }) });
+  const taskId = nextTask();
+  before.registry.launch(taskId, "s1");
+  assert.equal(before.prompts.prompt("s1").kind, "waiting");
+  before.prompts.stop();
+  // A fresh prompter over the same database, whose outbox takes turns: what a restarted daemon
+  // has. It starts before its sessions are restored, and a missing session is not an ended one.
+  const after = setup();
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "waiting", "kept while the session is not restored yet");
+  after.registry.tasks = before.registry.tasks;
+  after.registry.sessions = before.registry.sessions;
+  after.registry.emit("event", { type: "session_upsert", session: after.registry.getSession("s1") });
+  assert.equal(after.queued.length, 1, "sent once its session is back");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s1")?.state, "queued");
+  // And a restart that finds the session already there sends it at start.
+  const third = nextTask();
+  const waitingAgain = setup({ outboxRefusal: () => ({ error: "pending turns are still starting", retryable: true }) });
+  waitingAgain.registry.launch(third, "s3");
+  assert.equal(waitingAgain.prompts.prompt("s3").kind, "waiting");
+  waitingAgain.prompts.stop();
+  after.registry.tasks = waitingAgain.registry.tasks;
+  after.registry.sessions = waitingAgain.registry.sessions;
+  after.prompts.stop();
+  after.prompts.start();
+  assert.equal(db.getTaskSkillPrompt(third, "s3")?.state, "queued");
+  after.prompts.stop();
+});
+
+test("a refusal that cannot clear still ends the prompt not delivered, and a waiting prompt whose session ends does too", () => {
+  const gone = setup({ outboxRefusal: () => ({ error: "no such session", retryable: false }) });
+  const taskId = nextTask();
+  gone.registry.launch(taskId, "s1");
+  assert.equal(gone.prompts.prompt("s1").kind, "not_delivered");
+  assert.match(db.getTaskSkillPrompt(taskId, "s1")?.reason ?? "", /no such session/);
+  gone.prompts.stop();
+  const waiting = setup({ outboxRefusal: () => ({ error: "pending turns are still starting", retryable: true }) });
+  const other = nextTask();
+  waiting.registry.launch(other, "s2");
+  assert.equal(waiting.prompts.prompt("s2").kind, "waiting");
+  waiting.registry.emit("event", { type: "session_remove", id: "s2" });
+  assert.equal(db.getTaskSkillPrompt(other, "s2")?.state, "not_delivered");
+  waiting.prompts.stop();
 });

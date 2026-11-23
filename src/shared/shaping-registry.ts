@@ -52,7 +52,9 @@ export const RETIRED_SHAPING_SKILL_STATES = [] as const;
 
 /**
  * Where a launch's after-work prompt is. `held` waits for Foreman's wrap-up on a task with no
- * workflow, `queued` is in the session's outbox, and the other three are final.
+ * workflow, `queued` is in the session's outbox, `waiting` is one the outbox refused for a
+ * reason that can clear and is tried again, and `delivered`, `skipped` and `not_delivered` are
+ * final.
  */
-export const SHAPING_PROMPT_STATES = ["held", "queued", "delivered", "skipped", "not_delivered"] as const;
+export const SHAPING_PROMPT_STATES = ["held", "queued", "delivered", "skipped", "not_delivered", "waiting"] as const;
 export const RETIRED_SHAPING_PROMPT_STATES = [] as const;

@@ -80,6 +80,12 @@ export interface IdleSdkSender {
 
 export interface PendingTurnSubmitResult {
   ok: boolean;
+  /**
+   * A refusal that can clear without anyone acting: the outbox was still starting, or a live
+   * session could not take messages at that moment. Absent on a refusal that cannot, such as a
+   * session that is gone or has exited.
+   */
+  retryable?: boolean;
   pasted: false;
   submitVerified: false;
   delivery?: MessageSendDisposition;
@@ -477,12 +483,15 @@ export class PendingTurnManager {
     create: (noteKey: string, now: number) => PendingTurn | null,
   ): PendingTurnSubmitResult {
     if (!this.started) {
-      return { ok: false, pasted: false, submitVerified: false, error: "pending turns are still starting" };
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "pending turns are still starting" };
     }
     const session = this.registry.getSession(sessionId);
     if (!session) return { ok: false, pasted: false, submitVerified: false, error: "no such session" };
-    if (!canMessage(session) || session.state === "exited") {
+    if (session.state === "exited") {
       return { ok: false, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
+    }
+    if (!canMessage(session)) {
+      return { ok: false, retryable: true, pasted: false, submitVerified: false, error: "this session cannot receive messages" };
     }
     const pendingTurn = create(noteKeyFor(session), this.deps.now());
     if (!pendingTurn) return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };

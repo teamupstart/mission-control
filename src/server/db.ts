@@ -8779,11 +8779,45 @@ export function dropQueuedAfterWorkTurn(turnId: string, reason: string): boolean
   }
 }
 
-/** The prompt rows still waiting for a session: held or queued. */
+/** The prompt rows still owed to a session: held, queued or waiting. */
 export function listOpenTaskSkillPrompts(sessionId: string): Array<TaskSkillPrompt & { taskId: string; turnId: string | null }> {
-  const rows = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE session_id = ? AND state IN ('held', 'queued')`)
+  const rows = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE session_id = ? AND state IN ('held', 'queued', 'waiting')`)
     .all(sessionId) as unknown as TaskSkillPromptRow[];
   return rows.map(rowToTaskSkillPrompt).filter((row) => row !== null);
+}
+
+/** The sessions that have a prompt the outbox refused for a reason that can clear. */
+export function listWaitingTaskSkillPromptSessions(): string[] {
+  const rows = openDb().prepare(`SELECT DISTINCT session_id FROM task_skill_prompts WHERE state = 'waiting'`)
+    .all() as unknown as Array<{ session_id: string }>;
+  return rows.map((row) => row.session_id);
+}
+
+/**
+ * Record that the outbox refused a launch's prompt for a reason that can clear. A launch with no
+ * row gets one (`from` null); otherwise only a row still in `from` moves, and a row already
+ * waiting keeps waiting with the latest reason. True when written.
+ */
+export function markTaskSkillPromptWaiting(input: {
+  taskId: string;
+  sessionId: string;
+  from: "held" | "waiting" | null;
+  skills: readonly string[];
+  reason: string;
+  now: number;
+}): boolean {
+  const d = openDb();
+  const r = input.from === null
+    ? d.prepare(
+      `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+         VALUES (?, ?, 'waiting', ?, ?, NULL, ?, NULL)
+       ON CONFLICT(task_id, session_id) DO NOTHING`,
+    ).run(input.taskId, input.sessionId, input.reason, JSON.stringify(input.skills), input.now)
+    : d.prepare(
+      `UPDATE task_skill_prompts SET state = 'waiting', reason = ?, skills = ?
+         WHERE task_id = ? AND session_id = ? AND state = ?`,
+    ).run(input.reason, JSON.stringify(input.skills), input.taskId, input.sessionId, input.from);
+  return Number(r.changes) > 0;
 }
 
 /** The prompt row an outbox row was queued as. */
@@ -8816,8 +8850,9 @@ export function insertTaskSkillPrompt(input: {
 /**
  * Queue a launch's after-work prompt: the outbox row and the prompt row marked `queued`, in ONE
  * transaction, so a crash leaves neither or both and a retry never queues a second turn. A launch
- * with no row yet gets one; `fromHeld` instead releases a `held` row, and nothing else. Null when
- * the prompt is no longer owed: a row exists already, or the held row has moved on.
+ * with no row yet gets one (`from` null); otherwise only a row still in `from` - `held` behind a
+ * wrap-up, or `waiting` after a refusal that could clear - moves. Null when the prompt is no
+ * longer owed: a row exists already, or the row has moved on.
  */
 export function queueTaskSkillPromptTurn(input: {
   taskId: string;
@@ -8826,17 +8861,17 @@ export function queueTaskSkillPromptTurn(input: {
   turnId: string;
   text: string;
   skills: readonly string[];
-  fromHeld: boolean;
+  from: "held" | "waiting" | null;
   now: number;
 }): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
-    const owed = input.fromHeld
+    const owed = input.from !== null
       ? d.prepare(
         `UPDATE task_skill_prompts SET state = 'queued', reason = NULL, skills = ?, turn_id = ?
-           WHERE task_id = ? AND session_id = ? AND state = 'held'`,
-      ).run(JSON.stringify(input.skills), input.turnId, input.taskId, input.sessionId)
+           WHERE task_id = ? AND session_id = ? AND state = ?`,
+      ).run(JSON.stringify(input.skills), input.turnId, input.taskId, input.sessionId, input.from)
       : d.prepare(
         `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
            VALUES (?, ?, 'queued', NULL, ?, ?, ?, NULL)

@@ -88,6 +88,10 @@ export class RepositoryOwnership {
         unavailable();
       const now = Date.now(),
         locator = locatorFor(digest);
+      // Startup can release a pre-activation claim while another holder keeps its
+      // digest alive. Retire that record before restoring readiness on the new claim.
+      db.prepare("DELETE FROM workflow_repository_snapshot_claims WHERE submission_id=? AND state='released'")
+        .run(submissionId);
       db.prepare(
         `INSERT INTO workflow_repository_artifacts
         (digest,locator,state,metadata_json,created_at,verified_at) VALUES(?,?,'ready',?,?,?)

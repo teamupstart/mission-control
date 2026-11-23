@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { deflate } from "node:zlib";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { approvedPath } from "@shared/repository-policy.ts";
 import {
   RepositoryViewFieldsSchema,
   RepositoryViewDescriptorSchema,
@@ -13,6 +14,11 @@ import {
 
 const compress = promisify(deflate);
 export const MAX_CAPTURE_OBJECT_BYTES = 64 * 1024 * 1024;
+export function decodedPath(key: string) {
+  const raw = Buffer.from(key, "hex");
+  const text = raw.toString("utf8");
+  return Buffer.from(text).equals(raw) ? text : null;
+}
 export const oid = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 export const digestSchema = z.string().regex(/^[0-9a-f]{64}$/);
 export const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -62,7 +68,16 @@ export const manifestSchema = z.strictObject({
 });
 export type Manifest = z.infer<typeof manifestSchema>;
 export function descriptor(manifest: Manifest, digest: string, objectView: string): RepositoryViewDescriptor {
-  return RepositoryViewDescriptorSchema.parse({ ...manifest.view, snapshotDigest: digest, objectView });
+  const listed = new Set(manifest.view.worktree.map(entry => entry.path));
+  const statusDeletions = [];
+  for (const entry of manifest.paths) {
+    if (!entry.allowed || !entry.classifications.includes("deleted")) continue;
+    const path = decodedPath(entry.bytes);
+    if (path && approvedPath(path) && !listed.has(path))
+      statusDeletions.push({ path, classifications: entry.classifications });
+  }
+  return RepositoryViewDescriptorSchema.parse({ ...manifest.view, snapshotDigest: digest, objectView,
+    ...(statusDeletions.length ? { statusDeletions } : {}) });
 }
 
 async function ordinaryFile(path: string, mode: number, expectedSize?: number) {

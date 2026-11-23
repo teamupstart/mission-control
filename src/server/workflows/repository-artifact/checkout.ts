@@ -5,17 +5,12 @@ import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit } from "./git.ts";
-import { MAX_CAPTURE_OBJECT_BYTES, oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
+import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
 export type Entry = { mode: string; id: string };
 /** Hex keys sort in raw byte order, without Unicode decoding or case folding. */
 export type Layer = Map<string, Entry>;
-export const decodedPath = (key: string) => {
-  const raw = Buffer.from(key, "hex");
-  const text = raw.toString("utf8");
-  return Buffer.from(text).equals(raw) ? text : null;
-};
 export const allowed = (key: string) => approvedPath(decodedPath(key) ?? "");
 export function validPath(raw: Buffer) {
   if (

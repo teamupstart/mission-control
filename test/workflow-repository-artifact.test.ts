@@ -280,6 +280,49 @@ test("startup removes only marked abandoned candidates and releases stranded pro
   assert.ok(!existsSync(join(f.root, "digests", pending.digest)));
 });
 
+for (const changed of [false, true]) {
+  test(`restart allows a still-capturing submission to reclaim a ${changed ? "different" : "shared"} digest`, async (t) => {
+    const f = fixture(t);
+    f.write("a", "original");
+    const holder = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(holder);
+    const retryId = f.submission();
+    const interrupted = await f.service.promote(await f.prepare(), retryId);
+    assert.equal(interrupted.digest, holder.digest);
+    interruptedCapture(f); // A new process runs startup reconciliation.
+    await f.service.reconcile();
+    const claim = () => f.db.prepare(
+      "SELECT digest,state,created_at,activated_at,released_at FROM workflow_repository_snapshot_claims WHERE submission_id=?",
+    ).get(retryId);
+    const released = claim();
+    assert.equal(released?.state, "released");
+    assert.ok(released.released_at);
+    if (changed) f.write("a", "updated");
+    const candidate = await f.prepare();
+    f.db.exec("CREATE TEMP TRIGGER refuse_retry BEFORE INSERT ON workflow_repository_snapshot_claims BEGIN SELECT RAISE(ABORT,'injected'); END");
+    try {
+      await assert.rejects(f.service.promote(candidate, retryId), { code: "artifact_unavailable" });
+      assert.deepEqual(claim(), released);
+    } finally {
+      f.db.exec("DROP TRIGGER refuse_retry");
+    }
+    const retried = await f.service.promote(candidate, retryId);
+    assert.equal(retried.digest !== holder.digest, changed);
+    assert.equal(claim()?.state, "provisional");
+    assert.equal(claim()?.activated_at, null);
+    assert.equal(claim()?.released_at, null);
+    await assert.rejects(f.service.materialize(f.request(retried), signal));
+    f.store.commitRepositoryCaptureActivation(retried);
+    for (const snapshot of [retried, holder]) {
+      const lease = await f.service.materialize(f.request(snapshot), signal);
+      assert.equal(lease.identity.digest, snapshot.digest);
+      await lease.release();
+      await f.service.release(snapshot.submissionId);
+      await f.service.reconcile();
+    }
+  });
+}
+
 test("one service per root protects live candidates, provisional claims and leases across callers", async (t) => {
   const f = fixture(t);
   f.write("a", "submitted");
@@ -1421,6 +1464,9 @@ test("a failed or cancelled capture releases its provisional claim while another
     f.db.prepare("UPDATE workflow_submissions SET status=? WHERE id=?").run(status, first.submissionId);
     await f.service.reconcile();
     assert.throws(() => f.store.commitRepositoryCaptureActivation(first));
+    const refused = await f.prepare();
+    await assert.rejects(f.service.promote(refused, first.submissionId), { code: "artifact_unavailable" });
+    await f.service.discard(refused);
     f.store.commitRepositoryCaptureActivation(second);
     const snapshot = f.service.activeSnapshot(second.submissionId);
     assert.ok(snapshot);
@@ -1452,6 +1498,61 @@ test("unaddressable historical filename bytes retain their exact tree identity a
   ]);
   assert.deepEqual(m.view.worktree, []);
   await f.service.release(s.submissionId);
+  await f.service.reconcile();
+});
+
+test("status reports both sides of file and directory replacements without treating deletions as live files", async (t) => {
+  const f = fixture(t);
+  f.write("former-file", "old file");
+  f.write("staged-away", "old staged file");
+  mkdirSync(join(f.checkout, "former-directory"));
+  f.write("former-directory/child", "old child");
+  f.write("former-directory/.env", "private");
+  f.git("add", ".");
+  f.git("commit", "-qm", "before replacements");
+  f.git("rm", "-q", "staged-away");
+  rmSync(join(f.checkout, "former-file"));
+  for (const path of ["former-file", "staged-away"]) {
+    mkdirSync(join(f.checkout, path));
+    f.write(path + "/child", "new child");
+  }
+  rmSync(join(f.checkout, "former-directory"), { recursive: true });
+  f.write("former-directory", "new file");
+
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(f.checkout, { recursive: true });
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  const reader = createRepositoryReader({
+    view: lease.descriptor, objectDirectory: lease.objectDirectory, gitBinary: "git",
+    workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: { callItems: 2 }, audit: async () => {},
+  });
+  let page = await reader.query("git_status", {});
+  const entries = [...page.items];
+  while (page.nextCursor) {
+    page = await reader.query("git_status", { cursor: page.nextCursor });
+    entries.push(...page.items);
+  }
+  assert.equal(page.status, "ok");
+  assert.deepEqual(entries.map(e => e.path).sort(), [
+    "former-directory", "former-directory/child", "former-file", "former-file/child", "staged-away", "staged-away/child",
+  ]);
+  for (const path of ["former-directory/child", "former-file", "staged-away"]) {
+    const item = entries.find(e => e.path === path)!;
+    const classifications = item.metadata?.classifications;
+    assert.ok(Array.isArray(classifications) && classifications.includes("deleted"));
+    const filtered = await reader.query("git_status", { glob: path });
+    assert.deepEqual(filtered.items.map(e => e.path), [path]);
+    assert.equal(filtered.items[0]?.evidenceHandleId, undefined);
+    assert.equal((await reader.query("read", { path })).code, "unavailable");
+    assert.equal((await reader.query("glob", { glob: path })).items.length, 0);
+  }
+  assert.equal((await reader.query("read", { path: "former-file/child" })).items[0]?.text, "new child");
+  assert.equal((await reader.query("read", { path: "former-directory" })).items[0]?.text, "new file");
+  assert.equal((await reader.query("read", { path: "former-file", layer: "index" })).items[0]?.text, "old file");
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
 });
 

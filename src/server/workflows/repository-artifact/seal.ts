@@ -10,7 +10,6 @@ import {
 import { RepositoryPathSchema } from "@shared/repository-policy.ts";
 import {
   allowed as pathAllowed,
-  decodedPath,
   sample,
   validPath,
   workingFile,
@@ -18,6 +17,7 @@ import {
 } from "./checkout.ts";
 import { checkoutGit, openObjectReader } from "./git.ts";
 import {
+  decodedPath,
   descriptor,
   manifestSchema,
   RepositoryCaptureChanged,
@@ -352,8 +352,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       }
       return { bytes: key, allowed: allowed(key), classifications: classes };
     });
-    // Tombstones let git_status report deletions. A directory/file replacement cannot add
-    // a leaf above/below a live entry in the descriptor. The raw path manifest retains both.
+    // Preserve v1 tombstones where they fit. The lease derives the remaining status
+    // records from the path manifest without adding a leaf above or below a live entry.
     const live = new Set(workView.map((e) => e.path));
     const dirs = new Set<string>();
     for (const path of live) {

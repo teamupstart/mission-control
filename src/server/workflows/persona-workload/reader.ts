@@ -58,6 +58,9 @@ export interface RepositoryReaderOptions {
 /** A single attempt owns its budgets, cursor key and operation/evidence identities. */
 export function createRepositoryReader(options: RepositoryReaderOptions) {
   const view = RepositoryViewDescriptorSchema.parse(options.view);
+  const statusEntries = view.statusDeletions?.length
+    ? [...view.worktree, ...view.statusDeletions.map(entry => ({ ...entry, kind: null, binary: null }))]
+    : view.worktree;
   const budgets = RepositoryBudgetsSchema.parse(options.budgets);
   const secret = randomBytes(32);
   const started = Date.now();
@@ -347,7 +350,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const r = RepositoryOperationSchemas[operation].parse(input);
         allow(r.glob);
         let scanned = 0;
-        for (const e of view.worktree) {
+        for (const e of operation === "git_status" ? statusEntries : view.worktree) {
           if (++scanned % 64 === 0)
             await new Promise<void>((resolve) => setImmediate(resolve));
           signal.throwIfAborted();

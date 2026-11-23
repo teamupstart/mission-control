@@ -185,7 +185,13 @@ export const RepositoryViewFieldsSchema = z
     worktree: z.array(entry).max(200000),
     index: z.array(entry).max(200000),
   });
-export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.superRefine((v, ctx) => {
+export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.extend({
+  // A deletion may be an ancestor or descendant of a live leaf. It only describes status.
+  statusDeletions: z.array(z.strictObject({
+    path: RepositoryPathSchema,
+    classifications: entry.shape.classifications.refine(values => values.includes("deleted")),
+  })).max(200000).optional(),
+}).superRefine((v, ctx) => {
     const ids = new Set(v.retainedRevisions.map((r) => r.id));
     if (
       ids.size !== v.retainedRevisions.length ||
@@ -246,6 +252,14 @@ export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.superRe
     for (const layer of [v.worktree, v.index])
       if (new Set(layer.map((e) => e.path)).size !== layer.length)
         ctx.addIssue({ code: "custom", message: "Duplicate manifest path" });
+    if (v.statusDeletions) {
+      const paths = new Set(v.worktree.map(entry => entry.path));
+      for (const deletion of v.statusDeletions) {
+        if (paths.has(deletion.path))
+          ctx.addIssue({ code: "custom", message: "Duplicate status path" });
+        paths.add(deletion.path);
+      }
+    }
   });
 export type RepositoryViewDescriptor = z.infer<
   typeof RepositoryViewDescriptorSchema

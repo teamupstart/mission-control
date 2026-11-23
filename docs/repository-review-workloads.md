@@ -62,7 +62,11 @@ An absent skip-worktree path takes its indexed mode and object ID in the worktre
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
-Status classifications come from comparing the layers. This avoids running repository
+Status classifications come from comparing the layers. When a directory replaces a file
+or a file replaces a directory, the reader gets the missing deletion records from the
+verified path manifest. They appear in `git_status` alongside the replacement files and
+grant no content access. This also covers previously sealed v1 artifacts.
+Comparing the layers avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.
 
 History starts at HEAD and visits all parents breadth-first in recorded order. The service
@@ -98,7 +102,9 @@ Failed capture, submission deletion and evidence retention release claims. The d
 itself holds cleanup intent and any retryable deletion error. Publication and release commit
 their final row states atomically, so neither operation needs a separately committed
 intermediate state. Startup releases provisional
-claims and reclaims marked pending and lease directories. A publication intent beside the
+claims and reclaims marked pending and lease directories. A submission still capturing
+after restart can replace its released claim in a new promotion transaction, even when
+another active submission holds the original digest. A publication intent beside the
 candidate identifies a rename interrupted before database commit. If installing an owner
 marker fails, the allocator removes the temporary directory it just created. Failed seal and
 materialization attempts relinquish their temporary directories even if removal fails.

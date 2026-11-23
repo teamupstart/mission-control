@@ -254,7 +254,8 @@ taskId, sessionId, role, colorId, agent, state }`:
   `not-running`. It stays while the profile is live.
 - one per task with a call sign that has launched, keyed `task:<taskId>`: its call sign; its title
   as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
-  else `not-running`. A task in the backlog is not listed until it launches.
+  else `not-running`. A task is not listed until its first launch starts (`Task.dispatchedAt`), so
+  one in the backlog, or created to launch now and still waiting for the dispatcher, is not.
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
@@ -369,8 +370,8 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 - `test/voice-names.test.ts`: each warning, Steve against Stevie and Steven, control words, the
   meter, the stored name's bounds, and a cleared reference name staying cleared.
 - `test/voice-registry.test.ts`: a resident launched and stopped, a call sign set by update, a
-  session exiting, a hibernated task, the 24-hour and name-reuse removals, an evicted task, and the
-  `voice_roster` frames from the real Registry.
+  task still waiting for its first launch, a session exiting, a hibernated task, the 24-hour and
+  name-reuse removals, an evicted task, and the `voice_roster` frames from the real Registry.
 - `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
   one refused on a resident's task.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.

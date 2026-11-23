@@ -160,6 +160,22 @@ test("a task in the backlog, or one that never launched, answers to nothing yet"
   assert.deepEqual(names.roster(), []);
 });
 
+test("a task waiting for its first launch answers to nothing, and its day starts no earlier than the launch", () => {
+  const { sources, names, clock, timers } = harness();
+  const waiting = callSignTask("t-w", "Wren", { status: "dispatching", dispatchedAt: null, sessionId: null });
+  sources.upsertTask(waiting);
+  assert.deepEqual(names.roster(), [], "created to launch now, but the dispatcher has not reached it");
+  assert.equal(timers.length, 0, "no 24 hours are counting for it");
+  clock.now += 30 * HOUR;
+  sources.upsertTask({ ...waiting, dispatchedAt: clock.now });
+  assert.deepEqual(brief(names.roster()), ["task:t-w Wren not-running"], "listed once its launch starts");
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0]!.ms, VOICE_NAME_RETENTION_MS, "a full day from the launch: the wait before it does not count");
+  sources.upsertTask({ ...waiting, status: "running", dispatchedAt: clock.now, sessionId: "s-t-w" });
+  sources.upsertSession(liveSession("s-t-w", "t-w"));
+  assert.deepEqual(brief(names.roster()), ["task:t-w Wren running"]);
+});
+
 test("a session that exits leaves its task not running, and the name leaves 24 hours after", () => {
   const { sources, names, clock, timers } = harness();
   sources.upsertTask(callSignTask("t-1", "Alice"));

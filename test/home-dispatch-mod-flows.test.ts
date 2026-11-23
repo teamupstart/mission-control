@@ -903,3 +903,24 @@ test("a confirm the daemon answered is reported as it happened, even when the se
   const line = await runStartDispatchTool(tool.fake.host, { ...SESSION, live: () => !ended }, { brief: "add retries" });
   assert.match(line, /^Started mc-new1: /);
 });
+
+test("a description typed while the daemon is briefly down keeps the waiting draft, so typing it again reaches the same draft", async () => {
+  const { daemon, fake, filed } = world();
+  await runDispatchCommand(fake.host, SESSION, "");
+  const draftId = (await fake.host.paneState.get("draftId"))!;
+  assert.ok(draftId);
+
+  // The daemon is down when the description arrives: the failure is shown and the draft stays waiting.
+  daemon.setDown(true);
+  const failed = await runDispatchCommand(fake.host, SESSION, "the real description");
+  assert.equal(failed.outcome, "refused");
+  assert.equal(await fake.host.paneState.get("draftId"), draftId);
+
+  // Back up: the same text goes to the same draft (no Kind dialog starts over) and the task is filed.
+  daemon.setDown(false);
+  const dialogsBefore = fake.dialogs.length;
+  await runDispatchCommand(fake.host, SESSION, "the real description");
+  assert.equal(fake.dialogs.some((d, i) => i >= dialogsBefore && d.header === "Kind"), false);
+  assert.deepEqual(filed.map((f) => [f.draftId, f.choice]), [[draftId, "start"]]);
+  assert.equal(await fake.host.paneState.get("draftId"), null);
+});

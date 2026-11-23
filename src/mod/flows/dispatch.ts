@@ -156,10 +156,16 @@ function stop(host: FlowHost): FlowResult {
  * the draft is gone (expired, replaced, confirmed), and the caller treats the text as a new brief.
  */
 export async function describeDraft(host: FlowHost, session: FlowSession, draftId: string, words: string): Promise<FlowResult | null> {
-  session.reminded?.delete(draftId);
   const updated = await updateDraft(host, session, draftId, { words });
-  // Only this session's own marker is cleared: a replacement session may have its own by now.
-  if (!session.live || session.live()) await host.paneState.set("draftId", null);
+  // The waiting marker goes only when the draft is spent or gone. A daemon that was briefly down,
+  // or any other refusal, leaves the draft (and its kind, after work and repo) waiting, so typing
+  // the description again reaches it instead of starting over.
+  const gone = updated.ok || (updated.kind === "refused" && updated.status === 404);
+  if (gone) {
+    session.reminded?.delete(draftId);
+    // Only this session's own marker is cleared: a replacement session may have its own by now.
+    if (!session.live || session.live()) await host.paneState.set("draftId", null);
+  }
   if (updated.ok) return confirmLoop(host, session, updated.value, undefined);
   if (updated.kind === "refused" && updated.status === 404) return null;
   return fail(host, updated);

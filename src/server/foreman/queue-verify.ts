@@ -5,7 +5,7 @@ import type { VerifyInput } from "./queue-prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
@@ -206,7 +206,7 @@ export async function verifyItem(
         schema: QUEUE_VERDICT_JSON_SCHEMA,
       }),
     buildVerifyPrompt(input),
-    extractQueueVerdict,
+    (raw) => parseModelReply(raw, QueueVerdictSchema),
     "Foreman verify",
   );
   return r.kind === "ok"

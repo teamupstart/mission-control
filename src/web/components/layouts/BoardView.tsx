@@ -300,6 +300,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     const asVisitor = visitor(s, "tile");
     if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
+    const resident = props.residentBySession?.get(s.id);
     return <SessionTile
       key={s.id}
       session={s}
@@ -341,7 +342,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // a position counted at the call site would restart inside every frame - which is the
       // one thing the numbering must not do.
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
-      resident={props.residentBySession?.get(s.id) ?? null}
+      resident={resident}
+      residentLoopFeedback={resident && props.residentLoopFeedbackFor?.(resident.runId)}
     />
   };
   /**

@@ -29,10 +29,12 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  liveActivity,
   lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
@@ -186,8 +188,11 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { isBuiltinResidentProfileId } from "@shared/residents.ts";
-import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import { pinnedResidentSessions, residentMarksBySession, residentMarkTitle, residentReplacementsBySession } from "./residents/marker.ts";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, matchesResidentDrawerFilter, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import type { ResidentLoopFeedback } from "./residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL, residentLoopActions, residentLoopSearchFields } from "./residents/loop-presentation.ts";
+import { RESIDENT_VISITOR_NOTE } from "./residents/ResidentVisitorCard.tsx";
 import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
@@ -1321,6 +1326,32 @@ export function App(): React.JSX.Element {
     () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
     [residentRuns, residentProfiles, sessions],
   );
+  // The filter and both card surfaces share each run's feedback across menu and card unmounts.
+  const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
+  const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
+    setResidentLoopFeedback((current) => {
+      const next = new Map(current);
+      if (feedback.busy || feedback.error) next.set(runId, feedback);
+      else next.delete(runId);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    if (residentLoopFeedback.size === 0) return;
+    const live = new Set(residentRuns.map((run) => run.id));
+    if ([...residentLoopFeedback.keys()].every((id) => live.has(id))) return;
+    setResidentLoopFeedback((current) => new Map([...current].filter(([id]) => live.has(id))));
+  }, [residentRuns, residentLoopFeedback]);
+  const pendingReviews = useMemo(() => reviews.filter((review) => review.status === "pending"), [reviews]);
+  const fleetQuery = filter.trim();
+  const residentActiveHours = resolveFeatureFlag("resident-active-hours", featureFlags);
+  const residentSearchNow = useNow(route.page === "fleet" && Boolean(fleetQuery) && residentRuns.some((run) => run.nextWakeAt !== null));
+  const visibleResidentEntries = useMemo(() => {
+    if (!residentDrawerShown || !fleetQuery) return residentEntries;
+    return residentEntries.filter((entry) =>
+      matchesResidentDrawerFilter(entry, fleetQuery, pendingReviews, residentSearchNow, residentActiveHours,
+        residentLoopFeedback.get(entry.run.id)?.error));
+  }, [residentDrawerShown, fleetQuery, residentEntries, pendingReviews, residentSearchNow, residentActiveHours, residentLoopFeedback]);
   // The drawer always has a card selected while it is on screen: the one it was asked to open
   // on, or the one it last had while that resident is still live, else the first needing you.
   useEffect(() => {
@@ -2718,8 +2749,7 @@ export function App(): React.JSX.Element {
     [workflowBindingSummaries, sessions],
   );
 
-  // Nav-bar filter: live substring match over each card's title, status, agent, and visible
-  // pull-request label. Empty filter shows everything.
+  // The nav-bar filter matches every word of the query against the card's text.
   //
   // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
   // and anchors the cluster at its first member, so a filter that hides that member has to be
@@ -2807,16 +2837,37 @@ export function App(): React.JSX.Element {
     return awaitingIdsRef.current;
   }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
-    const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
       ? sessions.filter((s) => !placement.excluded.has(s.id))
       : sessions;
-    const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
+    const matched = !fleetQuery ? placed : placed.filter((session) => {
+      const mark = residentBySession.get(session.id);
+      if (!mark) return matchesSessionFilter(session, fleetQuery);
+      const residentFields = [mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      if (placement.visitors.has(session.id)) {
+        residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
+      } else {
+        residentFields.push(session.activity, liveActivity(session) ?? subagentActivityLine(session));
+        if (mark.loop) {
+          residentFields.push(...residentLoopSearchFields(mark.loop, session, residentSearchNow, residentActiveHours));
+          if (layout === "board") {
+            residentFields.push(
+              RESIDENT_LOOP_CONTROLS_LABEL,
+              ...residentLoopActions(mark).map(({ label }) => label),
+              residentLoopFeedback.get(mark.runId)?.error ?? null,
+            );
+          }
+        }
+      }
+      return matchesSessionFilter(session, fleetQuery, residentFields);
+    });
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
       awaitingIds,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
+  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+    residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
+    pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -2853,8 +2904,8 @@ export function App(): React.JSX.Element {
    */
   const drawerAsking = useMemo(() => {
     if (!residentDrawerShown) return [];
-    return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
-  }, [residentDrawerShown, residentEntries]);
+    return residentDrawerGroups(visibleResidentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
+  }, [residentDrawerShown, visibleResidentEntries]);
   /**
    * Residents the operator paused, by session: a paused resident does not wake, so its open
    * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
@@ -2951,7 +3002,6 @@ export function App(): React.JSX.Element {
   // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
   // cards and the console cannot count paused sessions differently.
   const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
-  const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
   // An inbox row is a thing to act on, and a review whose session is gone has nothing left to
@@ -3562,6 +3612,7 @@ export function App(): React.JSX.Element {
       (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
+  const drawerHasMatches = residentDrawerShown && visibleResidentEntries.length > 0;
   const filterableSessionNoun =
     layout === "board"
       ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
@@ -3671,6 +3722,10 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    residentLoopFeedbackFor: (runId) => ({
+      value: residentLoopFeedback.get(runId),
+      onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
+    }),
     awaitingIds,
     residentReplacementBySession,
     onFocusSession: focusSession,
@@ -5238,7 +5293,10 @@ export function App(): React.JSX.Element {
             <div className="residents-pinned-row">
               {layoutView ?? <div className="residents-pinned-spacer" />}
               <ResidentsDrawer
-                entries={residentEntries}
+                entries={visibleResidentEntries}
+                live={residentEntries.length}
+                loopFeedback={residentLoopFeedback}
+                onLoopFeedbackChange={updateResidentLoopFeedback}
                 profiles={residentProfiles}
                 pinned={residentDrawerPinned}
                 selectedId={residentDrawerSelected}
@@ -5334,6 +5392,7 @@ export function App(): React.JSX.Element {
             asked for exactly that. `layoutHasContent` counts these tasks so the layout holding
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
+          !(residentDrawerShown && residentEntries.length > 0) &&
           (layout !== "board" || restoringSessions.length === 0) &&
           dispatchingTasks.length === 0 &&
           failedLaunchTiles === 0 && (
@@ -5370,10 +5429,8 @@ export function App(): React.JSX.Element {
           )
         )}
 
-        {/* Only when the layout drew nothing - on the board a filter that matched only
-            backlog items has already rendered them, and telling the operator nothing
-            matched while the match is on screen is the bug this replaced. */}
-        {filterableSessionCount > 0 && !layoutHasContent && (
+        {/* Backlog and drawer matches also count as results. */}
+        {filterableSessionCount > 0 && !layoutHasContent && !drawerHasMatches && (
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">

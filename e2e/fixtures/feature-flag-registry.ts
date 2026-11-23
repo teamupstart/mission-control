@@ -6,6 +6,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
+export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+
 export const FEATURE_FLAGS = [
   { id: "preview-navigation", label: "Preview navigation", description: "Try a new way to move between sessions while keeping your existing workspace, preferences and running tasks exactly where you left them.", stage: "preview", keywords: ["wayfinding"] },
   { id: "preview-timeline", label: "Preview timeline", description: "See a chronological overview of session activity.", stage: "preview", keywords: ["chronology"] },

@@ -118,6 +118,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/backlog/plan", "queue.plan", "queues"],
   ["POST", "/api/schedules/preview", "schedule.preview", "schedules"],
   ["POST", "/api/schedules", "schedule.create", "schedules"],
+  ["POST", "/mcp/schedules/preview", "schedule.preview", "schedules"],
+  ["POST", "/mcp/schedules", "schedule.create", "schedules"],
   ["POST", "/api/schedules/:id/update", "schedule.edit", "schedules"],
   ["POST", "/api/schedules/:id/set-enabled", "schedule.enable", "schedules"],
   ["POST", "/api/schedules/:id/run-now", "schedule.run_now", "schedules"],

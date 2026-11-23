@@ -385,7 +385,8 @@ The click records that the report was opened and never marks it read. The **Open
 notification** band changes neither the Reports section nor the **to read** figure, offers
 **Mark read** while the report is unread, and is gone when the inbox closes. A report the
 dashboard no longer holds is read from `GET /api/reports/:id`, which returns the report and, when
-it was replaced, the latest report of its chain.
+it was replaced, the latest report of its chain. Like opening a report, that lookup is the
+operator's: an agent's token, credential or attribution is refused with 403.
 
 ### Stuck sessions
 

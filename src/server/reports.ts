@@ -380,9 +380,10 @@ export class ReportManager {
         continue;
       }
       // Unknown (found at startup) reads the state as it is now; otherwise only a change from
-      // working counts. First seen working after the deadline already passed, it kept going
-      // through the grace period.
-      if (!working && watch.working !== false) this.announce(id, "back");
+      // working counts. A post that said nothing (unconfirmed idle) reads as stopped as soon
+      // as the session says so: blocked on you, or a hook confirming the turn ended. First seen
+      // working after the deadline already passed, it kept going through the grace period.
+      if (!working && (watch.working !== false || !saysNothing(event.session))) this.announce(id, "back");
       else if (working && watch.working === null && watch.deadlinePassed) this.announce(id, "working");
       else if (working) watch.working = true;
     }

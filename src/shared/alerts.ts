@@ -161,7 +161,9 @@ export interface AlertScope {
    * two of the Away watcher's timed reads, or inside one batch of the dashboard's events when an
    * agent stops right after posting - so a report the previous scope did not hold, stamped after
    * that scope was read, is news. Unset, such a report never is. Both clocks are this machine's:
-   * the daemon writes `announcedAt`, and the dashboard it serves reads the same clock.
+   * the daemon writes `announcedAt`, and the dashboard it serves reads the same clock, because
+   * the daemon listens on 127.0.0.1 only and refuses a non-loopback Host on `/api/*` and
+   * `/events` (`requireLoopback`), so no dashboard runs on another machine.
    */
   takenAt?: number;
 }

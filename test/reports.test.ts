@@ -651,6 +651,31 @@ test("a restart recovers only reports it interrupted: an older unstamped report 
   assert.equal(after.reports.get(old.id)?.announcedAs, null);
 });
 
+test("a report posted with an unconfirmed state reads back once its session says it stopped", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Uninstrumented at the post, then blocked on you (a question open): it stopped.
+  const asking = working("s-unconfirmed-then-blocked", { state: "idle", stateConfirmed: false });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Asking", body: "b" });
+  a.set({ ...asking, pendingReviews: 1 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Unconfirmed at the post, then a hook confirms the turn ended: it stopped.
+  const ended = working("s-unconfirmed-then-confirmed", { state: "idle", stateConfirmed: false });
+  a.set(ended);
+  const done = await a.reports.post(ended, { title: "Done", body: "b" });
+  a.set({ ...ended, stateConfirmed: true });
+  assert.equal(a.reports.get(done.id)?.announcedAs, "back");
+  // Still saying nothing: no stamp until the grace ends, and then still working.
+  const quiet = working("s-unconfirmed-still-quiet", { state: "idle", stateConfirmed: false });
+  a.set(quiet);
+  const unproven = await a.reports.post(quiet, { title: "Hm", body: "b" });
+  a.set({ ...quiet, activity: "still typing" });
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, null);
+  a.fireAll();
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
+});
+
 test("after a restart an unconfirmed session blocked on you is evidence it stopped: back", async () => {
   const clock = { now: 1_000 };
   const before = announcer(clock);

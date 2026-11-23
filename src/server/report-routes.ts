@@ -149,8 +149,11 @@ export function registerReportRoutes(
 
   // One report, read or not, and the latest of its chain when it was replaced: what a report
   // notification opens when the dashboard no longer holds the report (already read, or replaced
-  // by one it never saw). Reading changes nothing, so it is not limited to the operator.
+  // by one it never saw). It hands back any report on any session, whole, so like opening one
+  // it is the operator's alone.
   app.get("/api/reports/:id", gate, (c) => {
+    const refusal = operatorRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
     if (!reports) return unavailable(c);
     const resolved = reports.resolve(c.req.param("id"));
     return resolved ? c.json(resolved) : c.json({ error: "no such report" }, 404);

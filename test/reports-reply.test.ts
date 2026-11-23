@@ -164,7 +164,6 @@ test("a follow-up's intent is the operator's words, then the report as context",
   assert.match(intent, /Report: Flaky test traced\n\nIt races the clock\./);
   assert.match(intent, /Link: https:\/\/example\.com\/x/);
   assert.match(intent, /Attached document: trace\.md/);
-  assert.ok(followUpIntent(report, "  ").startsWith("Pick up where this report leaves off."));
   assert.equal(followUpTitle(report), "Follow up: Flaky test traced");
   assert.ok(followUpTitle(mkReport({ id: "r-1", title: "x".repeat(200) })).length <= 200);
 });

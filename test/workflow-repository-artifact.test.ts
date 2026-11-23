@@ -181,6 +181,12 @@ test("portable layered capture reads and diffs after source deletion, omits sens
   });
   assert.equal((await reader.query("read", { path: "a" })).items[0]?.text, "working");
   assert.equal((await reader.query("read", { path: "a", layer: "index" })).items[0]?.text, "index");
+  await t.test("materialized reads preserve the untracked file bytes and literal symlink target", async () => {
+    for (const [path, expected] of [["executable", "hello"], ["link", "ignored"]] as const) {
+      const result = await reader.query("read", { path, unit: "byte" });
+      assert.deepEqual(result.items.map(item => item.text), [Buffer.from(expected).toString("base64")], path);
+    }
+  });
   assert.equal((await reader.query("read", { path: ".env" })).code, "denied_path");
   for (const [pair, expected] of [
     ["base_head", "commit"],

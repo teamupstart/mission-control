@@ -319,9 +319,13 @@ function ReportDocumentControls({
       {refusal && !published && (
         <div className="inbox-line inbox-error" role="alert">
           <p>{refusal.failed
-            ? "Not published. Mission Control could not write the archive; nothing is wrong with the document. Try again:"
+            // Mission Control's own failure, whose cause only the server knows: a write, a read of
+            // the stored copy or the library, or a restart. Its own words lead, never a guess.
+            ? refusal.problems.length > 1
+              ? "Not published, and nothing is wrong with the document:"
+              : `Not published, and nothing is wrong with the document: ${refusal.error}`
             : refusal.problems.length > 1 ? "Not published. The archive refused this document:" : `Not published. ${refusal.error}`}</p>
-          {(refusal.failed || refusal.problems.length > 1) && (
+          {refusal.problems.length > 1 && (
             <ul>
               {refusal.problems.map((problem) => <li key={problem}>{problem}</li>)}
             </ul>

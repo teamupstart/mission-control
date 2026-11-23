@@ -223,10 +223,10 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   try {
     await card.getByRole("button", { name: "Publish as scout" }).click();
     const failure = card.getByRole("alert");
-    await expect(failure).toContainText(
-      "Not published. Mission Control could not write the archive; nothing is wrong with the document. Try again:", { timeout: 30_000 });
-    await expect(failure).not.toContainText("refused");
-    await expect(failure.getByRole("listitem")).toContainText(/EACCES|permission denied/i);
+    await expect(failure).toContainText("Not published, and nothing is wrong with the document: ", { timeout: 30_000 });
+    // The server's own reason leads the line: here, the rename the read-only namespace refused.
+    await expect(failure).toContainText(/EACCES|permission denied/i);
+    await expect(failure).not.toContainText("refused this document");
     await capture(card, "05b-card-publish-failed", page);
   } finally {
     chmodSync(namespace, 0o700);

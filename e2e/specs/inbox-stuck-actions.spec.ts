@@ -318,7 +318,17 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   await expect(row()).toContainText('Open: the task "Fix the parser" and 2 open queue items.', { timeout: 15_000 });
   await expect(row()).toContainText(reason);
 
-  // 11. Open session leaves the inbox and focuses that session's detail.
+  // 11. A request that dies on the network shows an error under the row and leaves its controls
+  //     usable, rather than holding them disabled with nothing said.
+  served = [stall(id, "working but silent for 30m", { kind: "silent-working", activity: null, quietSince: 0 }, "silent-2")];
+  await expect(row()).toContainText("Silent while working", { timeout: 15_000 });
+  await page.route("**/api/sessions/*/inbox-message", (route) => route.abort("connectionreset"));
+  await row().getByRole("button", { name: "Nudge", exact: true }).click();
+  await expect(row().getByRole("alert")).not.toHaveText("");
+  await expect(row().getByRole("button", { name: "Nudge", exact: true })).toBeEnabled();
+  await page.unroute("**/api/sessions/*/inbox-message");
+
+  // 12. Open session leaves the inbox and focuses that session's detail.
   await row().getByRole("button", { name: "Open session", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Attention inbox" })).toBeHidden();
   await expect(page.locator(".console-detail")).toContainText(session.name);

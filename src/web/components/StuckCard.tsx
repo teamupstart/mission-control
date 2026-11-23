@@ -110,7 +110,12 @@ export function StuckCard({
     setBusy(action);
     setError(null);
     setDone(null);
-    void go().then((result) => {
+    // `api` answers failures as `{ ok: false }` rather than rejecting, but a rejection is still
+    // turned into one here, so a request that throws can never leave the row's controls disabled.
+    const settled = Promise.resolve()
+      .then(go)
+      .catch((err: unknown): ActionResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    void settled.then((result) => {
       if (request === latest.current) setBusy(null);
       // A sent message has left the box whatever is on screen now, so the draft is cleared.
       if (result.ok) after?.();

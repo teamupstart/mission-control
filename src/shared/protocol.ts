@@ -461,7 +461,6 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
 // Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
-/** A message the user sends into a session from the dashboard. */
 /**
  * A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The text is
  * the daemon's, chosen by kind, so a caller can never send other words under the
@@ -472,6 +471,7 @@ export const InboxMessageSchema = z.object({
 });
 export type InboxMessageInput = z.infer<typeof InboxMessageSchema>;
 
+/** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),
   /** Whether to submit (press Enter) after typing. Default true. */

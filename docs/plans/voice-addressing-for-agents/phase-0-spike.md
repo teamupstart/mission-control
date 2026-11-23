@@ -40,7 +40,9 @@ so no person has to speak for S1 to S3.
    repository, commit and per-file SHA-256.
 2. **S2 sherpa-onnx.** The same measurements for the v2 int8 ONNX export with its Node addon and
    hotwords, on macOS and, where a Linux machine is at hand, Linux. Does a microphone capture
-   package work beside it?
+   package work beside it? Also name a small English model from the sherpa-onnx catalogue to
+   serve as Phase 16's recognizer test model, preferring one on the same decoding path as
+   Parakeet, with its repository, commit, files, sizes and SHA-256.
 3. **S3 Pause threshold.** The gap that separates "Will, grab the door" from "Will you grab the
    door" for each backend. Recommend the default `pauseMs`.
 4. **S4 Microphone permission.** In an ad hoc signed, hardened-runtime probe app that starts a

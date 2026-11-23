@@ -304,8 +304,9 @@ family with three rows: previews on, microphone allowed, model ready.
 
 Linux has no desktop shell, so the shell's capabilities read as unavailable there and the
 in-window indicators and the toast are the whole interface. What Linux still needs is a daemon-run
-listener, a hotkey and call detection. The sherpa-onnx backend in this plan runs on Linux and
-macOS. The rest is a follow-on plan.
+listener, microphone capture verified on a Linux desktop, a hotkey and call detection. The
+sherpa-onnx backend in this plan runs on macOS, and its recognizer path is proven on Linux in CI
+from recorded audio. The rest is a follow-on plan.
 
 ## Defaults adopted without a question
 

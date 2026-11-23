@@ -48,6 +48,18 @@ follow Phase 7, so it moved to Phase 12; and Phase 11's spec read a "status line
 taken for Phase 7's indicator, so Phase 1's line at the top of Voice settings is now called the
 mode line in both phases.
 
+## Plan validation round 2
+
+One finding was accepted and applied:
+
+- **Phase 16's Linux claim has a required test.** The phase said the listener runs on Linux, but
+  its real-recognizer test could be skipped and its Linux manual check was conditional. Phase 16
+  now pins a small recognizer test model (chosen by the spike's S2) and a fixture recording, adds
+  a file-input mode to the listener, and requires on Linux CI a test that loads the addon and
+  transcribes the recording through the listener. Its outcome and exit criterion claim what that
+  test proves. Microphone capture on a Linux desktop is stated as unverified and belongs to the
+  follow-on plan, which the source plan's "Linux path" now says too.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -249,7 +261,8 @@ owns no requirement; it supplies the measured values phases 4, 8, 9, 10, 11, 12 
 ## Not scheduled here
 
 - **Voice on Linux.** A follow-on plan task, "Voice Addressing on Linux Phased Plan", is created
-  in the backlog behind Phase 16. It covers a daemon-run listener, a hotkey and call detection.
+  in the backlog behind Phase 16. It covers a daemon-run listener, microphone capture on a Linux
+  desktop, a hotkey and call detection.
 - Moving `voice` to `default-on` and retiring it, which `docs/feature-flags.md` makes separate
   pull requests.
 

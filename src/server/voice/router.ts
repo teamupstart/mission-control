@@ -33,7 +33,8 @@ export class RecentlyHeard {
   private entries: HeardEntry[] = [];
   list(): readonly HeardEntry[] { return this.entries; }
   record(entry: HeardEntry): void {
-    this.entries.unshift(entry);
+    const index = this.entries.findIndex((existing) => existing.time <= entry.time);
+    this.entries.splice(index < 0 ? this.entries.length : index, 0, entry);
     if (this.entries.length > HISTORY_LIMIT) this.entries.pop();
   }
   clear(): void { this.entries = []; }

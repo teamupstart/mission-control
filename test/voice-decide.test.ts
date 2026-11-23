@@ -337,7 +337,7 @@ function routerRig(answer: (questions: readonly VoiceQuestion[]) => Promise<Voic
     (card) => cards.push(structuredClone(card)),
     decider,
   );
-  const say = async (text: string, id = text) => {
+  const say = async (text: string, id: string = crypto.randomUUID()) => {
     await router.accept(VoiceUtteranceSchema.parse({ id, text, capturedAt: Date.now(), backend: "fluidaudio" }));
     await router.resolution(id);
   };

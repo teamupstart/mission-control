@@ -18,7 +18,9 @@ names no agent until the flag is on again.
 ## Routing a text utterance
 
 A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh id per capture and epoch milliseconds for `capturedAt`.
+`x-harness-token`. Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
+A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
+underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 
@@ -49,7 +51,8 @@ During the cancel window, the message stays in memory. At the deadline, or immed
 the window off, the daemon submits the remaining text verbatim to the running target’s operator
 queue. The card and Recently heard show `queued` when the queue accepts the message.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
-`Will, ???` queues `???`.
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
 “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest action that
@@ -59,7 +62,8 @@ opened wins. An unsure card has no deadline. Opening a sixth unsure card cancels
 Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
-`GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including
+`GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
+time with the latest arrival first for ties. Entries include
 ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
 captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
 card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview

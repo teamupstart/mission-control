@@ -3387,3 +3387,84 @@ test("an after-work turn whose launch cannot be checked is held back, never deli
   assert.equal(sent.length, 1);
   manager.stop();
 });
+
+test("an ownership read that fails only at the delivery guard still gets the turn rechecked and delivered on a quiet session", async () => {
+  const { queueTaskSkillPromptTurn } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  // Reads: 1 at the drain (owed), 2 at the guard (throws), 3 after the release (owed again).
+  // Nothing else happens to the session, so only the drain's own recheck can deliver it.
+  const intermittent = () => {
+    let reads = 0;
+    return () => {
+      reads += 1;
+      if (reads === 2) throw new Error("database is locked");
+      return true;
+    };
+  };
+
+  // SDK: the acceptance guard.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-intermittent";
+    registry.registerSdkSession({ id, agent: "claude", name: "intermittent", cwd: "/repo/intermittent", agentSessionId: "conversation:intermittent" });
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5, afterWorkTurnOwed: intermittent() });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-intermittent-sdk");
+    idle(registry, id);
+    await until(() => sent.length === 1, "the turn the guard held back to be rechecked and delivered");
+    assert.equal(handoffs, 2, "refused once at the guard, then delivered by the recheck");
+    await tick(20);
+    assert.equal(sent.length, 1);
+    manager.stop();
+  }
+
+  // Terminal: the paste guard.
+  {
+    const name = "after-work-intermittent-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => true,
+        afterWorkRecheckMs: 5,
+        afterWorkTurnOwed: intermittent(),
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-intermittent-pane");
+    stopHook(registry, name);
+    await until(() => pasted.length === 1, "the pane's held-back turn to be rechecked and pasted");
+    assert.equal(handoffs, 2, "refused once at the paste guard, then pasted by the recheck");
+    manager.stop();
+  }
+});

@@ -984,6 +984,8 @@ export class PendingTurnManager {
       const following = current ? this.nextDelivery(current) : null;
       const retiredId = turn?.id;
       const retired = !!retiredId && !!current && !current.pendingTurns.some((row) => row.id === retiredId);
+      // A guard's held-back mark is consumed by every delivery that ends, so none outlives its turn.
+      const recheckAfterWork = !!retiredId && this.unverifiedAfterWork.delete(retiredId);
       if (retired && following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
       } else if (!retired && current) {
@@ -993,7 +995,7 @@ export class PendingTurnManager {
         // that keeps refusing cannot become a loop. The one exception is an after-work turn
         // held back because its launch could not be checked: nothing else would ever wake it,
         // so it is checked again on the recheck interval until the read answers.
-        if (turn && this.unverifiedAfterWork.delete(turn.id)) {
+        if (recheckAfterWork) {
           this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
         } else {
           const escalation = this.nextEscalationAt(current);
@@ -1261,7 +1263,7 @@ export class PendingTurnManager {
       }
       // Immediately before the paste: an after-work turn task shaping was turned off for, or a
       // later launch superseded, while this delivery held it never reaches the agent.
-      const afterWorkRefusal = this.afterWorkRefusal(turn);
+      const afterWorkRefusal = this.guardAfterWork(turn);
       if (afterWorkRefusal) return afterWorkRefusal;
       const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
       if (resourceBlocker) return resourceBlocker;
@@ -1410,7 +1412,7 @@ export class PendingTurnManager {
     }
     // At the instant the driver would take it: an after-work turn task shaping was turned off
     // for, or a later launch superseded, while this delivery held it never reaches the agent.
-    return this.afterWorkRefusal(handoff.turn) ?? this.registry.promptResourceBlockerForSession(current.id);
+    return this.guardAfterWork(handoff.turn) ?? this.registry.promptResourceBlockerForSession(current.id);
   }
 
   /**
@@ -1428,13 +1430,26 @@ export class PendingTurnManager {
   }
 
   /**
+   * `afterWorkRefusal` at a delivery guard. A turn the guard holds back because its launch could
+   * not be checked is marked here, from the guard's own answer, so the drain rechecks it however
+   * any later read turns out: nothing else would wake a quiet session's queued turn.
+   */
+  private guardAfterWork(turn: PendingTurn): string | null {
+    const refusal = this.afterWorkRefusal(turn);
+    if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
+    return refusal;
+  }
+
+  /**
    * A released after-work turn that must not be delivered leaves the outbox at once, settled with
-   * why. One whose launch could not be checked stays queued for the drain to check again.
+   * why. One whose launch still cannot be checked stays queued, marked for the drain to check
+   * again; one that is owed after all stays queued with the guard's mark, and the recheck
+   * delivers it.
    */
   private dropIfRefused(turn: PendingTurn): void {
     const refusal = this.afterWorkRefusal(turn);
     if (refusal === AFTER_WORK_UNVERIFIED) this.unverifiedAfterWork.add(turn.id);
-    else if (refusal) dropQueuedAfterWorkTurn(turn.id, refusal);
+    else if (refusal && dropQueuedAfterWorkTurn(turn.id, refusal)) this.unverifiedAfterWork.delete(turn.id);
   }
 
   /**

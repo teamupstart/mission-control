@@ -64,7 +64,7 @@ test("a database from before reports gains the empty table on open, at the curre
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 48);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
   const columns = (upgraded.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>).map((c) => c.name);
   for (const column of [
     "id", "session_id", "task_id", "repository", "author_key", "author_name", "author_resident_profile_id",
@@ -93,18 +93,18 @@ test("a schema 47 database, from before the digest mark, gains counted_in_digest
   upgraded.prepare("DELETE FROM reports WHERE id = 'r-mig'").run();
 });
 
-test("a schema 48 database, from before mutes, gains the empty report_mutes table on open with its reports intact", () => {
+test("a schema 49 database, from before mutes, gains the empty report_mutes table on open with its reports intact", () => {
   db.openDb().prepare(
     `INSERT INTO reports (id, session_id, author_key, author_name, title, body, root_id, version, created_at, root_created_at)
      VALUES ('r-mut', 's-mut', 'session:s-mut', 'Mut', 'Kept', 'b', 'r-mut', 1, 5, 5)`,
   ).run();
   db.closeDb();
   const raw = new DatabaseSync(join(home, "harness.db"));
-  raw.exec("DROP TABLE IF EXISTS report_mutes; PRAGMA user_version = 48;");
+  raw.exec("DROP TABLE IF EXISTS report_mutes; PRAGMA user_version = 49;");
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 50);
   const columns = (upgraded.prepare("PRAGMA table_info(report_mutes)").all() as Array<{ name: string; pk: number }>);
   assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0]]);
   assert.equal((upgraded.prepare("SELECT COUNT(*) AS n FROM report_mutes").get() as { n: number }).n, 0);
@@ -547,6 +547,78 @@ test("a report whose session stops within the grace period is stamped back, once
   assert.equal(a.stamps(report.id).length, 2);
 });
 
+test("a stamp whose write fails is kept and written again, from a sighting or from the grace period", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_busy BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'database is locked'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_busy;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const stops = working("s-stamp-busy-back");
+  const keeps = working("s-stamp-busy-working");
+  a.set(stops);
+  a.set(keeps);
+  const back = await a.reports.post(stops, { title: "Stopped", body: "b" });
+  const kept = await a.reports.post(keeps, { title: "Kept going", body: "b" });
+  busy(true);
+  // The session stops while the database is busy: nothing escapes into the registry's loop, and
+  // the report is not stamped yet.
+  clock.now = 3_000;
+  assert.doesNotThrow(() => a.set({ ...stops, state: "idle" }));
+  assert.equal(a.reports.get(back.id)?.announcedAs, null);
+  assert.ok(a.delays().includes(5_000), "the stamp is written again shortly");
+  // The wording is decided: working again before the retry does not change it.
+  a.set(stops);
+  // The other's grace period ends while still busy: its timer does not throw either, and retries.
+  clock.now = 21_000;
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.equal(a.reports.get(kept.id)?.announcedAs, null);
+  // Still busy at the first retry: tried again, still not dropped.
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.deepEqual([a.reports.get(back.id)?.announcedAs, a.reports.get(kept.id)?.announcedAs], [null, null]);
+  busy(false);
+  clock.now = 31_000;
+  a.fireSetSoFar();
+  assert.deepEqual(a.stamps(back.id).at(-1), ["back", 31_000]);
+  assert.deepEqual(a.stamps(kept.id).at(-1), ["working", 31_000]);
+  assert.deepEqual(a.delays(), [], "both watches are done");
+});
+
+test("a stamp whose write keeps failing backs off and is given up with one last log", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  const logged = t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_stuck BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'attempt to write a readonly database'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_stuck;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-stamp-stuck");
+  a.set(session);
+  const report = await a.reports.post(session, { title: "Never stamped", body: "b" });
+  busy(true);
+  a.set({ ...session, state: "idle" });
+  // Each failure waits longer, up to a minute, then the stamp is given up: no retry left.
+  const waits: number[] = [];
+  for (let i = 0; i < 10 && a.delays().length > 0; i++) {
+    waits.push(...a.delays());
+    a.fireSetSoFar();
+  }
+  assert.deepEqual(waits, [5_000, 10_000, 20_000, 40_000, 60_000]);
+  assert.deepEqual(a.delays(), [], "the watch is gone");
+  assert.equal(logged.mock.callCount(), 6, "one line per failed write, the last saying it gave up");
+  assert.match(String(logged.mock.calls.at(-1)?.arguments[0]), /giving up/);
+  // Given up for good: the database recovering later stamps nothing, and the report still waits
+  // to be read.
+  busy(false);
+  a.set(session);
+  a.set({ ...session, state: "idle" });
+  assert.equal(a.reports.get(report.id)?.announcedAs, null);
+  assert.equal(a.reports.get(report.id)?.readAt, null);
+});
+
 test("a report whose session keeps working through the grace period is stamped working", async () => {
   const clock = { now: 1_000 };
   const a = announcer(clock);
@@ -852,6 +924,9 @@ test("a digest lost to a restart before any dashboard claimed it takes its marks
   const after = announcer(clock);
   // The digest is gone, so nothing keeps the report quiet as if one had shown it.
   assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
+  // The marks were the old run's own: starting another manager erased nothing of the first one's.
+  // What the new run lacks is only what was never written to the table.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
   after.set({ ...session, state: "idle" });
   const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
   assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", null]]);

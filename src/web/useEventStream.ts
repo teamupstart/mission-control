@@ -2,6 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -205,6 +206,12 @@ export interface MissionState {
   /** Observe each confirmed shaping config, as `subscribeFeatureFlags` does for flags. */
   subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
   /**
+   * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
+   * while the `voice` flag is off at connect time; a `voice_state` frame replaces it whole, and
+   * the one sent when the flag turns off carries the mode `off`.
+   */
+  voice: VoiceState | null;
+  /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
    * surface re-polls for them. Null until the first snapshot lands, which is "unknown",
@@ -326,6 +333,7 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [voice, setVoice] = useState<VoiceState | null>(null);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
   const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
     shapingListeners.current.add(listener);
@@ -473,6 +481,8 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
+          // Absent while the flag is off, which reads as off.
+          setVoice(msg.voice ?? null);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -730,6 +740,10 @@ export function useEventStream(): MissionState {
           setShaping(msg.config);
           for (const listener of shapingListeners.current) listener(msg.config);
           break;
+        // Replaced whole: one state for every window, which is how a mute in one reaches another.
+        case "voice_state":
+          setVoice(msg.state);
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -895,6 +909,7 @@ export function useEventStream(): MissionState {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    voice,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

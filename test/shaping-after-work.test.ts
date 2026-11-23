@@ -23,7 +23,7 @@ const { mkTask } = await import("./helpers/session-fixture.ts");
 
 function record(sessionId: string, skills: Array<[string, string, string?]> = [["retro", "after-work"], ["lint-fix", "during"]]): TaskShaping {
   return {
-    state: "ok", at: 1, durationMs: 5, entries: 0, bytes: 400, truncated: false, sessionId,
+    state: "ok", at: 1, durationMs: 5, entries: 0, bytes: 400, truncated: false, sessionId, deliveryId: `d-${sessionId}`,
     shapers: [{
       id: "router", label: "Router", stage: "route", origin: "registered", sha256: null, outcome: "ok", reason: null,
       durationMs: 1, entries: 0, bytes: 0, truncated: false, redacted: false, version: null,
@@ -47,8 +47,16 @@ class FakeRegistry extends EventEmitter {
     return () => this.off("delivered", fn);
   }
   launch(taskId: string, sessionId: string, shaping: TaskShaping | null = record(sessionId), agent: Session["agent"] = "claude") {
-    const task = { ...(this.tasks.get(taskId) ?? baseTask(taskId)), sessionId, ...(shaping ? { shaping } : {}) } as Task;
-    if (!shaping) delete (task as { shaping?: unknown }).shaping;
+    // Bound under the delivery the record describes, as a launch's commit binds it.
+    const task = {
+      ...(this.tasks.get(taskId) ?? baseTask(taskId)),
+      sessionId,
+      ...(shaping ? { shaping, shapingDelivery: shaping.deliveryId } : {}),
+    } as Task;
+    if (!shaping) {
+      delete (task as { shaping?: unknown }).shaping;
+      delete (task as { shapingDelivery?: unknown }).shapingDelivery;
+    }
     this.tasks.set(taskId, task);
     db.upsertTask(task);
     this.sessions.set(sessionId, { id: sessionId, agent, task: { id: taskId } } as unknown as Session);

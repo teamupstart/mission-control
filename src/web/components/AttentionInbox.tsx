@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
@@ -119,6 +119,7 @@ export type PinnedReport =
 
 export function AttentionInbox({
   fold,
+  focusSessionId,
   snoozed = [],
   onClose,
   onDismiss,
@@ -134,6 +135,8 @@ export function AttentionInbox({
   pinned = null,
 }: {
   fold: AttentionFold;
+  /** Session whose first visible question should receive focus when the inbox opens. */
+  focusSessionId?: string | null;
   /**
    * Questions the operator chose "Remind me later" on, listed in their own section after
    * everything that needs an answer now. Outside the fold and its `total` on purpose: nothing
@@ -170,6 +173,21 @@ export function AttentionInbox({
   pinned?: PinnedReport | null;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
+  const [initialQuestionId] = useState(() => {
+    if (!focusSessionId) return;
+    for (const item of fold.items) {
+      if (item.kind === "session_reviews" && item.session.id === focusSessionId) {
+        return item.reviews[0]?.id;
+      }
+    }
+  });
+  const questionTitle = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    const title = questionTitle.current;
+    if (!title) return;
+    title.focus({ preventScroll: true });
+    title.scrollIntoView({ block: "center" });
+  }, []);
   // A refused Mark read, by report, drawn under its card until it is tried again.
   const [readRefused, setReadRefused] = useState<ReadonlyMap<string, string>>(new Map());
   const markRead = (report: ReportItem) => {
@@ -248,6 +266,7 @@ export function AttentionInbox({
       // address the inbox by role instead of by class.
       role="dialog"
       ariaLabel="Attention inbox"
+      ariaModal
     >
       <header className="modal-head">
         <div>
@@ -333,6 +352,8 @@ export function AttentionInbox({
               ) : heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem
                 item={item}
+                initialQuestionId={initialQuestionId}
+                questionTitleRef={questionTitle}
                 reports={reports}
                 onMarkRead={markRead}
                 onMute={mute}
@@ -451,6 +472,8 @@ function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: ()
 
 function InboxItem({
   item,
+  initialQuestionId,
+  questionTitleRef,
   reports,
   onMarkRead,
   onMute,
@@ -465,6 +488,8 @@ function InboxItem({
   onLeave,
 }: {
   item: AttentionItem;
+  initialQuestionId?: string;
+  questionTitleRef: Ref<HTMLHeadingElement>;
   reports: InboxReportControls;
   onMarkRead: (report: ReportItem) => void;
   onMute: (report: ReportItem) => void;
@@ -562,6 +587,7 @@ function InboxItem({
             <ReviewCard
               key={review.id}
               review={review}
+              titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
               session={item.session}
               note={item.session.note}
               onMovedToChat={(sessionId) => {

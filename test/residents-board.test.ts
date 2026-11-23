@@ -434,6 +434,9 @@ function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[], overrides
   const launcher: ReturnType<typeof useResidentLaunches> = { launches: {}, launch: async () => {} };
   return renderToStaticMarkup(createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides } }, createElement(ResidentsDrawer, {
     entries: residentDrawerEntries(runs, [profile()], sessions),
+    live: runs.length,
+    loopFeedback: new Map(),
+    onLoopFeedbackChange: () => {},
     profiles: [profile()],
     pinned: true,
     selectedId: null,

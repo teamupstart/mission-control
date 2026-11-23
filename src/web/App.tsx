@@ -29,10 +29,12 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  liveActivity,
   lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchReport, fetchRepos } from "./lib/api.ts";
@@ -82,7 +84,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
 import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
-import { setupRowAnchor } from "@shared/setup-catalog.ts";
+import { setupReadingFlags, setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
@@ -189,8 +191,11 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { isBuiltinResidentProfileId } from "@shared/residents.ts";
-import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import { pinnedResidentSessions, residentMarksBySession, residentMarkTitle, residentReplacementsBySession } from "./residents/marker.ts";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, matchesResidentDrawerFilter, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import type { ResidentLoopFeedback } from "./residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL, residentLoopActions, residentLoopSearchFields } from "./residents/loop-presentation.ts";
+import { RESIDENT_VISITOR_NOTE } from "./residents/ResidentVisitorCard.tsx";
 import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
@@ -392,6 +397,7 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    voice,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -472,7 +478,12 @@ export function App(): React.JSX.Element {
   const llm = useLlm();
   // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
-  const setup = useSetupChecks(true);
+  // Re-read when a flag Setup depends on is switched in any window (the Voice family).
+  const liveSetupFlags = useMemo(
+    () => (hasSnapshot ? setupReadingFlags((id) => resolveFeatureFlag(id, featureFlags)) ?? "" : null),
+    [hasSnapshot, featureFlags],
+  );
+  const setup = useSetupChecks(true, liveSetupFlags);
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
@@ -492,10 +503,9 @@ export function App(): React.JSX.Element {
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
-  // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
-  // target of its own - what it draws is `attention` below, folded from state App already has -
-  // so it cannot go stale behind an item that resolved while it was open.
-  const [inboxOpen, setInboxOpen] = useState(false);
+  // The entry point can ask for initial focus on a conversation's question. The inbox still
+  // renders the live attention fold.
+  const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
   // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
   // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
   // read" to. Opening a report records that it was opened (once) and never marks it read.
@@ -536,6 +546,7 @@ export function App(): React.JSX.Element {
   // sections. Gone when the inbox closes; a fetch still in flight then is dropped by its number.
   const [pinnedReport, setPinnedReport] = useState<PinnedReport | null>(null);
   const pinnedRequest = useRef(0);
+  const inboxOpen = inbox !== null;
   useEffect(() => {
     if (inboxOpen) return;
     pinnedRequest.current += 1;
@@ -646,7 +657,7 @@ export function App(): React.JSX.Element {
     publishStateFor: (report) => publishStates.get(report.id) ?? { busy: false, refusal: null },
     onOpenArchive: (report) => {
       if (!report.publishedArchiveKey) return;
-      setInboxOpen(false);
+      setInbox(null);
       navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
     },
   }), [reportEntryControls, sessions, residentRuns, publishStates, navigate, refreshPinned, mutedReportAuthors]);
@@ -1381,6 +1392,32 @@ export function App(): React.JSX.Element {
     () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
     [residentRuns, residentProfiles, sessions],
   );
+  // The filter and both card surfaces share each run's feedback across menu and card unmounts.
+  const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
+  const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
+    setResidentLoopFeedback((current) => {
+      const next = new Map(current);
+      if (feedback.busy || feedback.error) next.set(runId, feedback);
+      else next.delete(runId);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    if (residentLoopFeedback.size === 0) return;
+    const live = new Set(residentRuns.map((run) => run.id));
+    if ([...residentLoopFeedback.keys()].every((id) => live.has(id))) return;
+    setResidentLoopFeedback((current) => new Map([...current].filter(([id]) => live.has(id))));
+  }, [residentRuns, residentLoopFeedback]);
+  const pendingReviews = useMemo(() => reviews.filter((review) => review.status === "pending"), [reviews]);
+  const fleetQuery = filter.trim();
+  const residentActiveHours = resolveFeatureFlag("resident-active-hours", featureFlags);
+  const residentSearchNow = useNow(route.page === "fleet" && Boolean(fleetQuery) && residentRuns.some((run) => run.nextWakeAt !== null));
+  const visibleResidentEntries = useMemo(() => {
+    if (!residentDrawerShown || !fleetQuery) return residentEntries;
+    return residentEntries.filter((entry) =>
+      matchesResidentDrawerFilter(entry, fleetQuery, pendingReviews, residentSearchNow, residentActiveHours,
+        residentLoopFeedback.get(entry.run.id)?.error));
+  }, [residentDrawerShown, fleetQuery, residentEntries, pendingReviews, residentSearchNow, residentActiveHours, residentLoopFeedback]);
   // The drawer always has a card selected while it is on screen: the one it was asked to open
   // on, or the one it last had while that resident is still live, else the first needing you.
   useEffect(() => {
@@ -2778,8 +2815,7 @@ export function App(): React.JSX.Element {
     [workflowBindingSummaries, sessions],
   );
 
-  // Nav-bar filter: live substring match over each card's title, status, agent, and visible
-  // pull-request label. Empty filter shows everything.
+  // The nav-bar filter matches every word of the query against the card's text.
   //
   // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
   // and anchors the cluster at its first member, so a filter that hides that member has to be
@@ -2867,16 +2903,37 @@ export function App(): React.JSX.Element {
     return awaitingIdsRef.current;
   }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
-    const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
       ? sessions.filter((s) => !placement.excluded.has(s.id))
       : sessions;
-    const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
+    const matched = !fleetQuery ? placed : placed.filter((session) => {
+      const mark = residentBySession.get(session.id);
+      if (!mark) return matchesSessionFilter(session, fleetQuery);
+      const residentFields = [mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      if (placement.visitors.has(session.id)) {
+        residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
+      } else {
+        residentFields.push(session.activity, liveActivity(session) ?? subagentActivityLine(session));
+        if (mark.loop) {
+          residentFields.push(...residentLoopSearchFields(mark.loop, session, residentSearchNow, residentActiveHours));
+          if (layout === "board") {
+            residentFields.push(
+              RESIDENT_LOOP_CONTROLS_LABEL,
+              ...residentLoopActions(mark).map(({ label }) => label),
+              residentLoopFeedback.get(mark.runId)?.error ?? null,
+            );
+          }
+        }
+      }
+      return matchesSessionFilter(session, fleetQuery, residentFields);
+    });
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
       awaitingIds,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
+  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+    residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
+    pinnedResidents, blockedPlacement, awaitingIds]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -2907,14 +2964,13 @@ export function App(): React.JSX.Element {
     ? detailSession.id
     : null;
   /**
-   * The drawer's Needs you group while the drawer is on screen, residents asking in the Needs you
-   * rail included: the group prints the review chord's keycap, so the chord reaches every resident
-   * it lists, after every fleet session with a review (see `reviewChordTarget`).
+   * The drawer's Needs you group, including residents in the rail. The review shortcut
+   * uses this group when the inbox entry point does not apply.
    */
   const drawerAsking = useMemo(() => {
     if (!residentDrawerShown) return [];
-    return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
-  }, [residentDrawerShown, residentEntries]);
+    return residentDrawerGroups(visibleResidentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
+  }, [residentDrawerShown, visibleResidentEntries]);
   /**
    * Residents the operator paused, by session: a paused resident does not wake, so its open
    * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
@@ -3011,7 +3067,6 @@ export function App(): React.JSX.Element {
   // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
   // cards and the console cannot count paused sessions differently.
   const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
-  const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
   // An inbox row is a thing to act on, and a review whose session is gone has nothing left to
@@ -3141,7 +3196,8 @@ export function App(): React.JSX.Element {
   openReportFromNotification.current = (reportId) => {
     // With the flag off at the click, the toast only focused the window.
     if (!notificationReads.current.inboxOn) return;
-    setInboxOpen(true);
+    // Opens the inbox if it is closed; one already open keeps whatever it was asked to focus.
+    setInbox((current) => current ?? { focusSessionId: null });
     const show = ({ where, report }: ReportPlacement) => {
       setPinnedReport(where === "band" ? { status: "ready", report } : null);
       // Opened as a click on its row would open it: recorded once, never marked read.
@@ -3224,6 +3280,8 @@ export function App(): React.JSX.Element {
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
   const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  const hasAnswers = attention.total > 0;
+  const hasOtherInboxItems = attention.toRead > 0 || snoozed.length > 0;
   // A filter can hide the selected detail without clearing the saved drill-in intent.
   // Navigation follows the overview that BoardView renders until a detail is visible again.
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
@@ -3674,6 +3732,7 @@ export function App(): React.JSX.Element {
       (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
+  const drawerHasMatches = residentDrawerShown && visibleResidentEntries.length > 0;
   const filterableSessionNoun =
     layout === "board"
       ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
@@ -3783,6 +3842,10 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    residentLoopFeedbackFor: (runId) => ({
+      value: residentLoopFeedback.get(runId),
+      onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
+    }),
     awaitingIds,
     residentReplacementBySession,
     onFocusSession: focusSession,
@@ -4294,6 +4357,15 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The inbox can hold items even with no visible session rows.
+      if (chord === bindings.review && (
+        (layout === "board" && hasAnswers) || (readerSession && (hasAnswers || hasOtherInboxItems))
+      )) {
+        e.preventDefault();
+        setInbox({ focusSessionId: readerSession?.id ?? null });
+        return;
+      }
+
       // The flat rail order, minus anything a folded repository frame is hiding. `visible` itself
       // is NOT filtered: the views still need every session to draw a frame's count and to know
       // what a fold is covering. Only what the keyboard walks is narrowed.
@@ -4524,15 +4596,7 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
-      // The review queue. The same click the attention-toned badge on the card performs,
-      // and deliberately the same TARGET rule: the selected session when it is the one
-      // asking, otherwise the first session in fleet order that is. Unclaimed - no
-      // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
-      // fleet stays the browser's.
-      // After the fleet, the first resident in the drawer's Needs you group: its review queue, with
-      // its card selected, or - asking without a review - its conversation with the cursor in the
-      // reply box, which is also what the chord does when that conversation is already the one
-      // open. See `reviewChordTarget`.
+      // Session and resident shortcuts when the inbox entry point does not apply.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
         const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
@@ -4652,7 +4716,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -4892,7 +4956,7 @@ export function App(): React.JSX.Element {
           snoozed={snoozed.length}
           toRead={attention.toRead}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
-          onOpenInbox={() => setInboxOpen(true)}
+          onOpenInbox={() => setInbox({ focusSessionId: null })}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
@@ -5174,6 +5238,7 @@ export function App(): React.JSX.Element {
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
               reportMutes={reportMutes}
+              voice={voice}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -5351,7 +5416,10 @@ export function App(): React.JSX.Element {
             <div className="residents-pinned-row">
               {layoutView ?? <div className="residents-pinned-spacer" />}
               <ResidentsDrawer
-                entries={residentEntries}
+                entries={visibleResidentEntries}
+                live={residentEntries.length}
+                loopFeedback={residentLoopFeedback}
+                onLoopFeedbackChange={updateResidentLoopFeedback}
                 profiles={residentProfiles}
                 pinned={residentDrawerPinned}
                 selectedId={residentDrawerSelected}
@@ -5447,6 +5515,7 @@ export function App(): React.JSX.Element {
             asked for exactly that. `layoutHasContent` counts these tasks so the layout holding
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
+          !(residentDrawerShown && residentEntries.length > 0) &&
           (layout !== "board" || restoringSessions.length === 0) &&
           dispatchingTasks.length === 0 &&
           failedLaunchTiles === 0 && (
@@ -5483,10 +5552,8 @@ export function App(): React.JSX.Element {
           )
         )}
 
-        {/* Only when the layout drew nothing - on the board a filter that matched only
-            backlog items has already rendered them, and telling the operator nothing
-            matched while the match is on screen is the bug this replaced. */}
-        {filterableSessionCount > 0 && !layoutHasContent && (
+        {/* Backlog and drawer matches also count as results. */}
+        {filterableSessionCount > 0 && !layoutHasContent && !drawerHasMatches && (
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
@@ -5548,12 +5615,13 @@ export function App(): React.JSX.Element {
                 </OverlayRegistration>
               )}
 
-              {inboxOpen && (
+              {inbox && (
                 <AttentionInbox
                   fold={attention}
+                  focusSessionId={inbox.focusSessionId}
                   snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
-                  onClose={() => setInboxOpen(false)}
+                  onClose={() => setInbox(null)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}

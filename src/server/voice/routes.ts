@@ -1,0 +1,77 @@
+import type { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import {
+  VOICE_FLAG,
+  VoiceConfigPatchSchema,
+  VoiceListenerHelloSchema,
+  VoiceMuteRequestSchema,
+  VoiceShellReportSchema,
+} from "@shared/voice.ts";
+import { checkToken } from "../auth.ts";
+import { requireFeature } from "../feature-flags/index.ts";
+import { parseBody } from "../http-body.ts";
+import { getVoiceConfig, setVoiceConfig } from "./config.ts";
+import { voiceStateStore, type VoiceStateStore } from "./state.ts";
+
+/**
+ * A hello lists at most 64 devices of two bounded strings each, and a shell report at most 32
+ * capabilities; both fit well inside this. Refused while streaming, after the flag's gate, so a
+ * disabled route still answers 404 before any body is read.
+ */
+const VOICE_BODY_MAX_BYTES = 128 * 1024;
+
+const limitBody = bodyLimit({
+  maxSize: VOICE_BODY_MAX_BYTES,
+  onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413),
+});
+
+/**
+ * Voice's routes (contracts A and B), every one behind the `voice` flag: with it off each answers
+ * 404 before its handler runs.
+ *
+ * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
+ * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
+ * - `POST /api/voice/mute { muted }` mutes or unmutes and returns `{ state }`.
+ *
+ * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
+ * cooperating local process posts to them, and the token is what separates it from any other.
+ * - `POST /voice/listener/hello` takes a listener's hello. One naming a protocol major this
+ *   daemon does not speak is refused with 409, and the state's `listener` capability says why.
+ * - `POST /voice/shell-report` takes the shell's capabilities, microphone permission, call and
+ *   push-to-talk readings and hotkey error, and returns `{ state }`.
+ */
+export function registerVoiceRoutes(app: Hono, store: VoiceStateStore = voiceStateStore): void {
+  const gate = requireFeature(VOICE_FLAG);
+  const authed = (header: string | undefined): boolean => checkToken(header);
+
+  app.get("/api/voice/config", gate, (c) => c.json({ config: getVoiceConfig() }));
+  app.put("/api/voice/config", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    return c.json({ config: setVoiceConfig(parsed.data) });
+  });
+  app.post("/api/voice/mute", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    setVoiceConfig({ muted: parsed.data.muted });
+    return c.json({ state: store.state() });
+  });
+
+  app.post("/voice/listener/hello", gate, limitBody, async (c) => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const result = store.acceptHello(parsed.data);
+    if (!result.ok) {
+      return c.json({ error: "unsupported_protocol", reason: result.reason, protocol: result.protocol }, 409);
+    }
+    return c.json({ accepted: true, protocol: result.protocol });
+  });
+  app.post("/voice/shell-report", gate, limitBody, async (c) => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, VoiceShellReportSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    store.acceptShellReport(parsed.data);
+    return c.json({ state: store.state() });
+  });
+}

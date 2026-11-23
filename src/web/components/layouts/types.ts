@@ -23,6 +23,7 @@ import {
 } from "@shared/pipeline.ts";
 import type { BacklogTrustView, StackShipping } from "../../lib/backlog-copy.ts";
 import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
+import type { ResidentLoopFeedbackBinding } from "../../residents/ResidentLoopControls.tsx";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -327,6 +328,8 @@ export interface SessionViewProps {
    * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
    */
   residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /** Feedback for a Board resident's controls, shared with the fleet filter. */
+  residentLoopFeedbackFor?: (runId: string) => ResidentLoopFeedbackBinding;
   /**
    * The sessions under Idle's Awaiting rule, computed once by App on one clock
    * (`awaitingSessionIds`) so the views draw the same order the arrow keys walk. A wait's

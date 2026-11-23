@@ -240,6 +240,19 @@ export const SETTINGS_CATEGORIES = [
     flag: "inbox",
   },
   {
+    id: "voice",
+    label: "Voice",
+    icon: "∿",
+    blurb: "Talking to agents by name: whether voice is listening, and how it behaves",
+    // `sessions` / `machine`: it decides how a spoken message reaches a session, and everything
+    // here is daemon-backed. Audio never leaves the machine; the panel says so where it matters.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["voice", "speech", "microphone", "listening", "mute", "cancel window", "unsure", "plan forms", "hands-free"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "voice",
+  },
+  {
     id: "cost",
     label: "Cost",
     icon: "$",

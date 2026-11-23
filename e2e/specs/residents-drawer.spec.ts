@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
@@ -7,6 +7,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
+import type { ServerEvent } from "../../src/shared/types.ts";
 
 /**
  * The Residents drawer: residents leave the Board columns and the Console rail for a drawer on
@@ -37,12 +38,20 @@ async function request<T>(daemon: DaemonHandle, path: string, body?: unknown, me
   return response.json() as Promise<T>;
 }
 
+interface ProfileOptions {
+  repo?: boolean;
+  controlOtherSessions?: boolean;
+}
+
 /** Author a resident profile through the real route, with or without a default repository. */
-async function createProfile(daemon: DaemonHandle, name: string, repo = true): Promise<ResidentProfile> {
+async function createProfile(
+  daemon: DaemonHandle, name: string, { repo = true, controlOtherSessions = false }: ProfileOptions = {},
+): Promise<ResidentProfile> {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   return request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name }, persona: { personaId: personas.find((p) => p.name === "Code Risk Reviewer")!.id },
     ...(repo ? { workspace: { defaultRepoRoot: daemon.repo } } : {}),
+    authority: { controlOtherSessions },
     execution: { model: "claude-fable-5" },
     // A long cadence keeps the resident waiting between steps instead of iterating under the test.
     loop: { delaySeconds: 3600, minDelaySeconds: 60, maxDelaySeconds: 3600 },
@@ -57,14 +66,64 @@ function waitingResidents(daemon: DaemonHandle): number {
 }
 
 /** Launch one resident through the real routes and wait until its loop is waiting. */
-async function launch(daemon: DaemonHandle, name = NAME): Promise<ResidentProfile> {
+async function launch(daemon: DaemonHandle, name = NAME, options?: ProfileOptions): Promise<ResidentProfile> {
   const before = waitingResidents(daemon);
-  const profile = await createProfile(daemon, name);
+  const profile = await createProfile(daemon, name, options);
   await request(daemon, `/api/residents/profiles/${profile.id}/launch`, {
     repoRoot: daemon.repo, requestId: `launch-${name.toLowerCase().replace(/\W+/g, "-")}`,
   });
   await expect.poll(() => waitingResidents(daemon), { timeout: 60_000 }).toBe(before + 1);
   return profile;
+}
+
+async function* residentEventFrames(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  const decoder = new TextDecoder();
+  let partial = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) return;
+    const frames = (partial + decoder.decode(chunk.value, { stream: true })).split("\n\n");
+    partial = frames.pop() ?? "";
+    for (const frame of frames) {
+      const data = frame.split("\n").find((line) => line.startsWith("data: "));
+      if (data) yield { frame, event: JSON.parse(data.slice(6)) as ServerEvent };
+    }
+  }
+}
+
+/** Capture the daemon's snapshot and the run reservation before a session joins it. */
+async function startingResidentFrames(daemon: DaemonHandle, profile: ResidentProfile): Promise<string> {
+  const stream = await fetch(`${daemon.baseURL}/events`, { signal: AbortSignal.timeout(60_000) });
+  expect(stream.ok).toBe(true);
+  const reader = stream.body!.getReader();
+  let snapshot: string | undefined;
+  try {
+    await request(daemon, `/api/residents/profiles/${profile.id}/launch`, {
+      repoRoot: daemon.repo, requestId: "launch-starting-filter-resident", answerWhen: "accepted",
+    });
+    for await (const { frame, event } of residentEventFrames(reader)) {
+      if (event.type === "snapshot") snapshot = frame;
+      if (snapshot && event.type === "resident_run_upsert" && event.run.profileId === profile.id
+        && event.run.launchState === "pending") return `${snapshot}\n\n${frame}\n\n`;
+    }
+    throw new Error("SSE closed before the pending resident run arrived");
+  } finally {
+    await reader.cancel();
+  }
+}
+
+async function residentSnapshot(daemon: DaemonHandle): Promise<Extract<ServerEvent, { type: "snapshot" }>> {
+  const stream = await fetch(`${daemon.baseURL}/events`, { signal: AbortSignal.timeout(20_000) });
+  expect(stream.ok).toBe(true);
+  const reader = stream.body!.getReader();
+  try {
+    for await (const { event } of residentEventFrames(reader)) {
+      if (event.type === "snapshot") return event;
+    }
+    throw new Error("SSE closed before the snapshot arrived");
+  } finally {
+    await reader.cancel();
+  }
 }
 
 /** Stand in for the resident calling its bundled request_input tool. Returns the review id. */
@@ -129,6 +188,225 @@ test("a new installation keeps residents in the drawer, off the Board", async ({
   await expect(cardOf(drawerOf(page))).toBeVisible();
   await expect(drawerOf(page).getByRole("heading", { name: "Live", exact: true })).toHaveCount(0);
   await capture(page, "01-default-drawer");
+});
+
+test("the fleet filter searches resident card questions and loop text in the drawer", async ({ dashboard: page, daemon }) => {
+  const other = "Release sentinel";
+  await launch(daemon);
+  await askResident(daemon);
+  await launch(daemon, other);
+  await useDrawer(page, daemon, "board");
+  await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
+
+  const drawer = drawerOf(page);
+  const matching = cardOf(drawer);
+  const nonmatching = cardOf(drawer, other);
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await expect(matching).toContainText("Ship the nightly migration?");
+  await expect(matching).toContainText("Hold it");
+  await expect(matching).toContainText("iteration 1");
+  await expect(nonmatching).toBeVisible();
+
+  await page.locator(".filter-box").click();
+  await filter.fill("  NIGHTLY Hold iteration  ");
+  await expect(matching).toBeVisible();
+  await expect(nonmatching).toHaveCount(0);
+  await expect(page.getByText(/^Nothing matches/)).toHaveCount(0);
+  await filter.fill("nightly hold");
+  await expect(matching).toBeVisible();
+  await expect(nonmatching).toHaveCount(0);
+  await capture(page, "filtered-resident-card");
+
+  await headOf(drawer).click();
+  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "false");
+  await expect(matching).toBeVisible();
+  await expect(matching.getByText("Hold it", { exact: false })).toHaveCount(0);
+  await page.locator(".filter-box").click();
+  await filter.fill("nightly sentinel");
+  await expect(matching).toHaveCount(0);
+  await expect(nonmatching).toHaveCount(0);
+  await expect(drawer.getByText("No residents match the filter.")).toBeVisible();
+  await expect(drawer.getByRole("heading", { name: "Profiles", exact: true })).toBeVisible();
+
+  await filter.press("Escape");
+  await expect(matching).toBeVisible();
+  await expect(nonmatching).toBeVisible();
+  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "false");
+
+  const latest = nonmatching.getByLabel(`Latest from ${other}`);
+  await expect(latest).toBeVisible();
+  const latestText = await latest.innerText();
+  await filter.fill(`${latestText} ⌥2 Run now`);
+  await expect(nonmatching).toBeVisible();
+  await expect(nonmatching.getByRole("button", { name: "Run now" })).toBeVisible();
+  await expect(matching).toHaveCount(0);
+});
+
+test("the fleet filter searches a starting resident and the paused card's Resume action", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await useDrawer(page, daemon, "board");
+  await page.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
+  const drawer = drawerOf(page);
+  const paused = cardOf(drawer);
+  const resume = paused.getByRole("button", { name: "Resume", exact: true });
+  await paused.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect(resume).toBeVisible();
+
+  const name = "Warmup sentinel";
+  const profile = await createProfile(daemon, name);
+  const frames = await startingResidentFrames(daemon, profile);
+  // Replay the real pre-session frames so launch completion cannot race the search assertions.
+  await page.route("**/events", (route) => route.fulfill({ contentType: "text/event-stream", body: frames }));
+  await page.reload();
+  await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
+
+  const starting = cardOf(drawer, name);
+  const startingHead = starting.getByRole("button", { name: `${name}, starting`, exact: true });
+  await expect(startingHead).toBeVisible();
+  await expect(startingHead).toBeDisabled();
+  await expect(resume).toBeVisible();
+
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("STARTING");
+  await expect(startingHead).toBeVisible();
+  await expect(paused).toHaveCount(0);
+  await capture(page, "filtered-starting-resident");
+
+  await filter.fill("Resume");
+  await expect(resume).toBeVisible();
+  await expect(starting).toHaveCount(0);
+  await capture(page, "filtered-resume-resident");
+});
+
+test("the fleet filter searches queued and restart actions and resident control badges", async ({ dashboard: page, daemon }) => {
+  const profile = await launch(daemon, NAME, { controlOtherSessions: true });
+  const other = "Release sentinel";
+  await launch(daemon, other);
+  await useDrawer(page, daemon, "board");
+  await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
+
+  const drawer = drawerOf(page);
+  const matching = cardOf(drawer);
+  const unrelated = cardOf(drawer, other);
+  const runNow = matching.getByRole("button", { name: "Run now", exact: true });
+  const cancel = matching.getByRole("button", { name: "Cancel queued run", exact: true });
+  const restart = matching.getByRole("button", { name: "Restart on new profile", exact: true });
+  const noControl = matching.getByRole("status", { name: "control not granted", exact: true });
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await expect(unrelated).toBeVisible();
+  await expect(noControl).toBeVisible();
+  await expect(noControl).toHaveText("No control");
+  await expect(cancel).toHaveCount(0);
+  await expect(restart).toHaveCount(0);
+
+  await matching.getByRole("button", { name: `Open ${NAME}`, exact: true }).click();
+  const detail = page.locator(".board-detail");
+  const reply = detail.getByPlaceholder(/^Reply to this session/);
+  await reply.fill("E2E_HOLD_TURN_UNTIL_RELEASED while the operator queues a run");
+  await reply.press("Enter");
+  try {
+    await expect(matching.getByLabel("Resident loop status")).toContainText("working");
+    await detail.getByRole("button", { name: "Back to the board" }).click();
+    await runNow.click();
+    await expect(cancel).toBeVisible();
+
+    await page.locator(".filter-box").click();
+    await filter.fill("Cancel queued run");
+    await expect(cancel).toBeVisible();
+    await expect(unrelated).toHaveCount(0);
+    await capture(page, "filtered-resident-cancel-queued");
+
+    await filter.press("Escape");
+    await expect(unrelated).toBeVisible();
+    await cancel.click();
+    await expect(runNow).toBeVisible();
+    await request(daemon, `/api/residents/profiles/${profile.id}`, {
+      expectedRevision: profile.revision,
+      settings: { ...profile.settings, instructions: { markdown: "Watch the updated fleet." } },
+    }, "PATCH");
+    await expect(restart).toBeVisible();
+
+    await page.locator(".filter-box").click();
+    await filter.fill("Restart on new profile");
+    await expect(restart).toBeVisible();
+    await expect(unrelated).toHaveCount(0);
+    await capture(page, "filtered-resident-restart-profile");
+
+    await filter.fill("No control");
+    await expect(noControl).toBeVisible();
+    await expect(unrelated).toHaveCount(0);
+    await capture(page, "filtered-resident-no-control");
+  } finally {
+    writeFileSync(join(daemon.recordDir, "e2e-release-held-turn"), "");
+  }
+
+  // Project the already-granted state into the browser. Desktop authorization is covered
+  // separately, and this browser test exercises only the badge text and the filter.
+  const snapshot = await residentSnapshot(daemon);
+  const taskId = snapshot.residentRuns?.find((run) => run.profileId === profile.id)?.taskId;
+  expect(taskId).toBeTruthy();
+  const sessions = snapshot.sessions.map((session) => session.task?.id === taskId
+    ? { ...session, sessionControlEnabled: true }
+    : session);
+  await page.route("**/events", (route) => route.fulfill({
+    contentType: "text/event-stream",
+    body: `data: ${JSON.stringify({ ...snapshot, sessions })}\n\n`,
+  }));
+  await page.reload();
+  await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
+  const control = matching.getByRole("status", { name: "control granted", exact: true });
+  await expect(control).toBeVisible();
+  await expect(control).toHaveText("Control");
+  await expect(unrelated).toBeVisible();
+
+  await page.locator(".filter-box").click();
+  await filter.fill("Control");
+  await expect(control).toBeVisible();
+  await expect(unrelated).toHaveCount(0);
+  await capture(page, "filtered-resident-control");
+});
+
+test("the fleet filter searches a resident card's inline action alert", async ({ dashboard: page, daemon }) => {
+  const other = "Release sentinel";
+  await launch(daemon);
+  await launch(daemon, other);
+  await useDrawer(page, daemon, "board");
+  await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
+
+  const drawer = drawerOf(page);
+  const matching = cardOf(drawer);
+  const nonmatching = cardOf(drawer, other);
+  const alert = matching.getByRole("alert");
+  const runNow = matching.getByRole("button", { name: "Run now", exact: true });
+  const path = "**/api/residents/runs/*/run-now";
+  const message = "Wake quota unavailable";
+  await page.route(path, (route) => route.fulfill({ status: 503, json: { error: message } }), { times: 1 });
+  await runNow.click();
+  await expect(alert).toHaveText(message);
+  await expect(nonmatching).toBeVisible();
+
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("wake QUOTA");
+  await expect(alert).toBeVisible();
+  await expect(nonmatching).toHaveCount(0);
+  await capture(page, "filtered-resident-alert");
+
+  await filter.fill("quota sentinel");
+  await expect(matching).toHaveCount(0);
+  await expect(nonmatching).toHaveCount(0);
+  await filter.fill("quota");
+  await expect(alert).toHaveText(message);
+
+  const [retry] = await Promise.all([page.waitForResponse(path), runNow.click()]);
+  expect(retry.ok()).toBe(true);
+  await expect(matching).toHaveCount(0);
+  await page.locator(".filter-box").click();
+  await filter.press("Escape");
+  await expect(matching).toBeVisible();
+  await expect(alert).toHaveCount(0);
+  await expect(nonmatching).toBeVisible();
 });
 
 test("the drawer opens three ways as a column beside the Board, dims nothing, and stays beside the drill-in", async ({ dashboard: page, daemon }) => {
@@ -333,6 +611,32 @@ test("a resident that needs you is a visitor card while the drawer is closed, an
   await request(daemon, `/api/reviews/${reviewId}/resolve`, { action: "dismiss" });
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
   await expectOffFleet(page);
+});
+
+test("the fleet filter searches the Board visitor card's note", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await askResident(daemon);
+  await request(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
+  });
+  await useDrawer(page, daemon, "board");
+
+  const board = page.locator("main.board");
+  const visitor = board.getByRole("button", { name: `${NAME} needs you - resident, opens its conversation`, exact: true });
+  const note = board.getByText("Resident · opens its conversation", { exact: true });
+  const unrelated = board.getByRole("button", { name: "Open Fleet neighbour", exact: true });
+  await expect(visitor).toBeVisible();
+  await expect(note).toBeVisible();
+  await expect(unrelated).toBeVisible({ timeout: 60_000 });
+  await expect(drawerOf(page)).toHaveCount(0);
+
+  await page.locator(".filter-box").click();
+  await page.getByRole("textbox", { name: /Filter sessions/ }).fill("opens its");
+  await expect(visitor).toBeVisible();
+  await expect(note).toBeVisible();
+  await expect(unrelated).toHaveCount(0);
+  await expect(drawerOf(page)).toHaveCount(0);
+  await capture(page, "filtered-board-visitor-note");
 });
 
 test("Board and Console placement restores the fleet placement and the dock, live, and ⌥1 still opens", async ({ dashboard: page, daemon }) => {
@@ -620,7 +924,7 @@ test("the drawer's footer launches a profile, and a profile with no repository l
   const WITH_REPO = "Footer launcher";
   const NO_REPO = "Footer gardener";
   await createProfile(daemon, WITH_REPO);
-  await createProfile(daemon, NO_REPO, false);
+  await createProfile(daemon, NO_REPO, { repo: false });
   await useDrawer(page, daemon, "board");
 
   await expect(edgeTab(page)).toHaveAccessibleName("Open the Residents drawer - 0 live");

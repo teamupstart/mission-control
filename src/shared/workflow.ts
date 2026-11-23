@@ -1869,6 +1869,8 @@ export interface SessionActionWarning {
  */
 export type SessionActionContinuationExpectation =
   | { kind: "none" }
+  /** A clean checkout whose HEAD is already contained in the observed default branch. */
+  | { kind: "no_change"; headOid: string; treeOid: string; baseOid: string; baseRef: string }
   /**
    * The pull request adapter's observed publication, carried forward for comparison.
    *

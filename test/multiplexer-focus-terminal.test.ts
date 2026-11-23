@@ -235,6 +235,7 @@ const DOMAINS_APPENDED_SINCE: readonly string[] = [
   "storage-limits",
   "feature-flags",
   "shaping",
+  "voice",
   "reports",
 ];
 

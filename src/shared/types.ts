@@ -2843,9 +2843,21 @@ export interface Task {
    * What task shaping added to the latest launch of this task that reached a worker, naming
    * the session it was delivered to. Absent or null when no shaper applied to that launch, the
    * `task-shaping` flag was off, or the task has never launched. Read it only through
-   * `currentShaping`, which shows it while it names the task's current session.
+   * `currentShaping`, which shows it while it names the task's current session and carries
+   * `shapingDelivery`.
    */
   shaping?: TaskShaping | null;
+  /**
+   * The turn-one delivery the task's binding was last written with: a fresh id per launch or
+   * handover, written in the same transaction as the record it stamps (`TaskShaping.deliveryId`)
+   * and the row naming the receiving session. A delivery that recorded nothing binds under its
+   * own id. So does one whose commit failed, through a fallback write of the binding alone, so an
+   * earlier record stops counting even when it names the same session. If that write fails too,
+   * the task keeps its previous id, live and durable alike. Absent on a task no delivery has bound since this existed, and from task
+   * reads except beside a record they show. Owned by the registry like `shaping`: a writer never
+   * sets it.
+   */
+  shapingDelivery?: string;
   /**
    * Set while this task's dispatch or handover is shaping context, never persisted: the pending
    * tile reads "Shaping context", and `shapingView` reports `shaping`. A projection like
@@ -2969,6 +2981,12 @@ export interface TaskSummary {
    * still compare its `sessionId` with the session they draw.
    */
   shaping?: TaskShaping;
+  /**
+   * `Task.shapingDelivery`, the delivery id the task's binding was written with, carried beside
+   * `shaping` and only with it. The card's readers hand it to `currentShaping` with the record,
+   * so the chip applies the whole rule to the task's own binding rather than trusting the card.
+   */
+  shapingDelivery?: string;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -4037,6 +4055,12 @@ export type ServerEvent =
        */
       shaping?: ShapingConfigView;
       /**
+       * The voice state at connect time (contract B of the voice plan). Present only while the
+       * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
+       * seven entries, and a roster that is empty until the names phase fills it.
+       */
+      voice?: import("./voice.ts").VoiceState;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -4210,6 +4234,14 @@ export type ServerEvent =
    * second fetch.
    */
   | { type: "shaping_config"; config: ShapingConfigView | null }
+  /**
+   * The voice state moved: a flag or the voice config changed, a listener's hello arrived or
+   * lapsed, or a shell report arrived or lapsed. Carries the whole state, so every follower - each
+   * dashboard and the desktop shell - converges without a fetch. Sent only while the `voice` flag
+   * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
+   * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
+   */
+  | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

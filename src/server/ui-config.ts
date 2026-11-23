@@ -9,6 +9,8 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -128,7 +130,13 @@ export function getUiConfig(persistMigration = true): UiConfig {
  * would call that unset and let the dashboard adopt stale `localStorage` over it.
  */
 export function uiConfigView(): UiConfigView {
-  return { configured: getAppConfig(CONFIG_ENTRY) !== undefined, config: getUiConfig() };
+  const configured = getAppConfig(CONFIG_ENTRY) !== undefined;
+  const config = getUiConfig();
+  if (featureEnabled(VOICE_FLAG)) return { configured, config };
+  // Behind its flag like every voice surface: with it off the response is the one an install
+  // without voice gave. The stored value is kept, and returns with the flag.
+  const { voice: _withheld, ...withoutVoice } = config;
+  return { configured, config: withoutVoice };
 }
 
 /**

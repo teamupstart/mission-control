@@ -151,6 +151,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "telemetry.runtime",
       "terminals",
       "ui",
+      // Voice settings, edited in Settings > Voice. `muted` is operational and never restored.
+      "voice",
       "workflows",
       "worktrees",
     ],
@@ -210,6 +212,17 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
+  assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
+    muted: "operational",
+    hotkey: "setting",
+    autoMuteDuringCalls: "setting",
+    cancelWindow: "setting",
+    whenUnsure: "setting",
+    planFormsByVoice: "setting",
+    inputDevice: "setting",
+    decisionProvider: "setting",
+    backend: "setting",
+  });
 });
 
 test("mixed config snapshots include settings and exclude derived or operational state", () => {

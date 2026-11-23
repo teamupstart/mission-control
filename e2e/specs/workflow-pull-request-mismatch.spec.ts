@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
+import type { SQLInputValue } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -77,7 +79,7 @@ async function announcePullRequest(daemon: DaemonHandle, sessionId: string, url:
   if (!response.ok) throw new Error(`hook answered ${response.status}: ${await response.text()}`);
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+async function dispatch(page: Page, daemon: DaemonHandle, unchanged = false): Promise<string> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
@@ -105,10 +107,13 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
     }, { message: "the dispatched session should settle to idle before evidence capture" })
     .toBe("idle");
 
+  if (unchanged) return session!.id;
+
   // Native acquisition is detached. Model the branch the working agent creates, then send
   // the same live hook that lets the daemon observe it without enabling host process scans
   // in the isolated browser fixture.
   execFileSync("git", ["-C", session!.cwd, "switch", "-q", "-c", "e2e/pr-mismatch"]);
+  execFileSync("git", ["-C", session!.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "Work to publish"]);
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const observed = await fetch(`${daemon.baseURL}/hooks/Stop`, {
     method: "POST",
@@ -131,7 +136,49 @@ const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string |
   (await api<{ summary: { actionWait?: string | null } }>(daemon, `/api/workflow-runs/${runId}`))
     .summary.actionWait ?? null;
 
-for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "merged"
+/** Seed only a sibling Persona's finished review and refused packet, without model calls.
+ * The retry endpoint, conversation hold, release, delivery, and rendered Runs state stay real.
+ */
+async function queueSiblingFeedback(daemon: DaemonHandle, runId: string): Promise<string> {
+  await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
+    `/api/workflow-runs/${runId}`)).deliveries.some(d => d.state === "delivered")).toBe(true);
+  const peer = withDaemonDb(daemon, db => {
+    const run = db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(runId)!;
+    const binding = db.prepare("SELECT * FROM workflow_bindings WHERE id = ?").get(run.binding_id as string)!;
+    const submission = db.prepare("SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round, segment LIMIT 1").get(runId)!;
+    const delivery = db.prepare("SELECT * FROM workflow_deliveries WHERE run_id = ? LIMIT 1").get(runId)!;
+    const clone = (table: string, row: Record<string, unknown>, patch: Record<string, unknown>) => {
+      const values = { ...row, ...patch };
+      db.prepare(`INSERT INTO ${table} (${Object.keys(values).join(",")}) VALUES (${Object.keys(values).map(() => "?").join(",")})`)
+        .run(...Object.values(values) as SQLInputValue[]);
+    };
+    const peerId = `${runId}-sibling`;
+    clone("workflow_bindings", binding, { id: peerId, repo_root: daemon.secondRepo,
+      session_repo_root: daemon.secondRepo, session_cwd: daemon.secondRepo });
+    clone("workflow_runs", run, { id: peerId, binding_id: peerId, trigger_key: peerId,
+      status: "waiting_for_session", current_phase: "persona_feedback" });
+    clone("workflow_submissions", submission, { id: peerId, run_id: peerId, trigger_key: peerId,
+      round: 3, status: "waiting_for_session" });
+    const payload = "Repair the sibling repository's round-3 review finding.";
+    clone("workflow_deliveries", delivery, { id: peerId, run_id: peerId, submission_id: peerId,
+      kind: "persona_feedback", node_attempt_id: null, state: "refused", delivered_at: null,
+      payload, payload_sha256: createHash("sha256").update(payload).digest("hex") });
+    return { id: peerId, sessionId: binding.session_id, noteKey: binding.note_key };
+  });
+  await api(daemon, `/api/workflow-deliveries/${peer.id}/retry`, {
+    requestId: "queue-sibling", expectedSessionId: peer.sessionId, expectedNoteKey: peer.noteKey,
+  });
+  // Retry enrolls the packet behind the live holder before claiming a send. Restore the
+  // normal prepared Persona-packet seed; no delivery or hold outcome is seeded.
+  withDaemonDb(daemon, db => db.prepare("UPDATE workflow_deliveries SET state = 'prepared' WHERE id = ? AND state = 'refused'").run(peer.id));
+  const held = await api<{ deliveryHold: { runId: string } | null; deliveries: Array<{ state: string }> }>(daemon,
+    `/api/workflow-runs/${peer.id}`);
+  expect(held.deliveryHold?.runId).toBe(runId);
+  expect(held.deliveries[0]?.state).toBe("prepared");
+  return peer.id;
+}
+
+for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead", "tree_retry_adoption", "returned_to_base", "changed_missing_tree", "no_change_inspector"]) test(scenario === "no_change_inspector" ? "an unchanged repository completes an Inspector-policy run without a PR" : scenario === "changed_missing_tree" ? "known changed work without accepted-tree proof waits for PR adoption" : scenario === "returned_to_base" ? "a clean checkout returned to base waits for late PR adoption" : scenario === "tree_retry_adoption" ? "missing accepted-tree proof allows a late PR adoption before recovery" : scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
   ? "an earlier merged PR completes the action and names the publication in Runs"
   : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
   : "a durably adopted pull request completes before provider metadata arrives", async ({
@@ -140,21 +187,36 @@ for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "
 }) => {
   test.setTimeout(360_000);
   const alreadyMerged = scenario === "merged";
+  const noChange = scenario === "no_change" || scenario === "no_change_inspector";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const sessionId = await dispatch(dashboard, daemon);
+  const detached = noChange || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base" || scenario === "changed_missing_tree";
+  const sessionId = await dispatch(dashboard, daemon, detached);
+  if (scenario === "returned_to_base") {
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+    writeFileSync(join(session.cwd, "published-plan.md"), "Plan content prepared for publication.\n");
+    execFileSync("git", ["-C", session.cwd, "add", "published-plan.md"]);
+    execFileSync("git", ["-C", session.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Plan to publish"]);
+  }
+  if (scenario === "detached_ahead" || scenario === "changed_missing_tree") {
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+    execFileSync("git", ["-C", session.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "Detached work to publish"]);
+    expect(execFileSync("git", ["-C", session.cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim()).toBe("HEAD");
+    expect(execFileSync("git", ["-C", session.cwd, "rev-list", "--count", "origin/main..HEAD"], { encoding: "utf8" }).trim()).toBe("1");
+  }
 
   // A `pull_request` action - the completion this build now proves, and the one whose graph
   // this spec's ancestor pinned as unpublishable.
   const action = await api<{ id: string }>(daemon, "/api/session-actions", {
     name: "Open the pull request",
     description: "Open the pull request for the reviewed work",
-    promptMarkdown: PROMPT,
+    promptMarkdown: detached ? `${PROMPT}\nE2E_HOLD_TURN_UNTIL_RELEASED\n` : PROMPT,
     requiredSkillId: null,
     completion: { kind: "pull_request" },
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E pull request run",
+    ...(scenario === "no_change_inspector" ? { completionPolicy: { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" } } : {}),
     draft: {
       nodes: [
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
@@ -198,6 +260,91 @@ for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "
   );
   const runId = submitted.run.id;
 
+  if (detached) {
+    // Keep the fake turn open while seeding sibling review state. Otherwise its result can
+    // race the fixture's SQLite writes and evict the session with SQLITE_BUSY on CI.
+    await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .find(session => session.id === sessionId)?.state, { timeout: 60_000 }).toBe("working");
+    if (scenario === "missing_base" || scenario === "retry_adoption") {
+      const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+      // Remove only base refs in this disposable fixture; HEAD remains a real detached commit.
+      for (const ref of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/heads/main"]) {
+        execFileSync("git", ["-C", session.cwd, "update-ref", "--no-deref", "-d", ref]);
+      }
+    }
+    const siblingId = await queueSiblingFeedback(daemon, runId);
+    if (scenario === "returned_to_base") {
+      const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+      execFileSync("git", ["-C", session.cwd, "switch", "--detach", "origin/main"]);
+      expect(execFileSync("git", ["-C", session.cwd, "status", "--porcelain"], { encoding: "utf8" }).trim()).toBe("");
+    }
+    if (scenario === "missing_tree" || scenario === "tree_retry_adoption" || scenario === "changed_missing_tree") withDaemonDb(daemon, db => {
+      // Delivery proves capture has finished. Remove the historical proof only now, so an
+      // in-flight capture cannot overwrite the seed with a freshly measured content tree.
+      const updated = db.prepare("UPDATE workflow_submissions SET context_json = json_remove(context_json, '$.evidence.contentTreeOid', '$.evidence.publication') WHERE run_id = ?")
+        .run(runId);
+      expect(Number(updated.changes)).toBe(1);
+      const stored = db.prepare("SELECT json_extract(context_json, '$.evidence.contentTreeOid') AS tree FROM workflow_submissions WHERE run_id = ?").get(runId);
+      expect(stored?.tree).toBeNull();
+    });
+    writeFileSync(join(daemon.recordDir, "e2e-release-held-turn"), "");
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    if (scenario === "missing_base" || scenario === "retry_adoption" || scenario === "missing_tree" || scenario === "tree_retry_adoption" || scenario === "returned_to_base") {
+      await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_proof");
+    }
+    if (scenario === "retry_adoption" || scenario === "detached_ahead" || scenario === "tree_retry_adoption" || scenario === "returned_to_base" || scenario === "changed_missing_tree") {
+      if (scenario === "detached_ahead" || scenario === "changed_missing_tree") {
+        await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_pull_request");
+        await expect(dashboard.locator("article.wf-run-action")).toContainText("Awaiting PR");
+      }
+      await announcePullRequest(daemon, sessionId, "https://github.com/owner/repo/pull/77");
+      await expect.poll(async () =>
+        (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+      { timeout: 30_000 }).toBe("completed");
+      await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
+        `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
+      await expect(dashboard.locator("article.wf-run-action")).toContainText("PR opened with warning");
+      await shoot(dashboard, scenario === "changed_missing_tree" ? "25-changed-missing-tree-adopted" : scenario === "returned_to_base" ? "24-returned-to-base-adopted" : scenario === "tree_retry_adoption" ? "23-missing-tree-adopted" : scenario === "detached_ahead" ? "21-detached-ahead-adopted" : "19-proof-retry-adopted");
+      return;
+    }
+    try {
+      await expect.poll(async () =>
+        (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+    { timeout: scenario.startsWith("missing_") ? 90_000 : 45_000 }).toBe(noChange ? "completed" : "blocked");
+    } catch (error) {
+      const holder = await api(daemon, `/api/workflow-runs/${runId}`);
+      const sibling = await api(daemon, `/api/workflow-runs/${siblingId}`);
+      const summarize = (detail: unknown) => {
+        const d = detail as { run: { status: string }; summary: { actionWait: string; recovery: unknown }; deliveryHold: unknown;
+          deliveries: Array<{ state: string }> };
+        return { status: d.run.status, actionWait: d.summary.actionWait, deliveryHold: d.deliveryHold,
+          packetStates: d.deliveries.map(p => p.state), recovery: d.summary.recovery };
+      };
+      console.log("Unchanged-repository stall evidence", JSON.stringify({ holder: summarize(holder), sibling: summarize(sibling) }));
+      await shoot(dashboard, "17-baseline-stall");
+      await dashboard.goto(`${daemon.baseURL}/#/runs/${siblingId}`);
+      await expect(dashboard.getByRole("heading", { name: "E2E pull request run", exact: true })).toBeVisible();
+      await shoot(dashboard, "17-baseline-sibling");
+      throw error;
+    }
+    await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
+      `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
+    const card = dashboard.locator("article.wf-run-action");
+    if (!noChange) {
+      await expect(card).toContainText(scenario === "missing_base" ? "default base" : "accepted content tree");
+      await expect(card).toContainText("resubmit with fresh evidence");
+      await expect(dashboard.getByRole("button", { name: "Start repair round 2", exact: true })).toBeEnabled();
+      await card.scrollIntoViewIfNeeded();
+      await shoot(dashboard, `${scenario === "missing_tree" ? "22" : "20"}-${scenario}-proof-retry`, true);
+      return;
+    }
+    await expect(card).toContainText("No changes to publish");
+    await expect(card).toContainText("No pull request was needed");
+    await expect(card).not.toContainText("PR opened");
+    expect(await api<unknown[]>(daemon, "/api/inspector/prs")).toEqual([]);
+    await shoot(dashboard, scenario === "no_change_inspector" ? "26-no-change-inspector" : "16-no-change");
+    return;
+  }
   if (alreadyMerged) {
     await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
     await expect.poll(async () =>
@@ -295,14 +442,14 @@ for (const scenario of ["unobserved", "merged", "operator"]) test(scenario === "
 });
 
 /** Both widths, for `workflow-session-action-evidence.spec.ts`' reason. */
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(page: Page, name: string, fullPage = false): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   for (const [suffix, width] of [["wide", 1440], ["narrow", 720]] as const) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForTimeout(300);
-    await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
+    await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png`, fullPage });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 }

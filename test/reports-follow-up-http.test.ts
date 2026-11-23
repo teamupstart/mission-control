@@ -439,9 +439,11 @@ test("Retry on a follow-up task the operator cancelled launches nothing and asks
   const taskId = String(held.body.taskId);
   f.failDispatches(null);
   f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
+  // Forgotten the moment it is cancelled, before any Retry.
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
   const retried = await f.followUp(report.id);
   assert.equal(retried.status, 409);
-  assert.match(String(retried.body.error), /deleted or cancelled/);
+  assert.match(String(retried.body.error), /Write what the follow-up task should do/);
   assert.deepEqual(f.dispatched, [], "a cancelled task is never dispatched");
   const waiting = f.reports.get(report.id)!;
   assert.equal(waiting.readAt, null);
@@ -508,6 +510,41 @@ test("a dispatched follow-up whose task is cancelled answers nothing: the report
   assert.equal(cleared.followUpTaskId, secondTask);
 });
 
+test("cancelling or deleting a dispatched follow-up's task puts its report back in to read, with no route call", async () => {
+  const f = setup();
+  const repo = f.inRepo(mkRepo());
+  for (const end of ["cancel", "delete"] as const) {
+    const report = await postFromGoneSession(f, { repoRoot: repo }, `Ended by ${end}`);
+    const started = await f.followUp(report.id, "Go");
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+    const taskId = String(started.body.taskId);
+    assert.equal(f.reports.get(report.id)!.readBy, "follow-up", "cleared by the dispatched follow-up");
+    // The operator ends the task from the Backlog; nothing calls the follow-up route.
+    if (end === "cancel") f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
+    else f.registry.removeTask(taskId);
+    const waiting = f.reports.get(report.id)!;
+    assert.equal(waiting.readAt, null, `${end}: waiting to be read again`);
+    assert.equal(waiting.readBy, null);
+    assert.equal(waiting.followUpTaskId, null, `${end}: the card offers the instructions box again`);
+    assert.equal(f.registry.reportsToRead().some((r) => r.id === report.id), true, `${end}: back in to read`);
+  }
+});
+
+test("a follow-up task deleted while the daemon was down is forgotten at the next start", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  const started = await f.followUp(report.id, "Go");
+  const taskId = String(started.body.taskId);
+  f.reports.stop();
+  f.registry.removeTask(taskId);
+  assert.equal(f.reports.get(report.id)!.readBy, "follow-up", "nothing was listening");
+  const restarted = new ReportManager(f.registry);
+  after(() => restarted.stop());
+  const waiting = restarted.get(report.id)!;
+  assert.equal(waiting.readAt, null);
+  assert.equal(waiting.followUpTaskId, null);
+});
+
 test("only the operator starts a follow-up", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
@@ -526,11 +563,12 @@ test("Retry after the recorded task was deleted asks for instructions again, and
   f.failDispatches(null);
   f.registry.removeTask(first);
 
-  // Retry carries no words: nothing is filed, the stale id is forgotten, and the card goes back
-  // to the instructions box (no followUpTaskId), with the report still waiting.
+  // Deleting the task forgets it at once: the card goes back to the instructions box (no
+  // followUpTaskId). A Retry still in flight carries no words, so it files nothing.
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, null);
   const retried = await f.followUp(report.id);
   assert.equal(retried.status, 409);
-  assert.match(String(retried.body.error), /was deleted or cancelled\. Write what the follow-up should do/);
+  assert.match(String(retried.body.error), /Write what the follow-up task should do/);
   assert.equal(retried.body.taskId, null);
   assert.equal(f.followUpTasks().length, 0, "no task was filed without the operator's words");
   const waiting = f.reports.get(report.id)!;

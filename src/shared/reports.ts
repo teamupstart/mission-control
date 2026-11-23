@@ -312,15 +312,15 @@ export function followUpTitle(report: Pick<ReportItem, "title">): string {
 
 /**
  * A follow-up task's intent: the operator's words, then the report as context. The session that
- * posted the report has ended, so the new session reads everything it needs here.
+ * posted the report has ended, so the new session reads everything it needs here. The words are
+ * never empty: a follow-up task is only filed with the operator's instructions.
  */
 export function followUpIntent(
   report: Pick<ReportItem, "id" | "title" | "body" | "url" | "document" | "author">,
   words: string,
 ): string {
-  const instruction = words.trim() || "Pick up where this report leaves off.";
   const lines = [
-    instruction,
+    words.trim(),
     "",
     `This follows up a report (${report.id}) that ${report.author.name} posted before its session ended. ` +
       "That session is not resumed; this is a new task, and the report below is its context.",

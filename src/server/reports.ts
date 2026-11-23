@@ -26,7 +26,7 @@ import {
 import { sessionWorkspaceRoot } from "@shared/session.ts";
 import type { PendingTurn, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
-import { inTransaction, openDb } from "./db.ts";
+import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
@@ -227,12 +227,15 @@ export class ReportManager {
     // checked once now for anything that changed while the daemon was down.
     this.stopTasks = this.registry.subscribe((event) => {
       if (event.type === "task_upsert") this.reconcileFollowUp(event.task);
+      else if (event.type === "task_remove") this.forgetFollowUpTask(event.id);
     });
     for (const row of openDb()
       .prepare("SELECT DISTINCT follow_up_task_id FROM reports WHERE follow_up_task_id IS NOT NULL AND (read_at IS NULL OR read_by = 'follow-up')")
       .all() as Array<{ follow_up_task_id: string }>) {
-      const task = this.registry.getTask(row.follow_up_task_id);
+      const task = this.registry.getTask(row.follow_up_task_id) ?? getDurableTask(row.follow_up_task_id);
+      // Deleted while the daemon was down: forgotten now, as `task_remove` would have.
       if (task) this.reconcileFollowUp(task);
+      else this.forgetFollowUpTask(row.follow_up_task_id);
     }
   }
 
@@ -445,6 +448,11 @@ export class ReportManager {
    * right after stamping, so no order of the two leaves a cleared report with no session.
    */
   private reconcileFollowUp(task: Task): void {
+    // Cancelled: it will never run, so it is no longer anyone's follow-up.
+    if (task.status === "cancelled") {
+      this.forgetFollowUpTask(task.id);
+      return;
+    }
     const outcome = launchFailureOutcome(task);
     if (outcome === "not-started" || outcome === "returned") {
       if (this.staleFailures.has(task.id) && this.staleFailures.get(task.id) === task.launchFailure!.at) return;
@@ -467,6 +475,29 @@ export class ReportManager {
       .prepare("SELECT id FROM reports WHERE follow_up_task_id = ? AND read_at IS NULL")
       .all(task.id) as Array<{ id: string }>;
     for (const { id } of waiting) this.markRead(id, "follow-up");
+  }
+
+  /**
+   * A follow-up task that was cancelled or deleted no longer answers its report. Every report
+   * naming it forgets it, and a clearing it gave (`readBy: "follow-up"`) is dropped, so the report
+   * waits in to read again and its card offers the instructions box for a new follow-up. Driven
+   * by the task itself (`task_upsert` to cancelled, `task_remove`), since a read report has no
+   * inbox card through which the follow-up route could notice.
+   */
+  private forgetFollowUpTask(taskId: string): void {
+    const rows = openDb()
+      .prepare("SELECT id FROM reports WHERE follow_up_task_id = ?")
+      .all(taskId) as Array<{ id: string }>;
+    for (const { id } of rows) {
+      const changed = openDb().prepare(
+        `UPDATE reports SET follow_up_task_id = NULL,
+           read_at = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_at END,
+           read_by = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_by END
+         WHERE id = ? AND follow_up_task_id = ?`,
+      ).run(id, taskId).changes > 0;
+      const report = getRow(id);
+      if (changed && report) this.registry.upsertReport(report);
+    }
   }
 
   /** Where a reply to `report` goes now: the same rule the card draws from. */
@@ -515,20 +546,14 @@ export class ReportManager {
     if (report.author.residentProfileId !== null) {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
-    // A task that was deleted or cancelled since it was recorded cannot be dispatched, and it is
-    // no longer a follow-up either: forget it, and with it any clearing it gave the report (a
-    // follow-up that no longer exists answers nothing, so the report waits again). Retry carries
-    // no words, and a follow-up task is only ever filed with the operator's instructions (below),
-    // so the report goes back to the instructions box rather than being re-filed from a Retry.
+    // A task that was deleted or cancelled is normally forgotten the moment it happens
+    // (`forgetFollowUpTask`, from the task watcher). This catches one the watcher has not seen yet,
+    // the same way. Retry carries no words, and a follow-up task is only ever filed with the
+    // operator's instructions (below), so the report goes back to the instructions box rather
+    // than being re-filed from a Retry.
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
-      openDb().prepare(
-        `UPDATE reports SET follow_up_task_id = NULL,
-           read_at = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_at END,
-           read_by = CASE WHEN read_by = 'follow-up' THEN NULL ELSE read_by END
-         WHERE id = ? AND follow_up_task_id = ?`,
-      ).run(id, report.followUpTaskId);
+      this.forgetFollowUpTask(report.followUpTaskId);
       report = getRow(id)!;
-      this.registry.upsertReport(report);
       if (!words.trim()) {
         return refuse(409, "The follow-up task was deleted or cancelled. Write what the follow-up should do and start a new one.", report);
       }

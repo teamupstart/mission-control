@@ -51,8 +51,22 @@ const markerSchema = z.strictObject({
   createdAt: z.int().positive(),
 });
 type Marker = z.infer<typeof markerSchema>;
+type Namespace = Marker["kind"] | "digests";
+type ActiveRequestLookup = (workloadId: string) => RepositoryMaterializationRequest | null;
 
 export class WorkflowRepositoryArtifactService implements RepositoryArtifactMaterializer {
+  private static readonly services = new Map<string, WorkflowRepositoryArtifactService>();
+  static forRoot(store: WorkflowStore, root = join(STATE_DIR, "workflow-repositories")) {
+    const path = resolve(root);
+    const canonical = join(realpathSync(dirname(path)), basename(path));
+    let service = this.services.get(canonical);
+    if (!service) {
+      service = new WorkflowRepositoryArtifactService(store, canonical);
+      this.services.set(canonical, service);
+    }
+    return service;
+  }
+
   private readonly ownership: RepositoryOwnership;
   private readonly live = new Set<string>();
   private readonly candidates = new Map<string, WorkflowRepositoryArtifactCandidate>();
@@ -60,16 +74,15 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   private tail: Promise<void> = Promise.resolve();
   private started = false;
   private failures = 0;
+  private activeRequest?: ActiveRequestLookup;
 
-  constructor(
-    store: WorkflowStore,
-    private readonly options: {
-      root?: string;
-      /** Trusted workload supervisor's current dispatch. Absence revokes all materialization. */
-      activeRequest?: (workloadId: string) => RepositoryMaterializationRequest | null;
-    } = {},
-  ) {
+  private constructor(store: WorkflowStore, private readonly root: string) {
     this.ownership = new RepositoryOwnership(store);
+  }
+
+  /** Install or revoke the trusted supervisor's dispatch lookup on the daemon's existing service. */
+  setActiveRequestLookup(lookup: ActiveRequestLookup | undefined) {
+    this.activeRequest = lookup;
   }
 
   private exclusive<T>(fn: () => Promise<T>) {
@@ -93,14 +106,19 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       workflowLog("info", { event, duration_ms: Date.now() - start });
     }
   }
-  private namespace(kind: "pending" | "leases" | "digests") {
-    const path = resolve(this.options.root ?? join(STATE_DIR, "workflow-repositories"));
-    const root = join(realpathSync(dirname(path)), basename(path));
-    for (const directory of [root, join(root, kind)]) {
-      if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
-      if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) unavailable();
+  private namespace(kind: Namespace): string;
+  private namespace(kind: Namespace, create: false): string | undefined;
+  private namespace(kind: Namespace, create = true) {
+    const path = join(this.root, kind);
+    for (const directory of [this.root, path]) {
+      const entry = lstatSync(directory, { throwIfNoEntry: false });
+      if (!entry) {
+        if (!create) return undefined;
+        mkdirSync(directory, { mode: 0o700 });
+      } else if (!entry.isDirectory()) unavailable();
+      if (realpathSync(directory) !== directory) unavailable();
     }
-    return join(root, kind);
+    return path;
   }
   private allocate(kind: Marker["kind"]) {
     const marker: Marker = { kind, id: randomUUID(), nonce: randomUUID(), createdAt: Date.now() };
@@ -165,7 +183,9 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     if (!lstatSync(intent).isFile()) unavailable();
     const digest = digestSchema.parse(readFileSync(intent, "utf8"));
     if (existsSync(join(pending, "artifact")) || this.ownership.hasArtifact(digest)) return;
-    const path = join(this.namespace("digests"), digest);
+    const root = this.namespace("digests", false);
+    if (!root) return;
+    const path = join(root, digest);
     if (!existsSync(path)) return;
     await verifyDirectory(path, digest, AbortSignal.timeout(600_000));
     if (!this.ownership.cleanup(digest, () => renameSync(path, join(pending, "artifact")))) unavailable();
@@ -220,7 +240,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       unavailable();
   }
   private checkRequest(request: RepositoryMaterializationRequest) {
-    const active = this.options.activeRequest?.(request.workloadId);
+    const active = this.activeRequest?.(request.workloadId);
     if (
       !active ||
       (["submissionId", "workloadId", "attemptId", "digest", "locator"] as const).some(
@@ -300,9 +320,11 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       let deleted = 0,
         orphans = 0;
       if (!this.started) this.ownership.recoverProvisional();
-      const root = this.namespace("digests");
+      const root = this.namespace("digests", false);
       for (const kind of ["pending", "leases"] as const) {
-        for (const id of readdirSync(this.namespace(kind))) {
+        const directory = this.namespace(kind, false);
+        if (!directory) continue;
+        for (const id of readdirSync(directory)) {
           if (this.live.has(id)) continue;
           try {
             const path = this.marked(kind, id);
@@ -316,13 +338,13 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       }
       this.ownership.queueUnclaimed();
       const rows = this.ownership.artifacts();
-      const present = new Set(readdirSync(root));
+      const present = new Set(root ? readdirSync(root) : []);
       for (const row of rows) {
-        const path = join(root, row.digest);
         if (row.state === "cleanup_pending") {
           if (
             this.ownership.cleanup(row.digest, () => {
-              if (!present.has(row.digest)) return;
+              if (!root || !present.has(row.digest)) return;
+              const path = join(root, row.digest);
               if (realpathSync(path) !== path || !lstatSync(path).isDirectory()) unavailable();
               // Published artifacts are flat. Never walk an unexpected directory, even at a
               // formerly owned digest path. Partial unlink failures leave the row retryable.

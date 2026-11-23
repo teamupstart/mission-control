@@ -122,7 +122,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     if (directory) embedded.push(key);
     paths.add(key);
   }
-  return { root, common, format, head, index, intent, embedded, paths: [...paths].sort() };
+  return { root, common, format, emptyBlob, head, index, intent, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);

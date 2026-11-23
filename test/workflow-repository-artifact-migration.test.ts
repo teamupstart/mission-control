@@ -39,3 +39,17 @@ test("pre-artifact submissions reopen twice with the fresh artifact tables, inde
     );
   }
 });
+
+test("upgrading a completed or interrupted v51 migration replaces the running-status trigger", () => {
+  const db = openDb();
+  const trigger = "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='repository_activation_required'";
+  const current = db.prepare(trigger).get()?.sql;
+  assert.equal(typeof current, "string");
+  const previous = String(current).replace("OLD.status='capturing' AND NEW.status='running'", "NEW.status='running'");
+  assert.notEqual(previous, current);
+  for (const version of [51, 50]) {
+    openDb().exec(`DROP TRIGGER repository_activation_required; ${previous}; PRAGMA user_version=${version};`);
+    closeDb();
+    assert.equal(openDb().prepare(trigger).get()?.sql, current);
+  }
+});

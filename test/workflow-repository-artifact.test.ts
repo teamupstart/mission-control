@@ -32,7 +32,7 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 ensureNativeStateLockAddon();
 const signal = new AbortController().signal;
-function fixture(t: TestContext) {
+function fixture(t: TestContext, format = "sha1") {
   const temp = mkdtempSync(join(tmpdir(), "artifact-fixture-")),
     checkout = join(temp, "source");
   const root = join(temp, "store");
@@ -44,14 +44,15 @@ function fixture(t: TestContext) {
       encoding: "utf8",
       env: { PATH: process.env.PATH, HOME: temp, GIT_CONFIG_NOSYSTEM: "1" },
     }).trim();
-  git("init", "-q", "-b", "main");
+  git("init", "-q", "-b", "main", "--object-format=" + format);
   git("config", "user.name", "Fixture");
   git("config", "user.email", "fixture@example.test");
   const store = new WorkflowStore(),
     db = openDb();
   const requests = new Map<string, RepositoryMaterializationRequest>();
-  const options = { root, activeRequest: (id: string) => requests.get(id) ?? null };
-  const service = new WorkflowRepositoryArtifactService(store, options);
+  const lookup = (id: string) => requests.get(id) ?? null;
+  const service = WorkflowRepositoryArtifactService.forRoot(store, root);
+  service.setActiveRequestLookup(lookup);
   const write = (name: string, value: string | Buffer) => writeFileSync(join(checkout, name), value);
   function submission() {
     const id = randomUUID();
@@ -74,12 +75,30 @@ function fixture(t: TestContext) {
     write,
     store,
     service,
-    options,
+    lookup,
     db,
     submission,
     request,
     prepare: (sourceBase: string | null = null) => service.prepare({ checkout, sourceBase }, signal),
   };
+}
+
+// Exit with a marked pending directory and, optionally, a second promoted candidate.
+// The parent subsequently runs startup recovery with a genuinely fresh in-memory registry.
+function interruptedCapture(f: ReturnType<typeof fixture>, submissionId?: string) {
+  const output = execFileSync(process.execPath, [
+    "--import", "tsx", "--input-type=module", "-e", `
+      import { WorkflowStore } from "./src/server/workflows/store.ts";
+      import { WorkflowRepositoryArtifactService } from "./src/server/workflows/repository-artifact/service.ts";
+      const [root, checkout, submission] = process.argv.slice(1);
+      const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+      const prepare = () => service.prepare({ checkout, sourceBase: null }, new AbortController().signal);
+      const pending = await prepare();
+      if (submission) await service.promote(await prepare(), submission);
+      console.log(JSON.stringify(pending));
+    `, f.root, f.checkout, ...(submissionId ? [submissionId] : []),
+  ], { encoding: "utf8" });
+  return JSON.parse(output.trimEnd().split("\n").at(-1)!) as { id: string; digest: string };
 }
 
 test("portable layered capture reads and diffs after source deletion, omits sensitive history and executes no filters", async (t) => {
@@ -138,7 +157,7 @@ test("portable layered capture reads and diffs after source deletion, omits sens
   f.store.commitRepositoryCaptureActivation(second);
   for (const field of ["workloadId", "attemptId", "submissionId", "digest", "locator"])
     await assert.rejects(f.service.materialize({ ...request, [field]: "stale" }, signal));
-  assert.deepEqual(readdirSync(join(f.root, "leases")), []);
+  assert.equal(existsSync(join(f.root, "leases")), false);
   const artifact = join(f.root, "digests", one.digest);
   for (const name of readdirSync(artifact))
     assert.ok(!readFileSync(join(artifact, name)).includes("SECRET-"));
@@ -235,20 +254,58 @@ test("portable layered capture reads and diffs after source deletion, omits sens
 
 test("startup removes only marked abandoned candidates and releases stranded provisional claims", async (t) => {
   const f = fixture(t);
-  const a = await f.prepare();
-  const b = await f.prepare();
+  const pending = interruptedCapture(f, f.submission());
   const unowned = join(f.root, "pending", randomUUID());
   mkdirSync(unowned);
   symlinkSync(f.checkout, join(f.root, "pending", randomUUID()));
-  await f.service.reconcile();
-  assert.ok(existsSync(join(f.root, "pending", a.id)));
-  const snapshot = await f.service.promote(b, f.submission());
-  const restarted = new WorkflowRepositoryArtifactService(f.store, f.options);
-  const result = await restarted.reconcile();
+  assert.ok(existsSync(join(f.root, "digests", pending.digest)));
+  const result = await f.service.reconcile();
   assert.equal(result.orphans, 2);
   assert.ok(existsSync(unowned) && existsSync(f.checkout));
-  assert.ok(!existsSync(join(f.root, "pending", a.id)));
-  assert.ok(!existsSync(join(f.root, "digests", snapshot.digest)));
+  assert.ok(!existsSync(join(f.root, "pending", pending.id)));
+  assert.ok(!existsSync(join(f.root, "digests", pending.digest)));
+});
+
+test("one service per root protects live candidates, provisional claims and leases across callers", async (t) => {
+  const f = fixture(t);
+  f.write("a", "submitted");
+  const pending = await f.prepare();
+  const first = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(first);
+  const request = f.request(first);
+  f.service.setActiveRequestLookup(undefined);
+  await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
+  const supervisor = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), f.root);
+  assert.equal(supervisor, f.service);
+  supervisor.setActiveRequestLookup(f.lookup);
+  const lease = await supervisor.materialize(request, signal);
+  const second = await supervisor.promote(await f.prepare(), f.submission());
+  await Promise.all([supervisor.reconcile(), f.service.reconcile()]);
+  assert.ok(existsSync(join(f.root, "pending", pending.id)));
+  assert.ok(existsSync(join(lease.objectDirectory, "objects")));
+  f.store.commitRepositoryCaptureActivation(second);
+  assert.ok(supervisor.activeSnapshot(second.submissionId));
+  await lease.release();
+  await f.service.discard(pending);
+  await supervisor.release(first.submissionId);
+  await supervisor.release(second.submissionId);
+  await f.service.reconcile();
+});
+
+test("artifact readiness guards first activation and a failed artifact permits later running transitions", async (t) => {
+  const f = fixture(t);
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  const id = snapshot.submissionId;
+  assert.throws(() => f.store.setSubmissionState(id, "running"), /repository claim is not active/);
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(join(f.root, "digests", snapshot.digest, "manifest.json"));
+  await assert.rejects(f.service.verify(snapshot, signal), { code: "artifact_unavailable" });
+  assert.equal(f.store.updateSubmissionCapture(id, { context: {}, evidence: {} }).status, "running");
+  f.store.setSubmissionState(id, "waiting_for_session");
+  assert.equal(f.store.setSubmissionState(id, "running").status, "running");
+  await assert.rejects(f.service.materialize(f.request(snapshot), signal), { code: "artifact_unavailable" });
+  await f.service.release(id);
+  await f.service.reconcile();
 });
 
 test("activation rolls back both writes and corruption and namespace substitution fail closed", async (t) => {
@@ -345,6 +402,40 @@ test("ambiguous allowed and sensitive object aliases, missing selected objects, 
   assert.deepEqual(readdirSync(join(f.root, "pending")), []);
   assert.deepEqual(f.service.artifacts(), []);
 });
+
+for (const format of ["sha1", "sha256"]) {
+  test(`empty blob aliases in ${format} preserve allowed bytes and deny the sensitive path`, async (t) => {
+    const f = fixture(t, format);
+    f.write(".env", "");
+    f.git("add", ".env");
+    f.git("commit", "-qm", "empty placeholder");
+    const empty = f.git("rev-parse", "HEAD:.env");
+    f.write(".env", "private");
+    f.write("__init__.py", "");
+    const snapshot = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    const artifact = join(f.root, "digests", snapshot.digest);
+    assert.deepEqual(readFileSync(join(artifact, empty)), Buffer.from("blob 0\0"));
+    assert.equal(existsSync(join(artifact, f.git("hash-object", ".env"))), false);
+    const request = f.request(snapshot);
+    const lease = await f.service.materialize(request, signal);
+    const reader = createRepositoryReader({
+      view: lease.descriptor,
+      objectDirectory: lease.objectDirectory,
+      workloadId: request.workloadId,
+      attemptId: request.attemptId,
+      gitBinary: "git",
+      signal,
+      budgets: {},
+      audit: async () => {},
+    });
+    assert.equal((await reader.query("read", { path: "__init__.py" })).status, "ok");
+    assert.equal((await reader.query("read", { path: ".env" })).code, "denied_path");
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
 
 test("raw path identity and gitlinks survive a round trip without following the submodule", async (t) => {
   const f = fixture(t);
@@ -522,16 +613,16 @@ test("512 MiB history limit stops before a large first parent and leaves the lat
 test("publication intent recovers a rename without a committed row and refuses unowned digest directories", async (t) => {
   const f = fixture(t);
   f.write("a", "partial promotion");
-  const c = await f.prepare();
+  const c = interruptedCapture(f);
   const parent = join(f.root, "pending", c.id),
     dest = join(f.root, "digests", c.digest);
   writeFileSync(join(parent, "promotion"), c.digest);
+  mkdirSync(join(f.root, "digests"));
   renameSync(join(parent, "artifact"), dest);
   const foreign = join(f.root, "digests", "a".repeat(64));
   mkdirSync(foreign);
   writeFileSync(join(foreign, "unowned"), "preserve");
-  const restarted = new WorkflowRepositoryArtifactService(f.store, f.options);
-  assert.equal((await restarted.reconcile()).orphans, 1);
+  assert.equal((await f.service.reconcile()).orphans, 1);
   assert.ok(existsSync(foreign));
   assert.ok(!existsSync(parent) && !existsSync(dest));
 });

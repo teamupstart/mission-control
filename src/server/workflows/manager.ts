@@ -698,14 +698,15 @@ export class WorkflowManager {
   private lastRetentionCompacted = 0;
   private lastRetentionDeleted = 0;
   private orphanedEvidenceImages = 0;
-  readonly repositoryArtifacts: WorkflowRepositoryArtifactService;
+  get repositoryArtifacts(): WorkflowRepositoryArtifactService {
+    return WorkflowRepositoryArtifactService.forRoot(this.store);
+  }
 
   constructor(
     private readonly registry: Registry,
     readonly store = new WorkflowStore(),
     private readonly options: WorkflowManagerOptions = {},
   ) {
-    this.repositoryArtifacts = new WorkflowRepositoryArtifactService(store);
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
     // `recordInjection` is still accepted as the sink's older name. A caller that wired it -
@@ -8326,7 +8327,6 @@ export class WorkflowManager {
         deleted: result.deletedRunIds.length,
         failed: result.failedRunCount,
       });
-      await this.repositoryArtifacts.reconcile();
     } catch (error) {
       this.lastRetentionAt = Date.now();
       this.lastRetentionError = "retention_failed";
@@ -8336,6 +8336,11 @@ export class WorkflowManager {
         event: "retention_failed",
         error: error instanceof Error ? error.name : "unknown",
       });
+    }
+    try {
+      await this.repositoryArtifacts.reconcile();
+    } catch {
+      workflowLog("error", { event: "repository_reconcile_failed", error: "artifact_unavailable" });
     } finally {
       this.retentionRunning = false;
     }

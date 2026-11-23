@@ -26,8 +26,9 @@ kind is append-only: `persona_verdict` is the sole current member. Later work ca
 in `request.execution`; the frozen Persona remains separate. Prompt, daemon-owned images,
 call-ledger identity and returned usage survive this boundary. This phase writes no ledger.
 
-`WorkflowRepositoryArtifactService` implements the injected materializer. Its supervisor
-supplies a lookup for the current workload request. It checks submission, workload, attempt,
+`WorkflowRepositoryArtifactService.forRoot` gives the manager and supervisor the same
+daemon-owned materializer for a canonical artifact directory. The supervisor can install
+or revoke its current workload lookup using `setActiveRequestLookup`. The service checks submission, workload, attempt,
 locator and digest, and requires the active SQLite claim and ready artifact before opening
 the artifact directory. The executor checks the returned identities again.
 
@@ -47,7 +48,8 @@ authenticates every object's type, size, Git id and SHA-256. Original tree bytes
 path spelling, mode and gitlink identity. The path table uses hex for raw filename bytes.
 Phase 1 can address only canonical UTF-8 paths. A sensitive or unaddressable path keeps
 its tree reference and classification while its blob body is omitted. If an allowed and
-a denied path require the same blob id, capture fails closed.
+a denied path share a nonempty blob, capture fails closed. They can share Git's empty
+blob, which has zero payload bytes. The sensitive path still denies reads.
 
 Capture reads index entries and Git's nonignored untracked enumeration with optional locks
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
@@ -62,7 +64,8 @@ worktree once, outside the history budget. Missing required objects fail sealing
 `promote` publishes a verified candidate under its digest and attaches a provisional claim
 after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
 claim active and the submission running in one transaction. Multiple submissions can
-independently own the same bytes. Each lease reconstructs a private loose Git object store
+independently own the same bytes. Later verification failures block artifact reads while
+the submission can still resume or retry. Each lease reconstructs a private loose Git object store
 from verified files, along with the layer descriptor used by the MCP. This works after both
 the checkout and its Git common directory have disappeared.
 
@@ -72,7 +75,9 @@ their final row states atomically, so neither operation needs a separately commi
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A publication intent beside the
 candidate identifies a rename interrupted before database commit. Periodic maintenance
-skips live candidates and leases. Unknown filesystem entries are counted for investigation.
+skips live candidates and leases. Reconciliation inspects existing directories and leaves
+unused artifact storage absent. Its failures log `repository_reconcile_failed` independently
+of Workflow retention results. Unknown filesystem entries are counted for investigation.
 The cleanup transaction rechecks ownership before removing digest files.
 
 For truncated history, the materializer supplies a `shallow` file containing exactly the

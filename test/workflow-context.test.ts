@@ -645,7 +645,7 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
   const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
   const { WorkflowStore } = await import("../src/server/workflows/store.ts");
   const root = join(home, "artifact-store");
-  const service = new WorkflowRepositoryArtifactService(new WorkflowStore(), { root });
+  const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
   const signal = new AbortController().signal;
   const sealed = await captureStableWorkflowContext(async () => dirty,
     captured => captureBoundaryChanged(registry, binding, captured.boundary), {

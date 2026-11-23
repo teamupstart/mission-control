@@ -323,7 +323,8 @@ let db: DatabaseSync | undefined;
 //     author was muted before it existed, so every report notifies and is listed as before.
 // 51: content-addressed repository artifacts and per-submission claims. Historical
 //     submissions acquire no claim. Cleanup intent is durable on the digest row.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 51;
+// 52: enforce repository readiness only on the capturing-to-running activation edge.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 52;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -478,6 +479,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // transactions.
   d.exec("BEGIN IMMEDIATE;");
   try {
+    // Version 51 installed the broader running-status guard. Replace it atomically
+    // with the current definition below, preserving existing claims and submissions.
+    if (databaseSchemaVersion(d) < 52) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
     createSchemaObjects(d);
     d.exec("COMMIT;");
   } catch (error) {
@@ -1523,7 +1527,7 @@ function createSchemaObjects(d: DatabaseSync): void {
         WHERE submission_id=NEW.id AND state='provisional';
     END;
     CREATE TRIGGER IF NOT EXISTS repository_activation_required BEFORE UPDATE OF status ON workflow_submissions
-    WHEN NEW.status='running' AND EXISTS (
+    WHEN OLD.status='capturing' AND NEW.status='running' AND EXISTS (
       SELECT 1 FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
        WHERE c.submission_id=NEW.id AND (c.state!='active' OR a.state!='ready'))
     BEGIN SELECT RAISE(ABORT,'repository claim is not active'); END;

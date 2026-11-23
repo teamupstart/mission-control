@@ -283,8 +283,9 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       retainedRevisions.push(record);
       queue.push(...record.parents);
     }
-    // A single object cannot be both present and physically absent. Fail closed on aliases.
-    if ([...denied].some((id) => needed.has(id))) unavailable();
+    // A shared nonempty blob would disclose denied bytes through the allowed path.
+    // The canonical empty blob has no payload. Path policy still denies the sensitive name.
+    for (const id of denied) if (id !== state.emptyBlob && needed.has(id)) unavailable();
     const finalWork = await scanWorking(git.path, state, signal, async (id, bytes) => {
       if (needed.has(id) && !table.has(id)) await save("blob", bytes, id);
     });

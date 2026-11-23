@@ -924,3 +924,36 @@ test("a first prompt a restart lost is written at start for a running submission
   assert.equal(after.queued.length, 2, "prompted once when it arrives, not on every update");
   after.prompts.stop();
 });
+
+test("a retried first prompt never prompts a launch written after it was owed, whether called or recovered at start", () => {
+  for (const recovered of [false, true]) {
+    const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+    const sessionId = recovered ? "s-bound-recovered" : "s-bound-called";
+    const taskId = nextTask();
+    // The record's launch time sits well before both bounds, as a real launch does.
+    const owed = () => [{ sessionId, submittedAt: 500 }];
+    const { registry, queued, prompts } = setup({ scheduled, ...(recovered ? { owed } : {}) });
+    if (recovered) prompts.stop();
+    registry.launch(taskId, sessionId);
+    // Fail exactly the prompt's own session read: recovery reads it twice first (its own check and promptOwed's).
+    const getSession = registry.getSession.bind(registry);
+    const failOn = recovered ? 3 : 1;
+    let reads = 0;
+    registry.getSession = (id: string) => {
+      reads += 1;
+      if (reads === failOn) throw new Error("transient read failure");
+      return getSession(id);
+    };
+    if (recovered) prompts.start();
+    else assert.deepEqual(prompts.prompt(sessionId), { kind: "none", why: "retrying" });
+    assert.equal(queued.length, 0);
+    assert.equal(scheduled.length, 1, "the failed prompt is owed and retried");
+    // The task is launched again into the same session before the retry runs.
+    registry.launch(taskId, sessionId, { ...record(sessionId), at: Number.MAX_SAFE_INTEGER - 1 });
+    scheduled[0]!.fn();
+    assert.equal(queued.length, 0, `the later launch is not prompted for the earlier one's work (${recovered ? "recovered" : "called"})`);
+    assert.equal(db.getTaskSkillPrompt(taskId, sessionId), null);
+    assert.equal(scheduled.length, 1, "and nothing is owed any more");
+    prompts.stop();
+  }
+});

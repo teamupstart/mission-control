@@ -2296,7 +2296,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (!created.ok) return { ok: false, status: created.status, error: String(created.body.error ?? "could not create the follow-up task") };
         return { ok: true, taskId: created.task.id };
       },
-      exists: (taskId) => tasks.get(taskId) !== undefined,
+      exists: (taskId) => {
+        const task = tasks.get(taskId);
+        return task !== undefined && task.status !== "cancelled";
+      },
       dispatch: async (taskId) => {
         // A retry after a launch that failed with no session, as the launch-failure Retry does: a
         // failure that kept its worktree is re-filed first, which reclaims that tree.
@@ -9398,20 +9401,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * cannot become a task the form would have refused.
    */
   /**
-   * `create` and `alongside` in one transaction. A rollback (a throw from `alongside`, or a
-   * failed COMMIT) leaves no registry entry: the task `create` published is removed, which also
-   * tells every window it is gone. The task is a backlog task, so nothing was launched.
+   * `create` and `alongside` in one transaction. A rollback (a throw from `create` after it
+   * published the task, from `alongside`, or a failed COMMIT) leaves no registry entry: every
+   * task that appeared in the registry during the attempt and has no durable row is removed,
+   * which also tells every window it is gone. Found by comparison rather than from `create`'s
+   * return, so a throw inside `create` (a `task_upsert` listener, say) is cleaned up too. The
+   * attempt is synchronous, so nothing else can add a task meanwhile. The task is a backlog task,
+   * so nothing was launched.
    */
   function createWithin(create: () => Task, alongside: (task: Task) => void): Task {
-    let created: Task | null = null;
+    const before = new Set(registry.listTasks().map((task) => task.id));
     try {
       return inTransaction(() => {
-        created = create();
+        const created = create();
         alongside(created);
         return created;
       });
     } catch (error) {
-      if (created) registry.removeTask((created as Task).id);
+      for (const task of registry.listTasks()) {
+        if (!before.has(task.id) && !getDurableTaskRow(task.id)) registry.removeTask(task.id);
+      }
       throw error;
     }
   }

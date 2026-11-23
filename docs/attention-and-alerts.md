@@ -138,8 +138,10 @@ runs:
   report is marked read only once the task has been dispatched. If the dispatch fails (a launch
   hold, say), the card reads "Follow-up task created but not started" with **Retry**, which
   dispatches that same task: a report has at most one follow-up task however often you press it.
-  If that task has since been deleted, **Retry** files nothing: the card goes back to the
-  instructions box, so a new follow-up never starts without your words.
+  If that task has since been deleted or cancelled, **Retry** files and launches nothing: the
+  card goes back to the instructions box, so a new follow-up never starts without your words.
+  The report follows its task however the task is started: a held follow-up you later start
+  from the Backlog leaves **to read** as soon as it starts, without pressing **Retry**.
   The route refuses a follow-up while the session has not ended: a running agent is replied to,
   never replaced by a second session. The dispatch runs its launch in the background, so if that
   launch then fails with no session (the task fails or returns to the Backlog), the report comes

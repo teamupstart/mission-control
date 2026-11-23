@@ -408,6 +408,59 @@ test("a follow-up whose report stamp rolls back leaves no task in the registry a
   assert.deepEqual(f.dispatched, [], "nothing launched");
 });
 
+test("a held follow-up started some other way leaves to read when it starts, with no Retry needed", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  f.failDispatches("everything is paused - automatic launches are held until you resume");
+  const held = await f.followUp(report.id, "Fix it");
+  assert.equal(held.status, 409);
+  const taskId = String(held.body.taskId);
+  assert.equal(f.reports.get(report.id)!.readAt, null, "held: still to read, with Retry");
+
+  // Started from the Backlog after resuming, not through Retry: the task gains a session.
+  f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "running", sessionId: "s-from-backlog" });
+  const cleared = f.reports.get(report.id)!;
+  assert.equal(cleared.readBy, "follow-up");
+  assert.equal(cleared.followUpTaskId, taskId);
+  assert.equal(f.registry.reportsToRead().some((r) => r.id === report.id), false, "out of to read");
+});
+
+test("Retry on a follow-up task the operator cancelled launches nothing and asks for instructions again", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  f.failDispatches("not now");
+  const held = await f.followUp(report.id, "Fix it");
+  const taskId = String(held.body.taskId);
+  f.failDispatches(null);
+  f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
+  const retried = await f.followUp(report.id);
+  assert.equal(retried.status, 409);
+  assert.match(String(retried.body.error), /deleted or cancelled/);
+  assert.deepEqual(f.dispatched, [], "a cancelled task is never dispatched");
+  const waiting = f.reports.get(report.id)!;
+  assert.equal(waiting.readAt, null);
+  assert.equal(waiting.followUpTaskId, null, "the card goes back to the instructions box");
+});
+
+test("a task_upsert listener that throws while the follow-up is created leaves no task behind", async () => {
+  const f = setup();
+  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
+  // Throws on the follow-up's own publication, inside tasks.create, so create never returns.
+  const stop = f.registry.subscribe((event) => {
+    if (event.type === "task_upsert" && event.task.title === "Follow up: Flaky test traced") throw new Error("listener fell over");
+  });
+  try {
+    const broken = await f.followUp(report.id, "Fix it");
+    assert.equal(broken.status, 500);
+    assert.match(String(broken.body.error), /listener fell over/);
+  } finally {
+    stop();
+  }
+  assert.equal(f.followUpTasks().length, 0, "the published task was removed again");
+  assert.equal(f.reports.get(report.id)!.followUpTaskId, null, "the stamp rolled back with the row");
+  assert.deepEqual(f.dispatched, []);
+});
+
 test("only the operator starts a follow-up", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
@@ -430,7 +483,7 @@ test("Retry after the recorded task was deleted asks for instructions again, and
   // to the instructions box (no followUpTaskId), with the report still waiting.
   const retried = await f.followUp(report.id);
   assert.equal(retried.status, 409);
-  assert.match(String(retried.body.error), /was deleted\. Write what the follow-up should do/);
+  assert.match(String(retried.body.error), /was deleted or cancelled\. Write what the follow-up should do/);
   assert.equal(retried.body.taskId, null);
   assert.equal(f.followUpTasks().length, 0, "no task was filed without the operator's words");
   const waiting = f.reports.get(report.id)!;

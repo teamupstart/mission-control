@@ -43,7 +43,7 @@ import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./s
  * profile - is copied onto the row at post time.
  *
  * `markRead` is the one place a report becomes read. The one way back is a follow-up whose launch
- * failed with no session (`reopenFailedFollowUp`), so its Retry is offered again.
+ * failed with no session (`reconcileFollowUp`), so its Retry is offered again.
  */
 
 /** A refused post or operator action, with the HTTP status the route answers. */
@@ -72,7 +72,10 @@ export interface FollowUpTaskPort {
     words: string,
     record: (taskId: string) => void,
   ): Promise<{ ok: true; taskId: string } | { ok: false; status: 400 | 404 | 409 | 503; error: string }>;
-  /** Whether the task still exists. */
+  /**
+   * Whether the task can still be this report's follow-up: it exists and was not cancelled. A
+   * cancelled task is never launched by a dispatch, so it is forgotten like a deleted one.
+   */
   exists(taskId: string): boolean;
   /**
    * Dispatch the task. The task manager starts the launch in the background, so the task row may
@@ -198,17 +201,17 @@ export class ReportManager {
       if (on && !wasOn) for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
       wasOn = on;
     });
-    // A follow-up clears its report when its dispatch is accepted, but the launch runs in the
-    // background and can still fail. Watched here, and checked once now for a failure recorded
-    // while the daemon was down, so such a report comes back with Retry.
+    // A follow-up's report follows its task: cleared once the task has started, however it was
+    // started, and back in to read when its launch failed with no session. Watched here, and
+    // checked once now for anything that changed while the daemon was down.
     this.stopTasks = this.registry.subscribe((event) => {
-      if (event.type === "task_upsert") this.reopenFailedFollowUp(event.task);
+      if (event.type === "task_upsert") this.reconcileFollowUp(event.task);
     });
     for (const row of openDb()
-      .prepare("SELECT follow_up_task_id FROM reports WHERE read_by = 'follow-up' AND follow_up_task_id IS NOT NULL")
+      .prepare("SELECT DISTINCT follow_up_task_id FROM reports WHERE follow_up_task_id IS NOT NULL AND (read_at IS NULL OR read_by = 'follow-up')")
       .all() as Array<{ follow_up_task_id: string }>) {
       const task = this.registry.getTask(row.follow_up_task_id);
-      if (task) this.reopenFailedFollowUp(task);
+      if (task) this.reconcileFollowUp(task);
     }
   }
 
@@ -398,9 +401,15 @@ export class ReportManager {
   }
 
   /**
-   * Put a follow-up's report back in to read when its task's launch failed with no session
-   * surviving it (`not-started` or `returned`; a `kept` failure left an agent that may be
-   * working). It still names its task, so the card offers Retry, which dispatches that same task.
+   * Keep a follow-up's report in step with its task.
+   *
+   * - **Started** (a session, or dispatching, running, done or hibernated, with no open launch
+   *   failure): the report is cleared as `follow-up`, however the task was started. One held by
+   *   Pause all and started later from the Backlog leaves to read the moment it starts, not only
+   *   when someone presses Retry.
+   * - **Failed with no session surviving it** (`not-started` or `returned`; a `kept` failure left
+   *   an agent that may be working): the report goes back to to read, still naming its task, so
+   *   the card offers Retry, which dispatches that same task.
    *
    * Decided by the task's own record, never by comparing times, so a failure in the same
    * millisecond as the clearing counts. The one record that does not count is the one the task
@@ -409,24 +418,29 @@ export class ReportManager {
    * failure that lands before the report is stamped is caught when `runFollowUp` reconciles
    * right after stamping, so no order of the two leaves a cleared report with no session.
    */
-  private reopenFailedFollowUp(task: Task): void {
+  private reconcileFollowUp(task: Task): void {
     const outcome = launchFailureOutcome(task);
-    if (outcome !== "not-started" && outcome !== "returned") {
-      // Relaunched or settled: whatever it carried before is no longer a record to ignore.
-      if (!task.launchFailure) this.staleFailures.delete(task.id);
+    if (outcome === "not-started" || outcome === "returned") {
+      if (this.staleFailures.has(task.id) && this.staleFailures.get(task.id) === task.launchFailure!.at) return;
+      const rows = openDb()
+        .prepare("SELECT id FROM reports WHERE follow_up_task_id = ? AND read_by = 'follow-up'")
+        .all(task.id) as Array<{ id: string }>;
+      for (const { id } of rows) {
+        const reopened = openDb()
+          .prepare("UPDATE reports SET read_at = NULL, read_by = NULL WHERE id = ? AND read_by = 'follow-up'")
+          .run(id).changes > 0;
+        const report = getRow(id);
+        if (reopened && report) this.registry.upsertReport(report);
+      }
       return;
     }
-    if (this.staleFailures.has(task.id) && this.staleFailures.get(task.id) === task.launchFailure!.at) return;
-    const rows = openDb()
-      .prepare("SELECT id FROM reports WHERE follow_up_task_id = ? AND read_by = 'follow-up'")
+    // Relaunched or settled: whatever it carried before is no longer a record to ignore.
+    if (!task.launchFailure) this.staleFailures.delete(task.id);
+    if (!followUpStarted(task)) return;
+    const waiting = openDb()
+      .prepare("SELECT id FROM reports WHERE follow_up_task_id = ? AND read_at IS NULL")
       .all(task.id) as Array<{ id: string }>;
-    for (const { id } of rows) {
-      const reopened = openDb()
-        .prepare("UPDATE reports SET read_at = NULL, read_by = NULL WHERE id = ? AND read_by = 'follow-up'")
-        .run(id).changes > 0;
-      const report = getRow(id);
-      if (reopened && report) this.registry.upsertReport(report);
-    }
+    for (const { id } of waiting) this.markRead(id, "follow-up");
   }
 
   /** Where a reply to `report` goes now: the same rule the card draws from. */
@@ -475,8 +489,8 @@ export class ReportManager {
     if (report.author.residentProfileId !== null) {
       return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
-    // A task that was deleted since it was recorded cannot be dispatched, and it is no longer a
-    // follow-up either: forget it. Retry carries no words (it only ever relaunched the recorded
+    // A task that was deleted or cancelled since it was recorded cannot be dispatched, and it is
+    // no longer a follow-up either: forget it. Retry carries no words (it only ever relaunched the recorded
     // task), so a new task is not filed from it, which would drop the instructions the operator
     // typed: the report goes back to the instructions box instead. A call that brings words
     // files the one new follow-up the report then has.
@@ -486,7 +500,7 @@ export class ReportManager {
       report = getRow(id)!;
       this.registry.upsertReport(report);
       if (!words.trim()) {
-        return refuse(409, "The follow-up task was deleted. Write what the follow-up should do and start a new one.", report);
+        return refuse(409, "The follow-up task was deleted or cancelled. Write what the follow-up should do and start a new one.", report);
       }
     }
     let taskId = report.followUpTaskId;
@@ -536,7 +550,23 @@ export class ReportManager {
     // The launch runs in the background and may already have failed, before the stamp above,
     // when the task event found nothing to reopen. Reconciled now from the task's record.
     const task = this.registry.getTask(taskId);
-    if (task) this.reopenFailedFollowUp(task);
+    if (task) this.reconcileFollowUp(task);
     return { ok: true, report: getRow(id) ?? report, taskId };
+  }
+}
+
+/** Whether a follow-up's task has started: it has a session, or it has left the backlog to run. */
+function followUpStarted(task: Task): boolean {
+  if (task.sessionId) return true;
+  switch (task.status) {
+    case "dispatching":
+    case "running":
+    case "done":
+    case "hibernated":
+      return true;
+    case "backlog":
+    case "cancelled":
+    case "failed":
+      return false;
   }
 }

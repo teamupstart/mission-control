@@ -632,6 +632,49 @@ test("archivePresent is false only for a real absence, and throws when the libra
   }
 });
 
+test("a press against a library that cannot be read answers 500 and writes nothing; only a missing root counts as empty", { skip: asRoot }, async () => {
+  const lockedParent = join(home, `publish-locked-${Date.now()}`);
+  const root = join(lockedParent, "library");
+  mkdirSync(root, { recursive: true });
+  const archives = new ArchiveManager({
+    root, legacyRoots: [], store: new ArchiveStore(openDb()),
+    producer: { id: PRODUCER, label: null }, intervalMs: null, watch: false,
+  });
+  after(() => archives.stop());
+  const page = Buffer.from(STATIC_HTML);
+  const publication = (reportId: string) => ({
+    reportId, reportCreatedAt: 1, title: "Locked library", page,
+    session: { id: "s-locked", name: "Locked", taskId: null }, repositoryLabel: null,
+  });
+
+  // The library root cannot be resolved (realpath: EACCES on its parent).
+  chmodSync(lockedParent, 0o000);
+  try {
+    const refused = await archives.publishReportPage(publication("r-501"));
+    assert.equal(refused.ok, false);
+    assert.equal(!refused.ok && refused.status, 500);
+    assert.match(!refused.ok ? refused.problems.join(" ") : "", /could not read the archive library: .*EACCES/);
+  } finally {
+    chmodSync(lockedParent, 0o700);
+  }
+  // The root resolves but cannot be listed, so the bundle at the key cannot be checked for replay.
+  chmodSync(root, 0o000);
+  try {
+    const refused = await archives.publishReportPage(publication("r-502"));
+    assert.equal(!refused.ok && refused.status, 500);
+    assert.match(!refused.ok ? refused.problems.join(" ") : "", /could not read the archive library: .*EACCES/);
+  } finally {
+    chmodSync(root, 0o700);
+  }
+  assert.deepEqual(readdirSync(root), [], "nothing was staged or written while the library was unreadable");
+
+  // A root that is simply not there is empty: the press publishes and creates it.
+  rmSync(root, { recursive: true, force: true });
+  const published = await archives.publishReportPage(publication("r-503"));
+  assert.equal(published.ok, true, JSON.stringify(published));
+  assert.equal(await archives.archivePresent(published.ok ? published.key : ""), true);
+});
+
 test("an unreadable library keeps every recorded key: the startup check skips it and a press answers 500", { skip: asRoot }, async () => {
   const { post, publish, reports, archives, root } = setup();
   const report = await post("locked.html", STATIC_HTML, "Library locked");

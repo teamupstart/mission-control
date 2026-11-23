@@ -910,8 +910,21 @@ export class ArchiveManager {
     if (!sha256) return { ok: false, status: 500, problems: ["the page could not be digested"] };
 
     return this.withMutation(key, async () => {
-      const root = await realpath(this.libraryPath).catch(() => null);
-      const existing = root ? await verifyArchiveBundle(root, identity) : null;
+      // Only a library that is not there counts as holding no bundle (ENOENT/ENOTDIR), as in
+      // `archivePresent`. A library that cannot be read right now (permissions, descriptor
+      // exhaustion, I/O) is reported, never taken for an empty one: a press then would stage over a
+      // bundle it could not see instead of replaying it.
+      let existing: Awaited<ReturnType<typeof verifyArchiveBundle>> | null;
+      try {
+        const root = await realpath(this.libraryPath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+          throw error;
+        });
+        existing = root ? await verifyArchiveBundle(root, identity) : null;
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        return { ok: false as const, status: 500 as const, problems: [`could not read the archive library: ${why}`] };
+      }
       if (existing?.kind === "verified") {
         const manifest = existing.bundle.manifest;
         const primary = manifest.artifacts.find((artifact) => artifact.role === "primary_report");

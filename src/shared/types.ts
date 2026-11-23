@@ -3781,8 +3781,8 @@ export interface LlmStatus {
    * the app-wide value.
    */
   jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
-  /** Foreman reads this live gate over HTTP. Absent on older daemons. */
-  backgroundReasoningEffort?: boolean;
+  /** Foreman reads this live gate over HTTP. Present only while the preview is on. */
+  backgroundReasoningEffort?: true;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];
 }

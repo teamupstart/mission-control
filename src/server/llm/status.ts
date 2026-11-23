@@ -31,7 +31,7 @@ export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
   ) as Partial<Record<LlmJobId, string | undefined>>;
   return {
     runner: llmRunnerChoice(cfg),
-    backgroundReasoningEffort: backgroundReasoningEffortEnabled(),
+    ...(backgroundReasoningEffortEnabled() && { backgroundReasoningEffort: true }),
     // Foreman reads this resolved value over HTTP. It cannot read app_config, and resolving
     // only from its own environment would let the daemon and worker disagree about a stored
     // choice until one of them restarted.

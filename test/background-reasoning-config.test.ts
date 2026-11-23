@@ -6,6 +6,7 @@ import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { getForemanConfig, setForemanConfig } from "../src/server/foreman/config.ts";
 import { inspectorExecution, setInspectorConfig } from "../src/server/inspector/config.ts";
 import { getLlmConfig, setLlmConfig } from "../src/server/llm/config.ts";
+import { llmStatus } from "../src/server/llm/status.ts";
 
 test("background settings preserve sibling overrides and accept a reset to provider default", () => {
   assert.equal(getLlmConfig().efforts, undefined);
@@ -30,7 +31,9 @@ test("background settings preserve sibling overrides and accept a reset to provi
 test("Inspector effort resolves live against its selected provider and model", () => {
   setInspectorConfig({ runner: "codex", model: "gpt-5.6-test", effort: "max" });
   assert.equal(inspectorExecution().effort, undefined);
+  assert.equal(Object.hasOwn(llmStatus(), "backgroundReasoningEffort"), false);
   applyFeatureFlagIntent({ kind: "flag", id: BACKGROUND_REASONING_EFFORT_FLAG_ID, enabled: true });
+  assert.equal(llmStatus().backgroundReasoningEffort, true);
   assert.equal(inspectorExecution().effort, undefined);
   setInspectorConfig({ model: "gpt-6-sol" });
   assert.equal(inspectorExecution().effort, "max");

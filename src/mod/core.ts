@@ -118,6 +118,35 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     toConnecting();
   };
 
+  /**
+   * Opens the pane unasked and unfocused (the person's typing is not interrupted), once. A refused
+   * open leaves `paneOpened` false, so a later tick tries again.
+   */
+  const openStartPane = async (): Promise<void> => {
+    if (paneOpened || stopped) return;
+    await host.paneState.set("paneTab", "needs-you");
+    if (stopped) return;
+    await host.paneOpen({ tab: "needs-you" });
+    paneOpened = true;
+    if (stopped) host.paneClose();
+  };
+
+  /**
+   * The pane open and the inbox poll. A refused open does not stop the poll (the glance layer
+   * still works) and is rethrown after it, so the caller logs it; the next tick opens it again.
+   */
+  const pollWithPane = async (): Promise<void> => {
+    let openFailure: unknown = null;
+    try {
+      await openStartPane();
+    } catch (error) {
+      openFailure = error;
+    }
+    if (stopped) return;
+    await poll();
+    if (openFailure !== null) throw openFailure;
+  };
+
   const connect = async (): Promise<void> => {
     const health = await checkHealth(host);
     if (stopped) return;
@@ -159,25 +188,14 @@ export function createModCore(host: CoreHost, facts: ModSessionFacts): ModCore {
     await host.paneState.set("registration", registration);
     if (stopped) return;
     if (beforeFirstPrompt) host.banner(bannerLines(registration));
-    if (!paneOpened) {
-      // Opened unasked and unfocused: the person's typing is not interrupted.
-      await host.paneState.set("paneTab", "needs-you");
-      if (stopped) return;
-      await host.paneOpen({ tab: "needs-you" });
-      paneOpened = true;
-      if (stopped) {
-        host.paneClose();
-        return;
-      }
-    }
-    await poll();
+    await pollWithPane();
   };
 
   const tick = async (): Promise<void> => {
     if (busy || stopped || phase === "inert") return;
     busy = true;
     try {
-      if (phase === "active") await poll();
+      if (phase === "active") await pollWithPane();
       else await connect();
     } finally {
       busy = false;

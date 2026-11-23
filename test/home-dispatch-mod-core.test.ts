@@ -603,3 +603,40 @@ test("the mod-calls scan ignores a path quoted in a comment and still catches a 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a refused automatic pane open is tried again on a later poll, and polling goes on meanwhile", async () => {
+  const { fake, core } = setup();
+  const real = fake.host.paneOpen;
+  let refusals = 1;
+  fake.host.paneOpen = async (opts) => {
+    if (refusals-- > 0) throw new Error("the engine refused the open");
+    return real(opts);
+  };
+  await assert.rejects(core.start(), /refused the open/);
+  // Connected, polling and drawing, but no pane yet.
+  assert.equal(core.phase(), "active");
+  assert.equal(fake.paneOpens.length, 0);
+  assert.ok(fake.bands.some((band) => band !== undefined));
+  // The next poll opens it, unasked and unfocused; later polls do not open it again.
+  await core.tick();
+  assert.deepEqual(fake.paneOpens, [{ tab: "needs-you" }]);
+  await core.tick();
+  await core.tick();
+  assert.equal(fake.paneOpens.length, 1);
+});
+
+test("a pane open that keeps being refused is retried on every poll until it succeeds", async () => {
+  const { fake, core } = setup();
+  const real = fake.host.paneOpen;
+  let attempts = 0;
+  fake.host.paneOpen = async (opts) => {
+    attempts += 1;
+    if (attempts < 3) throw new Error("refused");
+    return real(opts);
+  };
+  await assert.rejects(core.start());
+  await assert.rejects(core.tick());
+  await core.tick();
+  assert.equal(attempts, 3);
+  assert.equal(fake.paneOpens.length, 1);
+});

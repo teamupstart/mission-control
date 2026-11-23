@@ -157,8 +157,18 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     const marker: Marker = { kind, id: randomUUID(), nonce: randomUUID(), createdAt: Date.now() };
     const path = join(this.namespace(kind), marker.id);
     mkdirSync(path, { mode: 0o700 });
-    writeFileSync(join(path, "owner.tmp"), JSON.stringify(marker), { flag: "wx", mode: 0o600 });
-    renameSync(join(path, "owner.tmp"), join(path, "owner.json"));
+    try {
+      writeFileSync(join(path, "owner.tmp"), JSON.stringify(marker), { flag: "wx", mode: 0o600 });
+      renameSync(join(path, "owner.tmp"), join(path, "owner.json"));
+    } catch (error) {
+      // This call created the directory exclusively and has not handed it to anyone.
+      try {
+        rmSync(path, { recursive: true });
+      } catch (cleanupError) {
+        workflowLog("warn", { event: "repository_allocation_cleanup", error: workflowErrorCode(cleanupError) });
+      }
+      throw error;
+    }
     this.live.add(marker.id);
     return { marker, path };
   }

@@ -258,12 +258,18 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const retainedRevisions: RepositoryViewDescriptor["retainedRevisions"] = [];
     const queue = head ? [head] : [];
     const seen = new Set<string>();
+    const shallow = new Set(state.shallow);
+    const omittedParents = new Set<string>();
     let retainedBlobBytes = 0;
     for (let pos = 0; pos < queue.length && retainedRevisions.length < policy.maxCommits; pos++) {
       const id = queue[pos]!;
+      // The v1 descriptor is one breadth-first prefix. Stop before a source-shallow
+      // parent, even when another branch in the queue has deeper history available.
+      if (omittedParents.has(id)) break;
       if (seen.has(id)) continue;
-      seen.add(id);
       const { record } = await commit(id);
+      // A v1 frontier cannot declare an already-retained revision to be omitted.
+      if (shallow.has(id) && record.parents.some(parent => seen.has(parent))) break;
       const { layer, treeIds } = await flatten(record.tree, true);
       const extra = new Set(
         [...layer]
@@ -281,6 +287,8 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       await include(id, treeIds, layer);
       retainedBlobBytes += bytes;
       retainedRevisions.push(record);
+      seen.add(id);
+      if (shallow.has(id)) for (const parent of record.parents) omittedParents.add(parent);
       queue.push(...record.parents);
     }
     // A shared nonempty blob would disclose denied bytes through the allowed path.

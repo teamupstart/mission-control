@@ -12,6 +12,7 @@ import {
 } from "@shared/repository-access.ts";
 
 const compress = promisify(deflate);
+export const MAX_CAPTURE_OBJECT_BYTES = 64 * 1024 * 1024;
 export const oid = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 export const digestSchema = z.string().regex(/^[0-9a-f]{64}$/);
 export const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");

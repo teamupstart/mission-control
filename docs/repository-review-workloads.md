@@ -53,9 +53,11 @@ blob, which has zero payload bytes. The sensitive path still denies reads.
 
 Capture reads index entries and Git's nonignored untracked enumeration with optional locks
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
-Each regular worktree file may be at most 64 MiB. The daemon checks the open file's size
-before allocating its read buffer and retries capture if the file grows or shrinks during
-the read. An oversized tracked, untracked or denied file fails the capture as a whole.
+Each regular worktree file and each Git object read for capture may be at most 64 MiB.
+The daemon checks the open file's size before allocating its read buffer and retries
+capture if the file grows or shrinks during the read. For Git objects, it requests the
+type and size before requesting any payload, including objects needed only by the index,
+HEAD or source base. An oversized required payload fails the whole capture.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
@@ -66,7 +68,11 @@ filters or textconv to produce status. An unmerged index has no single tree and 
 History starts at HEAD and visits all parents breadth-first in recorded order. The service
 stops before the first revision that would exceed 2,048 commits or 512 MiB of additional
 unique allowed blob bytes. It counts objects already required by base, HEAD, index or
-worktree once, outside the history budget. Missing required objects fail sealing.
+worktree once, outside the history budget. A shallow checkout contributes its declared
+boundary commits to the same breadth-first prefix. Traversal stops before the first
+omitted parent, including at a merge, and records the original parent IDs in the frontier.
+Missing objects inside the selected prefix fail sealing. Changing the source's shallow
+boundary also changes the stable capture fingerprint.
 
 `promote` publishes a verified candidate under its digest and attaches a provisional claim
 after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
@@ -88,7 +94,8 @@ itself holds cleanup intent and any retryable deletion error. Publication and re
 their final row states atomically, so neither operation needs a separately committed
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A publication intent beside the
-candidate identifies a rename interrupted before database commit. Failed seal and
+candidate identifies a rename interrupted before database commit. If installing an owner
+marker fails, the allocator removes the temporary directory it just created. Failed seal and
 materialization attempts relinquish their temporary directories even if removal fails.
 Maintenance can then retry cleanup using their ownership markers. Periodic maintenance
 skips live candidates and leases. Reconciliation inspects existing directories and leaves

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   chmodSync,
   truncateSync,
@@ -25,8 +26,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
-import { RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
-import { MAX_WORKTREE_FILE_BYTES } from "../src/server/workflows/repository-artifact/checkout.ts";
+import { MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
 import { captureStableWorkflowContext } from "../src/server/workflows/context.ts";
@@ -371,7 +371,7 @@ test("oversized tracked, untracked and denied worktree files fail capture before
       f.write(name, "small");
       if (name === "tracked") f.git("add", name);
       const file = realpathSync(join(f.checkout, name));
-      truncateSync(file, MAX_WORKTREE_FILE_BYTES + 1);
+      truncateSync(file, MAX_CAPTURE_OBJECT_BYTES + 1);
       oversized.add(file);
       await assert.rejects(f.service.sampleBoundary(f.checkout, signal), { code: "artifact_unavailable" });
       await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
@@ -385,6 +385,36 @@ test("oversized tracked, untracked and denied worktree files fail capture before
     "[workflow] event=repository_boundary error=worktree_file_too_large",
     "[workflow] event=repository_seal error=worktree_file_too_large",
   ]).flat());
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  assert.deepEqual(f.service.artifacts(), []);
+});
+
+test("oversized required Git objects in the index, HEAD or base are rejected before payload allocation", async (t) => {
+  const f = fixture(t);
+  f.write("large", "");
+  truncateSync(join(f.checkout, "large"), MAX_CAPTURE_OBJECT_BYTES + 1);
+  f.git("add", "large");
+  rmSync(join(f.checkout, "large"));
+  const alloc = Buffer.allocUnsafe;
+  const sizes = t.mock.method(Buffer, "allocUnsafe", (size: number) => {
+    assert.ok(size <= MAX_CAPTURE_OBJECT_BYTES, "allocated oversized Git object");
+    return alloc(size);
+  });
+  const warnings = t.mock.method(console, "warn", () => {});
+  try {
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" }); // Index only.
+    f.git("commit", "-qm", "large staged blob");
+    const base = f.git("rev-parse", "HEAD");
+    f.git("update-index", "--force-remove", "large");
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" }); // HEAD only.
+    const tip = objects(f.checkout).commit(f.git("write-tree"), [], "independent tip");
+    f.git("update-ref", "HEAD", tip);
+    await assert.rejects(f.prepare(base), { code: "artifact_unavailable" }); // Diff-only base.
+  } finally {
+    sizes.mock.restore();
+  }
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]),
+    Array(3).fill("[workflow] event=repository_seal error=git_object_too_large"));
   assert.deepEqual(readdirSync(join(f.root, "pending")), []);
   assert.deepEqual(f.service.artifacts(), []);
 });
@@ -475,6 +505,55 @@ for (const kind of ["pending", "leases"] as const) {
     await f.service.reconcile();
   });
 }
+
+test("failed owner marker writes and renames clean up only their new pending and lease directories", async (t) => {
+  const f = fixture(t);
+  const holder = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(holder);
+  const other = await f.prepare();
+  const lease = await f.service.materialize(f.request(holder), signal);
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const write = fs.writeFileSync, rename = fs.renameSync;
+  const warnings = t.mock.method(console, "warn", () => {});
+  for (const kind of ["pending", "leases"]) {
+    const directory = join(f.root, kind);
+    const before = readdirSync(directory);
+    for (const operation of ["write", "rename"]) {
+      const failure = Object.assign(new Error("marker installation failed"), { code: "EIO" });
+      const install = operation === "write"
+        ? t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof write>) => {
+          if (String(args[0]).endsWith("/owner.tmp")) {
+            write(args[0], "{");
+            throw failure;
+          }
+          return write(...args);
+        })
+        : t.mock.method(fs, "renameSync", (...args: Parameters<typeof rename>) => {
+          if (String(args[0]).endsWith("/owner.tmp")) throw failure;
+          return rename(...args);
+        });
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(kind === "pending" ? f.prepare() : f.service.materialize(f.request(holder), signal),
+          { code: "artifact_unavailable" });
+      } finally {
+        install.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.deepEqual(readdirSync(directory), before);
+      assert.equal((await f.service.reconcile()).orphans, 0);
+    }
+  }
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), [
+    ...Array(2).fill("[workflow] event=repository_seal error=EIO"),
+    ...Array(2).fill("[workflow] event=repository_materialize error=EIO"),
+  ]);
+  await lease.release();
+  await f.service.discard(other);
+  await f.service.release(holder.submissionId);
+  await f.service.reconcile();
+});
 
 test("materializing a damaged source object fails the shared digest for every holder", async (t) => {
   const f = fixture(t);
@@ -836,6 +915,74 @@ function objects(checkout: string) {
     },
   };
 }
+
+test("a depth-two clone seals its declared frontier, rejects a missing undeclared parent and reads after deletion", async (t) => {
+  const f = fixture(t);
+  const revisions: string[] = [];
+  for (const content of ["old", "boundary", "tip"]) {
+    f.write("a", content + "\n");
+    f.git("add", "a");
+    f.git("commit", "-qm", content);
+    revisions.push(f.git("rev-parse", "HEAD"));
+  }
+  const [old, boundary, tip] = revisions as [string, string, string];
+  const checkout = join(f.checkout, "..", "shallow-clone");
+  f.git("clone", "-q", "--depth=2", pathToFileURL(f.checkout).href, checkout);
+  const marker = join(checkout, ".git", "shallow");
+  assert.equal(readFileSync(marker, "utf8"), boundary + "\n");
+  const prepare = () => f.service.prepare({ checkout, sourceBase: null }, signal);
+  const candidate = await prepare();
+  rmSync(marker);
+  assert.equal(await f.service.stillCurrent(candidate, signal), false);
+  await assert.rejects(prepare(), { code: "artifact_unavailable" });
+  writeFileSync(marker, boundary + "\n");
+  assert.equal(await f.service.stillCurrent(candidate, signal), true);
+  const snapshot = await f.service.promote(candidate, f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(checkout, { recursive: true });
+  rmSync(f.checkout, { recursive: true });
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  assert.deepEqual(lease.descriptor.retainedRevisions.map(rev => rev.id), [tip, boundary]);
+  assert.deepEqual(lease.descriptor.frontier, [{ revision: boundary, omittedParents: [old] }]);
+  assert.equal(readFileSync(join(lease.objectDirectory, "shallow"), "utf8"), boundary + "\n");
+  const reader = createRepositoryReader({
+    view: lease.descriptor, objectDirectory: lease.objectDirectory, gitBinary: "git",
+    workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {},
+  });
+  assert.equal((await reader.query("git_log", {})).itemCount, 2);
+  assert.equal((await reader.query("git_show", { revision: old })).code, "revision_out_of_range");
+  assert.equal((await reader.query("git_show", { revision: boundary, patch: true })).code, "history_boundary");
+  const blame = await reader.query("git_blame", { revision: boundary, path: "a", startLine: 1, endLineExclusive: 2 });
+  assert.equal(blame.status, "ok");
+  assert.equal(blame.historyTruncated, true);
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
+
+test("a shallow merge preserves the breadth-first prefix when another branch has deeper history", async (t) => {
+  const f = fixture(t);
+  const tree = f.git("write-tree");
+  const { commit } = objects(f.checkout);
+  const omitted = commit(tree, [], "parent beyond shallow boundary");
+  const boundary = commit(tree, [omitted], "shallow boundary");
+  const deeper = commit(tree, [], "available parent");
+  const other = commit(tree, [deeper], "other branch");
+  const tip = commit(tree, [boundary, other], "merge");
+  f.git("update-ref", "HEAD", tip);
+  writeFileSync(join(f.checkout, ".git", "shallow"), boundary + "\n");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const lease = await f.service.materialize(f.request(snapshot), signal);
+  assert.deepEqual(lease.descriptor.retainedRevisions.map(rev => rev.id), [tip, boundary, other]);
+  assert.deepEqual(lease.descriptor.frontier, [
+    { revision: boundary, omittedParents: [omitted] }, { revision: other, omittedParents: [deeper] },
+  ]);
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
 
 test("2,048-commit breadth-first merge prefix survives source deletion with shallow blame and diff-only base", async (t) => {
   const f = fixture(t);

@@ -5,13 +5,12 @@ import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit } from "./git.ts";
-import { oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
+import { MAX_CAPTURE_OBJECT_BYTES, oid, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
 export type Entry = { mode: string; id: string };
 /** Hex keys sort in raw byte order, without Unicode decoding or case folding. */
 export type Layer = Map<string, Entry>;
-export const MAX_WORKTREE_FILE_BYTES = 64 * 1024 * 1024;
 export const decodedPath = (key: string) => {
   const raw = Buffer.from(key, "hex");
   const text = raw.toString("utf8");
@@ -55,6 +54,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   const common = await realpath(line(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])));
   const format = line(await git(["rev-parse", "--show-object-format"]));
   if (!["sha1", "sha256"].includes(format)) unavailable();
+  const shallow = await shallowCommits(common, format, signal);
   const headBytes = await git(["rev-parse", "--verify", "-q", "HEAD"], true);
   const head = headBytes.length ? oid.parse(line(headBytes)) : null;
   if (!head) {
@@ -126,7 +126,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     if (directory) embedded.push(key);
     paths.add(key);
   }
-  return { root, common, format, emptyBlob, head, index, skipWorktree, intent, embedded, paths: [...paths].sort() };
+  return { root, common, format, emptyBlob, head, shallow, index, skipWorktree, intent, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);
@@ -161,7 +161,7 @@ async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSigna
     const stat = await fd.stat();
     if (!stat.isFile() || observed.dev !== stat.dev || observed.ino !== stat.ino)
       throw new RepositoryCaptureChanged();
-    if (stat.size > MAX_WORKTREE_FILE_BYTES)
+    if (stat.size > MAX_CAPTURE_OBJECT_BYTES)
       throw Object.assign(new Error("Worktree file exceeds capture limit"), { code: "worktree_file_too_large" });
     // The extra byte detects growth without extending the allocation. Short reads can
     // occur on a regular file, so only EOF establishes the final size.
@@ -178,6 +178,27 @@ async function readWorkingFile(path: Buffer, observed: Stats, signal: AbortSigna
   } finally {
     await fd.close();
   }
+}
+
+async function shallowCommits(common: string, format: string, signal: AbortSignal) {
+  const path = Buffer.from(join(common, "shallow"));
+  const stat = await lstat(path).catch(error => {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  });
+  if (!stat) return [];
+  if (!stat.isFile()) return unavailable();
+  const { data } = await readWorkingFile(path, stat, signal);
+  if (!data.length) return [];
+  const width = format === "sha1" ? 40 : 64;
+  const revisions: string[] = [];
+  for (let pos = 0; pos < data.length; pos += width + 1) {
+    const id = data.toString("latin1", pos, pos + width);
+    if ((pos + width < data.length && data[pos + width] !== 10) ||
+        id.length !== width || !oid.safeParse(id).success) unavailable();
+    revisions.push(id);
+  }
+  return revisions.sort();
 }
 
 export async function workingFile(

@@ -1,7 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { oid, unavailable } from "./format.ts";
+import { MAX_CAPTURE_OBJECT_BYTES, oid, unavailable } from "./format.ts";
 
 const env = {
   PATH: "/usr/bin:/bin",
@@ -97,36 +97,42 @@ export async function openObjectReader(
       rest = chunk.value;
     }
   }
+  async function readHeader(command: "info" | "contents", id: string, type: string) {
+    signal.throwIfAborted();
+    child.stdin.write(`${command} ${id}\n`);
+    let header = "";
+    for (;;) {
+      await fill();
+      const nl = rest.indexOf(10);
+      const end = nl < 0 ? rest.length : nl;
+      header += rest.subarray(0, end).toString("ascii");
+      rest = rest.subarray(end + 1);
+      if (header.length > 150) unavailable();
+      if (nl >= 0) break;
+    }
+    const [got, kind, length] = header.split(" ");
+    const size = Number(length);
+    if (got !== id || kind !== type || !Number.isSafeInteger(size) || size < 0) unavailable();
+    return size;
+  }
   return {
     async get(id: string, type: string, info = false) {
-      signal.throwIfAborted();
       oid.parse(id);
-      child.stdin.write(`${info ? "info" : "contents"} ${id}\n`);
-      let header = "";
-      for (;;) {
+      const size = await readHeader("info", id, type);
+      if (info) return { size, data: Buffer.alloc(0) };
+      if (size > MAX_CAPTURE_OBJECT_BYTES)
+        throw Object.assign(new Error("Git object exceeds capture limit"), { code: "git_object_too_large" });
+      if (await readHeader("contents", id, type) !== size) unavailable();
+      const data = Buffer.allocUnsafe(size);
+      for (let offset = 0; offset < size;) {
         await fill();
-        const nl = rest.indexOf(10);
-        const end = nl < 0 ? rest.length : nl;
-        header += rest.subarray(0, end).toString("ascii");
-        rest = rest.subarray(end + 1);
-        if (header.length > 150) unavailable();
-        if (nl >= 0) break;
+        const n = rest.copy(data, offset);
+        offset += n;
+        rest = rest.subarray(n);
       }
-      const [got, kind, length] = header.split(" ");
-      const size = Number(length);
-      if (got !== id || kind !== type || !Number.isSafeInteger(size) || size < 0) unavailable();
-      const data = Buffer.allocUnsafe(info ? 0 : size);
-      if (!info) {
-        for (let offset = 0; offset < size;) {
-          await fill();
-          const n = rest.copy(data, offset);
-          offset += n;
-          rest = rest.subarray(n);
-        }
-        await fill();
-        if (rest[0] !== 10) unavailable();
-        rest = rest.subarray(1);
-      }
+      await fill();
+      if (rest[0] !== 10) unavailable();
+      rest = rest.subarray(1);
       return { size, data };
     },
     close() {

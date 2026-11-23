@@ -39,24 +39,32 @@ As of `2088bd522`:
 1. **Capability.** The MCP child adds `convertible=1` to each wait poll. The review manager
    records, per waiting poll, whether it said so.
 2. **Conversion.** `ReviewManager.convertToFiled(reviewId)`: for a pending call-mode `input` or
-   `plan-decisions` review whose current waiter is convertible, set the row to message mode in
-   one transaction and answer the waiter with the row plus `converted { receipt }`, where the
-   receipt is the text a filed ask would have received. It returns false, and changes nothing,
+   `plan-decisions` review whose current waiter is convertible, set the row to message mode and
+   stamp a new column, `filed_by_voice_at`, in one transaction, then answer the waiter with the
+   row plus `converted { receipt }`. The receipt is the text a filed ask would have received and
+   is rebuilt from the row, so it is the same each time. It returns false, and changes nothing,
    when the waiter is not convertible or the row is no longer pending.
-3. **Child.** On a wait response with `converted`, the child returns the receipt as the tool
-   result and stops polling. It does not poll that review again, so `attachCall` is not reached.
-4. **Delivery.** Phase 5's deliverer calls `convertToFiled` for each pending call-mode ask of the
+3. **A lost response.** The answer to the waiter can be lost: the long poll may time out or its
+   connection may drop as the transaction commits. So the conversion is durable for the waiter.
+   While a row is pending with `filed_by_voice_at` set, a wait poll that says `convertible=1`
+   gets the `converted` receipt again and `wait` does not call `attachCall` for it. A poll that
+   does not say so is handled as today.
+4. **Child.** On a wait response with `converted`, the child returns the receipt as the tool
+   result and stops polling. If it never received the first response it polls again, and step 3
+   gives it the receipt then.
+5. **Delivery.** Phase 5's deliverer calls `convertToFiled` for each pending call-mode ask of the
    target before it submits. When each converts, the outcome is `queued` or `sent` and the
    open-questions note lists the converted asks. When one does not, the outcome stays `held`.
-5. **Contract sentence.** In the code comment and document that state the filed plan's wait-mode
+6. **Contract sentence.** In the code comment and document that state the filed plan's wait-mode
    rule, add: voice converts a call to a filed ask when the waiting child asked for it; from then
    on the row is a filed ask for each rule of that plan (listed, withdrawable, held by completion,
    closed by a merge).
-6. **Docs.** `docs/voice.md`, `docs/attention-and-alerts.md`.
+7. **Docs.** `docs/voice.md`, `docs/attention-and-alerts.md`, `docs/database-and-migrations.md`.
 
 ## 6. Data and compatibility
 
-No migration; the row's existing wait-mode columns are written. An older child sends no
+One migration: a nullable column `reviews.filed_by_voice_at`, so an existing database opens
+unchanged. It takes the next schema number at merge time. An older child sends no
 `convertible`, is not converted, and behaves as today. A newer child against an older daemon
 sends a query the daemon ignores.
 
@@ -64,7 +72,10 @@ sends a query the daemon ignores.
 
 - `test/voice-conversion.test.ts`: a convertible waiter is released with the receipt and the row
   is filed; a non-convertible waiter is untouched; a row answered in the same moment is not
-  converted; a converted ask is listed by `list_open_questions` and can be withdrawn.
+  converted; a converted ask is listed by `list_open_questions` and can be withdrawn; with the
+  first `converted` response dropped, the next convertible poll receives the same receipt, the
+  row stays in message mode and `attachCall` is not called.
+- A database upgrade test for the column.
 - `test/mcp-wait-conversion.test.ts`, with the real MCP child against a test daemon: the tool
   call returns the receipt and makes no further poll.
 - Additions to `test/voice-delivery-http.test.ts`: blocked and convertible gives `queued`; blocked
@@ -86,3 +97,6 @@ None inside this plan. Typed messages could use `convertToFiled` later; that is 
   and this plan's source both state. No rule of that plan reads what a row's mode used to be, so
   a converted row needs no extra column.
 - The held card's words are Phase 6's; this phase changes how often the card appears.
+- Pull request review: a `converted` response lost in transit would have let the child's next
+  poll re-attach the ask as a call while the message had already been reported delivered. Step 3
+  and `filed_by_voice_at` make the conversion durable, and a test drops the first response.

@@ -60,6 +60,22 @@ One finding was accepted and applied:
   test proves. Microphone capture on a Linux desktop is stated as unverified and belongs to the
   follow-on plan, which the source plan's "Linux path" now says too.
 
+## Pull request review
+
+GitHub Inspector's review of the pull request raised two findings. Both were accepted and
+applied.
+
+- **A lost conversion response.** Phase 15 answered the waiting poll with the receipt and
+  assumed it arrived. If it was lost, the child's next poll would re-attach the ask as a call
+  after the message had been reported delivered. The conversion is now recorded on the row
+  (`filed_by_voice_at`), a later convertible poll receives the same receipt, and a test drops
+  the first response. Contract K and the source plan say the same.
+- **CI depending on Hugging Face.** Phase 16's required recognizer test ran in the unit shards
+  and downloaded its model on each run. The operator authorized one CI change: a dedicated
+  Linux job that restores the model from a cache and runs that test alone. A missing addon, a
+  digest mismatch and a wrong transcription fail it; a network outage can fail that one job on a
+  cold cache and no unit shard.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -147,8 +163,8 @@ graph LR
   merged.
 - Phases that run together edit `src/server/routes.ts`, `src/shared/types.ts`,
   `src/web/useEventStream.ts`, `src/web/components/SettingsPage.tsx` and `docs/voice.md` in
-  different places; the later one rebases. A phase that adds a migration (2 and 5) takes the
-  next schema number at merge time, as the sibling plans do.
+  different places; the later one rebases. A phase that adds a migration (2, 5 and 15) takes
+  the next schema number at merge time, as the sibling plans do.
 
 ## Cross-phase contracts
 
@@ -228,7 +244,8 @@ cards: [{ kind, id, focused }] }`; `VoiceAnswer` and the event `voice_answer`;
 `optionLetter(index)`; `CardVoiceFoot`.
 
 **K. Conversion (Phase 15).** The wait poll's `convertible=1` query, the response field
-`converted { receipt }`, and `ReviewManager.convertToFiled(reviewId)`.
+`converted { receipt }`, `ReviewManager.convertToFiled(reviewId)`, and the `reviews` column
+`filed_by_voice_at`, which makes a later convertible poll receive the same receipt.
 
 Token routes live under `/voice/` and check `x-harness-token`. Dashboard routes live under
 `/api/voice/` behind the loopback gate. Both answer 404 while the flag is off.

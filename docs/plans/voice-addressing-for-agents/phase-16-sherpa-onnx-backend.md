@@ -19,7 +19,8 @@ changes.
 ## 3. Scope and non-goals
 
 In scope: the backend, its model manifest entry, backend selection, its packaging on macOS, a
-file-input mode for tests, a pinned recognizer test model, a required Linux CI test, docs. Not in
+file-input mode for tests, a pinned recognizer test model, a required Linux CI test in its own
+cached job, docs. Not in
 scope: starting a listener from the daemon on Linux, verifying microphone capture on a Linux
 desktop, a Linux hotkey or call detection, a Linux desktop app. Those belong to the follow-on
 plan.
@@ -62,10 +63,18 @@ As of `2088bd522`:
    the small English sherpa-onnx model S2 chose for testing: repository, commit, files, sizes and
    SHA-256, as for the real model. `test/fixtures/voice/steve-check-the-build.wav` is a short
    recording generated with `say`: a roster name, a 400 millisecond pause, then a message.
-   `test/helpers/voice-test-model.ts` downloads the pinned files once into a cache directory under
-   the temp dir, retrying a failed download twice, verifies each digest and reuses them. No CI
-   configuration changes: the test fetches its own model.
-7. **Docs.** `docs/voice.md` (backends, how to choose, what Linux has and lacks today),
+   `test/helpers/voice-test-model.ts` uses the directory named by `MISSION_VOICE_TEST_MODEL_DIR`
+   when it is set, and otherwise a cache directory under the temp dir. It downloads a missing
+   file, retrying a failed download twice, and verifies each digest on each use.
+7. **CI job.** This phase explicitly requires one CI change, which the operator authorized on
+   2026-11-23: one new Linux job in `.github/workflows/ci.yml`, named for the voice recognizer,
+   that depends on the Node.js 24 dependencies producer, restores the pinned model with
+   `actions/cache` keyed by the manifest's digests, sets `MISSION_VOICE_TEST_MODEL_DIR` and
+   `MISSION_VOICE_RECOGNIZER_JOB`, and runs `test/voice-sherpa-recognizer.test.ts` and nothing
+   else. Hugging Face is reached on a cache miss and not otherwise, as with the Electron runtime
+   cache in `.github/actions/run-unit-shard/action.yml`. Update the check count in `AGENTS.md`
+   and the runner policy note in `ci.yml`. No other CI, release or signing configuration changes.
+8. **Docs.** `docs/voice.md` (backends, how to choose, what Linux has and lacks today),
    `docs/configuration.md`.
 
 ## 6. Data and compatibility
@@ -80,11 +89,12 @@ downloads that backend's model; the other's files are left in place.
 - `test/voice-sherpa-recognizer.test.ts`, the Linux proof. It loads the platform's sherpa-onnx
   addon, loads `VOICE_TEST_MODEL`, runs the listener with `--input-file` on the fixture recording
   against a test daemon, and asserts that the posted utterance carries the fixture's words in
-  order, word timings, and a gap of at least `pauseMs` after the name. On Linux CI (`CI` set and
-  the platform `linux`) the test is required and has no skip: a missing addon, a failed download
-  or a digest mismatch fails it. It runs in the existing unit shards, so each pull request
-  exercises it. On a developer machine it skips, with the reason, when the model cannot be
-  fetched and is not cached.
+  order, word timings, and a gap of at least `pauseMs` after the name. In the dedicated job
+  (`MISSION_VOICE_RECOGNIZER_JOB` set) the test is required and has no skip: a missing addon, a
+  digest mismatch or a wrong transcription fails it, and so does a download that still fails
+  after its retries on a cold cache. That failure is confined to the one job. In the unit shards
+  and on a developer machine the test runs when the model is already cached and otherwise skips
+  with the reason, so no unit shard depends on the network for it.
 - `test/voice-word-merge.test.ts`: the token-to-word merge, with no model.
 - `test/voice-backend-select.test.ts`: `auto` on each platform and the explicit overrides.
 - Manual check, recorded in the pull request: on a Mac with `backend` set to `sherpa-onnx`,
@@ -96,7 +106,7 @@ downloads that backend's model; the other's files are left in place.
 
 Both backends pass the same protocol tests. The packaged macOS app can run either. On Linux CI
 the sherpa-onnx addon loads and the listener transcribes the fixture recording into the expected
-utterance, and that test has passed on the pull request before this phase is called done.
+utterance: the dedicated job has passed on the pull request before this phase is called done.
 
 ## 9. Downstream handoff
 
@@ -116,3 +126,6 @@ the shell-report fields of contract B.
   a desktop is at hand", so nothing proved the addon runs on Linux. Step 6 pins a test model and
   a fixture, the recognizer test is required on Linux CI, and the outcome now claims what that
   test proves and leaves Linux microphone capture to the follow-on plan.
+- Pull request review: run in the unit shards with a download on each run, the test made every
+  pull request's CI depend on Hugging Face. The operator authorized a dedicated job with a
+  cached model (step 7), so an outage can fail that one job on a cold cache and no unit shard.

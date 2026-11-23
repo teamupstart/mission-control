@@ -122,6 +122,7 @@ Root plan review and the conversation that followed it.
 | Input device | Prefer the built-in microphone, with a picker. |
 | Spike | A spike phase gates the audio and shell phases. |
 | Linux | Not built here. Decisions must not block it; a follow-on plan task holds the Linux work. |
+| CI configuration | Phase 16 may add one dedicated Linux job with a cached model for its recognizer test (authorized 2026-11-23). |
 | After this plan | Phase and schedule the work. |
 
 ## Reference verification
@@ -292,7 +293,9 @@ toast in the dashboard, or in a frameless shell window as a pill or a tray popov
 
 The MCP child states on each wait poll that it understands conversion. For such a waiter the daemon
 files the question and answers the poll with a receipt; the child returns the receipt and stops
-polling. A waiter that did not say so is left alone and the message waits.
+polling. The conversion is recorded on the row, so a child that missed the answer gets the same
+receipt on its next poll and is not re-attached as a call. A waiter that did not say so is left
+alone and the message waits.
 
 ### Model and setup
 

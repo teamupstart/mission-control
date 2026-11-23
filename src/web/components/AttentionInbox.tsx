@@ -104,6 +104,7 @@ export function AttentionInbox({
   onOpenRun = (runId) => {
     window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
   },
+  onReplyBox,
 }: {
   fold: AttentionFold;
   /**
@@ -136,6 +137,8 @@ export function AttentionInbox({
   held?: boolean;
   /** Open a workflow run on the Runs page, for a Stuck row about a parked run. */
   onOpenRun?: (runId: string) => void;
+  /** A Stuck row's message box appearing or going, by session (the `onReplyBox` contract). */
+  onReplyBox?: (sessionId: string, present: boolean) => void;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
   // A refused Mark read, by report, drawn under its card until it is tried again.
@@ -246,6 +249,7 @@ export function AttentionInbox({
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+                onReplyBox={onReplyBox}
                 onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
@@ -363,6 +367,7 @@ function InboxItem({
   onOpenPipelineCommission,
   onOpenRun,
   onDismiss,
+  onReplyBox,
   onLeave,
 }: {
   item: AttentionItem;
@@ -377,6 +382,7 @@ function InboxItem({
   onOpenRun: (runId: string) => void;
   /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
   onDismiss: () => void;
+  onReplyBox?: (sessionId: string, present: boolean) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
@@ -394,6 +400,7 @@ function InboxItem({
           onOpenSession={onOpenSession}
           onOpenRun={onOpenRun}
           onDismiss={onDismiss}
+          onReplyBox={onReplyBox ? (present) => onReplyBox(item.session.id, present) : undefined}
         />
       );
     case "pipeline_commission":

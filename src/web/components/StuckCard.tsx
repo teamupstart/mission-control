@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { canMessage } from "@shared/pane.ts";
 import { canInterruptSession } from "@shared/session.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
@@ -74,6 +74,7 @@ export function StuckCard({
   onOpenSession,
   onOpenRun,
   onDismiss,
+  onReplyBox,
 }: {
   session: Session;
   stall: Stall;
@@ -83,6 +84,12 @@ export function StuckCard({
   onOpenSession: (sessionId: string) => void;
   onOpenRun: (runId: string) => void;
   onDismiss: () => void;
+  /**
+   * Whether this row is drawing its message box (the escalation's reply box included), reported
+   * as it appears and goes: the shared `onReplyBox` contract the transcript's reply box uses, so
+   * the session keeps one compose box at a time.
+   */
+  onReplyBox?: (present: boolean) => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +120,15 @@ export function StuckCard({
   const facts = stall.facts ?? null;
   const name = subject.name;
   const messageable = canMessage(session) && session.state !== "exited";
+  // Reported without depending on the callback's identity, as `TranscriptPanel` does: present
+  // while the box is drawn, retracted when it goes or the row unmounts.
+  const notifyReplyBox = useRef(onReplyBox);
+  notifyReplyBox.current = onReplyBox;
+  useEffect(() => {
+    if (!messageable) return;
+    notifyReplyBox.current?.(true);
+    return () => notifyReplyBox.current?.(false);
+  }, [messageable]);
 
   const run = (
     action: string,

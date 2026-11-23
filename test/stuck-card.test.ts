@@ -191,3 +191,20 @@ test("Interrupt reports what the daemon actually did, and its tooltip says queue
   );
   assert.doesNotMatch(html, /Queued messages stay queued/);
 });
+
+test("a Stuck row's message box registers through the onReplyBox contract the session detail reads", async () => {
+  const { withInboxReplyBox } = await import("../src/web/lib/inbox-reply-boxes.ts");
+  const none: ReadonlySet<string> = new Set();
+  const open = withInboxReplyBox(none, "s1", true);
+  assert.deepEqual([...open], ["s1"]);
+  // Re-reporting what is already known keeps the same set, so nothing re-renders for it.
+  assert.equal(withInboxReplyBox(open, "s1", true), open);
+  assert.deepEqual([...withInboxReplyBox(open, "s1", false)], []);
+  assert.equal(withInboxReplyBox(none, "s1", false), none);
+  const { readFileSync } = await import("node:fs");
+  const read = (file: string) => readFileSync(new URL(`../src/web/${file}`, import.meta.url), "utf8");
+  // The card reports presence while its box is drawn and retracts it, as TranscriptPanel does.
+  assert.match(read("components/StuckCard.tsx"), /if \(!messageable\) return;\s*notifyReplyBox\.current\?\.\(true\);\s*return \(\) => notifyReplyBox\.current\?\.\(false\);/);
+  // The session detail's one send composer gives way to it, as it does to the transcript's box.
+  assert.match(read("components/layouts/ConsoleDetail.tsx"), /hasReply=\{hasReply \|\| inboxReplyBox\}/);
+});

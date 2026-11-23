@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createElement, type ReactElement } from "react";
+import { createElement, isValidElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   INBOX_ACTIONS,
@@ -87,6 +87,40 @@ test("a relabelled button keeps its action's id and spoken form", () => {
     action: "answer", name: "Steve", tooltip: "Send it", onClick: () => undefined,
   }));
   assert.doesNotMatch(off, /spoken-hint/);
+});
+
+/**
+ * The `<button>` an `InboxActionButton` draws, found in the element tree it returns. Called as a
+ * function, as `ensemble-compare.test.ts` does for its rationale links: the repository's tests
+ * render without a DOM, so the click is the button's own `onClick` prop, the one React binds.
+ */
+function drawnButton(props: Parameters<typeof InboxActionButton>[0]): ReactElement<{
+  onClick: () => void;
+  disabled: boolean;
+  "data-inbox-action": string;
+  children: string;
+}> {
+  const fragment = InboxActionButton(props) as ReactElement<{ children: unknown[] }>;
+  const tooltip = fragment.props.children.find(isValidElement) as ReactElement<{ children: unknown }>;
+  const button = tooltip.props.children;
+  assert.ok(isValidElement(button) && button.type === "button", "the control is a <button> inside its Tooltip");
+  return button as ReturnType<typeof drawnButton>;
+}
+
+test("clicking an inbox action button runs the action it was given, once, under either label", () => {
+  for (const label of [undefined, "Retry"]) {
+    let calls = 0;
+    const button = drawnButton({
+      action: "answer", name: "Steve", tooltip: "Send it", onClick: () => { calls++; }, ...(label ? { label } : {}),
+    });
+    assert.equal(button.props.children, label ?? "Send answer");
+    assert.equal(button.props["data-inbox-action"], "answer");
+    assert.equal(button.props.disabled, false);
+    button.props.onClick();
+    assert.equal(calls, 1, `the ${label ?? "default"} label's click runs its handler exactly once`);
+  }
+  // Disabled reaches the button itself, so the browser withholds the click.
+  assert.equal(drawnButton({ action: "answer", name: "Steve", tooltip: "t", onClick: () => undefined, disabled: true }).props.disabled, true);
 });
 
 // ---- the question card: a name line and its hints ----

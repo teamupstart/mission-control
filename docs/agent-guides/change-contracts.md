@@ -156,6 +156,15 @@ the registry before the session's first event (`registerSdkSession`'s `launchWor
 `workUnitEnv`; it never sets `WORK_UNIT_ID` any other way. A terminal hand-over is never matched
 by checkout path: only the agent beneath that launch's wrapper may take it.
 
+Telemetry exports `work_unit_id` unhashed, the one exception to per-destination `scopedRef`
+hashing. The exception lives in one list, `UNSCOPED_REF_KEYS` in `src/shared/telemetry.ts`, and a
+span exports a listed ref only through its descriptor's `unscopedRefAttributes`. The catalog lint
+(`telemetryCatalogProblems`) refuses an unscoped ref that is not listed, a listed one hashed
+through `refAttributes`, and a span-bearing event with a `session_id` or `task_id` ref that does
+not export `work_unit_id`, so a new session or task event inherits the rule. Capture reads the
+id from the launch record (`launchWorkUnitFor`) or the launch's own decision, never from the flag
+or a task. It is never a metric dimension (`FORBIDDEN_METRIC_DIMENSIONS`).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs

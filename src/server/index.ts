@@ -141,7 +141,7 @@ import {
   observeSessionOperation,
   recheckOrganization,
   registerBuiltinTelemetry,
-  retainPrObservation,
+  attachPrObservationTelemetry,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
@@ -736,22 +736,7 @@ registry.onTurnDelivered((e) => {
 // is what makes this a VERIFIED association rather than an agent's claim - and it is the last
 // moment at which the task's repository and kind can still be read, because
 // `invalidateTaskOwnershipInTransaction` may delete the binding at any point after it.
-registry.onTaskPrLinked((e) => {
-  const task = registry.getTask(e.taskId);
-  if (!task) return;
-  retainPrObservation({
-    taskId: e.taskId,
-    taskKind: task.kind,
-    repoRoot: e.repoRoot,
-    primaryRepoRoot: task.repoRoot,
-    prUrl: e.prUrl,
-    sessionId: task.sessionId,
-    // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
-    // carries no task. Here the honest claim is the weaker one.
-    creationVerified: false,
-    now: e.observedAt,
-  });
-});
+attachPrObservationTelemetry(registry);
 tasks.registerWritebackEnqueuer(writebackEnqueuer);
 const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has

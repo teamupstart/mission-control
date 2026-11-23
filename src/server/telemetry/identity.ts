@@ -62,6 +62,10 @@ function nonZeroHex(bytes: number): string {
  * destinations gets two unrelated ids, so the audiences cannot be joined by a third party; and
  * the mapping is one-way, so a backend holding the id cannot recover the Mission Control
  * session it came from.
+ *
+ * Every exported ref goes through this, with one exception: the refs on `UNSCOPED_REF_KEYS`
+ * (`@shared/telemetry.ts`), today only `work_unit_id`, which exist to be joined across lanes and
+ * services and are exported as they are. That list is the only place an exception is made.
  */
 export function scopedRef(profile: TelemetryProfileId, salt: string, value: string): string {
   return digest([profile, salt, value]).slice(0, 24);

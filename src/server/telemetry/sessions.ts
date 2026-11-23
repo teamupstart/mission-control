@@ -59,9 +59,12 @@ import type {
 } from "@shared/types.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
+import { WORK_UNIT_SPAN_ATTRIBUTE } from "@shared/work-unit.ts";
+import { launchWorkUnitFor, sessionWorkUnitId } from "../work-unit.ts";
 import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
-import { taskOutcomeSourceId } from "./store.ts";
+import { taskOutcomeSourceId, telemetryTransaction } from "./store.ts";
+import { deleteSourceState, readSourceState, writeSourceState } from "./source-state.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
 import { sessionTraceIds } from "./session-trace.ts";
@@ -156,12 +159,32 @@ interface SessionTrack {
   killRequestedAt: number | null;
   handoff: boolean;
   ended: boolean;
+  /**
+   * The work unit this session's agent was started with: its launch record, read through
+   * `launchWorkUnitFor` off every published projection of the session, so a resume that
+   * replaces the record is followed from the next event on. Never the flag and never a task -
+   * a span belongs to its session, and this is what that session's agent carries. Null for a
+   * session with no record: discovered, a resident's, or started without the variable.
+   */
+  workUnitId: string | null;
+  /**
+   * When `workUnitId` was last mirrored durably (see `LAUNCH_RECORD_NAMESPACE`), or null while
+   * the mirror is not known to match it - before the first write, and after a write that failed,
+   * so the next observation tries again.
+   */
+  mirroredAt: number | null;
 }
 
 /** Everything this module reads off a Registry, and nothing else. */
 export interface SessionTelemetryHost {
   subscribe(fn: (e: { type: string } & Record<string, unknown>) => void): () => void;
   getTask(id: string): Task | undefined;
+  /**
+   * A live session, for its launch record, when a fact names a session by id alone - a task
+   * outcome names the session its task points to. Optional so a fixture host that never
+   * reports one still attaches.
+   */
+  getSession?(id: string): Session | undefined;
 }
 
 const tracks = new Map<string, SessionTrack>();
@@ -204,6 +227,38 @@ function rememberDispatchStart(taskId: string, at: number): void {
 }
 /** Sessions the supervisor is bringing back, so their start is not reported as a new one. */
 const restoringSessions = new Map<string, { taskId: string | null }>();
+/**
+ * Where each observed session's launch record is mirrored DURABLY, so a task that settles after
+ * its agent's session was removed - however many sessions ended since, and across a daemon
+ * restart - still reads the record of the session it points to. One small row per session whose
+ * latest record carries an id, written on first sight, on every change, at removal and at least
+ * daily while it is unchanged, so retention counts from when the session was last seen; removed
+ * when the record becomes none. In telemetry's own source
+ * state: it expires with the reducer-state retention, counts against the telemetry byte budget,
+ * and is wiped with every other source checkpoint when collection consent changes.
+ *
+ * Those two bounds are deliberate (operator decision, documented in `docs/observability.md`): an
+ * outcome settling past the retention, or across a consent change, carries no work unit rather
+ * than one kept forever or replayed from before consent. It carries a wrong one only after the
+ * storage failure `unsettledMirrors` describes, followed by a restart.
+ */
+const LAUNCH_RECORD_NAMESPACE = "mission.session.launch-record";
+/**
+ * How often a live session's unchanged record is written again, so the retention counts from
+ * when it was last seen rather than from when it last changed - also for a daemon that stops
+ * without observing the session's removal. Removal itself always writes it.
+ */
+const LAUNCH_RECORD_REFRESH_MS = 24 * 60 * 60 * 1000;
+/**
+ * Sessions whose mirror could be neither updated nor withdrawn, so it may still hold an id an
+ * earlier process carried. Never read for attribution while listed; a later successful mirror
+ * clears the entry. In memory only: if storage refused every write and the daemon then restarts,
+ * the stale row can be read again (a documented limit - nothing durable can change while every
+ * write fails). The operator accepted that limit on 2026-11-23 over a cross-check against
+ * Phase 2's record, which could not cover a pruned row; see "Late task outcomes" in
+ * `docs/observability.md`.
+ */
+const unsettledMirrors = new Set<string>();
 
 let shuttingDown = false;
 
@@ -285,7 +340,7 @@ export function noteTaskDeparture(taskId: string): void {
 
 /** Somebody asked a session to stop. An action, captured whether or not an ending follows. */
 export function observeKillRequested(input: {
-  session: Pick<Session, "id" | "agent" | "runtime">;
+  session: Pick<Session, "id" | "agent" | "runtime" | "launchWorkUnitId">;
   taskId?: string | null;
   outcome: "accepted" | "refused";
   actor: TelemetryActor;
@@ -313,6 +368,7 @@ export function observeKillRequested(input: {
       session_id: input.session.id,
       task_id: input.taskId ?? track?.taskId ?? null,
       operation_id: input.operationId ?? null,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: launchWorkUnitFor(input.session),
     }),
     now,
   });
@@ -326,7 +382,7 @@ export function observeKillRequested(input: {
  * segment, which is what stops an accepted request being exported as an executed one.
  */
 export function observeEffortSelected(input: {
-  session: Pick<Session, "id" | "agent" | "runtime" | "agentSessionId">;
+  session: Pick<Session, "id" | "agent" | "runtime" | "agentSessionId" | "launchWorkUnitId">;
   requested: string;
   outcome: "accepted" | "refused";
   applies: "current_turn" | "next_turn" | "unknown";
@@ -353,6 +409,7 @@ export function observeEffortSelected(input: {
       session_id: input.session.id,
       operation_id: input.operationId ?? null,
       conversation_id: input.session.agentSessionId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: launchWorkUnitFor(input.session),
     }),
     now,
   });
@@ -360,7 +417,7 @@ export function observeEffortSelected(input: {
 
 /** One conversation operation, captured where delivery is actually known. */
 export function observeSessionOperation(input: {
-  session: Pick<Session, "id" | "agent" | "runtime" | "agentSessionId">;
+  session: Pick<Session, "id" | "agent" | "runtime" | "agentSessionId" | "launchWorkUnitId">;
   operation: "send" | "queued" | "interrupt" | "cancel" | "question_response";
   outcome: "delivered" | "refused";
   actor: TelemetryActor;
@@ -401,6 +458,7 @@ export function observeSessionOperation(input: {
       operation_id: input.operationId ?? null,
       conversation_id: input.session.agentSessionId,
       segment_id: track?.segmentId ?? null,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: launchWorkUnitFor(input.session),
     }),
     now,
   });
@@ -418,6 +476,12 @@ export function observeDispatchFinished(input: {
   repoCount: number;
   outcome: "launched" | "failed" | "superseded";
   sessionId?: string | null;
+  /**
+   * This launch's one work unit decision (`launchWorkUnitId`, made where the launch began), or
+   * null for none. A dispatch is a launch ATTEMPT, so it carries the decision whether or not an
+   * agent then started - like the shaper calls of the same attempt.
+   */
+  workUnitId?: string | null;
   now?: number;
 }): TelemetryCaptureResult {
   const now = input.now ?? Date.now();
@@ -447,7 +511,11 @@ export function observeDispatchFinished(input: {
       repo_count: boundedCount(input.repoCount),
       duration_ms: Math.max(0, now - startedAt),
     },
-    refs: refsOf({ task_id: input.taskId, session_id: input.sessionId ?? null }),
+    refs: refsOf({
+      task_id: input.taskId,
+      session_id: input.sessionId ?? null,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: input.workUnitId ?? null,
+    }),
     occurredAt: now,
     now,
   });
@@ -461,6 +529,8 @@ export function observeSessionRestore(input: {
   outcome: "succeeded" | "failed" | "interrupted";
   durationMs: number;
   turnInProgress: boolean;
+  /** The restore's one work unit decision, carried whatever the outcome: it reports an attempt. */
+  workUnitId?: string | null;
   now?: number;
 }): TelemetryCaptureResult {
   const now = input.now ?? Date.now();
@@ -474,7 +544,11 @@ export function observeSessionRestore(input: {
       duration_ms: Math.max(0, Math.round(input.durationMs)),
       turn_in_progress: input.turnInProgress,
     },
-    refs: refsOf({ session_id: input.sessionId, task_id: input.taskId }),
+    refs: refsOf({
+      session_id: input.sessionId,
+      task_id: input.taskId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: input.workUnitId ?? null,
+    }),
     now,
   });
 }
@@ -562,7 +636,7 @@ export function attachSessionTelemetry(host: SessionTelemetryHost): () => void {
       } else if (event.type === "session_remove") {
         onSessionRemoved(String(event.id));
       } else if (event.type === "task_upsert") {
-        onTask(event.task as Task);
+        onTask(host, event.task as Task);
       }
     } catch (error) {
       console.warn("[telemetry] session observer could not record an event:", error);
@@ -582,6 +656,7 @@ export function resetSessionTelemetryObservations(): void {
   settledTaskIds.clear();
   dispatchStarts.clear();
   restoringSessions.clear();
+  unsettledMirrors.clear();
 }
 
 /** Test-only: drop every tracked session so one fixture cannot leak into another's. */
@@ -605,6 +680,18 @@ function onSession(host: SessionTelemetryHost, session: Session): void {
     existing.killRequestedAt = null;
   }
   existing.lastState = session.state;
+  // Before anything below captures: a resume that succeeded replaced the record, and every span
+  // from here on belongs to the process it started.
+  const workUnitId = launchWorkUnitFor(session);
+  const changed = workUnitId !== existing.workUnitId;
+  existing.workUnitId = workUnitId;
+  if (
+    changed ||
+    existing.mirroredAt === null ||
+    (workUnitId && Date.now() - existing.mirroredAt >= LAUNCH_RECORD_REFRESH_MS)
+  ) {
+    mirrorTrack(existing);
+  }
   observeSegment(existing, session);
   observeTurn(existing, session);
 }
@@ -647,6 +734,10 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
     killRequestedAt: null,
     handoff: false,
     ended: false,
+    // From the session's first event, whatever its task identity: the registry installs the
+    // record before it publishes a launched session, for every kind of launch.
+    workUnitId: launchWorkUnitFor(session),
+    mirroredAt: null,
   };
   // The launch's own resolution, held until the first OBSERVED reading replaces it. Weaker
   // provenance, stated as such - never promoted to `observed` by having been chosen.
@@ -660,6 +751,9 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
     }
   }
   tracks.set(session.id, track);
+  // Every first sight, since this process may be a later one than the last that saw it: a
+  // restart that relaunched the session without a record must not leave the old one standing.
+  mirrorTrack(track);
   captureTelemetry({
     event: SESSION_STARTED_EVENT,
     // ONE start per session id, forever. The durable dedupe table is what makes a daemon
@@ -685,6 +779,7 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
       session_id: session.id,
       task_id: track.taskId,
       conversation_id: session.agentSessionId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: track.workUnitId,
     }),
     now,
   });
@@ -762,6 +857,7 @@ function observeSegment(
       task_id: track.taskId,
       conversation_id: track.conversationId,
       segment_id: track.segmentId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: track.workUnitId,
     }),
     now,
   });
@@ -822,6 +918,7 @@ function observeTurn(track: SessionTrack, session: Session): void {
       task_id: track.taskId,
       conversation_id: turn.conversationId,
       segment_id: turn.segmentId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: track.workUnitId,
     }),
     now,
   });
@@ -838,6 +935,8 @@ function onSessionRemoved(sessionId: string): void {
   if (!track || track.ended) return;
   track.ended = true;
   tracks.delete(sessionId);
+  // Last seen now: a task that settles after this reads the record for the full retention.
+  mirrorTrack(track);
   const now = Date.now();
   const reason = shuttingDown
     ? "shutdown"
@@ -867,13 +966,14 @@ function onSessionRemoved(sessionId: string): void {
       session_id: sessionId,
       task_id: track.taskId,
       conversation_id: track.conversationId,
+      [WORK_UNIT_SPAN_ATTRIBUTE]: track.workUnitId,
     }),
     now,
   });
 }
 
 /** A task moved. Capture one outcome per durable open/settled observation interval. */
-function onTask(task: Task): void {
+function onTask(host: SessionTelemetryHost, task: Task): void {
   const status = task.status;
   const terminal = status === "done" || status === "failed" || status === "cancelled";
   const now = Date.now();
@@ -904,7 +1004,15 @@ function onTask(task: Task): void {
       duration_ms: startedAt === null ? 0 : Math.max(0, now - startedAt),
       observation_bounded: startedAt === null,
     },
-    refs: refsOf({ task_id: task.id, session_id: task.sessionId }),
+    refs: refsOf({
+      task_id: task.id,
+      session_id: task.sessionId,
+      // No track here, but a task in hand: the record of the session it points to, while the
+      // task has that same id. None when it points to no session.
+      [WORK_UNIT_SPAN_ATTRIBUTE]: task.sessionId
+        ? sessionWorkUnitId(launchRecordOf(host, task.sessionId), task)
+        : null,
+    }),
     now,
   });
   if (result.kind === "accepted" || result.kind === "duplicate") {
@@ -984,6 +1092,66 @@ export function registerSessionTelemetrySource(): void {
 }
 
 // ---- helpers ----
+
+/**
+ * The launch record of `sessionId`, wherever it can still be read: the live session, the track
+ * that mirrors its last projection, or the durable mirror of what it last held. A session with
+ * no record yields `{}`, which emits nothing.
+ */
+function launchRecordOf(host: SessionTelemetryHost, sessionId: string): Pick<Session, "launchWorkUnitId"> {
+  const live = host.getSession?.(sessionId);
+  if (live) return live;
+  const track = tracks.get(sessionId);
+  if (track) return { launchWorkUnitId: track.workUnitId };
+  if (unsettledMirrors.has(sessionId)) return {};
+  try {
+    const mirrored = readSourceState<{ workUnitId: string }>(LAUNCH_RECORD_NAMESPACE, sessionId, Date.now());
+    return mirrored ? { launchWorkUnitId: mirrored.workUnitId } : {};
+  } catch (error) {
+    console.warn("[telemetry] could not read a session's launch record:", error);
+    return {};
+  }
+}
+
+/** Mirror what a track's session's record says now, and note when - only once it succeeded. */
+function mirrorTrack(track: SessionTrack): void {
+  track.mirroredAt = mirrorLaunchRecord(track.sessionId, track.workUnitId) ? Date.now() : null;
+}
+
+/**
+ * Mirror what `sessionId`'s record says now. A record of none REMOVES the mirror, so a late
+ * outcome cannot read an id its agent no longer carries (a resume started without the variable).
+ *
+ * A delete needs no budget, so clearing cannot be refused the way a write can. And when writing a
+ * new id is refused, the old one is withdrawn as well: an outcome then carries nothing rather
+ * than an id from an earlier process. If the withdrawal fails too, the session is listed in
+ * `unsettledMirrors` and its mirror is not read. Neither failure fails the observation.
+ *
+ * Returns whether the mirror now matches `workUnitId`, so a caller retries when it does not.
+ */
+function mirrorLaunchRecord(sessionId: string, workUnitId: string | null): boolean {
+  // Every caller is already behind the observer's consent check. Stated here as well, so that no
+  // future caller can write an id into telemetry state while collection is off.
+  if (!getTelemetryConfig().enabled) return false;
+  try {
+    telemetryTransaction(() => {
+      if (workUnitId) writeSourceState(LAUNCH_RECORD_NAMESPACE, sessionId, { workUnitId }, Date.now());
+      else deleteSourceState(LAUNCH_RECORD_NAMESPACE, sessionId);
+    });
+    unsettledMirrors.delete(sessionId);
+    return true;
+  } catch (error) {
+    console.warn("[telemetry] could not mirror a session's launch record:", error);
+    try {
+      telemetryTransaction(() => deleteSourceState(LAUNCH_RECORD_NAMESPACE, sessionId));
+      unsettledMirrors.delete(sessionId);
+    } catch (cleanup) {
+      unsettledMirrors.add(sessionId);
+      console.warn("[telemetry] could not withdraw a session's stale launch record:", cleanup);
+    }
+    return false;
+  }
+}
 
 function rememberTaskSettlement(taskId: string, terminal: boolean): void {
   if (!terminal) {
@@ -1130,5 +1298,6 @@ export function workflowAuthorContext(sessionId: string) {
     author_effort: track?.effort ?? "unknown",
     author_quality: track?.quality ?? "unknown",
   }, refs: track ? refsOf({ session_id: sessionId, task_id: track.taskId,
-    segment_id: track.segmentId, conversation_id: track.conversationId }) : {} };
+    segment_id: track.segmentId, conversation_id: track.conversationId,
+    [WORK_UNIT_SPAN_ATTRIBUTE]: track.workUnitId }) : {} };
 }

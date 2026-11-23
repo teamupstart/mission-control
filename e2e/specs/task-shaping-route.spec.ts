@@ -340,8 +340,7 @@ test.describe("handed over to a running agent", () => {
         await expect(detail).toContainText(title, { timeout: 30_000 });
       };
 
-      // The first handover's context chip is shown for the session it reached. A pane paste whose
-      // submit the fake agent does not confirm is recorded as unconfirmed, so it reads degraded.
+      // The first handover's context chip is shown for the session it reached.
       await handOver(daemon, task.id, sessionId);
       await expect.poll(shapingRoute, { timeout: 30_000 }).toBe(200);
       await openSession();

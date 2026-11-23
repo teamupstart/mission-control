@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
 import {
+  AgentEnvironmentConfigSchema,
   AwayConfigSchema,
   BacklogPlanSchema,
   CostConfigSchema,
@@ -379,6 +380,7 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
+  agentEnvironment: { ...wholeEntry("agentEnvironment", AgentEnvironmentConfigSchema.default({ names: [] }), "setting", "agent-environment"), optionalInSnapshot: true },
   featureFlags: { ...wholeEntry("featureFlags", FeatureFlagsConfigSchema, "setting", "feature-flags"), optionalInSnapshot: true },
   // Task shaping: registered shapers, stored choices, order, caller identity and budgets.
   // Backed up whole because it holds no secret text. A credential-bearing header holds only a

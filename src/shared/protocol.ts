@@ -3627,12 +3627,24 @@ const WorktreeSetupArgvSchema = z
  */
 const RESERVED_CLAIM_VARIABLE = /^(PATH|(MISSION|FLEET|HARNESS)_.*)$/;
 
-const WorktreeClaimVariableNameSchema = z
+export const WorktreeClaimVariableNameSchema = z
   .string()
   .min(1)
   .max(WORKTREES_CONFIG_LIMITS.maxClaimVariableNameBytes)
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a variable name is letters, digits and underscores")
   .refine((name) => !RESERVED_CLAIM_VARIABLE.test(name), "PATH and MISSION_/FLEET_/HARNESS_ names are reserved");
+
+const reservedAgentVariables = new Set([
+  ...Object.getOwnPropertyNames(Object.prototype), "WORK_UNIT_ID", "TMUX_PANE", "WEZTERM_PANE",
+  "ITERM_SESSION_ID", "TERM_PROGRAM", "TRACEPARENT", "TRACESTATE", "RESIDENT_STATE_DIR",
+  "GOCACHE", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "ELECTRON_RUN_AS_NODE",
+]);
+
+export const AgentEnvironmentConfigSchema = z.object({
+  names: z.array(WorktreeClaimVariableNameSchema.refine((name) => !reservedAgentVariables.has(name),
+    "This name is reserved by the session launcher")).max(32)
+    .refine((names) => new Set(names).size === names.length, "Variable names must be unique"),
+}).strict();
 
 /**
  * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).

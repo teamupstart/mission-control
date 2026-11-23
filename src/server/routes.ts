@@ -1,4 +1,6 @@
-import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { agentEnvironmentPresence, saveAgentEnvironment } from "./agent-environment.ts";
+import { AGENT_ENVIRONMENT_FLAG } from "@shared/feature-flag-registry.ts";
+import { AgentEnvironmentConfigSchema, FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
 import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
@@ -9275,6 +9277,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(saved);
   });
 
+  app.get("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) =>
+    c.json({ variables: await agentEnvironmentPresence() }));
+  app.put("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) => {
+    const parsed = await parseBody(c, AgentEnvironmentConfigSchema);
+    if (!parsed.ok) return c.json({ error: "Enter up to 32 unique, non-reserved variable names." }, 400);
+    saveAgentEnvironment(parsed.data.names);
+    return c.json({ variables: await agentEnvironmentPresence() });
+  });
   app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
   app.put("/api/feature-flags", async (c) => {
     const parsed = await parseBody(c, FeatureFlagIntentSchema);

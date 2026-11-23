@@ -729,6 +729,8 @@ export interface Session {
    * task has the same one. Optional so an older snapshot parses.
    */
   launchWorkUnitId?: string | null;
+  /** Configured names unavailable when this process started. */
+  missingEnvironment?: string[];
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
   /**

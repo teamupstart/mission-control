@@ -1600,6 +1600,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.cwd,
         opts.stateHome,
         {
+          ...(opts.namedEnvironment ? { namedEnvironment: opts.namedEnvironment } : {}),
           ...(overlay ? { codexHome: overlay } : {}),
           ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
           traceContext: opts.traceContext ?? null,

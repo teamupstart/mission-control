@@ -495,6 +495,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+export const fetchAgentEnvironment = () =>
+  fetchJson<{ variables: import("@shared/worktrees.ts").WorktreeClaimVariableView[] }>("/api/agent-environment");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
@@ -2495,6 +2497,8 @@ export const api = {
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
   /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setAgentEnvironment: (names: string[]) =>
+    put<ActionResult & { variables?: import("@shared/worktrees.ts").WorktreeClaimVariableView[] }>("/api/agent-environment", { names }),
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---

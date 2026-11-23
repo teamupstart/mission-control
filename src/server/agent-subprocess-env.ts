@@ -171,6 +171,12 @@ export function dropPaneIdentityEnv(env: Record<string, string | undefined>): vo
   for (const name of PANE_IDENTITY_ENV_NAMES) delete env[name];
 }
 
+/** Session overrides must never supply the terminal identity. A pane supplies its own. */
+export function dropTerminalIdentityEnv(env: Record<string, string | undefined>): void {
+  dropPaneIdentityEnv(env);
+  delete env.TERM_PROGRAM;
+}
+
 export interface AgentSubprocessEnvOptions {
   /** Reuse one home across the cooperating processes that make up a session launch. */
   stateHome?: string;
@@ -179,8 +185,7 @@ export interface AgentSubprocessEnvOptions {
   /** Checkout whose already-provisioned scoped scout capability should follow the launch. */
   cwd?: string;
   /**
-   * Harness launch variables a capability rendered for this session (the advisor's Off
-   * switch, today). Applied over the inherited environment and BEFORE the isolation below,
+   * Launch variables selected for this agent, including capability overrides and named credentials. Applied over the inherited environment and BEFORE the isolation below,
    * so nothing here can name a state home, a token or a credential back into the child.
    */
   extraEnv?: Readonly<Record<string, string>>;

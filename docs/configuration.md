@@ -529,3 +529,19 @@ and missing or nonnumeric stored values use 30. It is independent of `MISSION_WO
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
+
+## Agent environment
+
+Enable **Agent environment** in Settings > Feature flags. In Settings > Harnesses, enter one
+variable name per line and save. For example, a repository can reference `MY_TOKEN` in a
+Claude MCP header or as a Codex `bearer_token_env_var`.
+
+Each new managed session or resume reads the listed names from the daemon, then probes the
+login shell for any empty or unset names. Changes to shell exports take effect on the next
+launch. Settings reports presence and source. A missing variable leaves the session running
+and appears in its details. The setting and its backups contain only names.
+
+The preview adds selected variables to the usual launch environment. Terminal launches
+transfer them through a private one-use Unix socket. Embedded Pi receives them in its shell
+tool environment. Residents continue to use profile secrets. Disabling the preview stops
+future lookups and retains the saved list.

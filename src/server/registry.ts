@@ -471,6 +471,8 @@ export interface SdkSessionRegistration {
    * by a registration that launched nothing, which leaves the record as it was.
    */
   launchWorkUnitId?: string | null;
+  /** Only the names unavailable to this launch. */
+  missingEnvironment?: string[];
   /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
   id: string;
   agent: AgentType;
@@ -3086,6 +3088,7 @@ export class Registry extends EventEmitter {
       // definition. An SDK session never passes through here at all - it arrives through
       // `registerSdkSession`, which is the only other door into this map.
       runtime: "terminal",
+      missingEnvironment: prev?.missingEnvironment,
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
@@ -3260,7 +3263,10 @@ export class Registry extends EventEmitter {
       this.moveLaunchWorkUnitKey(boundBeforeSight, noteKeyFor(base));
     }
     if (!prev) {
-      takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => this.installHandedLaunchWorkUnit(base, launched, now));
+      takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => {
+        this.installHandedLaunchWorkUnit(base, launched, now);
+        base.missingEnvironment = launched.missingEnvironment;
+      });
     }
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
@@ -3377,6 +3383,7 @@ export class Registry extends EventEmitter {
       id: input.id,
       agent: input.agent,
       runtime: "sdk",
+      missingEnvironment: input.missingEnvironment,
       configuredModel: input.configuredModel ?? null,
       // Resolved below with note/goal. Ordinarily `"sdk"` with no stored row - Mission
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
@@ -12592,6 +12599,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // record with nothing else on the card changing, and the reuse guard on Foreman's side
   // reads it from the snapshot.
   launchWorkUnitId: byValue,
+  missingEnvironment: byJson,
   sessionControlEnabled: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
   sessionControlRequest: byJson,

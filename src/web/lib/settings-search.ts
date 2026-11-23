@@ -514,6 +514,10 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "toggle",
     backup: backupDomains("harnesses"),
   },
+  { id: "agent-environment-names", label: "Agent environment variables", category: "harnesses",
+    description: "Choose the daemon or login-shell variables available to agent sessions.",
+    anchor: "harnesses/agent-environment", keywords: ["service token", "login shell", "MCP"],
+    kind: "jump", backup: backupDomains("agent-environment") },
   ...HARNESS_CONTROLS,
   ...FEATURE_FLAG_CONTROLS,
   { id: "feature-flags-enable-all", label: "Enable all feature flags",
@@ -1357,7 +1361,8 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
  * category gate, live, never frozen at module load.
  */
 export function settingsControls(flags: FeatureFlagsConfig): readonly SettingsControl[] {
-  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags));
+  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags) &&
+    (control.id !== "agent-environment-names" || resolveFeatureFlag("agent-environment", flags)));
 }
 
 /**

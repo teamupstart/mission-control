@@ -17,6 +17,8 @@ import {
   type TaskLaunchFailure,
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
+import { launchAgentEnvironment, type NamedAgentEnvironment } from "./agent-environment.ts";
+import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -425,6 +427,8 @@ export class Dispatcher {
        * launcher is used and nothing changes.
        */
       spawn?: typeof spawnUniquely;
+      /** Terminal backends for exercising the ordinary agent launcher with a fixture pane. */
+      homeDeps?: HomeDeps;
       /**
        * Closes a terminal home that a replaced dispatch attempt spawned. Injected by tests that
        * spawn through `spawn` above, whose homes no real backend could close. Unset, the real
@@ -1131,7 +1135,8 @@ export class Dispatcher {
         // the one its wrapper runs from. The agent is discovered, and announced, before this
         // function gets control back, and the registry installs the launch record when it
         // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
-        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId);
+        const named = await launchAgentEnvironment(resident);
+        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId, null, named?.missing);
         home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
@@ -1142,6 +1147,8 @@ export class Dispatcher {
           terminalBackend,
           { ...advisorEnv, ...workUnitEnv(workUnitId) },
           piFallbackArgs,
+          named,
+          this.deps.homeDeps,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now -
@@ -3676,11 +3683,19 @@ export async function spawnUniquely(
   extraEnv: Readonly<Record<string, string>> = {},
   /** The arguments to launch with instead if `agentArgs` would not fit at exec (a shaped Pi turn one). */
   fallbackAgentArgs: readonly string[] | null = null,
+  named?: NamedAgentEnvironment,
+  deps?: HomeDeps,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
     const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
-    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
+    const handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named);
+    try {
+      return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
+    } catch (error) {
+      if (!(error instanceof TerminalLaunchError && error.outcomeUnknown)) handoff.dispose();
+      throw error;
+    }
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);
     throw error;

@@ -1,3 +1,5 @@
+import { AgentEnvironmentSettings } from "./AgentEnvironmentSettings.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { useEffect, useState } from "react";
 import {
   AGENT_TYPES,
@@ -612,6 +614,7 @@ export function HarnessesPanel({
   // default) and disables until the first read lands, so a toggle can't race the fetch.
   const autoMode = config?.autoModeOnDispatch ?? true;
   const advisorEnvironments = useAdvisorEnvironments();
+  const environmentOn = useFeatureFlag("agent-environment");
 
   return (
     <section className="settings-section">
@@ -621,6 +624,7 @@ export function HarnessesPanel({
       </p>
 
       {error && <p className="settings-error">{error}</p>}
+      {environmentOn && <AgentEnvironmentSettings />}
 
       <div className="kb-row harnesses-row" data-anchor="harnesses/auto-mode">
         <div className="kb-row-text">

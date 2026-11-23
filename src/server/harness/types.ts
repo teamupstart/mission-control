@@ -841,6 +841,8 @@ export interface ResidentMcpLaunch {
 }
 
 export interface SdkLaunchOptions {
+  /** Launch-only. Never persist or project the resolved values. */
+  namedEnvironment?: import("../agent-environment.ts").NamedAgentEnvironment;
   /** Profile-owned state, shared across runs and recreated on SDK restore. */
   residentStateDir?: string;
   residentCompaction?: { threshold: number; /** Previously measured native limit, replayed on resume. */ tokenLimit?: number };

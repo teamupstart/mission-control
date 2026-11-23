@@ -210,5 +210,5 @@ export interface PiSdkDeps {
   /** Configured GitHub remotes of this checkout, read without contacting GitHub. */
   repositories(cwd: string): Promise<string[]>;
   /** The environment Pi's in-process shell tools should run under. */
-  toolEnv(cwd: string, stateHome: string): Record<string, string>;
+  toolEnv(cwd: string, stateHome: string, namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment): Record<string, string>;
 }

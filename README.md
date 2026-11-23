@@ -279,6 +279,8 @@ SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; 
 internal launch secret, not a setting to configure. Public session IDs cannot select report
 credentials. See [Configuration](docs/configuration.md) for the launch boundary.
 
+Enable the [Agent environment preview](docs/configuration.md#agent-environment) to pass named login-shell variables to new agent sessions. Configure the names in Settings > Harnesses.
+
 ## Backlog and sources
 
 The backlog holds work that should happen but has not started. Order it with priorities and labels,

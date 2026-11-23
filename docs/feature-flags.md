@@ -1,7 +1,7 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
-**Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Agent environment](configuration.md#agent-environment), **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),

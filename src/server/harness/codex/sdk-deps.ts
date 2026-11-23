@@ -144,6 +144,7 @@ export interface CodexSdkDeps {
     options?: {
       residentStateDir?: string;
       codexHome?: string;
+      namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment;
       traceContext?: AgentTraceContext | null;
       /** This session's work unit, or null. One server per session, so it is session-scoped. */
       workUnitId?: string | null;
@@ -163,8 +164,9 @@ export function codexAppServerEnv(
   stateHome?: string,
   traceContext?: AgentTraceContext | null,
   workUnitId?: string | null,
+  namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment,
 ): Record<string, string | undefined> {
-  return withWorkUnit(withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome), traceContext), workUnitId);
+  return withWorkUnit(withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome, namedEnvironment), traceContext), workUnitId);
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
@@ -174,7 +176,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext, options?.workUnitId);
+    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext, options?.workUnitId, options?.namedEnvironment);
     if (options?.residentStateDir) env.RESIDENT_STATE_DIR = options.residentStateDir;
     if (options?.codexHome) env.CODEX_HOME = options.codexHome;
     return spawnAppServer(await codexExecutable(), args, cwd, env);

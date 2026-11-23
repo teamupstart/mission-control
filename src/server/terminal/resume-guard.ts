@@ -1,3 +1,5 @@
+import { createConnection } from "node:net";
+import type { TerminalEnvironmentPatch } from "./environment-handoff.ts";
 import { spawn } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -66,8 +68,25 @@ async function processInventory() {
   return parseResumeProcesses(result.stdout, result.childPid);
 }
 
+/** Replace this short-lived reader with the original wrapper, preserving its PID, tty and argv. */
+async function execWithAgentEnvironment(): Promise<never> {
+  const [socketPath, command, ...args] = process.argv.slice(3);
+  if (!socketPath || !command || !process.execve) throw new Error("Unavailable environment handoff");
+  const socket = createConnection(socketPath);
+  socket.setTimeout(5_000, () => socket.destroy(new Error("Environment handoff timed out")));
+  socket.setEncoding("utf8");
+  let payload = "";
+  for await (const chunk of socket) payload += chunk;
+  const patch: TerminalEnvironmentPatch = JSON.parse(payload);
+  const env = { ...process.env, ...patch.set };
+  for (const name of patch.unset) delete env[name];
+  delete env.ELECTRON_RUN_AS_NODE;
+  return process.execve(command, [command, ...args], env);
+}
+
 try {
-  if (process.argv[2] === "--check") console.log("mission-resume-guard-v1");
+  if (process.argv[2] === "--with-agent-environment") await execWithAgentEnvironment();
+  else if (process.argv[2] === "--check") console.log("mission-resume-guard-v1");
   else process.exitCode = await main();
 } catch {
   // Config, bearer values and the agent argv must never enter a launch error.

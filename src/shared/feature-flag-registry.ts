@@ -17,7 +17,16 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 
+export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: AGENT_ENVIRONMENT_FLAG,
+    label: "Agent environment",
+    description: "Pass selected daemon or login-shell variables to new agent sessions.",
+    stage: "preview",
+    keywords: ["harnesses", "environment", "MCP", "token"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

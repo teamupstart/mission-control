@@ -656,7 +656,7 @@ export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
             appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],
             // Pi runs in this process, so the environment of the tools it runs is its launch
             // environment: the work unit goes there. Pi has no remote MCP client of its own.
-            toolEnv: withWorkUnit(deps.toolEnv(opts.cwd, opts.stateHome), opts.workUnitId),
+            toolEnv: withWorkUnit(deps.toolEnv(opts.cwd, opts.stateHome, opts.namedEnvironment), opts.workUnitId),
           });
         } catch (err) {
           throw classifyPiFailure(err, ref?.provider ?? null);

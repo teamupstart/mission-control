@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
+import { agentSubprocessEnv, dropTerminalIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
 import type {
   ClaudeSdkDeps,
@@ -50,10 +50,12 @@ export function sdkSubprocessEnv(
   base: NodeJS.ProcessEnv = process.env,
   cwd?: string,
   stateHome?: string,
+  namedEnvironment?: import("../../agent-environment.ts").NamedAgentEnvironment,
 ): Record<string, string | undefined> {
-  const env = agentSubprocessEnv(base, { loopbackAccess: true, cwd, stateHome });
-  dropPaneIdentityEnv(env);
-  delete env.TERM_PROGRAM;
+  const inherited = { ...base };
+  for (const name of namedEnvironment?.missing ?? []) delete inherited[name];
+  const env = agentSubprocessEnv(inherited, { loopbackAccess: true, cwd, stateHome, extraEnv: namedEnvironment?.extraEnv });
+  dropTerminalIdentityEnv(env);
   return env;
 }
 
@@ -150,7 +152,7 @@ export async function startClaudeModelQuery(params: {
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
   query: startQuery,
   executable: claudeExecutable,
-  env: (cwd, stateHome) => sdkSubprocessEnv(process.env, cwd, stateHome),
+  env: (cwd, stateHome, named) => sdkSubprocessEnv(process.env, cwd, stateHome, named),
 };
 
 /** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */

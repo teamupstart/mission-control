@@ -100,6 +100,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.deepEqual(
     APP_CONFIG_ENTRY_LIST.map((entry) => entry.key).sort(),
     [
+      "agentEnvironment",
       "away",
       "backlog.plan",
       "backups",

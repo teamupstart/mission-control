@@ -1023,3 +1023,27 @@ test("local steps after an await stop once the session has ended: Change somethi
   assert.ok(dropping.fake.notices.every((n) => n !== "Dropped the draft that was waiting for its description."));
   assert.equal(dropping.fake.dialogs.length, dialogsBefore);
 });
+
+test("only the daemon's no-such-draft answer retires a waiting draft; any other 404 keeps it and is shown", async () => {
+  // A 404 that is not the daemon's own answer (a missing route): the draft stays waiting, the error is shown,
+  // and the description is not turned into a new brief.
+  const other = world();
+  await runDispatchCommand(other.fake.host, SESSION, "");
+  const draftId = (await other.fake.host.paneState.get("draftId"))!;
+  other.daemon.override("POST /dispatch/drafts/:id", () => ({ status: 404, body: { error: "not found" } }));
+  const dialogsBefore = other.fake.dialogs.length;
+  const result = await runDispatchCommand(other.fake.host, SESSION, "the description");
+  assert.equal(result.outcome, "refused");
+  assert.equal(other.fake.notices.at(-1), "not found");
+  assert.equal(await other.fake.host.paneState.get("draftId"), draftId);
+  assert.equal(other.fake.dialogs.length, dialogsBefore);
+  assert.equal(createdDrafts(other.daemon).length, 1);
+
+  // The daemon's own "no such draft" still retires it, and the text starts a new brief.
+  const gone = world();
+  await runDispatchCommand(gone.fake.host, SESSION, "");
+  gone.daemon.override("POST /dispatch/drafts/:id", () => ({ status: 404, body: { error: "no such draft" } }));
+  await runDispatchCommand(gone.fake.host, SESSION, "write up the logging design");
+  assert.equal(await gone.fake.host.paneState.get("draftId"), null);
+  assert.ok(gone.fake.dialogs.some((d) => d.header === "Kind"));
+});

@@ -206,15 +206,15 @@ export class ReportManager {
     // checked once now for anything that changed while the daemon was down.
     this.stopTasks = this.registry.subscribe((event) => {
       if (event.type === "task_upsert") this.reconcileFollowUp(event.task);
-      else if (event.type === "task_remove") this.forgetFollowUpTask(event.id);
+      else if (event.type === "task_remove") this.forgetFollowUpTask(event.id, "removed");
     });
     for (const row of openDb()
       .prepare("SELECT DISTINCT follow_up_task_id FROM reports WHERE follow_up_task_id IS NOT NULL AND (read_at IS NULL OR read_by = 'follow-up')")
       .all() as Array<{ follow_up_task_id: string }>) {
       const task = this.registry.getTask(row.follow_up_task_id) ?? getDurableTask(row.follow_up_task_id);
-      // Deleted while the daemon was down: forgotten now, as `task_remove` would have.
+      // Deleted while the daemon was down: treated now as `task_remove` would have been.
       if (task) this.reconcileFollowUp(task);
-      else this.forgetFollowUpTask(row.follow_up_task_id);
+      else this.forgetFollowUpTask(row.follow_up_task_id, "removed");
     }
   }
 
@@ -424,7 +424,7 @@ export class ReportManager {
   private reconcileFollowUp(task: Task): void {
     // Cancelled: it will never run, so it is no longer anyone's follow-up.
     if (task.status === "cancelled") {
-      this.forgetFollowUpTask(task.id);
+      this.forgetFollowUpTask(task.id, "cancelled");
       return;
     }
     const outcome = launchFailureOutcome(task);
@@ -452,15 +452,24 @@ export class ReportManager {
   }
 
   /**
-   * A follow-up task that was cancelled or deleted no longer answers its report. Every report
-   * naming it forgets it, and a clearing it gave (`readBy: "follow-up"`) is dropped, so the report
-   * waits in to read again and its card offers the instructions box for a new follow-up. Driven
-   * by the task itself (`task_upsert` to cancelled, `task_remove`), since a read report has no
-   * inbox card through which the follow-up route could notice.
+   * A follow-up task that no longer answers its report: every report naming it forgets it, so it
+   * waits in to read and its card offers the instructions box for a new follow-up. Driven by the
+   * task itself, since a read report has no inbox card through which the follow-up route could
+   * notice.
+   *
+   * - `cancelled`: it will never run, so it answers nothing, and a `follow-up` clearing it gave is
+   *   dropped too.
+   * - `removed` (`task_remove`, or gone from the store at startup): a removal says nothing about
+   *   what the task did. A report it cleared was dispatched, and one that ran and was later
+   *   deleted or pruned did its work, so that clearing stands and the report is left alone. Only a
+   *   report still waiting (a held or failed follow-up that never started) forgets the task.
+   *   Removing a running task normally follows cancelling it, which reopened the report already.
    */
-  private forgetFollowUpTask(taskId: string): void {
+  private forgetFollowUpTask(taskId: string, why: "cancelled" | "removed"): void {
     const rows = openDb()
-      .prepare("SELECT id FROM reports WHERE follow_up_task_id = ?")
+      .prepare(why === "cancelled"
+        ? "SELECT id FROM reports WHERE follow_up_task_id = ?"
+        : "SELECT id FROM reports WHERE follow_up_task_id = ? AND read_at IS NULL")
       .all(taskId) as Array<{ id: string }>;
     for (const { id } of rows) {
       const changed = openDb().prepare(
@@ -533,7 +542,8 @@ export class ReportManager {
     // operator's instructions (below), so the report goes back to the instructions box rather
     // than being re-filed from a Retry.
     if (report.followUpTaskId !== null && !port.exists(report.followUpTaskId)) {
-      this.forgetFollowUpTask(report.followUpTaskId);
+      // The operator is asking for a new follow-up, so whatever the old task did, it is replaced.
+      this.forgetFollowUpTask(report.followUpTaskId, "cancelled");
       report = getRow(id)!;
       if (!words.trim()) {
         return refuse(409, "The follow-up task was deleted or cancelled. Write what the follow-up should do and start a new one.", report);

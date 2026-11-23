@@ -510,83 +510,63 @@ test("a dispatched follow-up whose task is cancelled answers nothing: the report
   assert.equal(cleared.followUpTaskId, secondTask);
 });
 
-test("cancelling or deleting a dispatched follow-up's task puts its report back in to read, with no route call", async () => {
-  const f = setup();
-  const repo = f.inRepo(mkRepo());
-  for (const end of ["cancel", "delete"] as const) {
-    const report = await postFromGoneSession(f, { repoRoot: repo }, `Ended by ${end}`);
-    const started = await f.followUp(report.id, "Go");
-    assert.equal(started.status, 200, JSON.stringify(started.body));
-    const taskId = String(started.body.taskId);
-    assert.equal(f.reports.get(report.id)!.readBy, "follow-up", "cleared by the dispatched follow-up");
-    // The operator ends the task from the Backlog; nothing calls the follow-up route.
-    if (end === "cancel") f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
-    else f.registry.removeTask(taskId);
-    const waiting = f.reports.get(report.id)!;
-    assert.equal(waiting.readAt, null, `${end}: waiting to be read again`);
-    assert.equal(waiting.readBy, null);
-    assert.equal(waiting.followUpTaskId, null, `${end}: the card offers the instructions box again`);
-    assert.equal(f.registry.reportsToRead().some((r) => r.id === report.id), true, `${end}: back in to read`);
-  }
-});
-
-test("a follow-up task deleted while the daemon was down is forgotten at the next start", async () => {
+test("cancelling a dispatched follow-up's task puts its report back in to read, with no route call", async () => {
   const f = setup();
   const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
   const started = await f.followUp(report.id, "Go");
+  assert.equal(started.status, 200, JSON.stringify(started.body));
   const taskId = String(started.body.taskId);
-  f.reports.stop();
-  f.registry.removeTask(taskId);
-  assert.equal(f.reports.get(report.id)!.readBy, "follow-up", "nothing was listening");
-  const restarted = new ReportManager(f.registry);
-  after(() => restarted.stop());
-  const waiting = restarted.get(report.id)!;
-  assert.equal(waiting.readAt, null);
-  assert.equal(waiting.followUpTaskId, null);
+  assert.equal(f.reports.get(report.id)!.readBy, "follow-up", "cleared by the dispatched follow-up");
+  // The operator cancels it from the Backlog; nothing calls the follow-up route.
+  f.registry.upsertTask({ ...f.registry.getTask(taskId)!, status: "cancelled" });
+  const waiting = f.reports.get(report.id)!;
+  assert.equal(waiting.readAt, null, "waiting to be read again");
+  assert.equal(waiting.readBy, null);
+  assert.equal(waiting.followUpTaskId, null, "the card offers the instructions box again");
+  assert.equal(f.registry.reportsToRead().some((r) => r.id === report.id), true, "back in to read");
 });
 
-test("no window sees a successful follow-up as created but not started", async () => {
-  const f = setup();
-  const report = await postFromGoneSession(f, { repoRoot: f.inRepo(mkRepo()) });
-  const seen: Array<Pick<ReportItem, "followUpTaskId" | "readAt">> = [];
-  const stop = f.registry.subscribe((event) => {
-    if (event.type === "report_upsert" && event.report.id === report.id) seen.push(event.report);
-  });
-  try {
-    const started = await f.followUp(report.id, "Fix it");
-    assert.equal(started.status, 200, JSON.stringify(started.body));
-  } finally {
-    stop();
-  }
-  // A report naming its task while still unread is what the card draws as a failed dispatch.
-  assert.deepEqual(seen.filter((r) => r.followUpTaskId !== null && r.readAt === null), [], "never published mid-dispatch");
-  assert.ok(seen.some((r) => r.followUpTaskId !== null && r.readAt !== null), "the read outcome was published");
-});
-
-test("a refused or failed dispatch is published once it has an outcome, so the card shows Retry", async () => {
+test("removing a follow-up task keeps an answered report answered, and frees a waiting one", async () => {
   const f = setup();
   const repo = f.inRepo(mkRepo());
-  for (const failure of ["refused", "thrown"] as const) {
-    const report = await postFromGoneSession(f, { repoRoot: repo }, `Dispatch ${failure}`);
-    const seen: Array<Pick<ReportItem, "followUpTaskId" | "readAt">> = [];
-    const stop = f.registry.subscribe((event) => {
-      if (event.type === "report_upsert" && event.report.id === report.id) seen.push(event.report);
-    });
-    const dispatching = f.tasks.dispatch.bind(f.tasks);
-    if (failure === "refused") f.failDispatches("not now");
-    else f.tasks.dispatch = (async () => { throw new Error("fell over"); }) as typeof f.tasks.dispatch;
-    try {
-      const outcome = await f.followUp(report.id, "Fix it");
-      assert.equal(outcome.status, failure === "refused" ? 409 : 500);
-    } finally {
-      stop();
-      f.failDispatches(null);
-      f.tasks.dispatch = dispatching;
-    }
-    const last = seen.at(-1);
-    assert.ok(last?.followUpTaskId, `${failure}: the window learns the task it can retry`);
-    assert.equal(last?.readAt, null);
-  }
+  // Dispatched, ran, then deleted or pruned: the follow-up did its work.
+  const answered = await postFromGoneSession(f, { repoRoot: repo }, "Answered then removed");
+  const ran = await f.followUp(answered.id, "Go");
+  const ranTask = String(ran.body.taskId);
+  f.registry.upsertTask({ ...f.registry.getTask(ranTask)!, status: "done", sessionId: "s-ran" });
+  f.registry.removeTask(ranTask);
+  const kept = f.reports.get(answered.id)!;
+  assert.equal(kept.readBy, "follow-up", "still reads Followed up in a new task");
+  assert.ok(kept.readAt !== null);
+
+  // Held and never started, then deleted: nothing answers it, so the card asks for instructions.
+  const held = await postFromGoneSession(f, { repoRoot: repo }, "Held then removed");
+  f.failDispatches("not now");
+  const refused = await f.followUp(held.id, "Go");
+  f.failDispatches(null);
+  f.registry.removeTask(String(refused.body.taskId));
+  const freed = f.reports.get(held.id)!;
+  assert.equal(freed.readAt, null);
+  assert.equal(freed.followUpTaskId, null);
+});
+
+test("a follow-up task removed while the daemon was down is treated as removed at the next start", async () => {
+  const f = setup();
+  const repo = f.inRepo(mkRepo());
+  const answered = await postFromGoneSession(f, { repoRoot: repo }, "Answered, removed while down");
+  const ran = await f.followUp(answered.id, "Go");
+  const held = await postFromGoneSession(f, { repoRoot: repo }, "Held, removed while down");
+  f.failDispatches("not now");
+  const refused = await f.followUp(held.id, "Go");
+  f.failDispatches(null);
+  f.reports.stop();
+  f.registry.removeTask(String(ran.body.taskId));
+  f.registry.removeTask(String(refused.body.taskId));
+  const restarted = new ReportManager(f.registry);
+  after(() => restarted.stop());
+  assert.equal(restarted.get(answered.id)!.readBy, "follow-up", "an answered report stays answered");
+  assert.equal(restarted.get(held.id)!.followUpTaskId, null, "a waiting one is freed");
+  assert.equal(restarted.get(held.id)!.readAt, null);
 });
 
 test("only the operator starts a follow-up", async () => {

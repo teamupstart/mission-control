@@ -395,9 +395,13 @@ export class SdkSupervisor {
         noteSessionRestoring(row.id, row.taskId);
         const restoreStartedAt = Date.now();
         // The restore's one work unit decision, made here so the launch and the span that
-        // reports this attempt carry the same value whether or not the agent comes back.
-        const workUnitId = this.restoreWorkUnitId(row);
+        // reports this attempt carry the same value whether or not the agent comes back. Inside
+        // the `try`: the owner lookup reads SQLite, and a throw there must reach this row's
+        // failure handling rather than abort every row after it. A decision that could not be
+        // made is reported as none, never guessed.
+        let workUnitId: string | null = null;
         try {
+          workUnitId = this.restoreWorkUnitId(row);
           await this.resume(row, null, workUnitId);
           clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({

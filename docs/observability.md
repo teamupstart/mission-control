@@ -526,7 +526,9 @@ that attribute returns the session spans of a plan and all its phases.
   the outcome reads a durable mirror of the session's record kept in telemetry's own source
   state. The mirror is rewritten when the session is removed and at least daily while it runs,
   so its retention counts from when the session was last seen, and a failed write is retried at
-  the session's next observation. A session relaunched without a record removes its mirror, and
+  the session's next observation. After an unclean stop the removal is never observed, so the
+  last write can be up to a day older than the last observation and the retention can end up to
+  a day early. Writing on every observation would cost a database write per session update. A session relaunched without a record removes its mirror, and
   a refused write of a new id withdraws the old one. If storage refuses the withdrawal as well,
   that session's mirror is not read for the rest of the daemon's run.
   - **The guarantee, and its one exception.** A late outcome never exports an id its agent no

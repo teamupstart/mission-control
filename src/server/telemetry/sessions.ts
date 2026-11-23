@@ -246,7 +246,10 @@ const LAUNCH_RECORD_NAMESPACE = "mission.session.launch-record";
 /**
  * How often a live session's unchanged record is written again, so the retention counts from
  * when it was last seen rather than from when it last changed - also for a daemon that stops
- * without observing the session's removal. Removal itself always writes it.
+ * without observing the session's removal. Removal itself always writes it. After an unclean
+ * stop the last write can be up to this much older than the last observation, so retention can
+ * end up to a day early (documented in `docs/observability.md`); writing on every observation
+ * would cost a database write per session update.
  */
 const LAUNCH_RECORD_REFRESH_MS = 24 * 60 * 60 * 1000;
 /**

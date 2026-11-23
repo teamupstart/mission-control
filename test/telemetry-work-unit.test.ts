@@ -675,6 +675,40 @@ test("a restore decides once: its spans keep that decision across a switch, and 
   assert.equal(last.refs.work_unit_id, WU_A, "no agent started, and the attempt still names its decision");
 });
 
+test("a restore whose work unit lookup throws fails that row alone, reports no id, and the next row still restores", async (t) => {
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = { answersRequests: true, launch: async () => idleHandle() };
+  t.after(() => {
+    HARNESSES.claude.sdk = real;
+    preview(false);
+  });
+  preview(true);
+  for (const id of ["broken", "healthy"]) {
+    upsertTask(mkTask({ id: `task-${id}`, workUnitId: WU_A, status: "running", sessionId: `sdk:${id}` }));
+    upsertSdkSession({
+      id: `sdk:${id}`, agent: "claude", agentSessionId: `conversation-${id}`, cwd: `/wt/${id}`,
+      taskId: `task-${id}`, model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+    });
+  }
+  const registry = new Registry();
+  t.after(attachSessionTelemetry(registry));
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  // The decision's owner lookup reads storage; make it throw for one row only.
+  const decide = supervisor as unknown as { restoreWorkUnitId(row: { id: string }): string | null };
+  const original = decide.restoreWorkUnitId.bind(supervisor);
+  t.mock.method(decide, "restoreWorkUnitId", (row: { id: string }) => {
+    if (row.id === "sdk:broken") throw new Error("scripted: storage read failed");
+    return original(row);
+  });
+  await supervisor.restore();
+  await supervisor.stop("sdk:healthy").catch(() => {});
+
+  const byRow = Object.fromEntries(journal("mission.session.restore.finished")
+    .map((r) => [r.refs.session_id, [r.facts.outcome, r.refs.work_unit_id ?? null]]));
+  assert.deepEqual(byRow["sdk:broken"], ["failed", null], "the failed row is reported, with no guessed id");
+  assert.deepEqual(byRow["sdk:healthy"], ["succeeded", WU_A], "the next row was not aborted");
+});
+
 // ---- launch attempts and frozen attribution ----
 
 test("a dispatch span carries the launch's decision whatever its outcome", () => {

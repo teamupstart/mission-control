@@ -306,7 +306,7 @@ test("a wrapper that records itself only after the first sighting is still match
     return recorded ? self : null;
   };
   const match = launchedSessionMatcher(
-    { homeName: "mux", homeBackend: "tmux", terminalResourceId: null, launchStateHome: "/state/late" }, readOwner);
+    { homeName: "mux", homeBackend: "tmux", terminalResourceId: null, launchStateHome: "/state/late" }, { readOwner });
   assert.equal(await match(session), false, "nothing to match against before the wrapper records itself");
   recorded = true;
   assert.equal(await match(session), true, "the lookup that found nothing was not kept");
@@ -314,6 +314,67 @@ test("a wrapper that records itself only after the first sighting is still match
   // Once found, the owner is kept: no further lookups.
   assert.equal(await match(session), true);
   assert.equal(lookups.length, 2);
+});
+
+test("a worker that moves to another checkout while its identity is read is not bound", async () => {
+  const registry = new Registry();
+  const cwd = "/wt/discovery-moved";
+  const { self } = await selfProcess();
+  // Identified by its wrapper, so the check is asynchronous: it reads the state home and `ps`.
+  const stateHome = mkdtempSync(join(home, "moved-state-"));
+  writeFileSync(join(stateHome, "terminal-launch.json"), JSON.stringify(self));
+  const spawned = { homeName: "mux", homeBackend: "tmux" as const, terminalResourceId: null, launchStateHome: stateHome };
+  const waiting = registry.waitForLaunchedSessionAtCwd(cwd, spawned, 1_500);
+  const beneath = discovered(cwd, "$60@moved", { pid: self.pid, startedAt: self.startMs });
+  registry.applyDiscovery([beneath]);
+  // The very next sweep, before that check can settle, reports it in another checkout.
+  registry.applyDiscovery([{ ...beneath, cwd: "/wt/somewhere-else" }]);
+  assert.equal(registry.getSession(beneath.syntheticId)?.cwd, "/wt/somewhere-else");
+  assert.equal(await waiting, null, "its check passed, but it is no longer in the launched checkout");
+});
+
+test("an undecided check is retried even when no later sighting changes the session", async () => {
+  const registry = new Registry();
+  const cwd = "/wt/discovery-retry";
+  const worker = discovered(cwd, "$61@static");
+  registry.applyDiscovery([worker]);
+  // A check that cannot decide at first - say the process table could not be read - and can later.
+  const checks: string[] = [];
+  const matches = async (session: { id: string }) => {
+    checks.push(session.id);
+    return checks.length > 1;
+  };
+  const spawned = { homeName: "mux", homeBackend: "tmux" as const, terminalResourceId: null, launchStateHome: "/state/retry" };
+  // Nothing is applied after this: the only way to a second check is the wait's own re-check.
+  const session = await registry.waitForLaunchedSessionAtCwd(cwd, spawned, 5_000, matches);
+  assert.equal(session?.id, worker.syntheticId);
+  assert.deepEqual(checks, [worker.syntheticId, worker.syntheticId]);
+});
+
+test("a process listing that could not be read in full does not reject a worker for good", async () => {
+  const { self, parent } = await selfProcess();
+  const registry = new Registry();
+  const cwd = "/wt/discovery-partial-ps";
+  const beneath = discovered(cwd, "$62@partial", { pid: self.pid, startedAt: self.startMs });
+  const outsider = discovered(cwd, "$63@outside", { pid: parent.pid, startedAt: parent.startMs });
+  registry.applyDiscovery([beneath, outsider]);
+  const full = await (await import("../src/server/discovery/processes.ts")).listProcessesSnapshot();
+  assert.equal(full.unknownReason, null, "the real listing is complete here");
+  // The first listing timed out with no rows; every later one is complete.
+  let listings = 0;
+  const listSnapshot = async () => (++listings === 1
+    ? { processes: [], unknownReason: "process listing failed: timed out" }
+    : full);
+  const match = launchedSessionMatcher(
+    { homeName: "emu", homeBackend: "ghostty", terminalResourceId: "emulator:ghostty:unobserved", launchProcess: self },
+    { listSnapshot });
+  assert.equal(await match(registry.getSession(beneath.syntheticId)!), false, "a partial listing cannot find its wrapper");
+  assert.equal(await match(registry.getSession(beneath.syntheticId)!), true, "and that answer was not kept");
+  // A complete listing's "no" is kept: the outsider is not listed again.
+  assert.equal(await match(registry.getSession(outsider.syntheticId)!), false);
+  const before = listings;
+  assert.equal(await match(registry.getSession(outsider.syntheticId)!), false);
+  assert.equal(listings, before, "a complete listing's rejection stands without asking again");
 });
 
 test("a spawn that names no terminal or launch process binds nothing, even a worker that appears only after it", async () => {

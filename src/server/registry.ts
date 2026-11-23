@@ -606,6 +606,13 @@ const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+
+/**
+ * How often a launch's discovery wait re-checks the sessions in its checkout (ms), for a check
+ * that came back undecided on a session no later sweep will change. See
+ * `waitForLaunchedSessionAtCwd`.
+ */
+const LAUNCH_RECHECK_MS = 500;
 /**
  * How long a FINISHED, session-less queue is kept before it's pruned.
  *
@@ -8338,42 +8345,57 @@ export class Registry extends EventEmitter {
    * a worker appeared is no evidence of whose it is - a cancelled launch's agent can be
    * discovered late - so a home that cannot name its worker never binds one.
    *
+   * Every live session at `cwd` is checked on each sighting and again every
+   * `LAUNCH_RECHECK_MS`. A check can come back undecided - the wrapper's record or the process
+   * table could not be read - and an unchanged session produces no further sighting to retry
+   * on. One session is never checked twice at once. A session is resolved only if, re-read once
+   * its check settles, it is still live and still at `cwd`.
+   *
    * Like `waitForSessionAtCwd`, this proves a process exists, not that it reads input.
+   * `matches` defaults to `launchedSessionMatcher(home)`.
    */
   waitForLaunchedSessionAtCwd(
     cwd: string,
     home: SpawnedHome,
     timeoutMs: number,
+    matches: (session: Session) => Promise<boolean> = launchedSessionMatcher(home),
   ): Promise<Session | null> {
     if (!spawnHasLaunchIdentity(home)) return Promise.resolve(null);
-    const matches = launchedSessionMatcher(home);
     return new Promise<Session | null>((resolve) => {
       let settled = false;
+      const checking = new Set<string>();
       const finish = (session: Session | null): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearInterval(recheck);
         unsub();
         resolve(session);
       };
       const consider = (s: Session): void => {
-        if (settled || s.cwd !== cwd || s.state === "exited") return;
+        if (settled || s.cwd !== cwd || s.state === "exited" || checking.has(s.id)) return;
+        checking.add(s.id);
         void matches(s).then(
           (ok) => {
             if (!ok || settled) return;
             const current = this.sessions.get(s.id);
-            // It may have exited while its ancestry was read; a later sighting can still qualify.
-            if (current && current.state !== "exited") finish(current);
+            // It may have exited, or moved to another checkout, while its identity was read;
+            // a later sighting at `cwd` can still qualify.
+            if (current && current.state !== "exited" && current.cwd === cwd) finish(current);
           },
           () => {},
-        );
+        ).finally(() => checking.delete(s.id));
+      };
+      const scan = (): void => {
+        for (const s of this.sessions.values()) consider(s);
       };
       const timer = unref(setTimeout(() => finish(null), timeoutMs));
+      const recheck = unref(setInterval(scan, LAUNCH_RECHECK_MS));
       // Subscribed before the scan, so a sighting between the two is not lost.
       const unsub = this.subscribe((e) => {
         if (e.type === "session_upsert") consider(e.session);
       });
-      for (const s of this.sessions.values()) consider(s);
+      scan();
     });
   }
 

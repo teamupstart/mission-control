@@ -256,16 +256,24 @@ export function spawnHasLaunchIdentity(home: SpawnedHome): boolean {
  * the exact terminal resource it opened, or the live launch wrapper (`launchProcess`, else the
  * one recorded in `launchStateHome`) the session's process descends from. A resource is checked
  * on every sighting, since a pane's handles can arrive after the process does. The wrapper's
- * identity is looked up again on each sighting until it is found, since the wrapper records it
- * only once it starts; once found, process ancestry cannot change for a session, so a session it
- * rejects stays rejected.
+ * identity is looked up again on each check until it is found: a lookup can come back empty while
+ * the process table cannot be read. Once found, process ancestry cannot change for a session, so
+ * a session that a COMPLETE process listing places outside the launch stays rejected. A listing
+ * that could not be read in full proves no absence, so its "no" is not kept.
  *
  * Callers check `spawnHasLaunchIdentity` first; a home without identity matches nothing here.
- * `readOwner` is how the wrapper's identity is read from `launchStateHome`.
+ * `readOwner` reads the wrapper's identity from `launchStateHome`, and `listSnapshot` reads the
+ * process table; both default to the real readers.
  */
 export function launchedSessionMatcher(
   home: SpawnedHome,
-  readOwner: (stateHome: string) => Promise<LaunchProcess | null> = readLaunchProcess,
+  {
+    readOwner = readLaunchProcess,
+    listSnapshot,
+  }: {
+    readOwner?: (stateHome: string) => Promise<LaunchProcess | null>;
+    listSnapshot?: () => Promise<{ processes: readonly Proc[]; unknownReason: string | null }>;
+  } = {},
 ): (session: Session) => Promise<boolean> {
   // Only a found owner is kept. A lookup that finds none may simply have run before the wrapper
   // recorded itself, so the next sighting asks again; concurrent sightings share one lookup.
@@ -284,9 +292,12 @@ export function launchedSessionMatcher(
     const launch = await resolveOwner();
     if (!launch) return false;
     // Process discovery depends on initialized harnesses, which themselves reach Registry.
-    const { listProcesses } = await import("../discovery/processes.ts");
-    if (belongsToLaunch(session, launch, await listProcesses())) return true;
-    rejected.add(session.id);
+    const snapshot = listSnapshot
+      ? await listSnapshot()
+      : await (await import("../discovery/processes.ts")).listProcessesSnapshot();
+    if (belongsToLaunch(session, launch, snapshot.processes)) return true;
+    // Partial rows can omit the session or its wrapper; only a complete listing proves it is not this launch.
+    if (snapshot.unknownReason === null) rejected.add(session.id);
     return false;
   };
 }

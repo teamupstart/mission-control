@@ -8371,10 +8371,13 @@ export class Registry extends EventEmitter {
   removeTask(id: string): void {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
-    dbDeleteTask(id);
+    const stored = dbDeleteTask(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
-    if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    // Published for a stored task too, not only a cached one: a task already evicted from
+    // memory can still be held by a subscriber, such as the voice roster keeping its name.
+    const cached = this.tasks.delete(id);
+    if (cached || stored) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();

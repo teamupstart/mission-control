@@ -263,7 +263,7 @@ taskId, sessionId, role, colorId, agent, state }`:
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
-stopped later. A deleted task leaves at once. Agents that are not running stay listed so a later
+stopped later. A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
 phase can say "<name> isn't running".
 
 When a task stopped is not always known across a daemon restart, so the 24 hours are not an

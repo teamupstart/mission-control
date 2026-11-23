@@ -16,7 +16,9 @@ test("named login-shell variables reach both SDK processes and a missing name wa
   await page.goto(daemon.baseURL + "/#/settings/harnesses");
   const panel = page.getByRole("region", { name: "Agent environment" });
   await panel.getByRole("textbox").fill("E2E_LISTED_TOKEN\nE2E_ABSENT_TOKEN");
-  await panel.getByRole("button", { name: "Save variable names" }).click();
+  const save = panel.getByRole("button", { name: "Save variable names" });
+  await expect(save).toHaveAccessibleDescription("Apply these names to future agent launches");
+  await save.click();
   await expect(panel.getByText("Present (login shell)", { exact: false })).toBeVisible();
   const invalid = await page.request.put(endpoint, { data: { names: ["MISSION_API_TOKEN"], value: "rejected-input" } });
   expect(invalid.status()).toBe(400);
@@ -29,10 +31,12 @@ test("named login-shell variables reach both SDK processes and a missing name wa
     { name: "E2E_LISTED_TOKEN", present: true, source: "loginShell" },
     { name: "E2E_ABSENT_TOKEN", present: false, source: null },
   ] });
+  await save.hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Apply these names to future agent launches" })).toBeVisible();
   const evidence = artifactsDir("agent-environment");
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(evidence, { recursive: true });
-    await panel.screenshot({ path: join(evidence, "settings.png") });
+    await page.screenshot({ path: join(evidence, "settings.png") });
   }
 
   for (const agent of ["claude", "codex"]) {

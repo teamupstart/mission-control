@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AgentEnvironmentConfigSchema } from "@shared/protocol.ts";
 import type { WorktreeClaimVariableView } from "@shared/worktrees.ts";
 import { api, fetchAgentEnvironment } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 export function AgentEnvironmentSettings() {
   const [variables, setVariables] = useState<WorktreeClaimVariableView[] | null>(null);
@@ -41,9 +42,13 @@ export function AgentEnvironmentSettings() {
         <textarea className="si-textarea" disabled={!variables || saving} value={draft} rows={3} spellCheck={false}
           onChange={(event) => setDraft(event.target.value)} />
       </label>
-      <div className="si-actions"><button className="btn" type="button" disabled={!variables || saving} onClick={() => void save()}>
-        {saving ? "Saving…" : "Save variable names"}
-      </button></div>
+      <div className="si-actions">
+        <Tooltip label="Apply these names to future agent launches">
+          <button className="btn" type="button" disabled={!variables || saving} onClick={() => void save()}>
+            {saving ? "Saving…" : "Save variable names"}
+          </button>
+        </Tooltip>
+      </div>
       {error && <p role="alert" className="settings-error">{error}</p>}
       {!!variables?.length && <ul aria-label="Variable status">{variables.map(({ name, source }) => (
         <li key={name}><code>{name}</code> <span>{source === "daemon" ? "Present (daemon)" : source === "loginShell" ? "Present (login shell)" : "Absent"}</span></li>

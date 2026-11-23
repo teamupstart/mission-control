@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { HeardEntry, VoiceCard } from "../src/shared/voice-routing.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
+import type { VoiceDecisionResult, VoiceQuestion } from "../src/shared/voice-decide.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
 process.env.MISSION_HOME = home;
@@ -26,8 +27,14 @@ const registry = new Registry();
 const interrupts: string[] = [];
 const sdk = { interrupt: async (id: string) => { interrupts.push(id); return "idle"; } } as unknown as SdkSupervisor;
 const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000 });
+// The model step, scripted: no provider is reached and no model is spawned. "Not sure" unless a
+// test says otherwise.
+let decide: (questions: readonly VoiceQuestion[]) => VoiceDecisionResult = (questions) =>
+  ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
 const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews: new ReviewManager(registry),
-  tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+  tasks: new TaskManager(registry), queues: new QueueManager(registry),
+  voiceDecider: { ask: async (questions) => decide(questions) } });
+const resolved = (id: string) => registry.voiceRouter!.resolution(id) ?? Promise.resolve();
 const cards: VoiceCard[] = [];
 registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
 const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
@@ -135,8 +142,14 @@ test("window off queues immediately and an addressed stop interrupts the session
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
+  decide = (questions) => {
+    assert.deepEqual(questions.map((q) => q.kind === "split" && [q.first.label, q.second.label]), [["Will", "Steve"]]);
+    return { rung: "job", answers: [{ choice: "mention", confidence: 1 }], detail: "scripted" };
+  };
   await say("Will, " + body, "mention");
+  await resolved("mention");
   assert.equal(cards[0]?.state, "pending");
+  assert.equal(cards[0]?.reason, "mention");
   assert.equal(cards[0]?.parts[0]?.target?.name, "Will");
   assert.equal(cards[0]?.parts[0]?.text, body);
   assert.deepEqual(cards[0]?.candidates, []);
@@ -145,8 +158,21 @@ test("a later mention of Steve opens a pending card for Will and queues the enti
   assert.ok(!queued("Steve").includes(body));
 });
 
+test("a split queues each part to its own agent", async () => {
+  decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  await say("Steve, check the build, and Will, review the PR", "split");
+  await resolved("split");
+  assert.deepEqual(cards.at(-1)?.parts.map((p) => [p.target?.name, p.text]), [["Steve", "check the build"], ["Will", "review the PR"]]);
+  assert.equal((await act("split", "send-now")).status, 200);
+  assert.ok(queued("Steve").includes("check the build"));
+  assert.ok(queued("Will").includes("review the PR"));
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
 test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
+  decide = (questions) => ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
   await say("Steven tell Will something", "ambiguous");
+  await resolved("ambiguous");
   assert.equal(cards[0]?.state, "unsure");
   assert.equal(cards[0]?.deadline, null);
   assert.equal((await act("ambiguous", "send-now")).status, 409);
@@ -154,12 +180,13 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   assert.equal(cards.at(-1)?.state, "cancelled");
   assert.ok(!queued("Steve").includes("tell Will something"));
   for (const method of ["spoken", "click"]) {
-    await say("Steven ask Will", method);
+    await say("Steven ask Will about it", method);
+    await resolved(method);
     assert.equal((await act(method, "pick", { id: "unknown" })).status, 409);
     if (method === "spoken") await say("Will");
     else assert.equal((await act(method, "pick", { id: "task:Will" })).status, 200);
     assert.equal(cards.at(-1)?.state, "pending");
-    assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+    assert.deepEqual(cards.at(-1)?.parts.map(part => [part.target?.name, part.text]), [["Steve", "ask"], ["Will", "about it"]]);
     assert.equal((await act(method, "cancel")).status, 200);
   }
 });
@@ -175,9 +202,12 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [
     ["newer", "unsure"], ["older", "pending"],
   ]);
-  assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+  assert.deepEqual(cards.at(-1)?.parts.map(p => [p.target?.name, p.text]), [
+    ["Steve", "ask"], ["Will", "about the build"],
+  ]);
   assert.equal((await act("older", "send-now")).status, 200);
-  assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
+  assert.equal(queued("Steve").at(-1), "ask");
+  assert.equal(queued("Will").at(-1), "about the build");
 });
 
 test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
@@ -204,8 +234,8 @@ test("a replacement session receives neither a pending message nor a pending int
   await Promise.resolve();
   assert.deepEqual(queued("Bill"), replacementQueue);
   assert.deepEqual(interrupts, beforeInterrupts);
-  assert.deepEqual(cards.slice(-2).map((c) => [c.id, c.state, c.parts[0]?.target?.sessionId]), [
-    ["stop-original", "not-running", "sdk:Will"], ["picked-message", "not-running", "sdk:Will"],
+  assert.deepEqual(cards.slice(-2).map((c) => [c.id, c.state, c.parts.map(p => p.target?.sessionId)]), [
+    ["stop-original", "not-running", ["sdk:Will"]], ["picked-message", "not-running", ["sdk:Steve", "sdk:Will"]],
   ]);
   const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");
   assert.equal(deliveries.length, 2);

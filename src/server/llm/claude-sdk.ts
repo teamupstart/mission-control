@@ -273,6 +273,9 @@ export async function runClaudeSdkOneShot(
         },
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(opts.thinking === "off" ? { thinking: { type: "disabled" as const } } : {}),
+        // A string replaces Claude Code's own system prompt for this one-shot.
+        ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
         ...(opts.maxBudgetUsd !== undefined ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
         ...(opts.schema
           ? { outputFormat: { type: "json_schema" as const, schema: opts.schema } }

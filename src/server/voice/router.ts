@@ -1,6 +1,17 @@
-import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
+import {
+  routeUtterance,
+  type HeardEntry,
+  type VoiceAddressedCommand,
+  type VoiceCard,
+  type VoiceDeliveryOutcome,
+  type VoiceRouteDecision,
+  type VoiceSplitPoint,
+  type VoiceUtterance,
+} from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceConfig, VoiceState } from "@shared/voice.ts";
+import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
+import type { VoiceDecider } from "./decide.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
 
@@ -32,8 +43,77 @@ interface OpenCard {
   card: VoiceCard;
   entry: HeardEntry;
   message: string;
+  splitPicks?: Map<string, VoiceSplitPoint>;
   command?: VoiceAddressedCommand;
   timer?: ReturnType<typeof setTimeout>;
+}
+
+type NeedsModel = Extract<VoiceRouteDecision, { kind: "needs-model" }>;
+
+/** A decider with no rung: every answer "not sure". Routing then shows the roster rows. */
+const NO_DECIDER: VoiceDecider = {
+  ask: async (questions) => ({ rung: "none", answers: voiceAnswersUnsure(questions), detail: "no model step" }),
+};
+
+function choiceOf(name: SpokenName): VoiceChoice {
+  return { id: name.key, label: name.name, detail: name.role };
+}
+
+/** The first target's roster id keeps the message whole. Repeated targets need a boundary id. */
+function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[]): Map<string, VoiceSplitPoint> {
+  const counts = new Map([[firstKey, 1]]);
+  for (const { target } of splits) counts.set(target.key, (counts.get(target.key) ?? 0) + 1);
+  return new Map(splits.map((split) => {
+    const key = split.target.key;
+    return [counts.get(key) === 1 ? key : `split:${split.at}:${key}`, split];
+  }));
+}
+
+/** How bad each outcome is, for a split whose two parts ended differently: the card shows the worse. */
+const OUTCOME_SEVERITY: readonly VoiceDeliveryOutcome[] = ["failed", "not-running", "held", "queued", "sent"];
+
+function worse(a: VoiceDeliveryOutcome, b: VoiceDeliveryOutcome): VoiceDeliveryOutcome {
+  return OUTCOME_SEVERITY.indexOf(a) <= OUTCOME_SEVERITY.indexOf(b) ? a : b;
+}
+
+/**
+ * The questions a `needs-model` decision asks: who, when the heard name is in doubt; otherwise
+ * one split question per later name, the first target fixed and never asked about.
+ */
+export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtterance): VoiceQuestion[] {
+  if (decision.reason === "ambiguous-name") {
+    if (decision.match === "exact") return [];
+    return [{ kind: "who", text: utterance.text, candidates: decision.candidates.map(choiceOf) }];
+  }
+  if (decision.ambiguousSplitTarget) return [];
+  return decision.splits.map((split) => ({
+    kind: "split", text: utterance.text, first: choiceOf(decision.target), second: choiceOf(split.target),
+    ...(decision.splits.length > 1 ? { nameOffset: split.at } : {}),
+  }));
+}
+
+/**
+ * Turn the model step's answers into the card. Who: one target. Split questions, in the order
+ * the names were said: a mention lets the next be asked, the first split ends it, and a "not
+ * sure" before any split leaves the card unsure, since cutting at a later name would decide the
+ * earlier one too. Every later name a mention: the whole text goes to the first target.
+ */
+export function resolveVoiceDecision(
+  decision: NeedsModel,
+  result: VoiceDecisionResult,
+): { state: "pending"; reason: "model" | "split" | "mention"; parts: VoiceCard["parts"] } | { state: "unsure" } {
+  if (decision.reason === "ambiguous-name") {
+    const target = decision.candidates.find((candidate) => candidate.key === result.answers[0]?.choice);
+    return target ? { state: "pending", reason: "model", parts: [{ target, text: decision.text }] } : { state: "unsure" };
+  }
+  if (decision.splits.length === 0) return { state: "unsure" };
+  for (const [index, split] of decision.splits.entries()) {
+    const choice = result.answers[index]?.choice ?? null;
+    if (choice === "mention") continue;
+    if (choice !== "split") return { state: "unsure" };
+    return { state: "pending", reason: "split", parts: [{ target: decision.target, text: split.head }, { target: split.target, text: split.tail }] };
+  }
+  return { state: "pending", reason: "mention", parts: [{ target: decision.target, text: decision.text }] };
 }
 
 export class VoiceRouter {
@@ -45,12 +125,21 @@ export class VoiceRouter {
   // its words immediately and doesn't make a retried cancel act on another card.
   private readonly recentIds = new Set<string>();
 
+  // The model step of each utterance still resolving, so a caller can wait for it.
+  private readonly resolutions = new Map<string, Promise<void>>();
+
   constructor(
     private readonly state: () => VoiceState,
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly publish: (card: VoiceCard) => void,
+    private readonly decider: VoiceDecider = NO_DECIDER,
   ) {}
+
+  /** The model step for an utterance, while it runs: settles once its card is resolved. */
+  resolution(id: string): Promise<void> | undefined {
+    return this.resolutions.get(id);
+  }
 
   activeCards(): VoiceCard[] { return Array.from(this.open.values(), ({ card }) => card); }
 
@@ -62,7 +151,8 @@ export class VoiceRouter {
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
     const unsureCards = this.activeCards().filter((card) => card.state === "unsure");
-    const decision = routeUtterance(utterance, { roster, unsureCards });
+    // Bind every potential part to the roster session present when the utterance arrived.
+    const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
     const entry: HeardEntry = { id, time: utterance.capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
@@ -85,16 +175,79 @@ export class VoiceRouter {
       return true;
     }
     entry.pauseMs = decision.pauseMs;
-    const addressed = decision.kind === "addressed";
-    entry.rule = addressed ? decision.match : decision.reason;
-    entry.matchedName = addressed ? decision.target.name : null;
+    if (decision.kind === "needs-model") {
+      this.startModelStep(decision, utterance, entry);
+      return true;
+    }
+    entry.rule = decision.match;
+    entry.matchedName = decision.target.name;
     const card: VoiceCard = {
-      id, state: addressed ? "pending" : "unsure", deadline: null, openQuestions: 0, reason: entry.rule,
-      parts: [{ target: addressed ? { ...decision.target } : null, text: addressed ? decision.text : utterance.text }],
-      candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
+      id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
+      parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
     await this.openCard({ card, entry, message: decision.text, command: decision.command });
     return true;
+  }
+
+  /**
+   * Hand a `needs-model` decision to the model step without holding the listener's request.
+   *
+   * The card is open, and in the cancel order, from the start, so "cancel" stops it while it is
+   * resolving; it is published as `resolving` only once the step has taken a second, so a quick
+   * answer shows no intermediate state. A card cancelled, or voice turned off, while the step
+   * runs is gone from `open` when the answer comes, and that answer is dropped.
+   */
+  private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry): void {
+    const { id } = utterance;
+    entry.rule = decision.reason;
+    entry.matchedName = decision.reason === "second-name" ? decision.target.name : null;
+    entry.outcome = "resolving";
+    const candidates: VoiceCard["candidates"] = decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role }));
+    const item: OpenCard = {
+      entry,
+      message: decision.text,
+      command: decision.reason === "ambiguous-name" ? decision.command : undefined,
+      card: { id, state: "resolving", deadline: null, openQuestions: 0, reason: decision.reason, candidates,
+        parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
+    };
+    this.open.set(id, item);
+    this.pendingVoiceActions.push({ id, kind: "card", openedAt: Date.now(), cancel: () => this.cancel(id) });
+    item.timer = setTimeout(() => { if (this.open.get(id) === item) this.publish(item.card); }, VOICE_RESOLVING_AFTER_MS);
+    item.timer.unref?.();
+    const agents = decision.candidates.map((candidate) => candidate.agent);
+    const settle = async (): Promise<void> => {
+      let result: VoiceDecisionResult;
+      try {
+        const questions = voiceQuestionsFor(decision, utterance);
+        result = questions.length ? await this.decider.ask(questions, { agents })
+          : { rung: "none", answers: [], detail: "multiple agents share the spoken name" };
+      } catch (error) {
+        result = { rung: "none", answers: [], detail: error instanceof Error ? error.message : String(error) };
+      }
+      if (this.open.get(id) !== item) return;
+      this.take(item);
+      const resolved = resolveVoiceDecision(decision, result);
+      const verdict = resolved.state === "unsure" ? "not sure" : resolved.reason;
+      entry.detail = `${result.detail}: ${verdict}`;
+      if (resolved.state === "unsure") {
+        const card: VoiceCard = { ...item.card, state: "unsure" };
+        if (decision.reason === "second-name") {
+          item.splitPicks = splitPickOptions(decision.target.key, decision.splits);
+          const first = candidates[0]!;
+          card.candidates = [{ ...first, detail: `${first.detail} · Keep the whole message` }];
+          for (const [id, { target, tail }] of item.splitPicks) {
+            card.candidates.push({ kind: "agent", id, title: target.name, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
+          }
+        }
+        await this.openCard({ ...item, timer: undefined, card });
+        return;
+      }
+      if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
+      await this.openCard({ ...item, timer: undefined,
+        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } });
+    };
+    const done = settle().finally(() => { this.resolutions.delete(id); });
+    this.resolutions.set(id, done);
   }
 
   private async openCard(item: OpenCard): Promise<void> {
@@ -140,13 +293,21 @@ export class VoiceRouter {
   async pick(id: string, candidateId: string): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
-    const target = this.state().roster.find((c) => c.key === candidateId);
+    const roster = this.state().roster;
+    const split = item.splitPicks?.get(candidateId);
+    const target = roster.find((c) => c.key === (split?.target.key ?? candidateId));
     if (!target) return false;
+    let parts = [{ target: { ...target }, text: item.message }];
+    if (split) {
+      const first = roster.find((c) => c.key === item.card.parts[0]?.target?.key);
+      if (!first) return false;
+      parts = [{ target: { ...first }, text: split.head }, { target: { ...target }, text: split.tail }];
+    }
     this.take(item);
-    item.entry.matchedName = target.name;
+    item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
-    await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
-      candidates: [], parts: [{ target: { ...target }, text: item.message }] } });
+    await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
+      candidates: [], parts } });
     return true;
   }
 
@@ -154,25 +315,31 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
     this.take(item);
-    const { mode, roster } = this.state();
+    const { mode } = this.state();
     if (mode === "off") return false;
-    const part = item.card.parts[0]!;
-    // A roster key can outlive the session shown on the pending card.
-    const selected = part.target;
-    const target = selected && roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
     this.delivering.set(id, item);
-    let result: DeliveryResult = "not-running";
-    try {
-      if (target) result = await this.deliverer.deliver(target, part.text, id, item.command);
-    } catch (error) {
-      result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
+    // A split delivers each part in the order it was said; the card shows the worse outcome.
+    let outcome: VoiceDeliveryOutcome | null = null;
+    for (const [index, part] of item.card.parts.entries()) {
+      const state = this.state();
+      if (this.delivering.get(id) !== item || state.mode === "off") return true;
+      const selected = part.target;
+      const target = selected && state.roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
+      let result: DeliveryResult = "not-running";
+      try {
+        if (target) result = await this.deliverer.deliver(target, part.text, index === 0 ? id : `${id}#${index + 1}`, item.command);
+      } catch (error) {
+        result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
+      }
+      const delivered = typeof result === "string" ? result : result.outcome;
+      if (typeof result !== "string") item.entry.detail = result.detail;
+      outcome = outcome === null ? delivered : worse(outcome, delivered);
     }
+    outcome ??= "not-running";
+    if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
     if (this.delivering.get(id) !== item) return true;
     this.delivering.delete(id);
-    const outcome = typeof result === "string" ? result : result.outcome;
-    if (typeof result !== "string") item.entry.detail = result.detail;
-    else if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
     item.entry.outcome = outcome;
     if (this.state().mode !== "off") this.publish({ ...item.card, state: outcome, deadline: null });
     return true;
@@ -181,6 +348,7 @@ export class VoiceRouter {
   reset(): void {
     for (const item of this.open.values()) clearTimeout(item.timer);
     this.open.clear();
+    this.resolutions.clear();
     this.delivering.clear();
     this.pendingVoiceActions.length = 0;
     this.recentIds.clear();

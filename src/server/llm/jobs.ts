@@ -71,6 +71,17 @@ export interface StructuredJobRunOptions extends JobRunOptions {
   /** Limit executions independently of provider schema support when the caller owns retries. */
   maxAttempts?: 1 | 2;
   /**
+   * Run on this provider rather than the job's configured one. For a job whose subject decides
+   * the provider (voice routing asks Claude about Claude sessions and Codex about Codex ones).
+   * The MODEL still comes from the job's ladder, resolved for this provider, so a Settings
+   * override keeps working and a model of the other provider is never handed across.
+   */
+  runner?: LlmRunnerId;
+  /** Passed to the runner: see `LlmRunOptions.thinking`. */
+  thinking?: "off";
+  /** Passed to the runner: see `LlmRunOptions.systemPrompt`. */
+  systemPrompt?: string;
+  /**
    * Told the resolved pair ONCE, before the first attempt spends anything.
    *
    * For the caller that has to write a row describing a call while it is still in flight -
@@ -111,8 +122,8 @@ export async function runJob(
  * two reads is how a Claude id ends up handed to Codex. Once, because the config is editable
  * at runtime and a structured retry must land on the same pair as its first attempt.
  */
-function jobExecution(job: LlmJobId, cfg: LlmConfig): JobExecution {
-  const runner = llmJobRunner(job, cfg).id;
+function jobExecution(job: LlmJobId, cfg: LlmConfig, runnerOverride?: LlmRunnerId): JobExecution {
+  const runner = runnerOverride ?? llmJobRunner(job, cfg).id;
   return { runner, model: llmJobModel(job, cfg, runner).id };
 }
 
@@ -131,12 +142,18 @@ export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = Ty
   opts: StructuredJobRunOptions = {},
 ): Promise<StructuredResult<T> & { execution: JobExecution }> {
   const cfg = getLlmConfig();
-  const execution = jobExecution(job, cfg);
+  const execution = jobExecution(job, cfg, opts.runner);
   opts.onExecution?.(execution);
   const runner = llmRunner(execution.runner);
   const result = await runStructured<S, T>(
     (p) =>
-      runner.run(p, { model: execution.model, timeoutMs: opts.timeoutMs, schema: opts.schema }),
+      runner.run(p, {
+        model: execution.model,
+        timeoutMs: opts.timeoutMs,
+        schema: opts.schema,
+        ...(opts.thinking ? { thinking: opts.thinking } : {}),
+        ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
+      }),
     prompt,
     extract,
     label,

@@ -185,7 +185,9 @@ of scalars, at most seven capabilities with bounded reasons, and the roster. It 
 `LINE_INPUT_EVENTS` member.
 
 `voice_card` carries `{ card }` whenever an utterance opens a card or changes its state.
-Consumers replace the card by id. A reconnect snapshot carries the open cards in `voiceCards`
+Consumers replace the card by id. A card the model step is still settling is sent as `resolving`
+only once the step has taken a second, so a quick answer arrives as `pending` or `unsure` with no
+frame before it; a split is one card whose `parts` name two targets. A reconnect snapshot carries the open cards in `voiceCards`
 while voice is enabled. The daemon drops them and the dashboard clears its map when voice turns
 off. Recently heard stays in daemon memory and is read separately through the voice routes.
 

@@ -201,3 +201,81 @@ export async function startModelServer(): Promise<ModelServer> {
     },
   };
 }
+
+// ---- a stand-in for the two decision-model providers (Phase 4) ----
+
+/** One request a decision provider received. */
+export interface DecisionRequest {
+  path: string;
+  /** The bearer key it carried. A spec asserts which key reached which provider. */
+  key: string | null;
+  model: unknown;
+}
+
+export interface DecisionServer {
+  /** `MISSION_VOICE_OPENAI_DECISIONS_URL` and `MISSION_VOICE_JEV_URL` for the daemon. */
+  env: Record<string, string>;
+  requests: DecisionRequest[];
+  close(): Promise<void>;
+}
+
+/**
+ * Answer as OpenAI Decisions (`POST /v1/decisions`) and Jev (`POST /v1/systemone`) do, in their
+ * documented reply shapes, so a spec drives the decision-model rung with no real provider. A
+ * split question is answered "split" when the speech turns to the second name with a comma
+ * ("…, and Alice, review the PR"), else "mention"; any other question is answered with its first
+ * choice at a confidence below every floor, which the daemon reads as "not sure".
+ */
+export async function startDecisionServer(): Promise<DecisionServer> {
+  const requests: DecisionRequest[] = [];
+  const verdict = (instructions: string): { choice: string; confidence: number } => {
+    const second = /Later it names (.+?)\. Decide/.exec(instructions)?.[1];
+    const speech = /^Speech: (".*")$/m.exec(instructions)?.[1];
+    if (!second || !speech) return { choice: "not sure", confidence: 0.4 };
+    const text = JSON.parse(speech) as string;
+    const split = new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second},`).test(text);
+    return { choice: split ? "split" : "mention", confidence: 0.99 };
+  };
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+        model?: unknown;
+        questions?: { name?: string; instructions: string }[] | Record<string, { instructions: string }>;
+      };
+      const auth = request.headers.authorization ?? null;
+      requests.push({ path: request.url ?? "", key: auth?.replace(/^Bearer /, "") ?? null, model: body.model });
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/decisions" && Array.isArray(body.questions)) {
+        response.end(JSON.stringify({
+          answers: body.questions.map((question) => ({ type: "choice", name: question.name ?? null, ...verdict(question.instructions), probabilities: [] })),
+          model: body.model,
+          usage: { input_tokens: 1, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 0 }, output_tokens: 0, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 1 },
+        }));
+        return;
+      }
+      if (request.url === "/v1/systemone" && body.questions && !Array.isArray(body.questions)) {
+        response.end(JSON.stringify({
+          model: body.model,
+          answers: Object.fromEntries(Object.entries(body.questions).map(([name, question]) =>
+            [name, { type: "choice", ...verdict(question.instructions), probabilities: {} }])),
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ detail: "not found" }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    env: { MISSION_VOICE_OPENAI_DECISIONS_URL: origin, MISSION_VOICE_JEV_URL: origin },
+    requests,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}

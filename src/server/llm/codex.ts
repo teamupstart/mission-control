@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { locateExecutable } from "../executables/locator.ts";
-import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./codex-sdk.ts";
+import { killLiveCodexSdkRuns, runCodexSdkOneShot, withSystemPrompt, type CodexSdkDeps } from "./codex-sdk.ts";
 import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
@@ -343,6 +343,9 @@ export const codexRunner: LlmRunner = {
         if (opts.model) args.push("--model", opts.model);
         // The interactive harness's own launch flag, so the two cannot spell effort differently.
         if (opts.effort) args.push(...(capabilitiesFor("codex").effort?.launchArgs(opts.effort) ?? []));
+        // No reasoning pass at all: `none` is below every level `effort` offers, so it is its own
+        // option rather than a `ThinkingLevel` a dispatch could pick.
+        if (opts.thinking === "off") args.push("-c", 'model_reasoning_effort="none"');
         for (const image of images) args.push("--image", image.path);
         args.push("-");
         const env = headlessEnv();
@@ -424,7 +427,7 @@ export const codexRunner: LlmRunner = {
           }
           resolve(events.text.trim());
         });
-        child.stdin.end(prompt);
+        child.stdin.end(withSystemPrompt(prompt, opts.systemPrompt));
       });
     } finally {
       schema?.cleanup();

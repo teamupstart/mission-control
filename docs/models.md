@@ -72,8 +72,9 @@ passes through untouched, because model ids are free text.
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence, canonically reconciles authored criterion ids, and suggests proof classes without replacing the preserved goal, human decisions, author declarations, or deterministic readiness rules |
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
+| Voice routing | Haiku (disabled) or `gpt-6-luna` | Fixed per provider | Settles a spoken sentence the names alone could not: who was meant, or a split across two agents. Behind the `voice` preview; see below |
 
-Each resolves the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
+The configurable models resolve the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
 [GitHub Inspector's one](inspector-and-shipping.md#the-review-model) do: **your setting, then the environment variable, then the
 shipped default**. Clearing a field means "fall back", never "run with no model" - an unset
 `--model` inherits whatever the CLI happens to default to, which is the priciest tier available
@@ -86,6 +87,14 @@ ids and leaving account defaults and modes out of the picker. Shipped Claude cho
 with a note when the account does not report them. A value saved by another version or through configuration
 remains selected as **not currently reported** instead of being dropped, so catalog loading or
 failure cannot rewrite the configured model.
+
+**Voice routing** is the one job whose provider follows its subject rather than this panel: a
+sentence to Claude sessions runs on Claude, one to Codex sessions on Codex, and only a mixed or
+other set of agents takes the job's own provider. The job uses the measured model for its provider, with thinking off and one attempt inside the
+shared five-second budget. The Claude rung ships off after its retest missed that budget. Codex
+runs Luna, including for mixed candidates when Codex is the selected background provider.
+See [Voice addressing](voice.md#the-model-step). A decision model with a key, when one
+is in use, answers before this job is asked.
 
 The title, goal, digest, and Workflow-context jobs are best-effort calls with a deterministic
 fallback, so a missing or logged-out provider degrades their output rather than failing a

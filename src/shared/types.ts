@@ -3785,7 +3785,8 @@ export interface LlmStatus {
   claudeTransport: ClaudeTransport;
   /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
   codexTransport: CodexTransport;
-  models: Record<LlmJobId, ResolvedLlmJobModel>;
+  /** Every live job (`liveLlmJobIds`): a job behind a preview flag that is off is absent. */
+  models: Partial<Record<LlmJobId, ResolvedLlmJobModel>>;
   /**
    * Which provider each background job resolved to, and which layer chose it.
    *
@@ -3795,7 +3796,7 @@ export interface LlmStatus {
    * another process. This is the per-job axis, and a job with no override simply repeats
    * the app-wide value.
    */
-  jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
+  jobRunners: Partial<Record<LlmJobId, ResolvedLlmRunner>>;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];
 }

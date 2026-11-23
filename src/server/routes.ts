@@ -6,6 +6,7 @@ import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIO
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
+import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -598,6 +599,7 @@ import {
   inspectorRunner,
   setInspectorConfig,
 } from "./inspector/config.ts";
+import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
 import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
@@ -1463,6 +1465,12 @@ export interface RouteDeps {
    * test does not read the machine's own LaunchServices preferences.
    */
   systemDefaultTerminal?: () => Promise<EmulatorId | null>;
+  /**
+   * The voice model step (contract E). Defaults to the daemon's: the saved and environment
+   * decision-model keys, both providers and the `voice-routing` job. Injected so a route test
+   * routes an ambiguous sentence without reaching a provider or spawning a model.
+   */
+  voiceDecider?: VoiceDecider;
 }
 
 /**
@@ -1513,6 +1521,7 @@ export const ROUTE_DEP_NAMES = [
   "setupInstallDeps",
   "focusTerminals",
   "systemDefaultTerminal",
+  "voiceDecider",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1850,6 +1859,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupInstallDeps,
     focusTerminals,
     systemDefaultTerminal,
+    voiceDecider,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -8343,11 +8353,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // four roles and the Inspector's one keep their own routes and their own blobs, because
   // each is edited by the panel that owns that subsystem - a second writer would turn a
   // per-key merge into a lost update.
-  app.get("/api/llm/config", (c) => c.json(getLlmConfig()));
+  const hiddenLlmJobs = () => LLM_JOB_IDS.filter((job) => {
+    const flag = LLM_JOB_SPECS[job].previewFlag;
+    return flag && !featureEnabled(flag);
+  });
+  const visibleLlmConfig = (config: ReturnType<typeof getLlmConfig>) => {
+    const models = { ...config.models };
+    const runners = { ...config.runners };
+    for (const job of hiddenLlmJobs()) {
+      delete models[job];
+      delete runners[job];
+    }
+    return { ...config, models, runners };
+  };
+  app.get("/api/llm/config", (c) => c.json(visibleLlmConfig(getLlmConfig())));
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const config = setLlmConfig(parsed.data);
+    for (const job of hiddenLlmJobs()) {
+      if (parsed.data.runners?.[job] !== undefined || parsed.data.models?.[job] !== undefined) {
+        return c.json({ error: "This feature is disabled.", feature: LLM_JOB_SPECS[job].previewFlag }, 404);
+      }
+    }
+    for (const job of LLM_JOB_IDS) {
+      if (LLM_JOB_SPECS[job].fixedModels && parsed.data.models?.[job]) {
+        return c.json({ error: "This job uses a fixed model for each provider." }, 400);
+      }
+    }
+    const config = visibleLlmConfig(setLlmConfig(parsed.data));
     // Personas without a provider override follow this setting. Refresh their top-level SSE
     // projections in the same mutation so the editor never advertises a stale effective model.
     if ("runner" in parsed.data) personas?.refreshExecution();
@@ -9309,7 +9342,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = pendingTurns.submit(target.sessionId, text);
       return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Queue refused the message." };
     },
-  }, (card) => registry.emitVoiceCard(card));
+  }, (card) => registry.emitVoiceCard(card), voiceDecider);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

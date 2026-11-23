@@ -42,6 +42,31 @@ items that source itself swept. Nothing about writing relaxes a rule that govern
 the same credential the sweep uses does the write, no new token or host is introduced, and
 every egress guard the read path applies applies here unchanged.
 
+## Voice routing
+
+With the `voice` preview on, a spoken sentence that names alone cannot settle goes to one model
+step ([Voice addressing](voice.md#the-model-step)). Whichever rung runs receives the sentence and
+the names and one-line roles of the agents it is about (a resident's description, a session's
+task title), and nothing else: no transcript, no file, no audio. Audio never leaves the listener.
+
+- **A decision model** (OpenAI Decisions or Jev) receives it over HTTPS when one is in use. **A
+  key in the environment is enough**: with **Settings → Voice → Decision model** on Automatic,
+  `OPENAI_API_KEY` or `TYPESAFE_API_KEY` in the daemon's environment switches it on with no other
+  step, which is how an organization enables it with one variable. Settings names the provider in
+  use and says what is sent to it, so a key picked up from the environment is not hidden. Choose
+  **Off** there to stop it; nothing is sent to either provider while it is Off, whatever keys
+  exist. A provider chosen by name is only ever sent its own key.
+- **The `voice-routing` job** runs on the provider the agents use, through the CLI already logged
+  in on this machine, the same way every background job does, with tools disabled.
+
+### Saved voice decision keys
+
+The daemon stores keys saved in Voice settings in `<state home>/voice/decision-key.json`.
+The file has mode `0600` and its directory has mode `0700`. The keys stay outside SQLite
+and are excluded from both database and settings backups. The daemon never logs a key or
+returns it in a response, including when it rejects a key. It discards provider error bodies.
+Removing a saved key deletes that provider's entry from the file.
+
 ## Public product issue reporting
 
 Product reports are public GitHub issues, not private support messages. The agent tool is defined

@@ -22,7 +22,7 @@ inputs and human-speaker accuracy remain outside these measurements.
 | S4 Permission | GO: parent audio-input entitlement; explicit denial reaches helper as status 2, grant false, exit 2. |
 | S5 Hotkey | GO for Control+Command+Option+V: 3 presses and 3 releases, no permission prompt. Non-Option behavior is unproven. |
 | S6 Other microphone use | GO for the CoreAudio process-input signal, including muted Zoom and own-helper exclusion; start with 500 ms polling. |
-| S7 Model step | GO for bounded Luna feasibility at confidence 0.98 and 5 s total deadline; NO-GO for the tested Haiku general-routing prompt. |
+| S7 Model step | GO for bounded Luna feasibility at confidence 0.98 and 5 s total deadline; NO-GO for the tested Haiku general-routing prompt. Phase 4's Haiku retest: no wrong answer and 90% accepted on a held-out set, but one call of 60 missed the deadline, so the rung ships off ([addendum](#s7-addendum-haiku-retest)). |
 | S8 Devices | GO for transport metadata classification; one USB input observed, zero built-in/Bluetooth fixtures. |
 | S9 Speech output | GO for stopping capture through playback completion: 3/3 listening trials leaked speech; 0/6 paused trials did. |
 
@@ -447,6 +447,103 @@ conversation reuse was not benchmarked or proposed.
 Neither OPENAI_API_KEY nor TYPESAFE_API_KEY was present at inspection. Decisions/Jev
 trials are skipped as the phase allows when a key is absent; no provider-specific timeout
 or accuracy claim is made for them.
+
+### S7 addendum: Haiku retest
+
+Measured 2026-11-23 in Phase 4 on the same Mac, Claude Code 2.1.319. **The improved prompt
+passed on accuracy and coverage and missed the deadline, so the Claude-session Haiku rung ships
+off.** The operator ruled that it ships enabled only if a retest passes, and that the bar is not
+lowered to make it pass. Luna for Codex sessions is unchanged from S7 and was not retested.
+
+**What changed from the spike's prompt.** The model is no longer asked to route against the whole
+roster. Phase 4 asks only narrow questions: `split` (the first target is fixed; does a later name
+start a message of its own, or is it only mentioned), `who` (a first name in doubt, judged by
+sound, never by role) and `option` (a loose answer to a card). An exact first-word name is never
+asked about. Each answer is an enum of that question's choices plus "not sure" in a strict JSON
+schema the provider enforces, and the daemon checks membership again before reading confidence.
+The prompt, system prompt and schema are `src/server/voice/decide-prompt.ts`.
+
+**How it was run.** `scripts/voice-spike/routing-retest.ts` calls `runVoiceRoutingJob`, the
+function the daemon calls: `claude-haiku-4-5` through the Agent SDK transport (the daemon's
+default), thinking disabled, `tools: []`, `settingSources: []`, the strict schema and one
+attempt, one fresh process per case, one case at a time, under a throwaway state home. Wall
+time is measured around the whole call, process start included. Expected answers and category
+labels are never sent. This used the operator's own `claude` login.
+
+**Tuning set.** The spike's 60 cases recast as these questions (`routing-tuning.json`). No wrong
+answer was accepted at any floor from 0.5 to 0.99; at 0.9, 56 of 60 were accepted. Wall time
+p50 3,412 ms, p95 4,094 ms, maximum 5,077 ms (one call over five seconds). The tuning set is not
+pass evidence.
+
+**Held-out set.** 60 new cases (`routing-holdout.json`): a new invented roster of twelve names,
+new sentences and three new cards, 12 per category, 4 of them cases where "not sure" is the right
+answer (2 phonetic, 2 option). Written before any tuning run, never used to tune, and run once
+after the prompt and the floor were frozen.
+
+**Floor: 0.9**, chosen on the tuning set before the held-out run. No wrong answer was accepted
+there at any floor, so the floor is not what held errors at zero; 0.9 sits below the band of
+Haiku's confident answers (0.95 to 0.99) and excludes its hesitant ones (0.85 and below), which
+on the tuning set were the near-miss names.
+
+| Floor | Accepted | Wrong accepted | Abstained |
+| ---: | ---: | ---: | ---: |
+| 0.5 | 56 | 0 | 4 |
+| 0.8 | 56 | 0 | 4 |
+| **0.9** | **54** | **0** | **6** |
+| 0.95 | 53 | 0 | 7 |
+| 0.98 | 27 | 0 | 33 |
+| 0.99 | 15 | 0 | 45 |
+
+At 0.9, per category (each of 12):
+
+| Category | Accepted | Wrong | Abstained | p50 wall ms | Maximum ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain names | 12 | 0 | 0 | 3,608 | 4,244 |
+| Phonetic names | 8 | 0 | 4 (2 expected "not sure", 2 right at 0.85) | 3,715 | 8,930 |
+| Split commands | 12 | 0 | 0 | 3,388 | 4,084 |
+| Mentions | 12 | 0 | 0 | 3,536 | 4,381 |
+| Loose card options | 10 | 0 | 2 (both expected "not sure") | 2,703 | 3,311 |
+
+The table counts confidence and membership before applying the clock. With the runtime deadline,
+53 of 60 (88.3%) would have been accepted, including 7 of 12 phonetic names. The other four
+categories keep the counts shown above. Overall wall time p50 3,533 ms, p95 4,381 ms, maximum
+8,930 ms.
+
+| Bar (Voice Feature PM's default) | Result |
+| --- | --- |
+| Zero wrong accepted answers at the floor shipped | **Met**: 0 of 54 |
+| At least 80% of cases accepted | **Met**: 54 of 60, 90% |
+| Every call inside the 5,000 ms model-stage deadline | **Missed**: 59 of 60; `phonetic-04` took 8,930 ms (correct, 0.95) |
+
+None of the spike's three failure modes recurred: no plain name was redirected by role, no
+mention became a split, and every answer was one of the question's choices. These figures are
+in-sample on synthetic text from one host, not a confidence calibration. The first ten or so
+calls overlapped unit tests run on the same machine; the slow call came after them, and the set
+was not rerun to look for a passing sample.
+
+**Why it is slow.** Through the Agent SDK, a schema-enforced reply takes two model turns: Haiku
+answers, the CLI then has it call its structured-output tool. Probes of the same split question
+took 2.3 to 3.2 seconds in two turns with the schema and about 1 second in one turn without it.
+Telling the model to call the tool at once did not save the turn. `claude -p` with the schema and
+settings isolated also took two turns, 3.4 to 4.1 seconds. Possible next steps, not taken here
+because each changes what the operator specified or needs a new held-out corpus: drop the
+provider schema for Claude and rely on the daemon's strict parse and membership check, or keep a
+process started ahead of time.
+
+**The "Prompt is too long" failure, explained.** The spike could not reproduce it. On this Mac a
+plain `claude -p` loads the operator's user settings, and a two-word prompt went out as about
+294,865 tokens, over Haiku's 200,000-token limit, and failed with "Prompt is too long". The same
+call with `--strict-mcp-config` or `--setting-sources ""` sent 1,295 input tokens and answered.
+The daemon's default SDK transport passes `settingSources: []` and is not affected; the `print`
+transport is, for every background job, and is left as it is in this phase.
+
+Commands:
+
+```sh
+node --import tsx scripts/voice-spike/routing-retest.ts --yes --cases scripts/voice-spike/routing-tuning.json --label tune1-sdk
+node --import tsx scripts/voice-spike/routing-retest.ts --yes --cases scripts/voice-spike/routing-holdout.json --label holdout-claude
+node --import tsx scripts/voice-spike/routing-retest.ts --summarize holdout-claude
+```
 
 ## S8: input devices
 

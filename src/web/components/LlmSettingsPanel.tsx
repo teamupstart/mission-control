@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
-import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
+import { liveLlmJobIds, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import type { ForemanConfigPatch, InspectorConfigPatch } from "@shared/protocol.ts";
@@ -67,6 +69,8 @@ export function LlmSettingsPanel({
   inspector: InspectorState;
 }): React.JSX.Element {
   const { config, status, update, error } = state;
+  const flags = useContext(FeatureFlagsContext);
+  const jobs = liveLlmJobIds((flag) => resolveFeatureFlag(flag, flags));
   const runners = status?.runners ?? [];
   /**
    * What a row's own provider change just reset, per job.
@@ -123,11 +127,12 @@ export function LlmSettingsPanel({
             { key: "provider", label: "Provider" },
             { key: "model", label: "Model" },
           ]}
-          rows={LLM_JOB_IDS.map((job) =>
+          rows={jobs.map((job) =>
             modelSlotRow({
               key: `llm-${job}`,
               anchor: `models/job-${job}`,
               spec: LLM_JOB_SPECS[job],
+              fixedModels: LLM_JOB_SPECS[job].fixedModels,
               providers: runners,
               runnerValue: config?.runners[job] ?? "",
               runnerResolved: status?.jobRunners[job],

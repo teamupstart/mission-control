@@ -264,7 +264,29 @@ function rasterMimeType(bytes) {
   return null;
 }
 
+/**
+ * The voice-routing job (voice Phase 4): every question answered, deterministically. A split
+ * question is "split" when the speech turns to the second name with a comma ("…, and Alice,
+ * review the PR"), else "mention"; any other question is "not sure".
+ */
+function voiceRoutingAnswer(prompt) {
+  const answers = {};
+  for (const block of prompt.split(/\n(?=Question q\d+ \()/)) {
+    const head = /^Question (q\d+) \((who|split|option)\):/m.exec(block);
+    if (!head) continue;
+    const speech = /^Speech: (".*")$/m.exec(block);
+    const second = /Later it names (.+?)\. Decide/.exec(block);
+    const text = speech ? JSON.parse(speech[1]) : "";
+    const split = head[2] === "split" && second && new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second[1]},`).test(text);
+    answers[head[1]] = head[2] === "split"
+      ? { choice: split ? "split" : "mention", confidence: 0.99 }
+      : { choice: "not sure", confidence: 0 };
+  }
+  return JSON.stringify({ answers });
+}
+
 function codexWorkflowAnswer(prompt) {
+  if (prompt.includes("You settle doubts in voice commands")) return voiceRoutingAnswer(prompt);
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

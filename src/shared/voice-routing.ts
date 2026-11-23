@@ -39,13 +39,41 @@ export interface HeardEntry {
   detail: string;
 }
 
+/**
+ * Where a later name would split an utterance: the first target's message (`head`) and the later
+ * name's (`tail`), each verbatim from the text. Only a name with words on both sides can split.
+ */
+export interface VoiceSplitPoint {
+  target: SpokenName;
+  /** Character offset of this name in the original utterance. */
+  at: number;
+  head: string;
+  tail: string;
+}
+
+/** Drop what joins two commands from the end of the first: separators and a joining word. */
+function splitHead(text: string): string {
+  let head = text;
+  for (;;) {
+    const next = head.replace(/[\s,;:–—-]+$/u, "").replace(/\b(?:and then|and|then|also|plus)$/iu, "");
+    if (next === head) return head.trim();
+    head = next;
+  }
+}
+
 export type VoiceAddressedCommand = "stop";
+export type VoiceRouteDecision = Decision;
 
 type Decision =
   | { kind: "control"; command: "cancel" }
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
   | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
-  | { kind: "needs-model"; command?: VoiceAddressedCommand; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
+  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name"; match: "exact" | "phonetic"; command?: VoiceAddressedCommand; pauseMs: number | null }
+  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "second-name"; pauseMs: number | null;
+      /** The fixed first target: the model never chooses it (the first-word rule, spike S3). */
+      target: SpokenName; match: "exact" | "phonetic";
+      /** Each later name that could start a message of its own, in the order it was said. */
+      splits: VoiceSplitPoint[]; ambiguousSplitTarget: boolean }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 function normalized(text: string): string {
@@ -138,17 +166,36 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const after = words[count];
   const pauseMs = before && after ? after.startMs - before.endMs : null;
   const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
-  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
+  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
-  if (match !== "exact" || count !== 1) {
-    const remaining = tokens.slice(count).map((m) => normalized(m[0]));
-    const mentions = new Set(remaining);
-    for (let i = 1; i < remaining.length; i++) mentions.add(remaining[i - 1] + " " + remaining[i]);
-    const later = names.filter(({ name, target: other }) => other.key !== target.key &&
-      mentions.has(name));
-    if (later.length) {
-      return { kind: "needs-model", reason: "second-name", candidates: [target, ...later.map(({ target: other }) => other)], text: body, pauseMs, ...command };
+  // A later roster name may start a message of its own or only be talked about. The first
+  // target stays fixed whichever it is: the model is asked split or mention, never who.
+  const splitCandidates = new Set([target]);
+  let ambiguousSplitTarget = false;
+  const splits: VoiceSplitPoint[] = [];
+  for (let i = count; i < tokens.length; i++) {
+    for (const length of [2, 1]) {
+      if (i + length > tokens.length) continue;
+      const heard = tokens.slice(i, i + length).map((m) => normalized(m[0])).join(" ");
+      const matches = names.filter(({ name }) => name === heard);
+      if (!matches.length) continue;
+      const at = tokens[i]!;
+      const end = tokens[i + length - 1]!;
+      const head = splitHead(text.slice(text.length - body.length, at.index));
+      const tail = messageAfterAddress(text, at.index, end.index + end[0].length).replace(/^[\s,;:–—-]+/u, "").trim();
+      if (head && tail) {
+        for (const other of matches) {
+          splits.push({ target: other.target, at: at.index, head, tail });
+          splitCandidates.add(other.target);
+        }
+        if (matches.length > 1) ambiguousSplitTarget = true;
+      }
+      i += length - 1;
+      break;
     }
+  }
+  if (splits.length) {
+    return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits, ambiguousSplitTarget };
   }
   return { kind: "addressed", target, text: body, match, pauseMs, ...command };
 }

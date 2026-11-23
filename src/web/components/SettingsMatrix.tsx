@@ -264,6 +264,7 @@ export function modelSlotRow({
   runnerResolved,
   inheritedRunner,
   modelValue,
+  fixedModels,
   modelResolved,
   disabled,
   reset,
@@ -301,6 +302,7 @@ export function modelSlotRow({
   inheritedRunner: ResolvedLlmRunner | undefined;
   /** The stored model override, or "" for the ladder. */
   modelValue: string;
+  fixedModels?: Record<LlmRunnerId, string>;
   modelResolved: (ResolvedModel & { unsupported?: string | null }) | undefined;
   disabled: boolean;
   /** What this row reset, and why - shown until the operator's next edit to it. */
@@ -347,7 +349,7 @@ export function modelSlotRow({
           }}
         />
       ),
-      model: (
+      model: fixedModels ? <code>{fixedModels[runnerForCatalog]}</code> : (
         <ModelField
           id={`${key}-model`}
           anchor={null}

@@ -1,0 +1,767 @@
+{
+  "description": "Held-out corpus for the Phase 4 Haiku retest. Written before any tuning run and never used to tune the prompt. Invented names, roles and cards; synthetic text.",
+  "roster": {
+    "Theo": "build engineer: keeps CI and the build green",
+    "Maya": "frontend: dashboard UI and styling",
+    "Iris": "QA: writes and runs the test suites",
+    "Felix": "security: reviews auth, tokens and secrets",
+    "Nora": "docs: writes guides and release notes",
+    "Owen": "releases: cuts and ships releases",
+    "Ruby": "database: schema, migrations and queries",
+    "Hugo": "product: priorities and specs",
+    "Clara": "design: mockups and UX review",
+    "Ezra": "infrastructure: servers, deploys and monitoring",
+    "Leo": "mobile: the iOS and Android apps",
+    "Mara": "analytics: dashboards and weekly numbers"
+  },
+  "cards": {
+    "test-runner": {
+      "prompt": "Which test runner should the new package use?",
+      "options": [
+        {
+          "label": "Vitest",
+          "detail": "recommended; fast and Vite-native"
+        },
+        {
+          "label": "Jest",
+          "detail": "widely used, slower"
+        },
+        {
+          "label": "node:test",
+          "detail": "built into Node, no dependency"
+        }
+      ]
+    },
+    "deploy": {
+      "prompt": "Deploy the fix now or wait for the morning window?",
+      "options": [
+        {
+          "label": "Deploy now",
+          "detail": "ship immediately"
+        },
+        {
+          "label": "Wait for the morning window",
+          "detail": "recommended; lower risk"
+        }
+      ]
+    },
+    "cache": {
+      "prompt": "Where should the session cache live?",
+      "options": [
+        {
+          "label": "Redis",
+          "detail": "recommended; a shared server"
+        },
+        {
+          "label": "In-memory",
+          "detail": "per process, lost on restart"
+        },
+        {
+          "label": "SQLite",
+          "detail": "a file on disk"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "plain-01",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Hugo, fix the failing CI build",
+        "candidates": [
+          "Hugo",
+          "Theo"
+        ]
+      },
+      "expected": "Hugo"
+    },
+    {
+      "id": "plain-02",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Maya, rotate the database credentials",
+        "candidates": [
+          "Maya",
+          "Felix",
+          "Ruby"
+        ]
+      },
+      "expected": "Maya"
+    },
+    {
+      "id": "plain-03",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Nora, run the full test suite",
+        "candidates": [
+          "Nora",
+          "Iris"
+        ]
+      },
+      "expected": "Nora"
+    },
+    {
+      "id": "plain-04",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Clara, cut the release tonight",
+        "candidates": [
+          "Clara",
+          "Owen"
+        ]
+      },
+      "expected": "Clara"
+    },
+    {
+      "id": "plain-05",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Ezra, update the button styles",
+        "candidates": [
+          "Ezra",
+          "Maya"
+        ]
+      },
+      "expected": "Ezra"
+    },
+    {
+      "id": "plain-06",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Iris, write the migration for the new column",
+        "candidates": [
+          "Iris",
+          "Ruby"
+        ]
+      },
+      "expected": "Iris"
+    },
+    {
+      "id": "plain-07",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Owen, review the login flow for vulnerabilities",
+        "candidates": [
+          "Owen",
+          "Felix"
+        ]
+      },
+      "expected": "Owen"
+    },
+    {
+      "id": "plain-08",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Felix, draft the release notes",
+        "candidates": [
+          "Felix",
+          "Nora",
+          "Owen"
+        ]
+      },
+      "expected": "Felix"
+    },
+    {
+      "id": "plain-09",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Theo, mock up the settings page",
+        "candidates": [
+          "Theo",
+          "Clara"
+        ]
+      },
+      "expected": "Theo"
+    },
+    {
+      "id": "plain-10",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Ruby, restart the staging servers",
+        "candidates": [
+          "Ruby",
+          "Ezra"
+        ]
+      },
+      "expected": "Ruby"
+    },
+    {
+      "id": "plain-11",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Hugo, add an index to the orders table",
+        "candidates": [
+          "Hugo",
+          "Ruby"
+        ]
+      },
+      "expected": "Hugo"
+    },
+    {
+      "id": "plain-12",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Theo what do you think about the onboarding copy",
+        "candidates": [
+          "Theo",
+          "Nora",
+          "Hugo"
+        ]
+      },
+      "expected": "Theo"
+    },
+    {
+      "id": "phonetic-01",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Thea, check why the build is red",
+        "candidates": [
+          "Theo",
+          "Clara"
+        ]
+      },
+      "expected": "Theo"
+    },
+    {
+      "id": "phonetic-02",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Mya, tighten the padding on the header",
+        "candidates": [
+          "Maya",
+          "Nora"
+        ]
+      },
+      "expected": "Maya"
+    },
+    {
+      "id": "phonetic-03",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Iras, rerun the flaky tests",
+        "candidates": [
+          "Iris",
+          "Ezra"
+        ]
+      },
+      "expected": "Iris"
+    },
+    {
+      "id": "phonetic-04",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Phelix, look at the token handling",
+        "candidates": [
+          "Felix",
+          "Theo"
+        ]
+      },
+      "expected": "Felix"
+    },
+    {
+      "id": "phonetic-05",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Norah, update the setup guide",
+        "candidates": [
+          "Nora",
+          "Owen"
+        ]
+      },
+      "expected": "Nora"
+    },
+    {
+      "id": "phonetic-06",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Owin, tag the release",
+        "candidates": [
+          "Owen",
+          "Ezra"
+        ]
+      },
+      "expected": "Owen"
+    },
+    {
+      "id": "phonetic-07",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Rubie, why is that query slow",
+        "candidates": [
+          "Ruby",
+          "Hugo"
+        ]
+      },
+      "expected": "Ruby"
+    },
+    {
+      "id": "phonetic-08",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Hugh go, what is the priority this week",
+        "candidates": [
+          "Hugo",
+          "Theo"
+        ]
+      },
+      "expected": "Hugo"
+    },
+    {
+      "id": "phonetic-09",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Klara, review the new icons",
+        "candidates": [
+          "Clara",
+          "Maya"
+        ]
+      },
+      "expected": "Clara"
+    },
+    {
+      "id": "phonetic-10",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Esra, scale up the workers",
+        "candidates": [
+          "Ezra",
+          "Iris"
+        ]
+      },
+      "expected": "Ezra"
+    },
+    {
+      "id": "phonetic-11",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Neo, ship the hotfix",
+        "candidates": [
+          "Theo",
+          "Leo"
+        ]
+      },
+      "expected": "not sure"
+    },
+    {
+      "id": "phonetic-12",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Kara, pull the weekly numbers",
+        "candidates": [
+          "Mara",
+          "Clara"
+        ]
+      },
+      "expected": "not sure"
+    },
+    {
+      "id": "split-01",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Theo, fix the build, and Iris, rerun the tests",
+        "first": "Theo",
+        "second": "Iris"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-02",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Maya, center the logo, then Clara, check the colors",
+        "first": "Maya",
+        "second": "Clara"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-03",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Ruby, add the index. Ezra, bump the database memory",
+        "first": "Ruby",
+        "second": "Ezra"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-04",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Owen, hold the release; Felix, audit the new dependency",
+        "first": "Owen",
+        "second": "Felix"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-05",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Nora, update the changelog and Owen, publish it after",
+        "first": "Nora",
+        "second": "Owen"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-06",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Hugo, write the spec. Maya, start on the layout",
+        "first": "Hugo",
+        "second": "Maya"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-07",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Iris, add a test for the crash, and Theo, make CI fail on warnings",
+        "first": "Iris",
+        "second": "Theo"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-08",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Felix, rotate the keys, Ezra, restart the gateway",
+        "first": "Felix",
+        "second": "Ezra"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-09",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Clara, send me the mockups, and Hugo, set the priority",
+        "first": "Clara",
+        "second": "Hugo"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-10",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Ezra, check the disk alerts. Also Ruby, vacuum the old tables",
+        "first": "Ezra",
+        "second": "Ruby"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-11",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Theo, pin the node version, and Nora, mention it in the docs",
+        "first": "Theo",
+        "second": "Nora"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-12",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Owen, cut a beta, and Iris, smoke test it when it's out",
+        "first": "Owen",
+        "second": "Iris"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "mention-01",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Theo, ask Iris why the tests are flaky",
+        "first": "Theo",
+        "second": "Iris"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-02",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Maya, check with Clara before changing the colors",
+        "first": "Maya",
+        "second": "Clara"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-03",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Ruby, tell Ezra when the migration is done",
+        "first": "Ruby",
+        "second": "Ezra"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-04",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Owen, wait for Felix to sign off before the release",
+        "first": "Owen",
+        "second": "Felix"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-05",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Nora, use Hugo's spec for the guide",
+        "first": "Nora",
+        "second": "Hugo"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-06",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Hugo, what did Maya say about the layout",
+        "first": "Hugo",
+        "second": "Maya"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-07",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Iris, pair with Theo on the CI failure",
+        "first": "Iris",
+        "second": "Theo"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-08",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Felix, review the change Ezra made to the gateway",
+        "first": "Felix",
+        "second": "Ezra"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-09",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Clara, send the mockups to Hugo",
+        "first": "Clara",
+        "second": "Hugo"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-10",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Ezra, let Ruby know the disk is almost full",
+        "first": "Ezra",
+        "second": "Ruby"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-11",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Theo, the build broke after Nora's docs change, can you look",
+        "first": "Theo",
+        "second": "Nora"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-12",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Owen, hand the release checklist over to Iris",
+        "first": "Owen",
+        "second": "Iris"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "option-01",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "let's go with the built in one",
+        "card": "test-runner"
+      },
+      "expected": "node:test"
+    },
+    {
+      "id": "option-02",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "the recommended one",
+        "card": "test-runner"
+      },
+      "expected": "Vitest"
+    },
+    {
+      "id": "option-03",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "option two",
+        "card": "test-runner"
+      },
+      "expected": "Jest"
+    },
+    {
+      "id": "option-04",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "the fast Vite thing",
+        "card": "test-runner"
+      },
+      "expected": "Vitest"
+    },
+    {
+      "id": "option-05",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "ship it now",
+        "card": "deploy"
+      },
+      "expected": "Deploy now"
+    },
+    {
+      "id": "option-06",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "let's be careful and wait",
+        "card": "deploy"
+      },
+      "expected": "Wait for the morning window"
+    },
+    {
+      "id": "option-07",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "the second one",
+        "card": "deploy"
+      },
+      "expected": "Wait for the morning window"
+    },
+    {
+      "id": "option-08",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "keep it in memory",
+        "card": "cache"
+      },
+      "expected": "In-memory"
+    },
+    {
+      "id": "option-09",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "a shared server",
+        "card": "cache"
+      },
+      "expected": "Redis"
+    },
+    {
+      "id": "option-10",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "put it in a file on disk",
+        "card": "cache"
+      },
+      "expected": "SQLite"
+    },
+    {
+      "id": "option-11",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "none of those, use mocha",
+        "card": "test-runner"
+      },
+      "expected": "not sure"
+    },
+    {
+      "id": "option-12",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "I'm not sure yet, ask me later",
+        "card": "cache"
+      },
+      "expected": "not sure"
+    }
+  ]
+}

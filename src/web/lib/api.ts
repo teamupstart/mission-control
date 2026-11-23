@@ -3,6 +3,7 @@ import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
+import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -500,6 +501,8 @@ export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
+/** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
+export const fetchVoiceDecisionKey = () => fetchJson<VoiceDecisionKeyReport>("/api/voice/decision-key");
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -2509,6 +2512,12 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  /** Save one provider's decision-model key. The answer is the report, never the key. */
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string) =>
+    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key }),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider) =>
+    request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>

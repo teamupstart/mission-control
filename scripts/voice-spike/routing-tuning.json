@@ -1,0 +1,728 @@
+{
+  "description": "The spike's 60 routing cases (routing-cases.json), recast as the narrow questions Phase 4 asks. The tuning set: never pass evidence.",
+  "roster": {
+    "Steve": "build engineer",
+    "Will": "frontend",
+    "Luna": "tests",
+    "Atlas": "architecture",
+    "Nova": "releases",
+    "Jordan": "product",
+    "Quinn": "security",
+    "Sage": "docs",
+    "Phoenix": "operations",
+    "Rowan": "performance"
+  },
+  "cards": {
+    "db": {
+      "prompt": "Which database should the cache use?",
+      "options": [
+        {
+          "label": "Postgres",
+          "detail": "recommended; a relational server"
+        },
+        {
+          "label": "SQLite",
+          "detail": "an embedded file"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "plain-0",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Steve, check the build",
+        "candidates": [
+          "Steve",
+          "Luna"
+        ]
+      },
+      "expected": "Steve"
+    },
+    {
+      "id": "plain-1",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Will, check the build",
+        "candidates": [
+          "Will",
+          "Steve"
+        ]
+      },
+      "expected": "Will"
+    },
+    {
+      "id": "plain-2",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Luna, check the build",
+        "candidates": [
+          "Luna",
+          "Steve"
+        ]
+      },
+      "expected": "Luna"
+    },
+    {
+      "id": "plain-3",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Atlas, check the build",
+        "candidates": [
+          "Atlas",
+          "Steve"
+        ]
+      },
+      "expected": "Atlas"
+    },
+    {
+      "id": "plain-4",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Nova, check the build",
+        "candidates": [
+          "Nova",
+          "Steve"
+        ]
+      },
+      "expected": "Nova"
+    },
+    {
+      "id": "plain-5",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Jordan, check the build",
+        "candidates": [
+          "Jordan",
+          "Steve"
+        ]
+      },
+      "expected": "Jordan"
+    },
+    {
+      "id": "plain-6",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Quinn, check the build",
+        "candidates": [
+          "Quinn",
+          "Steve"
+        ]
+      },
+      "expected": "Quinn"
+    },
+    {
+      "id": "plain-7",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Sage, check the build",
+        "candidates": [
+          "Sage",
+          "Steve"
+        ]
+      },
+      "expected": "Sage"
+    },
+    {
+      "id": "plain-8",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Phoenix, check the build",
+        "candidates": [
+          "Phoenix",
+          "Steve"
+        ]
+      },
+      "expected": "Phoenix"
+    },
+    {
+      "id": "plain-9",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Rowan, check the build",
+        "candidates": [
+          "Rowan",
+          "Steve"
+        ]
+      },
+      "expected": "Rowan"
+    },
+    {
+      "id": "plain-10",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Steve, check the logs",
+        "candidates": [
+          "Steve",
+          "Phoenix"
+        ]
+      },
+      "expected": "Steve"
+    },
+    {
+      "id": "plain-11",
+      "category": "plain",
+      "question": {
+        "kind": "who",
+        "text": "Will, check the linter",
+        "candidates": [
+          "Will",
+          "Steve"
+        ]
+      },
+      "expected": "Will"
+    },
+    {
+      "id": "phonetic-12",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Steven, check the build",
+        "candidates": [
+          "Steve",
+          "Atlas"
+        ]
+      },
+      "expected": "Steve"
+    },
+    {
+      "id": "phonetic-13",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "W ill, check the build",
+        "candidates": [
+          "Will",
+          "Nova"
+        ]
+      },
+      "expected": "Will"
+    },
+    {
+      "id": "phonetic-14",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Loona, check the build",
+        "candidates": [
+          "Luna",
+          "Jordan"
+        ]
+      },
+      "expected": "Luna"
+    },
+    {
+      "id": "phonetic-15",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "At lass, check the build",
+        "candidates": [
+          "Atlas",
+          "Quinn"
+        ]
+      },
+      "expected": "Atlas"
+    },
+    {
+      "id": "phonetic-16",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Novah, check the build",
+        "candidates": [
+          "Nova",
+          "Sage"
+        ]
+      },
+      "expected": "Nova"
+    },
+    {
+      "id": "phonetic-17",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Jorden, check the build",
+        "candidates": [
+          "Jordan",
+          "Phoenix"
+        ]
+      },
+      "expected": "Jordan"
+    },
+    {
+      "id": "phonetic-18",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Quin, check the build",
+        "candidates": [
+          "Quinn",
+          "Rowan"
+        ]
+      },
+      "expected": "Quinn"
+    },
+    {
+      "id": "phonetic-19",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Saige, check the build",
+        "candidates": [
+          "Sage",
+          "Steve"
+        ]
+      },
+      "expected": "Sage"
+    },
+    {
+      "id": "phonetic-20",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Fenix, check the build",
+        "candidates": [
+          "Phoenix",
+          "Will"
+        ]
+      },
+      "expected": "Phoenix"
+    },
+    {
+      "id": "phonetic-21",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Rowen, check the build",
+        "candidates": [
+          "Rowan",
+          "Luna"
+        ]
+      },
+      "expected": "Rowan"
+    },
+    {
+      "id": "phonetic-22",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Steve's, check the build",
+        "candidates": [
+          "Steve",
+          "Atlas"
+        ]
+      },
+      "expected": "Steve"
+    },
+    {
+      "id": "phonetic-23",
+      "category": "phonetic",
+      "question": {
+        "kind": "who",
+        "text": "Loonah, check the build",
+        "candidates": [
+          "Luna",
+          "Jordan"
+        ]
+      },
+      "expected": "Luna"
+    },
+    {
+      "id": "split-24",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Steve, check the build, and Will, review the tests",
+        "first": "Steve",
+        "second": "Will"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-25",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Will, check the build, and Luna, review the tests",
+        "first": "Will",
+        "second": "Luna"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-26",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Luna, check the build, and Atlas, review the tests",
+        "first": "Luna",
+        "second": "Atlas"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-27",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Atlas, check the build, and Nova, review the tests",
+        "first": "Atlas",
+        "second": "Nova"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-28",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Nova, check the build, and Jordan, review the tests",
+        "first": "Nova",
+        "second": "Jordan"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-29",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Jordan, check the build, and Quinn, review the tests",
+        "first": "Jordan",
+        "second": "Quinn"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-30",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Quinn, check the build, and Sage, review the tests",
+        "first": "Quinn",
+        "second": "Sage"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-31",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Sage, check the build, and Phoenix, review the tests",
+        "first": "Sage",
+        "second": "Phoenix"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-32",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Phoenix, check the build, and Rowan, review the tests",
+        "first": "Phoenix",
+        "second": "Rowan"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-33",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Rowan, check the build, and Steve, review the tests",
+        "first": "Rowan",
+        "second": "Steve"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-34",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Steve, check the build, and Will, review the documentation",
+        "first": "Steve",
+        "second": "Will"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "split-35",
+      "category": "split",
+      "question": {
+        "kind": "split",
+        "text": "Will, check the build, and Luna, review the documentation",
+        "first": "Will",
+        "second": "Luna"
+      },
+      "expected": "split"
+    },
+    {
+      "id": "mention-36",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Steve, ask Will about the failing tests",
+        "first": "Steve",
+        "second": "Will"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-37",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Will, ask Luna about the failing tests",
+        "first": "Will",
+        "second": "Luna"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-38",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Luna, ask Atlas about the failing tests",
+        "first": "Luna",
+        "second": "Atlas"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-39",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Atlas, ask Nova about the failing tests",
+        "first": "Atlas",
+        "second": "Nova"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-40",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Nova, ask Jordan about the failing tests",
+        "first": "Nova",
+        "second": "Jordan"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-41",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Jordan, ask Quinn about the failing tests",
+        "first": "Jordan",
+        "second": "Quinn"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-42",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Quinn, ask Sage about the failing tests",
+        "first": "Quinn",
+        "second": "Sage"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-43",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Sage, ask Phoenix about the failing tests",
+        "first": "Sage",
+        "second": "Phoenix"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-44",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Phoenix, ask Rowan about the failing tests",
+        "first": "Phoenix",
+        "second": "Rowan"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-45",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Rowan, ask Steve about the failing tests",
+        "first": "Rowan",
+        "second": "Steve"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-46",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Steve, ask Will about the release checklist",
+        "first": "Steve",
+        "second": "Will"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "mention-47",
+      "category": "mention",
+      "question": {
+        "kind": "split",
+        "text": "Will, ask Luna about the release checklist",
+        "first": "Will",
+        "second": "Luna"
+      },
+      "expected": "mention"
+    },
+    {
+      "id": "option-48",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "use the server database one",
+        "card": "db"
+      },
+      "expected": "Postgres"
+    },
+    {
+      "id": "option-49",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "the second choice",
+        "card": "db"
+      },
+      "expected": "SQLite"
+    },
+    {
+      "id": "option-50",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "your recommendation",
+        "card": "db"
+      },
+      "expected": "Postgres"
+    },
+    {
+      "id": "option-51",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "the embedded database",
+        "card": "db"
+      },
+      "expected": "SQLite"
+    },
+    {
+      "id": "option-52",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "a relational server",
+        "card": "db"
+      },
+      "expected": "Postgres"
+    },
+    {
+      "id": "option-53",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "keep it in a file",
+        "card": "db"
+      },
+      "expected": "SQLite"
+    },
+    {
+      "id": "option-54",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "neither of these",
+        "card": "db"
+      },
+      "expected": "not sure"
+    },
+    {
+      "id": "option-55",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "I cannot decide",
+        "card": "db"
+      },
+      "expected": "not sure"
+    },
+    {
+      "id": "option-56",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "option one",
+        "card": "db"
+      },
+      "expected": "Postgres"
+    },
+    {
+      "id": "option-57",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "option two",
+        "card": "db"
+      },
+      "expected": "SQLite"
+    },
+    {
+      "id": "option-58",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "use PostgreSQL",
+        "card": "db"
+      },
+      "expected": "Postgres"
+    },
+    {
+      "id": "option-59",
+      "category": "option",
+      "question": {
+        "kind": "option",
+        "text": "go with SQLite",
+        "card": "db"
+      },
+      "expected": "SQLite"
+    }
+  ]
+}

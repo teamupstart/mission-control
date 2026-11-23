@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
-import { api, fetchVoiceConfig, fetchVoiceDevices } from "./lib/api.ts";
+import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
+import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices } from "./lib/api.ts";
 
 // Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
 // `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
@@ -143,4 +144,59 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
     };
   }, [enabled]);
   return state;
+}
+
+export interface VoiceDecisionKeyState {
+  /** The provider in use and where each provider's key comes from. Null until the first read. */
+  report: VoiceDecisionKeyReport | null;
+  /** Save a key. Resolves to whether the daemon kept it; the key is never read back. */
+  save(provider: VoiceKeyProvider, key: string): Promise<boolean>;
+  remove(provider: VoiceKeyProvider): Promise<boolean>;
+  /** Why the last save or removal failed, or null. */
+  error: string | null;
+}
+
+/**
+ * The decision-model key report (`GET /api/voice/decision-key`), read when the panel opens, when
+ * the chosen provider changes, and on the same poll as the config, so a key saved in another
+ * window or a provider chosen there shows here too.
+ */
+export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string | null | undefined): VoiceDecisionKeyState {
+  const [report, setReport] = useState<VoiceDecisionKeyReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const writes = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const tick = async (): Promise<void> => {
+      const at = writes.current;
+      const read = await fetchVoiceDecisionKey();
+      if (alive && read && writes.current === at) setReport(read);
+    };
+    void tick();
+    const id = setInterval(() => void tick(), POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [enabled, decisionProvider]);
+
+  const settle = useCallback((res: Awaited<ReturnType<typeof api.saveVoiceDecisionKey>>, failed: string): boolean => {
+    writes.current++;
+    if (res.ok && res.keys && res.provider !== undefined) {
+      setReport({ provider: res.provider, keys: res.keys });
+      setError(null);
+      return true;
+    }
+    setError(res.reason ?? failed);
+    return false;
+  }, []);
+
+  const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
+    settle(await api.saveVoiceDecisionKey(provider, key), "The key could not be saved."), [settle]);
+  const remove = useCallback(async (provider: VoiceKeyProvider) =>
+    settle(await api.removeVoiceDecisionKey(provider), "The key could not be removed."), [settle]);
+
+  return { report, save, remove, error };
 }

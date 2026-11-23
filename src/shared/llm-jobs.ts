@@ -2,6 +2,7 @@ import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
 
 // The daemon's own background model calls - which model each of them runs as.
 //
@@ -41,6 +42,7 @@ export const LLM_JOB_IDS = [
   "away-digest",
   "workflow-context",
   "ensemble-comparison",
+  "voice-routing",
 ] as const;
 
 export type LlmJobId = (typeof LLM_JOB_IDS)[number];
@@ -53,6 +55,14 @@ export interface LlmJobSpec extends ModelChoiceSpec {
    * split and the same reason.
    */
   envKey: string;
+  /**
+   * The preview flag a job belongs to, when it belongs to one. While that flag is off the job
+   * does not exist to anyone outside the daemon: `GET /api/llm/status` leaves it out, Settings >
+   * Models draws no row for it, and `PUT /api/llm/config` refuses to set it. See `liveLlmJobIds`.
+   */
+  previewFlag?: FeatureFlagId;
+  /** Models with measured routing accuracy and latency, pinned per runner. */
+  fixedModels?: Record<LlmRunnerId, string>;
 }
 
 /**
@@ -117,7 +127,29 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
     blurb:
       "Ranks Best-of-N candidates, and mines a Consensus run's divergences, in one tool-less call. A judging Persona's own model wins.",
   },
+  // The roster chooses the runner for a homogeneous set of agents. A mixed roster follows the configured runner.
+  "voice-routing": {
+    previewFlag: "voice",
+    fixedModels: { claude: "claude-haiku-4-5", codex: "gpt-6-luna" },
+    envKey: "VOICE_ROUTING_MODEL",
+    envVar: "MISSION_VOICE_ROUTING_MODEL",
+    fallback: "claude-haiku-4-5",
+    label: "Voice routing",
+    blurb: "Codex sessions use Luna. Claude sessions show roster choices. This provider applies to mixed rosters.",
+  },
 };
+
+/**
+ * The jobs that exist right now, in display order: every job, less those whose preview flag is
+ * off. The daemon asks with its own flag reader and the dashboard with the flags its event stream
+ * holds, so the status route, the config route and the panel agree on which rows there are.
+ */
+export function liveLlmJobIds(flagOn: (flag: FeatureFlagId) => boolean): LlmJobId[] {
+  return LLM_JOB_IDS.filter((job) => {
+    const flag = LLM_JOB_SPECS[job].previewFlag;
+    return flag === undefined || flagOn(flag);
+  });
+}
 
 /**
  * The operator's per-job overrides, keyed by job id.
@@ -169,6 +201,8 @@ export function resolveLlmJobModel(
   envValue: string | null | undefined,
   runner: LlmRunnerId = "claude",
 ): ResolvedLlmJobModel {
+  const fixed = LLM_JOB_SPECS[job].fixedModels?.[runner];
+  if (fixed) return { job, id: fixed, source: "default", unsupported: null };
   const chosen = resolveModelChoice(
     { ...LLM_JOB_SPECS[job], fallback: providerModelDefault(runner, "cheap") },
     models?.[job],

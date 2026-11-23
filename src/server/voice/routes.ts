@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceRouter, type VoiceDeliverer } from "./router.ts";
+import { defaultVoiceDecider, type VoiceDecider } from "./decide.ts";
+import { decisionKeyAvailability, removeDecisionKey, saveDecisionKey, savedDecisionKeys } from "./decision-key.ts";
+import {
+  VoiceDecisionKeyProviderSchema,
+  VoiceDecisionKeyPutSchema,
+  voiceDecisionKeyReport,
+  type VoiceDecisionKeyReport,
+} from "@shared/voice-decide.ts";
 import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
@@ -44,6 +52,12 @@ const limitBody = bodyLimit({
  *   already running, or a model already verified, is not started again.
  * - `DELETE /api/voice/model/download` cancels a running download, removes what it wrote, and
  *   returns `{ model }` as the disk now reads.
+ * - `GET /api/voice/decision-key` (contract E) returns `VoiceDecisionKeyReport`: the decision
+ *   provider in use and where each provider's key comes from. Never a key.
+ * - `PUT /api/voice/decision-key { provider, key }` saves one provider's key and `DELETE
+ *   /api/voice/decision-key?provider=` removes it; each leaves the other provider's key alone and
+ *   answers with the report. The key lives in `<state home>/voice/decision-key.json`, mode 0600,
+ *   outside SQLite and settings backups.
  *
  * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
  * cooperating local process posts to them, and the token is what separates it from any other.
@@ -83,6 +97,42 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
+  const keyReport = (): VoiceDecisionKeyReport =>
+    voiceDecisionKeyReport(getVoiceConfig(), decisionKeyAvailability(savedDecisionKeys(), process.env));
+  app.get("/api/voice/decision-key", gate, (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json(keyReport());
+  });
+  app.put("/api/voice/decision-key", gate, limitBody, async (c) => {
+    // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key
+    // must not come back in the answer.
+    let body: unknown;
+    try { body = await c.req.json(); }
+    catch { return c.json({ error: "invalid_body", reason: "The body is not JSON." }, 400); }
+    const parsed = VoiceDecisionKeyPutSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);
+    }
+    try {
+      saveDecisionKey(parsed.data.provider, parsed.data.key);
+    } catch (error) {
+      console.warn("[voice] could not save the decision-model key:", error instanceof Error ? error.message : String(error));
+      return c.json({ error: "save_failed", reason: "The key could not be saved." }, 500);
+    }
+    return c.json(keyReport());
+  });
+  app.delete("/api/voice/decision-key", gate, (c) => {
+    const provider = VoiceDecisionKeyProviderSchema.safeParse(c.req.query("provider"));
+    if (!provider.success) return c.json({ error: "invalid_provider", reason: "Name the provider: openai or jev." }, 400);
+    try {
+      removeDecisionKey(provider.data);
+    } catch (error) {
+      console.warn("[voice] could not remove the decision-model key:", error instanceof Error ? error.message : String(error));
+      return c.json({ error: "save_failed", reason: "The key could not be removed." }, 500);
+    }
+    return c.json(keyReport());
+  });
+
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
@@ -106,9 +156,10 @@ export function registerVoiceUtteranceRoutes(
   app: Hono,
   deliverer: VoiceDeliverer,
   publish: (card: VoiceCard) => void,
+  decider: VoiceDecider = defaultVoiceDecider(),
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
-  const router = new VoiceRouter(() => voiceStateStore.state(), () => getVoiceConfig().cancelWindow, deliverer, publish);
+  const router = new VoiceRouter(() => voiceStateStore.state(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider);
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });

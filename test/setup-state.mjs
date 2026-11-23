@@ -131,6 +131,12 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // A decision-model key alone switches voice routing's provider on (voice Phase 4), so a key
+  // the developer has exported for other tools would let a test that routes an ambiguous
+  // sentence reach OpenAI or Jev. No test may: a test that needs a key sets one itself.
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.

@@ -80,7 +80,8 @@ test("the daemon advertises a 65 s keep-alive and still exits promptly with an i
   let output = "";
   child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
   child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
-  const exited = new Promise<number>((resolve) => child.once("exit", () => resolve(Date.now())));
+  const exited = new Promise<{ at: number; code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.once("exit", (code, signal) => resolve({ at: Date.now(), code, signal })));
   const agent = new http.Agent({ keepAlive: true });
 
   try {
@@ -107,7 +108,8 @@ test("the daemon advertises a 65 s keep-alive and still exits promptly with an i
       new Promise<null>((resolve) => setTimeout(() => resolve(null), SHUTDOWN_BUDGET_MS).unref()),
     ]);
     assert.ok(stopped, `daemon still running ${SHUTDOWN_BUDGET_MS}ms after SIGTERM with an idle connection open\n${output}`);
-    console.log(`[daemon-keep-alive] keep-alive=${health.headers["keep-alive"]}; exited ${stopped - signalled}ms after SIGTERM`);
+    assert.deepEqual({ code: stopped.code, signal: stopped.signal }, { code: 0, signal: null }, `daemon did not shut down cleanly\n${output}`);
+    console.log(`[daemon-keep-alive] keep-alive=${health.headers["keep-alive"]}; exited ${stopped.at - signalled}ms after SIGTERM`);
   } finally {
     agent.destroy();
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");

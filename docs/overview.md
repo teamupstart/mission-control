@@ -44,7 +44,10 @@ and get your decision back.
   A checkout already on the default branch is left on it.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
-  answer - your decision flows straight back to the agent.
+  answer - your decision flows straight back to the agent. With the `async-input`
+  preview flag, a question is
+  [filed without stopping](sessions.md#asking-without-stopping): the agent keeps
+  working and your answer reaches it later as a message.
 - **Answers the menus** a session is parked on - a permission prompt, an
   `AskUserQuestion` clarification, a folder-trust check - as
   [clickable options on the session detail](sessions.md#answer-a-sessions-menu-from-the-dashboard).

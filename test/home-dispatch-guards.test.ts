@@ -1,6 +1,6 @@
 // Guards 2 and 3 of the headless-mode plan (4.2): headless mode never touches the existing
 // Focus feature. Guard 1 (a home-dispatched task keeps the dashboard's runtime) needs a started
-// task and is added by the phase that first starts one.
+// task, so it lives in `home-dispatch-drafts.test.ts`, where a confirmed draft starts one.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -29,20 +29,44 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 424 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
-  // /api/shaping routes of task shaping (refreshed when one last changed) and the three
-  // flag-gated session control request routes (`POST /mcp/session-control/requests`, its
-  // `GET .../:requestId/wait`, and the dashboard's `POST .../requests/:requestId/decline`),
-  // hashed key-sorted. Any added, removed
+  // The 449 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
+  // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
+  // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
+  // `POST .../requests/:requestId/decline`), the async-input lifecycle routes
+  // `POST /mcp/questions/list` and `POST /mcp/questions/:id/withdraw`, the three routes of
+  // a session awaiting a background process (the flag-gated `POST /mcp/awaiting`, and
+  // `POST /mcp/awaiting/clear` and the dashboard's `POST /api/sessions/:id/awaiting/clear`,
+  // which stay open so a wait can always end), the four flag-gated agent report routes
+  // (`POST /mcp/reports`, `POST /api/reports/:id/opened`, `POST /api/reports/:id/read` and
+  // `GET /api/sessions/:id/reports`), the two flag-gated report answer routes
+  // (`POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up`), the two flag-gated
+  // report document routes (`GET /api/reports/:id/document` and `POST /api/reports/:id/publish`),
+  // the Stuck row's flag-gated `POST /api/sessions/:id/inbox-message`, and the report lookup
+  // `GET /api/reports/:id`, hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
-  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
+  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off, and then for
+  // the agent report routes, which answer 404 with the `inbox` flag off, and then for the report
+  // reply and follow-up routes, which answer 404 with it off too, then for
+  // `GET /api/reviews/:id`, the earlier version a revised plan form links to, then for the Stuck
+  // row's `POST /api/sessions/:id/inbox-message`, which answers 403 with the `inbox` flag off, and
+  // then for the report document and Publish as scout routes, which answer 404 with it off, and
+  // then for `GET /api/reports/:id` and `GET /api/ui/config` reporting the "What notifies you"
+  // switches in `alerts`, all on. The recurring-mission MCP routes add GET/POST /mcp/schedules
+  // and POST /mcp/schedules/preview, all answering 401 without a daemon token. Voice addressing's
+  // five routes (`GET` and `PUT /api/voice/config`, `POST /api/voice/mute`,
+  // `POST /voice/listener/hello` and `POST /voice/shell-report`) answer 404 with the `voice` flag
+  // off, and `POST /api/setup/install`'s refusal names the new `voice-previews` id.
+  // `GET /api/setup/checks` is unchanged, and what voice adds to `GET /api/ui/config` is withheld
+  // with the flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 424);
+  assert.equal(others.length, 449);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "a96beb918b4e4dfae03f231662e0eba68bbd271483bc6268afcb3dc2ca5f8945");
+    "15a69ca9f84f700a8efc8d0849a76eff757b4489d9a03e1409ef2da09def983f");
 });
 
 function sourceFiles(dir: string): string[] {

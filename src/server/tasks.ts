@@ -1,3 +1,13 @@
+import { featureEnabled } from "./feature-flags/index.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { selectPinChangeDependencies } from "./plans/pin-change.ts";
+import { run } from "./util/exec.ts";
+import { getInspectorPr } from "./db.ts";
+import { parsePrUrl } from "./inspector/github.ts";
+import { resolveCommitTree } from "./workflows/commit-id.ts";
+import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
+import { WorkflowStore } from "./workflows/store.ts";
+import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
@@ -51,7 +61,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage, canRename } from "@shared/pane.ts";
+import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
@@ -70,8 +80,11 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
   taskRequeueRefusal,
+  taskKindHasWorkUnit,
   MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
+import { isWorkUnitId, launchWorkUnitConflicts, WORK_UNIT_REUSE_REFUSAL } from "@shared/work-unit.ts";
+import { mintWorkUnitId, sessionWorkUnitId } from "./work-unit.ts";
 import {
   isPersonaLaunchRefusal,
   personaLaunchRefusal,
@@ -85,6 +98,8 @@ import {
   type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
+  headBranch,
+  headCommit,
   releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
@@ -105,6 +120,7 @@ import {
   type InjectResult,
 } from "./actions.ts";
 import {
+  claimTaskWorkUnitId,
   clearTaskSessionClosure,
   completeTaskWithSessionClosure,
   getTask as getDurableTask,
@@ -157,6 +173,16 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import {
+  CHECKOUT_UNVERIFIED_REASON,
+  PANE_UNVERIFIED_REASON,
+  deliveredWithoutContext,
+  launchUnconfirmed,
+  shapeLaunch,
+  withTaskContext,
+} from "./shaping/launch.ts";
+import type { shapeTask } from "./shaping/engine.ts";
+import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
@@ -224,7 +250,7 @@ import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
-import { noteTaskDeparture } from "./telemetry/index.ts";
+import { noteTaskDeparture, sessionTraceContext } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { getWorkflowPolicy, resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
@@ -393,6 +419,22 @@ export type InternalCreateOptions =
       /** The run that owns this task. Identity only; the run row stays the source of truth. */
       resident: { runId: string; workspaceDir?: string | null };
     };
+
+/**
+ * Where a new task's work unit id comes from. Internal, like `InternalCreateOptions`, and a
+ * separate argument for the same reason: no request body can name a work unit. Omitted, the
+ * task gets a new one. See `docs/work-units.md`.
+ *
+ *  - `inherit`: the first task in `from` that exists and whose kind has a work unit. A task that
+ *    predates the column is given its id first, and the new task copies it. When no task in
+ *    `from` qualifies the new task gets its own: an automatic inheritor never fails for want of
+ *    a source. A refusal to inherit is the caller's to make before it creates anything.
+ *  - `supplied`: a well-formed id chosen by an internal producer, kept for the later Agent
+ *    Platform handoff. A malformed one is a programming error and throws.
+ */
+export type TaskWorkUnitSource =
+  | { inherit: readonly string[] }
+  | { supplied: string };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
 export class TaskIdCollisionError extends Error {}
@@ -698,6 +740,17 @@ interface CompletionInput {
    * agent nothing will ever revisit. See `completeTaskWithSessionClosure`.
    */
   closeSessionId?: string | null;
+  /**
+   * Durable state that must commit with this completion or not at all. `finishCompletion` runs
+   * `persist` inside the same transaction as the task's status write, after every check, so a
+   * throw or a failed write rolls back both and leaves the task untouched; `publish` runs only
+   * after the commit. Merge-driven completion closes the session's outstanding request_input
+   * questions this way: a scout whose archive check refuses never reaches it, and a failed
+   * status write cannot leave questions closed behind a task that is still running.
+   */
+  joinCompletion?: { persist: () => void; publish: () => void };
+  /** Auto-settlement must revalidate publication after archive I/O and state at the write. */
+  finishGuard?: { verify: () => Promise<boolean>; current: () => boolean };
 }
 
 /**
@@ -849,6 +902,11 @@ export interface AssignOptions {
   confirmReset?: boolean;
   /** Deliver the task's intent to the agent. The one call that types. */
   inject?: typeof injectPrompt;
+  /**
+   * Task shaping's engine, for a test that stands in a run. Production takes `shapeTask`, and
+   * calls it only while the `task-shaping` flag is on.
+   */
+  shapeTask?: typeof shapeTask;
   /** Ask whether the pane could take a prompt, before anything is done to the agent. */
   paneReady?: (session: Session) => Promise<ActionResult>;
   /** Hand the agent's checkout back in the shape a fresh one starts in. */
@@ -960,15 +1018,57 @@ function closureRefusal(result: ActionResult): string {
   return result.error ?? "the agent could not be stopped";
 }
 
+/** A rolled-over episode can settle only if its current checkout still matches the merge. */
+export async function mergedPublicationCoversCheckout(session: Session, url: string, exec = run): Promise<boolean> {
+  const parsed = parsePrUrl(url);
+  const pr = parsed ? getInspectorPr(parsed.key) : null;
+  if (!session.cwd || !pr?.repoRoot || pr.observedState !== "MERGED" || !pr.observedHeadSha
+    || !pr.headRefName || pr.headRefName !== session.gitBranch) return false;
+  const git = (root: string, args: string[]) => exec("git", ["-C", root, ...args]);
+  const [localRepo, adoptedRepo, status, headTree, mergedTree, branch] = await Promise.all([
+    git(session.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(pr.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]),
+    git(session.cwd, ["rev-parse", "HEAD^{tree}"]),
+    resolveCommitTree(session.cwd, pr.observedHeadSha),
+    git(session.cwd, ["branch", "--show-current"]),
+  ]);
+  const matches = localRepo.code === 0 && adoptedRepo.code === 0
+    && realpathSync(localRepo.stdout.trim()) === realpathSync(adoptedRepo.stdout.trim())
+    && branch.code === 0 && branch.stdout.trim() === pr.headRefName
+    && status.code === 0 && !status.stdout.trim()
+    && headTree.code === 0 && headTree.stdout.trim() === mergedTree;
+  if (!matches) return false;
+  // Tree resolution may take time. Recheck after it, including files hidden by user config.
+  const freshStatus = await git(session.cwd, ["status", "--porcelain", "--untracked-files=normal"]);
+  const freshTree = await git(session.cwd, ["rev-parse", "HEAD^{tree}"]);
+  return freshStatus.code === 0 && !freshStatus.stdout.trim()
+    && freshTree.code === 0 && freshTree.stdout.trim() === mergedTree;
+}
+
+/** See `TaskManager.useMergeQuestions`. */
+export interface MergeQuestions {
+  /** The closure split for the completion's transaction; see `ReviewManager.mergeClosure`. */
+  closure(sessionId: string): { persist: () => void; publish: () => void };
+  blockedInCall(sessionId: string): boolean;
+}
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
+  mergedPublicationCoversCheckout?: typeof mergedPublicationCoversCheckout;
+  workflowDeliveredCurrentPrompt: (runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null) => boolean;
   kill: typeof kill;
 }
 
-const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
-  resetWouldDestroyWork,
-  kill,
-};
+function defaultCloseMergedSessionDeps(): CloseMergedSessionDeps {
+  let workflows: WorkflowStore | undefined;
+  return {
+    mergedPublicationCoversCheckout,
+    workflowDeliveredCurrentPrompt: (...args) => (workflows ??= new WorkflowStore()).deliveredActionOwnsPrompt(...args),
+    resetWouldDestroyWork,
+    kill,
+  };
+}
 
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
@@ -1101,6 +1201,15 @@ export class TaskManager {
   private readonly subscriptions: (() => void)[] = [];
   private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
+  /**
+   * The running, sessionless rows this daemon inherited, by object identity: any write that
+   * replaces a row's object is this daemon's lifecycle claiming it. See the constructor and
+   * `reconcileTasksWithNoLiveSession`. `ensureWorkUnit` is the one write that does not count.
+   */
+  private readonly sessionlessAtStartup = new Set<Task>();
+  private readonly publicationSettlements = new Map<string, Promise<void>>();
+  private readonly publicationSettlementRechecks = new Set<string>();
+
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
@@ -1122,9 +1231,14 @@ export class TaskManager {
    */
   private stackReadiness: StackReadiness;
   private readonly stackDispatching = new Set<string>();
+  /** How a merge reaches a session's request_input questions; see `useMergeQuestions`. */
+  private mergeQuestions?: MergeQuestions;
+  /** Tasks inside `settleIfEpisodeFinished`'s close-then-complete, against re-entry. */
+  private readonly mergeSettling = new Set<string>();
+  private readonly closeMergedSessionDeps: CloseMergedSessionDeps;
   constructor(
     private registry: Registry,
-    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    closeMergedSessionDeps: Partial<CloseMergedSessionDeps> = {},
     /**
      * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
      *
@@ -1156,12 +1270,14 @@ export class TaskManager {
      */
     private pause?: TaskPause,
   ) {
+    this.closeMergedSessionDeps = { ...defaultCloseMergedSessionDeps(), ...closeMergedSessionDeps };
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
     this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      workflowName: (workflowId) => this.workflowNameFor(workflowId),
       worktrees: this.worktrees,
       legacy: this.legacyWorktrees,
       // The launch no longer waits for a model to name it, so the name can arrive on either
@@ -1182,9 +1298,10 @@ export class TaskManager {
     });
     // Only unchanged inherited rows are evidence of a lost binding. A task created,
     // assigned, or displaced during restore belongs to this daemon's live lifecycle.
-    const sessionlessAtStartup = new Set(registry.listTasks().filter(
-      (task) => task.status === "running" && task.sessionId === null,
-    ));
+    for (const task of registry.listTasks()) {
+      if (task.status === "running" && task.sessionId === null) this.sessionlessAtStartup.add(task);
+    }
+    const sessionlessAtStartup = this.sessionlessAtStartup;
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
@@ -1254,6 +1371,11 @@ export class TaskManager {
       if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
         this.stackReadiness.schedule();
       }
+      if (e.type === "workflow_run_upsert" && e.run.sessionId
+        && !activeWorkflowOwnsSession([e.run])) {
+        const session = this.registry.getSession(e.run.sessionId);
+        if (session) this.settleIfEpisodeFinished(session);
+      }
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1301,6 +1423,7 @@ export class TaskManager {
     // it never had resources of ours - was skipped by it on every restart, forever.
     this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
+      for (const session of this.registry.snapshot().sessions) this.settleIfEpisodeFinished(session);
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession(sessionlessAtStartup);
       // And the closures a previous daemon left owed. Nothing before this point may act on
@@ -1637,6 +1760,13 @@ export class TaskManager {
     return resolved.ok ? null : resolved.error;
   }
 
+  private workflowNameFor: (workflowId: string) => string | null = () => null;
+
+  /** Install the workflow name reader task shaping describes the after-work step with. */
+  registerWorkflowNames(resolve: (workflowId: string) => string | null): void {
+    this.workflowNameFor = resolve;
+  }
+
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
   registerWorkflowEvidenceEligibility(
     resolve: (task: Pick<Task, "kind" | "workflowId">) => boolean,
@@ -1704,8 +1834,18 @@ export class TaskManager {
    * `reopenIfWorkResumed`. Every other route to `done` is a human's and stays put.
    */
   private settleIfEpisodeFinished(s: Session): void {
-    if (s.state !== "idle") return;
+    // Deliberately no review hold (`async-input`): a merge is the operator's own conclusion, so
+    // an outstanding request_input question does not hold this completion. The questions are
+    // closed with the reason `merged` as part of it, below, rather than left behind it.
+    //
+    // The one non-idle state handled here: an agent blocked inside a request_input call. It can
+    // never go idle while it waits, so the merge completes the task and closes its questions in
+    // one transaction, which returns the call.
+    const blockedInCall = s.state !== "idle" && this.mergeQuestions?.blockedInCall(s.id) === true;
+    if (s.state !== "idle" && !blockedInCall) return;
     if (s.queue && s.queue.openCount > 0) return;
+    if (!blockedInCall && activeWorkflowOwnsSession(this.registry.workflowRunSummaries()
+      .filter(run => run.sessionId === s.id))) return;
     // The one task this agent is executing, per the serial invariant - never "the task
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
@@ -1721,7 +1861,10 @@ export class TaskManager {
     // answer for) has no such turn left, so any merge it produced IS the outcome. So this
     // path keeps the episode-currency gate and reads only THIS episode's evidence.
     const current = this.registry.workEpisodeForSession(s.id);
-    if (current && current.episodeId !== binding.episodeId) return;
+    if ((current && current.episodeId !== binding.episodeId) || !this.currentEpisodeLanded(t, binding)) {
+      this.settlePublishedWorkAfterWorkflow(t, s);
+      return;
+    }
     // This episode's own work has to have landed, and for a multi-repo task that is any repo
     // it shipped rather than the PRIMARY specifically. Gating on the primary's own binding -
     // the only thing this line used to read - meant a task that never touched the primary
@@ -1731,26 +1874,122 @@ export class TaskManager {
     if (!this.currentEpisodeLanded(t, binding)) return;
     const outcome = this.liveEpisodeOutcome(t, binding);
     if (!outcome) return;
-    // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
-    // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
-    // provenance that makes it reversible - still happens synchronously inside this call, so
-    // the reopen path sees exactly what it always did. For a scout it lands once the archive
-    // is verified, which is the only ordering that can be true: a scout is not done until its
-    // report is durable.
-    this.completeInBackground(t.id, {
-      outcome: outcome.outcome,
-      outcomeUrl: outcome.url,
-      satisfyDependents: false,
-      requireStopped: false,
-      confirmIncompleteScout: false,
-      inferredFrom: s.id,
-    }, undefined, () => {
-      this.closeMergedSessionAfterCompletion({
-        taskId: t.id,
-        sessionId: s.id,
-        episodeId: binding.episodeId,
+    // Closing a question publishes a `session_upsert`, which re-enters this listener for the
+    // same session before the close has returned. One settle per task at a time.
+    if (this.mergeSettling.has(t.id)) return;
+    const guarded = (fn: () => void) => {
+      const held = this.mergeSettling.has(t.id);
+      this.mergeSettling.add(t.id);
+      try { fn(); }
+      finally { if (!held) this.mergeSettling.delete(t.id); }
+    };
+    const closure = this.mergeQuestions?.closure(s.id);
+    this.mergeSettling.add(t.id);
+    try {
+      // Backgrounded rather than awaited because this runs inside a `session_upsert` listener.
+      // For a ship task the whole completion - status, broadcast, and the `autoCompleted`
+      // provenance that makes it reversible - still happens synchronously inside this call, so
+      // the reopen path sees exactly what it always did. For a scout it lands once the archive
+      // is verified, which is the only ordering that can be true: a scout is not done until its
+      // report is durable.
+      //
+      // Closing the questions is part of that completion (`joinCompletion`), never ahead of it:
+      // their settles commit in the same transaction as the task's status write. A failed close
+      // or a failed write rolls back both, leaving the questions open and the task running for
+      // the next observation. A completion that refuses first (a scout whose archive is not
+      // ready) never reaches them, so the operator can still answer.
+      //
+      // An agent blocked inside a request_input call completes here too, in the same transaction:
+      // closing its question is what releases the call, so the two cannot be separated without
+      // leaving a closed question behind a running task. That completion is not recorded as
+      // inferred (`inferredFrom: null`): the agent is mid-turn by construction, and the turn it
+      // finishes reading the closure would otherwise reopen the task the merge concluded.
+      this.completeInBackground(t.id, {
+        outcome: outcome.outcome,
+        outcomeUrl: outcome.url,
+        satisfyDependents: false,
+        requireStopped: false,
+        confirmIncompleteScout: false,
+        inferredFrom: blockedInCall ? null : s.id,
+        ...(closure ? { joinCompletion: { persist: closure.persist, publish: () => guarded(closure.publish) } } : {}),
+      }, undefined, () => {
+        this.closeMergedSessionAfterCompletion({
+          taskId: t.id,
+          sessionId: s.id,
+          episodeId: binding.episodeId,
+        });
       });
-    });
+    } finally {
+      this.mergeSettling.delete(t.id);
+    }
+  }
+
+  /**
+   * Install how a merge reaches a session's request_input questions (`async-input`): `closure`
+   * settles every outstanding one with the reason `merged` inside the completion's own
+   * transaction; `blockedInCall` says the agent is waiting inside a call the merge must close,
+   * since it can never go idle on its own. A setter rather than a constructor argument,
+   * like `useStackGitHub`, because the review manager is the daemon's and every focused test
+   * that never asks a question constructs this class without one.
+   */
+  useMergeQuestions(questions: MergeQuestions): void {
+    this.mergeQuestions = questions;
+  }
+
+  /** Workflow delivery can roll the episode after merge; content proof closes that case. */
+  private settlePublishedWorkAfterWorkflow(task: Task, session: Session): void {
+    if (this.stopping || task.extraRepos.length > 0) return;
+    if (this.publicationSettlements.has(task.id)) {
+      this.publicationSettlementRechecks.add(task.id);
+      return;
+    }
+    const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+    const latestRun = this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0];
+    if (!episode || episode.promptedAt === null || !latestRun || activeWorkflowOwnsSession([latestRun])) return;
+    const promptRevision = this.registry.getGoal(session.id)?.promptRevision ?? null;
+    if (!this.closeMergedSessionDeps.workflowDeliveredCurrentPrompt(
+      latestRun.id, session.id, episode.episodeId, episode.promptedAt, promptRevision)) return;
+    const outcome = this.mergeOutcomeFor(task);
+    if (!outcome) return;
+    const current = () => {
+      const fresh = this.registry.getSession(session.id);
+      const latestTask = this.registry.getTask(task.id);
+      const latestEpisode = this.registry.recordedWorkEpisodeForSession(session.id);
+      return !this.stopping && !!fresh && fresh.state === "idle" && fresh.lastActivity === session.lastActivity
+        && fresh.workCycle?.generation === session.workCycle?.generation && !fresh.queue?.openCount
+        && latestTask?.status === "running" && latestTask.sessionId === session.id
+        && latestTask.dispatchedAt === task.dispatchedAt && this.mergeOutcomeFor(latestTask)?.url === outcome.url
+        && latestEpisode?.episodeId === episode.episodeId && latestEpisode.promptedAt === episode.promptedAt
+        && (this.registry.getGoal(session.id)?.promptRevision ?? null) === promptRevision
+        && !activeWorkflowOwnsSession(this.registry.workflowRunSummaries().filter(run => run.sessionId === session.id));
+    };
+    const verify = async () => {
+      try {
+        return await (this.closeMergedSessionDeps.mergedPublicationCoversCheckout ?? mergedPublicationCoversCheckout)(session, outcome.url);
+      } catch {
+        // Unknown publication proof leaves the task running.
+        return false;
+      }
+    };
+    const pending = (async () => {
+      if (!await verify() || !current()) return;
+      await this.runCompletion(task.id, {
+        outcome: outcome.outcome, outcomeUrl: outcome.url, satisfyDependents: false,
+        requireStopped: false, confirmIncompleteScout: false, inferredFrom: session.id,
+        finishGuard: { verify, current },
+      });
+    })().catch((error: unknown) => {
+      console.error("[merge] settling published task after workflow failed:", task.id, error);
+    })
+      .finally(() => {
+        this.publicationSettlements.delete(task.id);
+        if (this.publicationSettlementRechecks.delete(task.id) && !this.stopping) {
+          const fresh = this.registry.getSession(session.id);
+          if (fresh) this.settleIfEpisodeFinished(fresh);
+        }
+      });
+    this.publicationSettlements.set(task.id, pending);
   }
 
   /**
@@ -1931,7 +2170,8 @@ export class TaskManager {
     this.stopMissionSessionClosures();
     this.stackReadiness.stop();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    this.stopping = this.settleWorktreeReturns();
+    this.stopping = Promise.all(this.publicationSettlements.values())
+      .then(() => this.settleWorktreeReturns());
     return this.stopping;
   }
 
@@ -3118,6 +3358,7 @@ export class TaskManager {
     internal?: InternalCreateOptions,
     manualDispatch?: symbol,
     creationPolicy?: TaskCreationPolicy,
+    workUnit?: TaskWorkUnitSource,
   ): Task {
     const creator = taskKindCreator(input.kind);
     const refusal = taskKindBacklogRefusal(input.kind);
@@ -3279,8 +3520,12 @@ export class TaskManager {
     // would put a number in the column that means nothing. `reschedule` is what gives one
     // to a task that arrives in the backlog later.
     const backlogRank = backlogged ? this.allocateBacklogRank("bottom") : null;
+    // Last, after every refusal above: inheriting can give an older parent its id, and a
+    // creation that is then refused should not have written to another task.
+    const workUnitId = taskKindHasWorkUnit(input.kind) ? this.creationWorkUnitId(workUnit) : null;
     const task: Task = {
       id,
+      workUnitId,
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
@@ -3375,6 +3620,48 @@ export class TaskManager {
     return task;
   }
 
+  /** The work unit id a task being created gets from `source`. See `TaskWorkUnitSource`. */
+  private creationWorkUnitId(source: TaskWorkUnitSource | undefined): string {
+    if (source && "supplied" in source) {
+      if (!isWorkUnitId(source.supplied)) throw new TypeError(`not a work unit id: ${source.supplied}`);
+      return source.supplied;
+    }
+    for (const taskId of source?.inherit ?? []) {
+      const parent = this.registry.getTask(taskId) ?? getDurableTask(taskId);
+      if (!parent || !taskKindHasWorkUnit(parent.kind)) continue;
+      const inherited = this.ensureWorkUnit(parent).workUnitId;
+      if (inherited) return inherited;
+    }
+    return mintWorkUnitId();
+  }
+
+  /**
+   * `task` with the work unit id it has once this returns. A task that predates the column, and
+   * whose kind has a work unit, is given one here and the row is saved before this returns, so
+   * whatever reads the task next - a launch, an assign, a child inheriting from it - sees it.
+   *
+   * The write is conditional (`claimTaskWorkUnitId`) and the stored value is what is returned,
+   * never the id minted here: when two operations reach the same task at once, the first write
+   * wins and every other one uses it. A null in this copy is not trusted either, because the
+   * copy may have been read before another operation gave the id.
+   */
+  ensureWorkUnit(task: Task): Task {
+    if (task.workUnitId !== null || !taskKindHasWorkUnit(task.kind)) return task;
+    const stored = claimTaskWorkUnitId(task.id, mintWorkUnitId());
+    if (stored === null) return task;
+    const live = this.registry.getTask(task.id);
+    if (live && live.workUnitId !== stored) {
+      // Already saved, so broadcast without writing the row again.
+      this.registry.publishPersistedTask({ ...live, workUnitId: stored }, []);
+      // An id is not a lifecycle change. A row restart reconciliation is still waiting to
+      // judge keeps its place under the object the board now holds, or a dispatch or assign
+      // that reached it before the first sweep would leave it running with no session.
+      const published = this.registry.getTask(task.id);
+      if (published && this.sessionlessAtStartup.delete(live)) this.sessionlessAtStartup.add(published);
+    }
+    return { ...task, workUnitId: stored };
+  }
+
   /**
    * Create or recover the one post-merge retro task owned by a source work episode.
    *
@@ -3403,6 +3690,9 @@ export class TaskManager {
         backlog: true,
       },
       { id: reserved.retroTaskId },
+      undefined,
+      undefined,
+      { inherit: [input.sourceTask.id] },
     );
     // A completed source may remain clickable after the bounded board projection evicted this
     // older follow-up. Re-admit the durable row before `dispatch` inspects it; the upsert does
@@ -3575,8 +3865,11 @@ export class TaskManager {
   async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task" };
+    // First, before anything in this dispatch reads the task: an older row gets its work unit
+    // here (decision D3), and the launch that follows reads it.
+    const t = this.ensureWorkUnit(found);
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is being assigned", task: t };
     }
@@ -4166,7 +4459,7 @@ export class TaskManager {
     id: string,
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
-  ): Promise<Ok & { task?: Task }> {
+  ): Promise<Ok & { task?: Task; before?: Task }> {
     // Preparation can await tool availability or the plan-storage lock after reading its base
     // row, and writing the prepared row would undo anything written meanwhile, a dispatch
     // included. A dashboard edit prepares once more from the newer row, which re-runs every
@@ -4180,8 +4473,8 @@ export class TaskManager {
         return { ok: false, error: `task is ${current.status}, not in the backlog` };
       }
       if (current === prepared.base) {
-        this.registry.upsertTask(prepared.task);
-        return { ok: true, task: prepared.task };
+        if (!patch.previewOnly) this.registry.upsertTask(prepared.task);
+        return { ok: true, task: prepared.task, ...(patch.previewOnly ? { before: prepared.base } : {}) };
       }
       if (options.backlogOnly || attempt > 0) {
         return { ok: false, error: "task changed while preparing the update; retry" };
@@ -4204,6 +4497,56 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    let planChangeDependencies: TaskDependency[] | undefined;
+    if (patch.planInputChange || patch.previewOnly) {
+      if (!featureEnabled(PINNED_PLAN_CHANGE_FLAG_ID)) return { ok: false, error: "Change pinned plan revision preview is disabled" };
+      if (t.status !== "backlog") return { ok: false, error: "task is not in the backlog" };
+    }
+    if (patch.planInputChange) {
+      if (patch.planInputs !== undefined || patch.dependencies !== undefined) return { ok: false, error: "Use planInputChange separately from planInputs and dependencies" };
+      try {
+        const { from, to, expectedUpdatedAt } = patch.planInputChange;
+        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== t.updatedAt) throw new PlanStoreError("Task changed; reopen the editor and preview again");
+        const index = (t.planInputs ?? []).findIndex(input => input.repoKey === from.repoKey && input.planId === from.planId && input.revision === from.revision && JSON.stringify(input.files) === JSON.stringify(from.files));
+        if (index < 0) throw new PlanStoreError("Pinned input changed; reopen the editor and preview again");
+        validatePlanInputs([to], [t.repoRoot, ...t.extraRepos.map(r => r.repoRoot)]);
+        const planInputs = [...t.planInputs!];
+        planInputs[index] = to;
+        const saved = planRevisionRecord(to.planId, to.revision);
+        const source = saved.task_id ? this.getDurable(saved.task_id) ?? null : null;
+        const selection = selectPinChangeDependencies({
+          current: t.dependencies,
+          from: { input: from, origin: planRevisionRecord(from.planId, from.revision) },
+          to: { input: to, origin: saved },
+          remainingPins: planInputs.map(input => ({ input, origin: planRevisionRecord(input.planId, input.revision) })),
+          storage: readPlanRevision(to.planId, to.revision).manifest.policy.storage,
+          published: Boolean(publicationReceipt(to)),
+          source,
+          bindings: saved.task_id
+            ? [taskWorkEpisodeForTask(saved.task_id), ...historicalTaskWorkEpisodeBindingsForTask(saved.task_id)]
+              .filter((binding): binding is TaskWorkEpisodeBinding => binding !== null)
+            : [],
+          now: Date.now(),
+        });
+        const { dependencies, addition, mergeCandidate } = selection;
+        if (addition) {
+          const candidates = [...dependencies];
+          if (mergeCandidate) {
+            const mergedUrl = this.mergeUrlForDependency(mergeCandidate.edge, "");
+            if (mergedUrl) candidates.push({ ...mergeCandidate.edge, prUrl: mergedUrl,
+              satisfiedAt: mergeCandidate.mergedAt ?? Date.now() });
+          }
+          if (addition.type === "task" && source?.status === "done"
+            && !candidates.some(edge => dependencyKey(edge) === dependencyKey(addition))) {
+            throw new PlanStoreError(`Completed replacement origin ${JSON.stringify(source.title)} has no merge proof for work episode ${saved.episode_id ?? "unknown"}. Select a revision with verified merge proof.`);
+          }
+          dependencies.push(...this.resolveDependencies([addition], t.id, candidates));
+        }
+        if (dependencies.length > MAX_TASK_DEPENDENCIES) throw new TaskDependencyError("Too many task dependencies");
+        planChangeDependencies = dependencies;
+        patch = { ...patch, planInputs, dependencies: dependencies.map(dependencyInputOf) };
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
     if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: "task is being assigned" };
     }
@@ -4369,7 +4712,7 @@ export class TaskManager {
     }
     try {
       if (patch.dependencies !== undefined) {
-        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, planChangeDependencies ?? t.dependencies);
         validatePlanInputDependencies({ planInputs: patch.planInputs ?? t.planInputs, dependencies });
       }
     } catch (error) {
@@ -4790,8 +5133,10 @@ export class TaskManager {
    * window they hold open is where this method's ordering rules can be broken.
    */
   async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task", scope: "task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task", scope: "task" };
+    // First, as in `dispatch`: an older row gets its work unit before this assign reads it.
+    const t = this.ensureWorkUnit(found);
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
@@ -4867,6 +5212,18 @@ export class TaskManager {
 
     const s = this.registry.getSession(sessionId);
     if (!s) return { ok: false, error: "no such session", scope: "session" };
+    // Decision D7. The agent's environment was fixed when it started, and an assign starts no
+    // process, so an agent started with one work unit would tag this task's MCP calls with
+    // that one. Asked of the launch record, never of the flag: the environment is already
+    // set, so this holds after the preview is switched off too. An agent started with none
+    // takes any task, which then emits nothing until the agent's next start.
+    //
+    // First among the session refusals, because it is the only PERMANENT one: an agent that is
+    // busy or mid-handover frees up, and saying so would send the operator to wait for an agent
+    // that will refuse this task all the same.
+    if (launchWorkUnitConflicts(s.launchWorkUnitId, t.workUnitId)) {
+      return { ok: false, error: WORK_UNIT_REUSE_REFUSAL, scope: "session" };
+    }
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is already being assigned", scope: "task" };
     }
@@ -4947,7 +5304,9 @@ export class TaskManager {
     // dashboard files such a session under "needs you" rather than "idle" and won't
     // offer it as a target; refuse it here too, so the API can't route around a rule
     // the operator can see being applied on screen.
-    if (s.pendingReviews > 0) {
+    // A message-mode question (`async-input`) counts too: its agent is waiting on the answer
+    // just as surely, and reassigning underneath it would lose the work it reconciles.
+    if (questionsAwaitingOperator(s) > 0) {
       return {
         ok: false,
         error: "that agent has a review waiting on you - clear it first",
@@ -5162,7 +5521,7 @@ export class TaskManager {
       !fresh ||
       !fresh.instrumented ||
       fresh.state !== "idle" ||
-      fresh.pendingReviews > 0
+      questionsAwaitingOperator(fresh) > 0
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }
@@ -5247,89 +5606,237 @@ export class TaskManager {
     // this path. It matters more on an assignment than on a dispatch - the session already
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
-    const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
-    // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
-    // a refusal does - the task stays in the backlog, so a surviving row would claim an
-    // episode saw a task nobody has been given. `inject` is injectable here and the guard
-    // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
-    // reject; the dispatcher's seam guards the same risk the same way.
-    let r: InjectResult;
-    try {
-      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
-      // refuses a multi-repo task and stands in the session's own checkout - so the only
-      // thing that could have is the configuration, and a live process's system prompt
-      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
-      // one mid-session semantic and the pairs without one another, for the same feature.
-      // One boundary instead: a session keeps the standing instructions it launched with.
-      //
-      // So this replays the session's own launch snapshot, and only for a session whose
-      // pair had no out-of-band channel. On the three pairs that do, the block is still
-      // installed on that process - that is what "durable" means - and prefixing it again
-      // would have the agent read the same rule twice. A session with no snapshot acquires
-      // nothing mid-life.
-      const launched = this.registry.standingInstructionsFor(s.id);
-      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
-      r = await inject(
-        this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
-          fallbackRoot: s.cwd,
-          planDiscovery,
-          planSkills: planSkills?.ok ? planSkills.commands : null,
-          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
-          workflowEvidence,
-        }),
-        undefined,
-        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
-      );
-    } catch (err) {
-      discardScoutPromptBoundary(boundary);
-      throw err;
-    }
-    // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
-    // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
-    // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
-    // of unreadable captures - and both mean the Enter went out while the text may still be
-    // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
-    // has: reversing that would change what assignment MEANS, which is not archive
-    // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
-    // prompt, and an unconfirmed paste cannot support that claim.
+    // The turn this handover types, before any task context: composed once, so the shaping
+    // step's last check and the inject below see the same text.
     //
-    // The cost of being wrong this way is a scout that loses its frozen title and anchor and
-    // falls back to the legacy task title with an honestly truncated trail. The cost of being
-    // wrong the other way is an archive anchored into a conversation that never started.
-    if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
-    if (!r.ok) {
-      // Nothing was typed, and the task stays droppable. A boundary left behind would claim
-      // an episode saw a task that is still sitting in the backlog.
-      return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
-    }
-
-    // Merge onto the LATEST snapshot, not the one read before the injection, for the
-    // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
-    // for a retriage to land, and priority/labels stay editable in every status - so a
-    // stale spread here writes yesterday's priority back over one just set on the card,
-    // silently, on a gesture that was only meant to hand the task to an agent.
-    const cur = this.registry.getTask(t.id) ?? t;
-    const now = Date.now();
-    this.registry.upsertTask({
-      ...cur,
-      status: "running",
-      sessionId: s.id,
-      dispatchedAt: now,
-      updatedAt: now,
+    // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+    // refuses a multi-repo task and stands in the session's own checkout - so the only
+    // thing that could have is the configuration, and a live process's system prompt
+    // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+    // one mid-session semantic and the pairs without one another, for the same feature.
+    // One boundary instead: a session keeps the standing instructions it launched with.
+    //
+    // So this replays the session's own launch snapshot, and only for a session whose
+    // pair had no out-of-band channel. On the three pairs that do, the block is still
+    // installed on that process - that is what "durable" means - and prefixing it again
+    // would have the agent read the same rule twice. A session with no snapshot acquires
+    // nothing mid-life.
+    const launched = this.registry.standingInstructionsFor(s.id);
+    const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
+    const unshapedTurn = withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
+      fallbackRoot: s.cwd,
+      planDiscovery,
+      planSkills: planSkills?.ok ? planSkills.commands : null,
+      grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
+      workflowEvidence,
     });
-    this.registry.bindTaskToWorkEpisode(t.id, s.id);
-    // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
-    // Last, and after the claim: it is the one step here that changes nothing about
-    // whether the task is running, so it must not sit in front of anything that does.
-    await this.renameForTask(
-      // Re-read for the same reason the task is: the reset detached the checkout and the
-      // injection took a round trip, and `rename` targets the terminal home BY NAME.
-      this.registry.getSession(s.id) ?? s,
-      this.registry.getTask(t.id) ?? cur,
-      doRename,
-    );
-    return { ok: true };
+    // Task shaping on the handover, the second call site beside `Dispatcher.dispatch`: the same
+    // input builder and section helper, awaited before the turn is typed. The repository is the
+    // session's own checkout, which is the one slot `assign` allows, on the branch and commit the
+    // reset above left it on. Its trace context is the one the session's agent was launched
+    // with - an embedded session's own, none for a pane. A message to a live session has no byte
+    // ceiling unless its pane pastes through AppleScript, which is checked. The step itself never
+    // throws; the handover stops only if the task was edited while shapers ran.
+    const live = this.registry.getSession(s.id) ?? s;
+    const shapingOn = featureEnabled("task-shaping");
+    // What the shapers are told is what the agent is handed: these fields of the task, read now.
+    const inputs = (task: Task) => JSON.stringify([task.intent, task.title, task.kind, task.labels, task.priority,
+      task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
+    const shapedFrom = inputs(ready);
+    const writePane = innermostPane(live);
+    // The pane the paste budget was checked for; a section is only sent into that same pane.
+    const shapedPane = paneToken(live);
+    // The baseline is read before the step's own clock starts, so it gets a short bound of its
+    // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
+    // A turn the operator starts and finishes while shapers run leaves the session idle again, so
+    // its state alone cannot tell; any departure from idle after the reset is recorded here, until
+    // the delivery's own guard has had its say.
+    let leftIdle = false;
+    const watchTurns = (event: { type: string; session?: { id: string; state: string } }) => {
+      if (event.type === "session_upsert" && event.session?.id === s.id && event.session.state !== "idle") leftIdle = true;
+    };
+    if (shapingOn) this.registry.on("event", watchTurns);
+    const stopWatching = () => { this.registry.off("event", watchTurns); };
+    // Released however the handover ends: a refusal, a probe or delivery that throws, or success.
+    try {
+      // Branch and commit read from the same post-reset checkout, not the registry's cached branch,
+      // which a reset that detached HEAD leaves on the previous one until discovery catches up.
+      const checkout = shapingOn && live.cwd
+        ? await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS)
+        : { baseSha: null, branch: live.gitBranch ?? null };
+      let shaping = await shapeLaunch({
+        // The baseline is the commit the reset left the checkout on, read only when shaping runs.
+        task: { ...ready, worktreePath: live.cwd, branch: checkout.branch, baseSha: checkout.baseSha },
+        runtime: live.runtime,
+        workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
+        trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
+        // No process starts here, so the work unit is the one the agent was started with, from
+        // its launch record, while the task has that same id - never the preview as it reads
+        // now. The reuse guard above already refused an agent started for another work unit,
+        // so this is the task's id or, for an agent started with none, nothing.
+        workUnitId: sessionWorkUnitId(live, ready),
+        delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
+        turnOnes: [],
+        launch: null,
+        stillDispatching: () => this.registry.getTask(t.id)?.status === "backlog",
+        onShaping: (active) => this.registry.setTaskShapingContext(t.id, active),
+        // The session's own pane decides how the paste travels, as `Dispatcher` checks a launch.
+        ...(live.runtime !== "sdk" && writePane?.kind === "emulator" && pasteTravelsAsArgument(writePane.backend)
+          ? { finalCheck: async (section: string) => appleScriptPasteFits(withTaskContext(unshapedTurn, section), process.env, await platformArgMax())
+            ? null
+            : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
+          : {}),
+      }, { shapeTask: opts.shapeTask, enabled: shapingOn });
+      // Whether the turn carries context. The session and task checks below are cheap and run whenever
+      // the handover waited on shaping at all; the extra pane probe and checkout comparison guard the
+      // context itself, so they run only when there is a section to deliver. A run that added nothing
+      // - no shaper applied, or one failed or timed out - goes on with the original prompt, and its
+      // record is still settled after the inject.
+      const carriesContext = shapingOn && shaping.section.length > 0;
+      const after = this.registry.getTask(t.id);
+      if (after?.status !== "backlog") {
+        return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
+      }
+      // An edit made while shapers ran would be handed over as the older text with context chosen
+      // for it, while the card shows the newer one. The task stays in the backlog to be handed
+      // over again, as it is for every other refusal after the reset.
+      if (inputs(after) !== shapedFrom) {
+        return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
+      }
+      // The session was checked before the reset, and shapers can take seconds: an operator who
+      // started a turn in the meantime, or a review that arrived, makes it no longer a session to
+      // type into. Asked again only when shaping ran, so a handover with the flag off is unchanged.
+      // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
+      // probe below is itself an await a turn could start during.
+      const sessionChanged = (): string | null => {
+        if (!shapingOn) return null;
+        // The task too: still in the backlog, with the inputs its context was chosen for.
+        const current = this.registry.getTask(t.id);
+        if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
+        if (inputs(current) !== shapedFrom) return "the task was edited while its context was being shaped, so it was not typed - hand it over again";
+        const receiving = this.registry.getSession(s.id);
+        const changed = !receiving ? "went away"
+          // The context, its baseline and the checkout checks were all taken for this directory.
+          : receiving.cwd !== live.cwd ? "moved to another checkout"
+          // A section sized for one pane is not pasted into another (an AppleScript pane has its own limit).
+          : shaping.section && paneToken(receiving) !== shapedPane ? "moved to another pane"
+          : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
+          : leftIdle ? "took a turn"
+          : receiving.pendingReviews > 0 ? "got a review waiting on you"
+          : null;
+        return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
+      };
+      if (shapingOn) {
+        const changed = sessionChanged();
+        if (changed) return { ok: false, error: changed, scope: "session" };
+      }
+      if (carriesContext) {
+        const receiving = this.registry.getSession(s.id);
+        if (!receiving) {
+          return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+        // A probe that throws is inconclusive rather than a "no": the session is already reset, so
+        // the original prompt goes ahead without the context, through the delivery's own guard.
+        const stillReady = await paneReady(receiving).catch(() => null);
+        if (stillReady === null) {
+          shaping = deliveredWithoutContext(shaping, PANE_UNVERIFIED_REASON);
+        } else if (!stillReady.ok) {
+          return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
+        }
+      }
+      // The context was chosen for this branch and commit; another terminal in the same checkout
+      // could have moved it while shapers ran or the pane was probed. Read last, as the final await
+      // before delivery: the session and task are then rechecked by the guard `inject` runs at the
+      // write itself, which cannot run Git.
+      // Asked of the section as it now stands: one the probe above dropped has nothing left to verify.
+      if (carriesContext && shaping.section && live.cwd) {
+        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
+        if (now.baseSha === null || checkout.baseSha === null) {
+          // Unreadable is not changed: with either read unknown nothing can be compared, and the agent
+          // is already reset, so the original prompt goes ahead without context that could not be
+          // confirmed to fit this checkout. Only two known states that differ refuse.
+          shaping = deliveredWithoutContext(shaping, CHECKOUT_UNVERIFIED_REASON);
+        } else if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+      }
+      const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
+      // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
+      // a refusal does - the task stays in the backlog, so a surviving row would claim an
+      // episode saw a task nobody has been given. `inject` is injectable here and the guard
+      // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
+      // reject; the dispatcher's seam guards the same risk the same way.
+      let r: InjectResult;
+      try {
+        r = await inject(
+          this.registry.getSession(s.id) ?? s,
+          withTaskContext(unshapedTurn, shaping.section),
+          undefined,
+          () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id) ?? sessionChanged(),
+        );
+      } catch (err) {
+        discardScoutPromptBoundary(boundary);
+        throw err;
+      }
+      // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
+      // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
+      // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
+      // of unreadable captures - and both mean the Enter went out while the text may still be
+      // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
+      // has: reversing that would change what assignment MEANS, which is not archive
+      // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
+      // prompt, and an unconfirmed paste cannot support that claim.
+      //
+      // The cost of being wrong this way is a scout that loses its frozen title and anchor and
+      // falls back to the legacy task title with an honestly truncated trail. The cost of being
+      // wrong the other way is an archive anchored into a conversation that never started.
+      if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
+      if (!r.ok) {
+        // Nothing was typed, and the task stays droppable. A boundary left behind would claim
+        // an episode saw a task that is still sitting in the backlog.
+        return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
+      }
+
+      // Merge onto the LATEST snapshot, not the one read before the injection, for the
+      // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
+      // for a retriage to land, and priority/labels stay editable in every status - so a
+      // stale spread here writes yesterday's priority back over one just set on the card,
+      // silently, on a gesture that was only meant to hand the task to an agent.
+      // The turn reached the session: only now does this handover's shaping record replace the
+      // task's last one, stamped with the session it was delivered to and this delivery's id.
+      // Settled whether or not shaping ran, so a handover nothing shaped clears an earlier
+      // record, as a launch does. The row naming the receiving session is written in the same
+      // transaction, so a stop between the two can never leave one without the other; and a
+      // record that cannot be committed still binds the task under this delivery's id, so the
+      // record an earlier delivery to this same session left never reads as this one's.
+      // A paste whose submit was not seen may still be sitting in the composer: the assignment
+      // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
+      // Only a turn that carried a section has anything to confirm; an empty run keeps its outcome.
+      const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
+      const cur = this.registry.getTask(t.id) ?? t;
+      const now = Date.now();
+      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section, {
+        ...cur,
+        status: "running",
+        sessionId: s.id,
+        dispatchedAt: now,
+        updatedAt: now,
+      });
+      this.registry.bindTaskToWorkEpisode(t.id, s.id);
+      // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
+      // Last, and after the claim: it is the one step here that changes nothing about
+      // whether the task is running, so it must not sit in front of anything that does.
+      await this.renameForTask(
+        // Re-read for the same reason the task is: the reset detached the checkout and the
+        // injection took a round trip, and `rename` targets the terminal home BY NAME.
+        this.registry.getSession(s.id) ?? s,
+        this.registry.getTask(t.id) ?? cur,
+        doRename,
+      );
+      return { ok: true };
+    } finally {
+      stopWatching();
+    }
   }
 
   /**
@@ -5719,6 +6226,8 @@ export class TaskManager {
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
+        if (input.finishGuard) return input.finishGuard.verify()
+          .then(verified => verified ? this.finishCompletion(id, input) : null);
         return Promise.resolve(this.finishCompletion(id, input));
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
@@ -5770,6 +6279,7 @@ export class TaskManager {
         throw new ScoutArchiveNotReadyError(ready.problems);
       }
       this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      if (input.finishGuard && !await input.finishGuard.verify()) return null;
       return this.finishCompletion(id, input);
     };
     return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
@@ -5873,9 +6383,11 @@ export class TaskManager {
 
   /** The synchronous status write. Unchanged from before completion became awaitable. */
   private finishCompletion(id: string, input: CompletionInput): Task | null {
+    if (input.finishGuard && !input.finishGuard.current()) return null;
     this.assertCompletable(id, input.requireStopped);
     const t = this.registry.getTask(id);
     if (!t) return null;
+    const join = input.joinCompletion;
     this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {
@@ -5896,7 +6408,7 @@ export class TaskManager {
         sessionId: closeSessionId,
         requestedAt: now,
         deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
-      } : null);
+      } : null, join?.persist);
       this.registry.publishPersistedTask(updated, displaced);
       // Armed HERE, beside the write, and that placement is the invariant: a closure row is
       // never committed without something scheduled to settle it.
@@ -5911,6 +6423,9 @@ export class TaskManager {
       // The ordinary path pays one extra pass, which costs a stop attempt against a session
       // that is usually already exiting and refused by the guard at the top of the settle.
       this.scheduleMissionSessionClosureSweep(0);
+    } else if (join) {
+      const displaced = inTransaction(() => { join.persist(); return dbUpsertTask(updated); });
+      this.registry.publishPersistedTask(updated, displaced);
     } else {
       this.registry.upsertTask(updated);
     }
@@ -5921,6 +6436,9 @@ export class TaskManager {
     if (input.inferredFrom && !taskHasWorktrees(t) && this.registry.getTask(id) === updated) {
       this.autoCompleted.set(id, input.inferredFrom);
     }
+    // After the commit and the task's own broadcast, so a listener re-entering on the closed
+    // questions' `session_upsert` already reads the task as done.
+    join?.publish();
     // The task's upstream item, if it came from one, is owed a note. A LOCAL INSERT and
     // nothing else - the enqueuer spawns nothing and the worker does the delivering - so
     // this stays as synchronous as the rest of this function.
@@ -7181,5 +7699,30 @@ export class TaskManager {
       sessionId: null,
       updatedAt: Date.now(),
     });
+  }
+}
+
+
+/** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
+const HANDOVER_BASELINE_TIMEOUT_MS = 2000;
+
+/**
+ * The checkout's commit and branch (null when detached), read together; both unknown once `ms`
+ * pass first or either read fails. The timer never outlives the race.
+ */
+async function boundedCheckoutState(dir: string, ms: number): Promise<{ baseSha: string | null; branch: string | null }> {
+  const unknown = { baseSha: null, branch: null };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      // A branch that could not be read makes the whole state unknown, as an unreadable commit does,
+      // so it takes the original-prompt fallback rather than passing for "detached" on both reads.
+      Promise.all([headCommit(dir), headBranch(dir)])
+        .then(([baseSha, branch]) => (baseSha === null || branch === undefined ? unknown : { baseSha, branch }))
+        .catch(() => unknown),
+      new Promise<typeof unknown>((resolve) => { timer = setTimeout(() => resolve(unknown), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

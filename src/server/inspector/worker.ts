@@ -16,7 +16,7 @@ import {
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
+import { createLimiter, runStructured, parseModelReply } from "../llm/structured.ts";
 import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
@@ -990,7 +990,7 @@ async function answerFollowUp(
   const result = await runStructured<typeof InspectorReplySchema>(
     (p) => run.runner.run(p, run.options),
     prompt,
-    (raw) => parseModelJson(raw, InspectorReplySchema),
+    (raw) => parseModelReply(raw, InspectorReplySchema),
     "The inspector",
   );
   if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, now, tick);
@@ -1165,7 +1165,7 @@ async function reviewRound(
   const result = await runStructured<typeof InspectorVerdictSchema>(
     (p) => run.runner.run(p, run.options),
     prompt,
-    (raw) => parseModelJson(raw, InspectorVerdictSchema),
+    (raw) => parseModelReply(raw, InspectorVerdictSchema),
     "The inspector",
   );
   if (result.kind !== "ok") {

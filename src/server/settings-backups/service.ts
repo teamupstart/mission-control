@@ -1,5 +1,6 @@
 import { reloadFeatureFlags } from "../feature-flags/index.ts";
 import { reloadShaping } from "../shaping/index.ts";
+import { reloadVoiceConfig } from "../voice/config.ts";
 import { syncWindowBackground } from "../ui-config.ts";
 import { randomBytes } from "node:crypto";
 import type { CostConfig, SkillsConfig } from "@shared/protocol.ts";
@@ -318,6 +319,9 @@ export class SettingsBackupService {
     const registry = this.runtime.registry;
     attempt("Feature flags reconciliation failed", reloadFeatureFlags);
     attempt("Task shaping reconciliation failed", reloadShaping);
+    // The restored settings can change the mode (auto-mute during calls), so the voice state
+    // recomputes and reaches every follower.
+    attempt("Voice reconciliation failed", reloadVoiceConfig);
     if (registry) {
       attempt("Library catalog reconciliation failed", () => registry.replaceSettingsCatalogs({
         personas: this.workflowStore.personaCatalog().map((row) => personaView(row)),

@@ -483,3 +483,19 @@ test("restoreArtifact refuses a historical path no longer owned by the member Ta
   assert.equal(result.ok, false);
   assert.match(result.detail ?? "", /no live worktree/);
 });
+
+test("each member Task a wave creates names the run's other member Tasks as its work unit source", async () => {
+  const store = new EnsembleStore(db);
+  const { run } = store.createRun(runInsert(singleWavePlan(3)));
+  const gateway = new FakeGateway();
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
+  await engine.recover(run.id);
+  assert.equal(gateway.created.length, 3);
+  const ids = gateway.created.map((request) => request.taskId);
+  // The first member mints, so it may name none yet; every later one names those before it,
+  // and never itself. TaskManager then copies from the first that exists.
+  gateway.created.forEach((request, index) => {
+    assert.equal(request.workUnitFrom.includes(request.taskId), false);
+    for (const earlier of ids.slice(0, index)) assert.ok(request.workUnitFrom.includes(earlier), `member ${index} names ${earlier}`);
+  });
+});

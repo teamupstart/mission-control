@@ -1,7 +1,12 @@
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
-// The shipped registry also exports this id; the private builds that substitute it keep the export.
+// The shipped registry also exports these ids; the private builds that substitute it keep the export.
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
+export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
+export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
+
+export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 
 export const FEATURE_FLAGS = [
   { id: "preview-navigation", label: "Preview navigation", description: "Try a new way to move between sessions while keeping your existing workspace, preferences and running tasks exactly where you left them.", stage: "preview", keywords: ["wayfinding"] },

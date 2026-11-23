@@ -4,7 +4,7 @@ import type { LlmConfig } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { getLlmConfig, llmJobModel, llmJobRunner } from "./config.ts";
 import { llmRunner } from "./index.ts";
-import { runStructured } from "./structured.ts";
+import { runStructured, type ModelReplyMiss } from "./structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "./structured.ts";
 
 // How the daemon's own background work asks a model something.
@@ -126,7 +126,7 @@ function jobExecution(job: LlmJobId, cfg: LlmConfig): JobExecution {
 export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   job: LlmJobId,
   prompt: string,
-  extract: (raw: string) => T | null,
+  extract: (raw: string) => T | ModelReplyMiss | null,
   label: string,
   opts: StructuredJobRunOptions = {},
 ): Promise<StructuredResult<T> & { execution: JobExecution }> {

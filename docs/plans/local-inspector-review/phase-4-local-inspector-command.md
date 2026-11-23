@@ -61,13 +61,17 @@ behavior on GitHub, the merge predicate. Those are Phases 5 and 6.
    artifact claim; dispatch one workload with the Inspector's provider, model and the
    `inspector:review` spend role; parse, plan and return the outcome. A provider failure, an
    oversize diff and a missing artifact claim block for the operator and spend no repair
-   round. A spent allowance follows the slot's exhaustion policy.
+   round. A spent allowance follows the slot's exhaustion policy. The default, Block, blocks
+   for the operator. Skip skips the stage with a note, and a skipped stage keeps the GitHub
+   review.
 9. Extend the capture predicate so a pinned graph with an `inspector` node captures the
    artifact, with the `localReview` decision frozen per submission. The capture does not
    depend on the Persona access flag of amendment A5.
 10. In `src/server/workflows/engine.ts`, pass the previous attempt's unresolved findings to the
     stage and render a failed outcome's findings with `findings-text.ts`. Retain normalized
-    findings through `command-artifacts.ts`.
+    findings through `command-artifacts.ts`. When the run's repair rounds are spent while the
+    stage still fails, the run blocks at the existing `round_limit` phase and nothing is
+    pushed. The stage adds no second rule for that case.
 11. UI: the Local review control in `src/web/components/InspectorSettingsPanel.tsx`, the
     Local Inspector row in `src/web/workflows/CommandLibrary.tsx`, the stage in the editor's
     Command choices, and the run card in `WorkflowRuns.tsx` with findings and a statement that
@@ -87,8 +91,10 @@ behavior on GitHub, the merge predicate. Those are Phases 5 and 6.
 ## 7. Tests and verification
 
 - New focused tests: review core (local diff, finding carry, resolution, threshold, off-diff
-  drop, scrubbing), interpreter ladder (each skip and block reason), engine (stage ordering,
-  repair loop, allowance, restart), GitHub prompt bytes unchanged.
+  drop, scrubbing), interpreter ladder (each skip and block reason, and a spent allowance under
+  Block and under Skip), engine (stage ordering, repair loop, allowance, restart, and the
+  repair budget ending the loop at `round_limit` with nothing pushed), GitHub prompt bytes
+  unchanged.
 - A fake-provider test in which a Codex Local Inspector review makes repository queries.
 - Playwright: `e2e/specs/local-inspector.spec.ts` covering the setting, the Library row and a
   run card with findings. A spec that opens a modal calls `expectContentClearsBorder`.
@@ -117,3 +123,7 @@ change what "passed" means.
 - 2026-11-23: checked against Phases 5 and 6. Neither needs a field this phase does not record.
 - 2026-11-23: reconciled with the source plan. The blocking severity default (D3), the
   operator blocks of design item 2 and the modal inset check are stated here.
+- 2026-11-23: review of the pull request. The spent-allowance rule now reads the same here
+  and in the source plan: the slot's exhaustion policy decides, with Block as the default.
+- 2026-11-23: review of the pull request. The repair-budget case is stated: the run blocks at
+  `round_limit`, the same as for any failing reviewer, and the engine tests cover it.

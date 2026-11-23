@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import type { PrCheckDetails } from "../../src/shared/pr-check-details.ts";
@@ -310,6 +310,45 @@ async function boardCheckWarning(page: Page, daemon: DaemonHandle): Promise<Loca
   return warning;
 }
 
+test("the CI warning is drawn as an icon the size of the PR flag beside it", async ({ dashboard, daemon }) => {
+  // The warning was once the `⚠` text character, whose height came from the platform's font
+  // fallback, so it stood visibly taller than every pill beside it. It must sit level with
+  // the PR pill on both surfaces that draw it.
+  const warning = await boardCheckWarning(dashboard, daemon);
+  const flag = dashboard.locator("main.board a.tile-flag-link", { hasText: `#${PR_NUMBER}` });
+  await expect(flag).toBeVisible();
+  // Geometry first: this is the reported defect, and the line the old glyph fails on.
+  await expectSameHeight(warning, flag, "board tile");
+  await expect(warning).not.toContainText("⚠");
+  await expect(warning.locator("svg")).toHaveCount(1);
+  await capture(dashboard, "board-warning-size.png", dashboard.locator("main.board .tile-marks").first());
+
+  const layout = await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "console" }) });
+  expect(layout.ok).toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const titleBar = dashboard.locator(".console-detail header.detail-head");
+  const chip = titleBar.locator(".pr-chip");
+  const alert = titleBar.getByRole("button", { name: /CI includes 1 cancelled check/ });
+  await expect(alert).toBeVisible();
+  await expectSameHeight(alert, chip, "session title bar");
+  await expect(alert).not.toContainText("⚠");
+  await capture(dashboard, "titlebar-warning-size.png", titleBar);
+});
+
+/** The warning is no taller than the pill it sits beside, to within a rounding pixel. */
+async function expectSameHeight(warning: Locator, pill: Locator, surface: string): Promise<void> {
+  const [w, p] = [(await warning.boundingBox())!, (await pill.boundingBox())!];
+  // eslint-disable-next-line no-console
+  console.log(`${surface}: warning ${w.width}x${w.height}, pill height ${p.height}`);
+  expect(Math.abs(w.height - p.height), `${surface}: warning ${w.height}px beside a ${p.height}px pill`)
+    .toBeLessThanOrEqual(1);
+  // Centred on the same line, not just the same size.
+  expect(Math.abs((w.y + w.height / 2) - (p.y + p.height / 2)), `${surface}: warning off the pill's centre line`)
+    .toBeLessThanOrEqual(1);
+}
+
 test("the check dialog backdrop dismisses without opening its board session", async ({ dashboard, daemon }) => {
   const warning = await boardCheckWarning(dashboard, daemon);
   await warning.click();
@@ -459,13 +498,23 @@ test("publication wait reason remains visible separately from the cancelled CI w
   const binding = await post<{ id: string }>("/api/workflow-bindings", {
     workflowVersionId: published.version.id, sessionId: session.id, deliveryMode: "preview",
   });
+  // Real unpublished work, captured as it is. This used to be written into the submission's
+  // evidence by hand over a clean checkout, and the resumption sweep, which compares a parked
+  // round's evidence with the checkout every fifteen seconds, then read the mismatch as new
+  // work and opened round 2 under the assertions below, removing the wait reason.
+  const git = (...args: string[]) => execFileSync("git", ["-C", worktree, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", ...args]);
+  writeFileSync(join(worktree, "unpublished.txt"), "published\n");
+  git("add", "unpublished.txt");
+  git("commit", "-q", "-m", "e2e: a published file");
+  writeFileSync(join(worktree, "unpublished.txt"), "published\nnot pushed\n");
   const submitted = await post<{ run: { id: string } }>(`/api/workflow-bindings/${binding.id}/submit`, { requestId: "ci-publication-wait" });
   const runPath = `/api/workflow-runs/${submitted.run.id}`;
   await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status,
     { timeout: 40_000 }).toBe("completed");
 
-  // Seed the recorded gate state, as the completion-pane specs do. This test proves
-  // production UI reporting of that record, not how publication validation produces it.
+  // Seed the recorded gate over that captured evidence. Inspector re-observes historical
+  // publication holds, so a clean snapshot would correctly leave this state; this one is not
+  // clean, so Inspector and the resumption sweep both leave it where it is.
   const now = Date.now();
   withDaemonDb(daemon, db => {
     db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
@@ -487,7 +536,11 @@ test("publication wait reason remains visible separately from the cancelled CI w
   await dashboard.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Workflows$/ }).click();
   const ladder = dashboard.getByRole("region", { name: `${name} workflow stages` });
   const wait = ladder.getByText("Required publication content is missing, differs from the PR, or lacks retained artifact evidence. Check the evidence snapshot, then commit and push the required changes and resubmit.", { exact: true });
-  await wait.scrollIntoViewIfNeeded();
+  // Only retrying assertions on this sentence, never a one-shot element action such as
+  // `scrollIntoViewIfNeeded`. The seeded gate's content is stable, but the Inspector still
+  // re-evaluates it on session events and republishes the run unchanged; every run update
+  // refetches the detail and remounts the ladder, so a held element handle can detach
+  // mid-action. The viewport above fits the ladder without scrolling.
   await expect(wait).toBeVisible();
   await expect(wait).toBeInViewport();
   const warning = dashboard.locator("header.detail-head").getByRole("button", { name: /CI includes 2 cancelled checks; no failures in the reported results/ });

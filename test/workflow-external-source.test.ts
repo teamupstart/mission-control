@@ -868,6 +868,9 @@ test("run detail carries display provenance and never the opaque idempotency key
     // `externalSource`, so a binding that captured no name carries no key at all
     // (`workflow-store-summary.test.ts` pins that half).
     "sessionName",
+    // When the run started. Added for headless mode's inbox, which uses it to tell a run that began
+    // before a task took over a session from the task's own. A plain timestamp, never an identity.
+    "startedAt",
     "status",
     "uncertainDeliveryCount",
     "updatedAt",

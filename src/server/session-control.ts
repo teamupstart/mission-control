@@ -1,6 +1,6 @@
 import { isActiveTask } from "@shared/task-status.ts";
 import { hasBlocker } from "@shared/session.ts";
-import type { SessionBlocker } from "@shared/types.ts";
+import type { SessionAwaiting, SessionBlocker } from "@shared/types.ts";
 import type { Context, Hono } from "hono";
 import {
   RequestSessionControlSchema, SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
@@ -52,8 +52,18 @@ export function blockerSummary(blocker: SessionBlocker | null | undefined) {
   return { id, kind, reason, waitingOn, referenceUrl, startedAt, reply };
 }
 
+/** The list form's compact wait: what, how it wakes and when it is due, without the details. */
+export function awaitingSummary(awaiting: SessionAwaiting | null | undefined, now = Date.now()) {
+  if (!awaiting) return null;
+  const { id, what, wakeSource, expectedBy, referenceUrl, startedAt } = awaiting;
+  return { id, what, wakeSource, expectedBy, referenceUrl, startedAt, overdue: now >= expectedBy };
+}
+
+/** The actions that are exactly one dashboard request. `complete` is two; see `completeTarget`. */
+export type SingleRequestControlAction = Exclude<SessionControlAction, { action: "complete" }>;
+
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
-export function controlRequest(target: string, command: SessionControlAction): {
+export function controlRequest(target: string, command: SingleRequestControlAction): {
   path: string; method: string; body?: unknown;
 } {
   const base = `/api/sessions/${encodeURIComponent(target)}`;
@@ -79,6 +89,7 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_permission_mode": return post("mode", { mode: command.mode });
     case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerId: command.blockerId });
     case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerId: command.blockerId });
+    case "clear_awaiting": return post("awaiting/clear", { resolution: command.resolution, awaitingId: command.awaitingId });
   }
 }
 
@@ -202,10 +213,15 @@ export function registerSessionControlRoutes(
     if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
     if (!parsed.data.sessionId) {
       const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
-        && (!parsed.data.blocked || hasBlocker(s)));
+        && (!parsed.data.blocked || hasBlocker(s))
+        // Every declared wait, overdue ones included: an overdue wait is the one a resident
+        // most needs to find, since the session said it would be back by now.
+        && (!parsed.data.awaiting || s.awaiting != null));
+      const now = Date.now();
       return c.json({ sessions: sessions.map((s) => ({
         id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity,
         blocker: blockerSummary(s.blocker),
+        awaiting: awaitingSummary(s.awaiting, now),
       })) });
     }
     const session = registry.getSession(parsed.data.sessionId);
@@ -235,19 +251,69 @@ export function registerSessionControlRoutes(
       if (!review || review.sessionId !== sessionId) return c.json({ error: "Review does not belong to the target session" }, 404);
       if (review.status !== "pending") return c.json({ error: "Review is already resolved" }, 409);
     }
-    const request = controlRequest(sessionId, command);
-    const delegatedRequest = new Request(`http://localhost${request.path}`, {
-      method: request.method,
-      headers: { host: "localhost", "content-type": "application/json", "x-mission-operation-surface": "mcp", "x-mission-operation-actor": "agent" },
-      ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-    });
-    delegatedActors.set(delegatedRequest, `session:${caller}`);
-    try {
-      const response = await app.request(delegatedRequest);
-      logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
-      return response;
-    } finally {
-      delegatedActors.delete(delegatedRequest);
-    }
+    const delegate = async (request: { path: string; method: string; body?: unknown }): Promise<Response> => {
+      const delegatedRequest = new Request(`http://localhost${request.path}`, {
+        method: request.method,
+        headers: { host: "localhost", "content-type": "application/json", "x-mission-operation-surface": "mcp", "x-mission-operation-actor": "agent" },
+        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+      });
+      delegatedActors.set(delegatedRequest, `session:${caller}`);
+      try {
+        return await app.request(delegatedRequest);
+      } finally {
+        delegatedActors.delete(delegatedRequest);
+      }
+    };
+    const response = command.action === "complete"
+      ? await completeTarget(registry, sessionId, command, delegate)
+      : await delegate(controlRequest(sessionId, command));
+    logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
+    return response;
   });
+}
+
+type CompleteAction = Extract<SessionControlAction, { action: "complete" }>;
+
+/**
+ * The dashboard's Complete dialog, step for step, through the same two routes it calls.
+ *
+ * The task is recorded before the stop is requested, and the order matters for the reason the
+ * dialog gives: a stop that fails must not leave the outcome unwritten, because the task would
+ * then settle as `failed` through the session-went-away path. When completion already asked for
+ * the session's closure (a task with its own worktree), no second stop is sent. The task is the
+ * one the target is running now, resolved from the live session, never an id the caller names.
+ */
+async function completeTarget(
+  registry: Registry,
+  sessionId: string,
+  command: CompleteAction,
+  delegate: (request: { path: string; method: string; body?: unknown }) => Promise<Response>,
+): Promise<Response> {
+  const json = (body: unknown, status: number) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const target = registry.getSession(sessionId);
+  const task = target ? registry.taskForSession(target.id, target.cwd) : undefined;
+  if (!task) return json({ error: "Target session has no task to complete" }, 409);
+  const completed = await delegate({
+    path: `/api/tasks/${encodeURIComponent(task.id)}/complete`,
+    method: "POST",
+    body: {
+      // The dialog's own fallback: an outcome is context, not permission to finish.
+      outcome: command.outcome || "completed",
+      ...(command.satisfyDependents ? { satisfyDependents: true } : {}),
+      ...(command.confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
+    },
+  });
+  if (!completed.ok) return completed;
+  const done = await completed.json() as { status: string; sessionClosureRequested?: boolean };
+  const result = { ok: true, taskId: task.id, taskStatus: done.status };
+  if (done.sessionClosureRequested) return json({ ...result, session: "closing" }, 200);
+  // Completion may have ended the session itself; there is nothing left to stop.
+  if (!registry.getSession(sessionId)) return json({ ...result, session: "closed" }, 200);
+  const killed = await delegate({ path: `/api/sessions/${encodeURIComponent(sessionId)}/kill`, method: "POST" });
+  if (!killed.ok) {
+    const reason = ((await killed.json().catch(() => null)) as { error?: string } | null)?.error ?? "failed";
+    return json({ ...result, ok: false, error: `task marked done, but the session could not be closed: ${reason}` }, killed.status);
+  }
+  return json({ ...result, session: "closing" }, 200);
 }

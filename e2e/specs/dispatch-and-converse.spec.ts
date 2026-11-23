@@ -1288,7 +1288,12 @@ test("a managed launch shows only the human task request, and the agent still ge
 }) => {
   await dispatch(dashboard, daemon, { task: HUMAN_REQUEST });
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  // The launch turn moves this row from the Working group to the Idle one, which remounts it.
+  // A click that lands during that move reaches neither copy and selects nothing, so select it
+  // only once it has regrouped.
+  const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click();
   const detail = dashboard.locator(".console-detail");
   // The agent has replied, so the launch turn has certainly been written and read back.
   await expect(detail.locator(".turn").getByText(`Mock reply to: ${HUMAN_REQUEST}`)).toBeVisible();

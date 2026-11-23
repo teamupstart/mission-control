@@ -1,5 +1,12 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
+import { workUnitEnv } from "./agent-work-unit.ts";
+import { launchWorkUnitId } from "./work-unit.ts";
+import {
+  expectTerminalLaunchWorkUnit,
+  settleTerminalLaunchWorkUnit,
+  type TerminalLaunchWorkUnit,
+} from "./terminal-launch-work-units.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -11,8 +18,8 @@ import {
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
-import { readLaunchProcess } from "./terminal/launch-process.ts";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
@@ -62,7 +69,7 @@ import {
   type PersonaLookup,
 } from "./instructions/persona.ts";
 import { standingInstructionsForLaunch } from "./instructions/resolve.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import {
@@ -85,6 +92,7 @@ import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
   isolatedAgentArgv,
+  isolatedAgentEnvironment,
 } from "./agent-subprocess-env.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
@@ -105,12 +113,19 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planSkillsForAgent } from "./plans/skills.ts";
 import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import type { shapeTask } from "./shaping/engine.ts";
+import { launchFellBack, launchUnconfirmed, shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
+import { sessionTraceContext } from "./telemetry/index.ts";
+import { appendRepoTaskSkills, resolveRepoTaskSkills } from "./instructions/repo-task-skill.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { appleScriptPasteFits, pasteTravelsAsArgument, platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
   discardScoutPromptBoundary,
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
-import { withRepoMemoryPointer } from "./memory.ts";
+import { hasRepoMemory, withRepoMemoryPointer } from "./memory.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -279,6 +294,8 @@ interface DispatchResolution {
  */
 export class Dispatcher {
   private readonly teardown: typeof teardownWorktree;
+  /** Each task's current dispatch attempt; see `bindLaunch`. */
+  private readonly dispatchAttempts = new Map<string, symbol>();
   private readonly worktrees: WorktreeManager;
   private readonly legacy: LegacyTreehouseService;
 
@@ -348,6 +365,21 @@ export class Dispatcher {
        */
       standingInstructions?: typeof standingInstructionsForLaunch;
       /**
+       * Task shaping's engine. A seam so a focused test can stand in a shaper run that
+       * answers, rejects or never settles without configuring a shaper. Production always
+       * takes `shapeTask`, and only calls it while the `task-shaping` flag is on.
+       */
+      shapeTask?: typeof shapeTask;
+      /** A workflow's name, for a shaper's view of the after-work step. */
+      workflowName?: (workflowId: string) => string | null;
+      /** The platform's `ARG_MAX`. A seam so a test can stand at the combined limit. */
+      argMax?: () => Promise<number | null>;
+      /**
+       * Whether the `headless-mode` flag is on, which gates repository task skills (spec 7.15).
+       * A seam so a test can pick a side without writing a flag document.
+       */
+      headlessModeEnabled?: () => boolean;
+      /**
        * The resident launch composer, asked once per resident task for its standing
        * instructions. Supplied by `ResidentManager`; a daemon without one refuses resident
        * launches instead of starting an agent with no role.
@@ -393,6 +425,12 @@ export class Dispatcher {
        * launcher is used and nothing changes.
        */
       spawn?: typeof spawnUniquely;
+      /**
+       * Closes a terminal home that a replaced dispatch attempt spawned. Injected by tests that
+       * spawn through `spawn` above, whose homes no real backend could close. Unset, the real
+       * `killHome` is used.
+       */
+      killHome?: typeof killHome;
       /** The daemon's singleton native allocator. Focused tests may inject an isolated one. */
       worktrees?: WorktreeManager;
       /** Release-only bridge for persisted historical Treehouse resources. */
@@ -418,11 +456,24 @@ export class Dispatcher {
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
+    // This attempt's identity, for the shaping commit: a later dispatch of the same task
+    // replaces it, and an attempt that is no longer current never writes the record.
+    const attempt = Symbol(taskId);
+    this.dispatchAttempts.set(taskId, attempt);
+    const currentAttempt = () => this.dispatchAttempts.get(taskId) === attempt;
+    // A replaced attempt may still be inside its shaping step, and it no longer raises or clears
+    // the task's "Shaping context" mark (see `onShaping`), so this one starts from none.
+    this.registry.setTaskShapingContext(taskId, false);
     // Only failures in the resource preflight/provisioning phase are safe ordinary backlog
     // retries. Earlier refusals describe a task or launch configuration that must change,
     // while anything after this phase may have crossed into an agent runtime.
     let backlogRecoveryEligible = false;
     let pendingAgentStateHome: string | null = null;
+    // Closes this attempt's own terminal home, once it has one. A replaced attempt calls it to
+    // retire its worker without touching the task row, which belongs to its successor.
+    let retireOwnHome: (() => Promise<void>) | null = null;
+    // The state home whose `turnOneOutcomePath` a Pi wrapper with a fallback writes, if any.
+    let outcomeStateHome: string | null = null;
     // What this launch RESOLVED, frozen at the resolver's own boundary and carried to
     // whichever exit this attempt takes. Held out here rather than read back at the end,
     // because the interesting row is the one that never reaches a running agent - and by then
@@ -430,6 +481,17 @@ export class Dispatcher {
     // a refusal BEFORE it (a missing binary, an unavailable tool bundle) stays distinguishable
     // from a launch that resolved a model and then failed.
     let resolution: DispatchResolution | null = null;
+    // This launch's one work unit decision, made here where the launch begins and never again:
+    // the agent's environment, the launch record the registry installs when the agent
+    // appears, the shaping run and this attempt's `mission.dispatch` span (whatever its
+    // outcome) all take this value, so a switch of the preview while this
+    // launch is in flight cannot give them different answers. `TaskManager.dispatch` has
+    // already given an older row its id, so its first dispatch decides with it.
+    const workUnitId = launchWorkUnitId(task);
+    // A terminal launch's hand-over to the registry, and whether the launch got as far as a
+    // task running on its agent - the only outcome that confirms it (see the `finally`).
+    let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
+    let launchSucceeded = false;
     noteDispatchStarted(taskId);
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
@@ -456,7 +518,7 @@ export class Dispatcher {
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);
       if (task.kind === "pipeline") {
-        await this.dispatchPipeline(taskId, task);
+        await this.dispatchPipeline(taskId, task, workUnitId);
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
         // dispatch this facility ever recorded - and a launch-success rate computed from
         // failures alone is worse than no rate at all. Nothing is resolved on this path: the
@@ -464,6 +526,7 @@ export class Dispatcher {
         // rather than inventing a ladder that never ran.
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(null, task),
           outcome: "launched",
           sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
@@ -718,7 +781,23 @@ export class Dispatcher {
       const planDiscovery = await taskPlanDiscovery(provisioned);
       const inputProblemAtDelivery = taskPlanInputProblem(provisioned);
       if (inputProblemAtDelivery) throw new Error(inputProblemAtDelivery);
-      const composeTurnOne = (standingBlock: string) =>
+      // Repository task skills (spec 7.15): resolved ONCE per launch, from each attached
+      // worktree in manifest order, and only with the headless-mode flag on. Null leaves
+      // turn one byte-identical to what it was before this existed.
+      const repoSkillWorktrees = [
+        { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
+        ...extras
+          .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
+          .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
+      ];
+      const repoSkills =
+        taskHasRepository(provisioned) && (this.deps.headlessModeEnabled ?? (() => featureEnabled(HEADLESS_MODE_FLAG_ID)))()
+          ? resolveRepoTaskSkills(provisioned.kind, repoSkillWorktrees)
+          : null;
+      // Turn one up to and including the kind contract. The task context section, when this
+      // launch is shaped, follows it through `withTaskContext` below, and the repository task
+      // skills come last: kind contract, task context, repository task skill.
+      const contractTurnOne = (standingBlock: string) =>
         claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
@@ -729,18 +808,9 @@ export class Dispatcher {
           // base it names is that pull request's branch. `undefined`: no episode exists yet.
           stackInstruction: stackPrInstruction(provisioned, undefined),
         });
-      const intent = composeTurnOne(standingPrefix);
-      // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
-      // channel turns out to be unusable once the driver is already talking to its subprocess.
-      //
-      // Composed here rather than by the supervisor or the adapter because this is the only
-      // place that can: the ordering the operator's text belongs to - manifest, then rules,
-      // then request - is produced BY `intentWithRepoManifest`, not by wrapping a finished
-      // prompt, and wrapping one would put the rules above the manifest that names the
-      // checkouts they are about. Empty unless there is an out-of-band delivery to fall back
-      // FROM: `standingPrefix` is non-empty exactly when the block is already inside `intent`.
-      const standingFallbackTurnOne =
-        !standingPrefix && standing.text ? composeTurnOne(standing.text) : "";
+      // The whole turn one an unshaped launch sends, skills included: what the shaping budget
+      // measures, and byte-identical to a launch from before shaping.
+      const unshapedTurnOne = (standingBlock: string) => appendRepoTaskSkills(contractTurnOne(standingBlock), repoSkills);
       if (task.kind === "scout") {
         (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
       }
@@ -785,6 +855,133 @@ export class Dispatcher {
         source: tier,
         repoCount: taskHasRepository(task) ? 1 + task.extraRepos.length : 0,
       };
+      // The terminal launch around turn one, prepared before shaping because a turn one that
+      // travels as a launch argument shares the platform's limits with every other argument and
+      // environment string of this exact launch. None of it depends on turn one, so moving it
+      // above the composition changes no argv; the embedded arm prepares nothing here.
+      const terminal = runtime === "sdk" ? null : await (async () => {
+        const stateHome = createDisposableAgentStateHome();
+        pendingAgentStateHome = stateHome;
+        const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
+        // `--settings` is single-valued and nothing else in this argv renders it, so the
+        // advisor's flag-layer object can own the flag outright. Whoever adds a second
+        // contributor merges into one JSON value here, the way `systemPromptAppendArgs` does.
+        const advisorSpec = harnessFor(task.agent).advisor;
+        const advisorArgs = advisor ? (advisorSpec?.launchArgs(advisor) ?? []) : [];
+        const advisorEnv = advisor ? (advisorSpec?.launchEnv(advisor) ?? {}) : {};
+        // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
+        // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
+        // which a fresh session's folder-trust dialog hides, so it gave up and the session
+        // ran in its default mode. The flag sets the mode whether or not the footer is
+        // readable, and is scoped to sessions WE launch by construction. Codex is reached by
+        // its own launch builder below (widened sandbox), so this is empty for it; live TUI
+        // control stays only for a human swapping an existing session's mode from the card.
+        const modeArgs = dispatchPermissionModeArgs(task.agent);
+        // The ask channel rides along on every dispatch: it takes Claude's built-in
+        // `AskUserQuestion` away and hands the agent our `request_input` instead, so
+        // a clarifying question arrives as structured arguments in the dashboard rather than
+        // as a menu we read off the child's screen. Scoped to dispatch for the same reason
+        // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
+        // started and we merely discovered. It returns nothing rather than half its flags on
+        // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
+        // launch is then refused below with that reason; see `askChannelContribution`.
+        const codexLaunch = task.agent === "codex"
+          ? await prepareCodexLaunch(
+              getHarnessesConfig().autoModeOnDispatch,
+              missionMcp,
+              wt.path,
+              stateHome,
+            )
+          : { args: [] as string[], instrumented: true, missionMcp: false };
+        const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
+        // Every decision a task asks goes through `request_input`. A launch that needs the ask
+        // channel and cannot have it is refused, with the reason, rather than started with the
+        // built-in menu (a decision asked outside it) or with no way to ask at all.
+        if (askChannel.unavailable) throw new Error(askChannel.unavailable);
+        // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
+        // single-valued and repeating it is last-wins with no warning, so a second flag beside
+        // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
+        //
+        // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
+        // with `AskUserQuestion` removed and no replacement is worse than one with the
+        // built-in intact, and a launch that needs the channel and cannot have it was refused
+        // just above. The standing instruction does NOT acquire that tie, so it still ships for
+        // an agent the ask channel does not apply to.
+        const askArgs = [
+          ...askChannel.args,
+          ...systemPromptAppendArgs([
+            askChannel.redirect,
+            standing.mechanism === "claude-append-system-prompt" ? standing.text : null,
+          ]),
+        ];
+        // Rendered by the harness that has to honour it, from a capability measured against a
+        // real installation - Claude's `--add-dir`, Codex's writable-roots override. Read off
+        // the spec the guard above already resolved rather than re-asking with a `?.` that
+        // would render NO flags for a harness without one: that is precisely the silent drop
+        // the guard exists to turn into a refusal, and asking twice is how the two answers
+        // drift apart.
+        const extraDirArgs =
+          extraDirs.length > 0 && multiRepo?.kind === "flags" ? multiRepo.launchArgs(extraDirs) : [];
+        // Pi accepts repeated appends; do not fold it through Claude's single-value helper.
+        // Flags precede piLaunch.args, whose final argument is the positional first turn.
+        const piStandingArgs = standing.mechanism === "pi-append-system-prompt"
+          ? ["--append-system-prompt", standing.text]
+          : [];
+        return { stateHome, advisorEnv, codexLaunch, askChannel, leadingArgs: [
+          ...(model ? ["--model", model] : []),
+          ...effortArgs,
+          ...advisorArgs,
+          ...modeArgs,
+          ...askArgs,
+          ...extraDirArgs,
+          ...codexLaunch.args,
+          ...piStandingArgs,
+        ] };
+      })();
+      // Read once for this launch, so the step and everything it decides agree on it.
+      const shapingOn = featureEnabled("task-shaping");
+      // An embedded session's id, minted here only when this launch is shaped, so the step
+      // carries exactly the trace context its agent is launched with (`supervisor.start`
+      // derives it from this id). With shaping off the supervisor mints it, as it always has.
+      const sdkSessionId = runtime === "sdk" && shapingOn ? newSdkSessionId() : null;
+      // Pi's memory pointer, read once: the budget below and the launch message after shaping
+      // must prefix the same text, even if the checkout gains an index while shapers run.
+      const piHasMemory = task.agent === "pi" && hasRepoMemory(wt.path);
+      // Task shaping, the one awaited call before turn one is built. With the flag off it does
+      // nothing at all, and with no shaper that applies it adds nothing, so either launch is
+      // byte-identical to one from before shaping. It never throws and never blocks the launch.
+      const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
+        agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
+        currentAttempt, workUnitId,
+        // D14 must use the same resolution as turn one, even if skill files change afterward.
+        repositoryTaskSkillWorktrees: repoSkills?.contributingWorktreePaths ?? [],
+      });
+      // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
+      // a later attempt that owns it now: this one launches nothing and tears nothing down.
+      if (!currentAttempt()) {
+        cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
+        pendingAgentStateHome = null;
+        return;
+      }
+      if (await this.abortIfSettled(taskId)) {
+        cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
+        pendingAgentStateHome = null;
+        return;
+      }
+      const composeTurnOne = (standingBlock: string) =>
+        appendRepoTaskSkills(withTaskContext(contractTurnOne(standingBlock), shaping.section), repoSkills);
+      const intent = composeTurnOne(standingPrefix);
+      // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
+      // channel turns out to be unusable once the driver is already talking to its subprocess.
+      //
+      // Composed here rather than by the supervisor or the adapter because this is the only
+      // place that can: the ordering the operator's text belongs to - manifest, then rules,
+      // then request - is produced BY `intentWithRepoManifest`, not by wrapping a finished
+      // prompt, and wrapping one would put the rules above the manifest that names the
+      // checkouts they are about. Empty unless there is an out-of-band delivery to fall back
+      // FROM: `standingPrefix` is non-empty exactly when the block is already inside `intent`.
+      const standingFallbackTurnOne =
+        !standingPrefix && standing.text ? composeTurnOne(standing.text) : "";
       // The launch intent, recorded BEFORE anything is spawned on either arm. The session
       // appears - and is announced - before this function gets control back, so an intent
       // recorded afterwards would always lose that race and every app-owned launch would be
@@ -794,10 +991,10 @@ export class Dispatcher {
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.
       // After the SDK return, EVERYTHING below is terminal-branch-only: the argv and
-      // ask-channel redirect, terminal home, `waitForSessionAtCwd`, `awaitReady`, and
+      // ask-channel redirect, terminal home, `waitForLaunchedSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if (runtime === "sdk") {
-        await this.dispatchEmbedded(
+        const embeddedSession = await this.dispatchEmbedded(
           taskId,
           task,
           wt,
@@ -810,48 +1007,31 @@ export class Dispatcher {
           standing,
           standingFallbackTurnOne,
           residentMcp,
+          repoSkills?.record ?? null,
+          // Only a launch a shaper actually ran for shares the pre-minted id: those shapers were
+          // handed its trace context, so the agent must start under the same one. When no
+          // shaper applied, nothing saw that id, and the supervisor mints its own exactly as an
+          // unshaped launch always has.
+          shaping.summary ? sdkSessionId : null,
+          currentAttempt,
+          workUnitId,
+          // Turn one IS the start on this runtime, so the launch reached its worker the moment
+          // `supervisor.start` returned, and binding the task to it records that delivery.
+          (session) => this.bindLaunch(taskId, attempt, shaping, session),
         );
+        // A later attempt took the task while this driver started: `dispatchEmbedded` stopped
+        // the worker, and nothing of this attempt is recorded or reported as a launch.
+        if (!currentAttempt() || embeddedSession === null) return;
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(resolution),
           outcome: "launched",
           sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
         });
         return;
       }
-      const stateHome = createDisposableAgentStateHome();
-      pendingAgentStateHome = stateHome;
-      const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
-      // `--settings` is single-valued and nothing else in this argv renders it, so the
-      // advisor's flag-layer object can own the flag outright. Whoever adds a second
-      // contributor merges into one JSON value here, the way `systemPromptAppendArgs` does.
-      const advisorSpec = harnessFor(task.agent).advisor;
-      const advisorArgs = advisor ? (advisorSpec?.launchArgs(advisor) ?? []) : [];
-      const advisorEnv = advisor ? (advisorSpec?.launchEnv(advisor) ?? {}) : {};
-      // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
-      // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
-      // which a fresh session's folder-trust dialog hides, so it gave up and the session
-      // ran in its default mode. The flag sets the mode whether or not the footer is
-      // readable, and is scoped to sessions WE launch by construction. Codex is reached by
-      // its own launch builder below (widened sandbox), so this is empty for it; live TUI
-      // control stays only for a human swapping an existing session's mode from the card.
-      const modeArgs = dispatchPermissionModeArgs(task.agent);
-      // The ask channel rides along on every dispatch: it takes Claude's built-in
-      // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
-      // a clarifying question arrives as structured arguments in the dashboard rather than
-      // as a menu we read off the child's screen. Scoped to dispatch for the same reason
-      // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
-      // started and we merely discovered. It returns nothing rather than half its flags on
-      // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
-      // launch is then refused below with that reason; see `askChannelContribution`.
-      const codexLaunch = task.agent === "codex"
-        ? await prepareCodexLaunch(
-            getHarnessesConfig().autoModeOnDispatch,
-            missionMcp,
-            wt.path,
-            stateHome,
-          )
-        : { args: [] as string[], instrumented: true, missionMcp: false };
+      const { stateHome, advisorEnv, codexLaunch, askChannel, leadingArgs } = terminal!;
       // Pi is the one harness with no file channel: Claude and Codex load the worktree's
       // root doc themselves, and the committed `.agents/memory` reference line rides in
       // on it, but Pi's only channel is turn one. So the pointer is composed INTO the
@@ -869,55 +1049,25 @@ export class Dispatcher {
       // needs it to build the argv, and the launch marker needs to fingerprint the exact
       // text that argv carries. Recomposing it at the second site is how the two answers
       // drift apart.
-      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent) : null;
+      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent, piHasMemory) : null;
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
-      const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
-      // Every decision a task asks goes through `request_input`. A launch that needs the ask
-      // channel and cannot have it is refused, with the reason, rather than started with the
-      // built-in menu (a decision asked outside it) or with no way to ask at all.
-      if (askChannel.unavailable) throw new Error(askChannel.unavailable);
-      // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
-      // single-valued and repeating it is last-wins with no warning, so a second flag beside
-      // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
-      //
-      // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
-      // with `AskUserQuestion` removed and no replacement is worse than one with the
-      // built-in intact, and a launch that needs the channel and cannot have it was refused
-      // just above. The standing instruction does NOT acquire that tie, so it still ships for
-      // an agent the ask channel does not apply to.
-      const askArgs = [
-        ...askChannel.args,
-        ...systemPromptAppendArgs([
-          askChannel.redirect,
-          standing.mechanism === "claude-append-system-prompt" ? standing.text : null,
-        ]),
-      ];
-      // Rendered by the harness that has to honour it, from a capability measured against a
-      // real installation - Claude's `--add-dir`, Codex's writable-roots override. Read off
-      // the spec the guard above already resolved rather than re-asking with a `?.` that
-      // would render NO flags for a harness without one: that is precisely the silent drop
-      // the guard exists to turn into a refusal, and asking twice is how the two answers
-      // drift apart.
-      const extraDirArgs =
-        extraDirs.length > 0 && multiRepo?.kind === "flags" ? multiRepo.launchArgs(extraDirs) : [];
-      // Pi accepts repeated appends; do not fold it through Claude's single-value helper.
-      // Flags precede piLaunch.args, whose final argument is the positional first turn.
-      const piStandingArgs = standing.mechanism === "pi-append-system-prompt"
-        ? ["--append-system-prompt", standing.text]
-        : [];
       const agentArgs = [
-        ...(model ? ["--model", model] : []),
-        ...effortArgs,
-        ...advisorArgs,
-        ...modeArgs,
-        ...askArgs,
-        ...extraDirArgs,
-        ...codexLaunch.args,
-        ...piStandingArgs,
+        ...leadingArgs,
         ...piLaunch.args,
       ];
+      // A shaped Pi turn one travels in the launch argument, and how much room it has is decided
+      // by the pane's environment at exec, which the budget above could only estimate. The
+      // wrapper checks it there and falls back to this: the same launch, the same conversation
+      // id, the original turn one.
+      const piUnshapedText = piText !== null && shaping.section
+        ? withRepoMemoryPointer(wt.path, unshapedTurnOne(standingPrefix), piHasMemory)
+        : null;
+      const piFallbackArgs = piUnshapedText !== null && piLaunch.sessionId
+        ? [...leadingArgs, ...preparePiLaunch(piUnshapedText, piLaunch.sessionId).args]
+        : null;
+      if (piFallbackArgs) outcomeStateHome = stateHome;
       // A launch registration is reported by the builders that actually produced it.
       // A machine install rides no argv: reuse the pre-worktree probe's answer.
       const missionMcpRegistered = missionTools?.mechanism === "mcp-client"
@@ -977,6 +1127,11 @@ export class Dispatcher {
         : null;
       let home: SpawnedHome;
       try {
+        // Handed over immediately before the spawn, keyed by this launch's own state home -
+        // the one its wrapper runs from. The agent is discovered, and announced, before this
+        // function gets control back, and the registry installs the launch record when it
+        // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
+        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId);
         home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
@@ -985,24 +1140,68 @@ export class Dispatcher {
           agentArgs,
           stateHome,
           terminalBackend,
-          advisorEnv,
+          { ...advisorEnv, ...workUnitEnv(workUnitId) },
+          piFallbackArgs,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
-        // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
-        if (this.deps.spawn) cleanupDisposableAgentStateHome(stateHome);
+        // An injected spawn seam starts no wrapper, so its disposable fixture can go now -
+        // unless it ran the real wrapper and says so, which then owns the home as it would.
+        if (this.deps.spawn && home.launchStateHome !== stateHome) cleanupDisposableAgentStateHome(stateHome);
         pendingAgentStateHome = null;
       } catch (err) {
         // Nothing was launched, so the marker describes a turn that will never be written.
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      this.patch(taskId, homeRecord(home));
-      if (await this.abortIfSettled(taskId)) return;
-
-      let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
-      if (!discovered) {
-        throw new Error("agent session never appeared (the launch may have exited immediately)");
+      // Closed only by the identity this spawn returned, never by its name: a name a cancel freed can
+      // already belong to the replacement. With no identity the terminal is left standing.
+      retireOwnHome = async () => {
+        if (!home.terminalResourceId) return;
+        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId).catch(() => {});
+      };
+      // From here every checkpoint also asks whether a cancel and a redispatch replaced this
+      // attempt while it waited, and if so retires its worker before it can bind the task.
+      const settled = async () => {
+        if (!currentAttempt()) {
+          await retireOwnHome?.();
+          return true;
+        }
+        return this.abortIfSettled(taskId);
+      };
+      if (!currentAttempt()) {
+        await retireOwnHome();
+        return;
       }
+      this.patch(taskId, homeRecord(home));
+      if (await settled()) return;
+
+      // Only the worker this spawn started: matched by the terminal resource or launch wrapper
+      // the spawn returned, never by the checkout alone, which a cancelled attempt's worker can
+      // still share while it waits to be retired. A home that names neither cannot tell its own
+      // worker from that one, so it binds nothing and its terminal is left standing.
+      if (!spawnHasLaunchIdentity(home)) {
+        throw new Error("the terminal launch returned no terminal or launch process to find its agent by; terminal preserved");
+      }
+      // Each session whose most recent identity check threw, so a timeout can name a failure that
+      // still stands instead of blaming the agent. A later check that completes clears it.
+      const checkFailures = new Map<string, string>();
+      let discovered = await this.registry.waitForLaunchedSessionAtCwd(wt.path, home, READY_TIMEOUT_MS, {
+        onCheckSettled: (sessionId, error) => {
+          if (error === null) checkFailures.delete(sessionId);
+          else checkFailures.set(sessionId, error instanceof Error ? error.message : String(error));
+        },
+      });
+      if (!discovered) {
+        // Only a session still live in this checkout: one that left took its failure with it.
+        const standing = [...checkFailures].find(([sessionId]) => {
+          const session = this.registry.getSession(sessionId);
+          return session !== undefined && session.state !== "exited" && session.cwd === wt.path;
+        })?.[1];
+        throw new Error(standing
+          ? `agent session was never matched to this launch: checking a worker's launch identity failed (${standing})`
+          : "agent session never appeared (the launch may have exited immediately)");
+      }
+      if (await settled()) return;
       if (home.terminalResourceId?.startsWith("emulator:")) {
         const adopted = await this.registry.adoptTerminalLaunch(taskId, home, discovered);
         if (!adopted) {
@@ -1010,6 +1209,7 @@ export class Dispatcher {
         }
         if (adopted.newlyBound) this.notifySessionBound(taskId);
         discovered = this.requireLiveSession(adopted.session.id);
+        if (await settled()) return;
       }
       if (!this.registry.getTask(taskId)?.terminalResourceId) {
         this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
@@ -1026,7 +1226,7 @@ export class Dispatcher {
       if (TASK_KIND_BEHAVIOR[task.kind].foremanInvite) {
         this.registry.setForemanInvite(discovered.id, "dispatch");
       }
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
 
       // Discovery only proves the process exists. Hooked agents prove they can READ before
       // we type; launch-prompt agents such as Pi only need to survive the settle window.
@@ -1035,6 +1235,9 @@ export class Dispatcher {
         discovered,
         codexLaunch.instrumented,
       );
+      // Before anything reads or writes the task's terminal fields: a replacement that took the
+      // task during the wait owns them.
+      if (await settled()) return;
       const session = piLaunch.sessionId
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
@@ -1047,13 +1250,13 @@ export class Dispatcher {
       // the registry's rotation move carries the row to the native key, and to every key a
       // later `/clear` rotates to. Pi has already bound its pre-minted conversation id
       // above, so it records under that.
-      this.registry.recordStandingInstructions(session.id, standing);
+      this.registry.recordStandingInstructions(session.id, standing, repoSkills?.record ?? null);
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId && !this.registry.getTask(taskId)?.terminalResourceId) {
         this.patch(taskId, { terminalResourceId: readyResourceId });
       }
-      if (await this.abortIfSettled(taskId)) return;
+      if (await settled()) return;
 
       // The permission mode is already set: it rode in on the launch argv (`modeArgs`),
       // so the task runs in it from the first prompt with no post-launch keystrokes to
@@ -1100,15 +1303,30 @@ export class Dispatcher {
           throw err;
         }
       }
-
-      if (await this.abortIfSettled(taskId)) return;
+      // Turn one has been handed to the worker: pasted and acknowledged, or for Pi carried by
+      // the launch itself. Only now does this launch's shaping record replace the last one -
+      // saying what actually launched. A Pi wrapper with a fallback wrote which turn one it ran.
+      // Only `shaped` is a delivery and only `original` a confirmed fallback, whose turn one the
+      // launch presentation then names; with no readable receipt neither is claimed.
+      let delivered = shaping;
+      const outcome = piFallbackArgs ? readTurnOneOutcome(stateHome) : "shaped";
+      if (outcome === "original") {
+        delivered = launchFellBack(shaping);
+        this.recordLaunchPresentationForKey(piLaunch.sessionId!, piUnshapedText!, task.intent);
+      } else if (outcome !== "shaped") {
+        delivered = launchUnconfirmed(shaping);
+      }
+      if (await settled()) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
       // and nothing more. Provenance lives in the work-episode bindings used by
-      // `bindTaskToWorkEpisode` and `mergedPrFor`.
-      this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      // `bindTaskToWorkEpisode` and `mergedPrFor`. Written with this launch's shaping record
+      // and delivery id, in one transaction (`bindLaunch`).
+      this.bindLaunch(taskId, attempt, delivered, deliverySession.id);
+      launchSucceeded = true;
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
       observeDispatchFinished({
         taskId,
+        workUnitId,
         ...dispatchFacts(resolution),
         outcome: "launched",
         sessionId: deliverySession.id,
@@ -1116,6 +1334,12 @@ export class Dispatcher {
     } catch (err) {
       cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
       pendingAgentStateHome = null;
+      // A replaced attempt's failure is its own: the task row, its status and its resources
+      // belong to the successor, so this one only retires the worker it started.
+      if (!currentAttempt()) {
+        await retireOwnHome?.();
+        return;
+      }
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
       // A cancel/complete that settled the task in flight owns its terminal state
@@ -1128,6 +1352,7 @@ export class Dispatcher {
         // launch on the only chart that answers "do dispatches work".
         observeDispatchFinished({
           taskId,
+          workUnitId,
           ...dispatchFacts(resolution, task),
           outcome: "superseded",
         });
@@ -1138,6 +1363,7 @@ export class Dispatcher {
       }
       observeDispatchFinished({
         taskId,
+        workUnitId,
         ...dispatchFacts(resolution, task),
         outcome: "failed",
       });
@@ -1215,11 +1441,38 @@ export class Dispatcher {
         });
         await this.teardownTaskResources(taskId, cur, message);
       }
+    } finally {
+      // The terminal launch's verdict on its work unit hand-over. Every exit short of the task
+      // running on its agent - a failure, or a task settled underneath the launch - is
+      // "failed", never "not-started": a failed dispatch keeps its terminal, so its agent may
+      // be running with the variable, and its record must outlive the failure for as long as
+      // that agent does. A no-op for an embedded launch.
+      settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
+      // Settled: nothing of this attempt writes after here. A successor's entry is its own.
+      if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
+      // Best-effort: the worker is already launched, and restart recovery reclaims a leftover file.
+      if (outcomeStateHome) {
+        try {
+          rmSync(turnOneOutcomePath(outcomeStateHome), { force: true });
+        } catch (error) {
+          console.warn(`[shaping] could not remove task ${taskId}'s launch outcome file:`, error);
+        }
+      }
     }
   }
 
-  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
-  private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
+  /**
+   * Launch Conductor's Engineer host, leaving provider worktree creation to the engine.
+   *
+   * `workUnitId` is the launch's one decision. The managed host is an agent this supervisor
+   * starts, so it carries the id and gets a launch record. The terminal host is Conductor's own
+   * CLI, not an agent: the agents it starts are its engine's, discovered rather than launched by
+   * Mission Control, so no launch record could follow them - and a variable they inherited from
+   * the host would tag their MCP calls with a work unit their sessions never emit. It therefore
+   * carries none (and inherits none: `agentSubprocessEnv` and the wrapper remove it).
+   */
+  private async dispatchPipeline(taskId: string, task: Task, workUnitId: string | null): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
     }
@@ -1640,6 +1893,7 @@ export class Dispatcher {
         if (problem) throw new Error(problem);
         session = await supervisor.start({
           sessionId,
+          workUnitId,
           agent: task.agent,
           name: task.title.trim() || launch.cwd,
           cwd: launch.cwd,
@@ -1931,7 +2185,21 @@ export class Dispatcher {
     standingFallbackTurnOne: string,
     /** A resident run's pinned MCP set, rendered beside Mission's descriptor. */
     residentMcp: ResidentMcpLaunch | null = null,
-  ): Promise<void> {
+    /** What repository task skills this launch included or skipped (spec 7.15). */
+    repoTaskSkills: RepoTaskSkillRecord | null = null,
+    /** The session id to start under, minted before shaping so both share its trace context. */
+    sessionId: string | null = null,
+    /** Whether this dispatch is still the task's current attempt. */
+    currentAttempt: () => boolean = () => true,
+    /** The launch's one work unit decision, from the top of `dispatch`. */
+    workUnitId: string | null = null,
+    /**
+     * Binds the task to the started session, with this launch's shaping record and delivery id
+     * in the same transaction (`bindLaunch`). Turn one IS the start on this runtime, so the
+     * binding is where its delivery is recorded.
+     */
+    bind: (sessionId: string) => void = (id) => this.patch(taskId, { status: "running", sessionId: id }),
+  ): Promise<string | null> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
       // Never silently fall back to the terminal path: the operator set this harness to the
@@ -1998,7 +2266,11 @@ export class Dispatcher {
     }
     const inputProblem = taskPlanInputProblem(task);
     if (inputProblem) throw new Error(inputProblem);
+    // Asked once more at the start itself: preparing the launch above awaits, and a later attempt
+    // that took the task meanwhile must not have this attempt's turn one handed to a worker.
+    if (!currentAttempt()) return null;
     const session = await supervisor.start({
+      ...(sessionId ? { sessionId } : {}),
       agent: task.agent,
       // The task's own title, unsanitized: `sessionLabel` cuts a name down to a terminal
       // backend's target grammar, and there is no terminal here to satisfy. It is also what
@@ -2024,23 +2296,35 @@ export class Dispatcher {
       // back to turn one - and it therefore owns this runtime's launch snapshot. On the pairs
       // with no channel the block is already inside `intent` above, and the supervisor sends
       // nothing out of band for them.
-      standingInstructions: { delivery: standing, fallbackPrompt: standingFallbackTurnOne },
+      standingInstructions: {
+        delivery: standing,
+        fallbackPrompt: standingFallbackTurnOne,
+        ...(repoTaskSkills ? { repoTaskSkills } : {}),
+      },
       taskId,
+      workUnitId,
       gitBranch: wt.branch,
       gitRoot: taskHasRepository(task) ? wt.path : null,
       repoRoot: taskHasRepository(task) ? task.repoRoot : null,
     });
     supervisorOwnsStateHome = true;
+    // A cancel and a redispatch while the driver started put the task back in `dispatching`
+    // under a later attempt. That attempt owns the task row and its resources, so this worker
+    // is stopped alone, before anything binds it, and nothing else is torn down.
+    if (!currentAttempt()) {
+      await supervisor.stop(session.id).catch(() => {});
+      return session.id;
+    }
     if (await this.abortIfSettled(taskId)) {
       // A cancel landed while the driver was starting. `abortIfSettled` tore down the
       // worktree; the session it would have worked in has to go with it.
       await supervisor.stop(session.id).catch(() => {});
-      return;
+      return session.id;
     }
     // The launch snapshot for this runtime was written by `supervisor.start`, which is the
     // only caller that sees what the driver reported back. See the terminal arm below for the
     // same record on the path where the argv settles the question synchronously.
-    this.patch(taskId, { status: "running", sessionId: session.id });
+    bind(session.id);
     // Both orders are covered on purpose. If the driver has already bound, the episode
     // exists and this binds it; if it has not, `applyDriverBinding` binds it when it does,
     // because the task now records this session id. Neither can be relied on alone.
@@ -2056,6 +2340,7 @@ export class Dispatcher {
     // - returning with no log and no trace of what went wrong. It cannot throw: the seam
     // logs and swallows, which turns exactly that invisible loss into a visible one.
     freezeScoutPromptBoundary(this.registry, task, session.id, "launch");
+    return session.id;
     } finally {
       if (!supervisorOwnsStateHome) cleanupDisposableAgentStateHome(stateHome);
     }
@@ -2203,7 +2488,7 @@ export class Dispatcher {
       // Listen BEFORE typing - the hook can land before the next line runs.
       const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal, sessionId)
         : null;
 
       let sent: Awaited<ReturnType<typeof injectPrompt>>;
@@ -2249,6 +2534,126 @@ export class Dispatcher {
   /** The condition under which task cancel stops this task's claims, asked as one registers. */
   private taskCancelled(taskId: string): boolean {
     return this.registry.getTask(taskId)?.status === "cancelled";
+  }
+
+  /**
+   * The shaping step of one launch: what it tells the engine, and what it budgets against.
+   *
+   * Every turn-one variant this launch may send is measured as its path carries it - Pi's
+   * terminal turn one with its memory pointer, as the positional message `preparePiLaunch`
+   * renders - and a launch argument also with the exact other arguments and environment of
+   * this launch. Nothing is measured, and nothing is called, while the flag is off.
+   */
+  private shapeTurnOne(
+    taskId: string,
+    provisioned: Task,
+    runtime: SessionRuntime,
+    standing: StandingInstructionsDelivery,
+    standingPrefix: string,
+    unshapedTurnOne: (standingBlock: string) => string,
+    launch: {
+      agentBin: string;
+      sdkSessionId: string | null;
+      /** Whether the `task-shaping` flag is on for this launch, read once by the caller. */
+      enabled: boolean;
+      terminal: { stateHome: string; advisorEnv: Record<string, string>; leadingArgs: string[] } | null;
+      /** The primary worktree, where Pi's memory pointer is read from. */
+      worktreePath: string;
+      /** Whether Pi's memory pointer prefixes this launch, read once by the caller. */
+      piHasMemory: boolean;
+      /** The terminal backend this launch was configured for, or null for an automatic choice. */
+      terminalBackend: string | null;
+      /** Whether this dispatch is still the task's current attempt. */
+      currentAttempt: () => boolean;
+      /**
+       * This launch's one work unit decision, made where `dispatch` began. The shapers are handed
+       * it, and the agent is launched with it, so neither can see the preview differently.
+       */
+      workUnitId: string | null;
+      /** Worktrees whose own task skill for the kind is in this turn one (D14). */
+      repositoryTaskSkillWorktrees: readonly string[];
+    },
+  ): Promise<LaunchShaping> {
+    const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
+    const variants = [unshapedTurnOne(standingPrefix), ...(!standingPrefix && standing.text ? [unshapedTurnOne(standing.text)] : [])];
+    const launchArgument = delivery.path === "launch-argument" && provisioned.agent === "pi" && launch.terminal;
+    const carried = launchArgument
+      // Composed exactly as the terminal arm composes Pi's launch message below.
+      ? variants.map((variant) => preparePiLaunch(withRepoMemoryPointer(launch.worktreePath, variant, launch.piHasMemory)).args.at(-1)!)
+      : variants;
+    return shapeLaunch({
+      task: provisioned,
+      runtime,
+      repositoryTaskSkillWorktrees: launch.repositoryTaskSkillWorktrees,
+      workflowName: () => (provisioned.workflowId ? this.deps.workflowName?.(provisioned.workflowId) ?? null : null),
+      // Exactly what the agent is launched under: an embedded session's derived context, and
+      // none for a terminal launch, which carries none.
+      trace: launch.sdkSessionId ? sessionTraceContext(launch.sdkSessionId) : null,
+      // The decision itself, never a second reading of the preview: the work unit every shaper
+      // call carries is the one this launch's agent is started with, and it stays the task's own
+      // when the agent then fails to start.
+      workUnitId: launch.workUnitId,
+      delivery,
+      turnOnes: carried,
+      launch: launchArgument
+        ? async (): Promise<LaunchArgumentLaunch> => ({
+            otherArgs: [
+              launch.agentBin,
+              ...launch.terminal!.leadingArgs,
+              ...preparePiLaunch(carried[0]!).args.slice(0, -1),
+            ],
+            // What the agent's process holds: the terminal server's environment, which the
+            // daemon started and so passed its own, overlaid with what the launch wrapper exports.
+            env: {
+              ...process.env,
+              ...isolatedAgentEnvironment({
+                cwd: provisioned.worktreePath ?? provisioned.repoRoot,
+                stateHome: launch.terminal!.stateHome,
+                // As the terminal arm spawns it, the work unit included.
+                extraEnv: { ...launch.terminal!.advisorEnv, ...workUnitEnv(launch.workUnitId) },
+              }),
+            },
+            argMax: await (this.deps.argMax ?? platformArgMax)(),
+          })
+        : null,
+      stillDispatching: () => launch.currentAttempt() && this.stillDispatching(taskId),
+      onShaping: (active) => { if (launch.currentAttempt()) this.registry.setTaskShapingContext(taskId, active); },
+      // A pane paste that travels as an `osascript` argument shares `ARG_MAX` with the daemon's
+      // environment, and its size depends on the exact text, so the shaped turn is checked as
+      // the AppleScript backends encode it before it is sent.
+      ...(delivery.path === "paste" && runtime !== "sdk" && pasteTravelsAsArgument(launch.terminalBackend)
+        ? { finalCheck: async (section: string) => {
+            const argMax = await (this.deps.argMax ?? platformArgMax)();
+            return variants.every((variant) => appleScriptPasteFits(withTaskContext(variant, section), process.env, argMax))
+              ? null
+              : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context";
+          } }
+        : {}),
+    }, { shapeTask: this.deps.shapeTask, enabled: launch.enabled });
+  }
+
+  /**
+   * Bind the task to the session its turn one reached, `running` on it, and settle this
+   * launch's shaping record and delivery id in the same transaction (`commitTaskShaping`), so
+   * no stop between them leaves the record and the binding out of step. Runs whether or not
+   * shaping ran, so a launch that no shaper applied to - or that ran with the flag off - clears
+   * the record an earlier launch left and binds under its own delivery id. A commit that fails
+   * is logged by the registry and never fails the launch: the binding still lands, under this
+   * delivery's id, so the record an earlier delivery left is never read as this one's.
+   */
+  private bindLaunch(taskId: string, attempt: symbol, shaping: LaunchShaping, sessionId: string): void {
+    const fields = { status: "running" as const, sessionId };
+    // Only the current attempt, and only while its worker is the task's: still dispatching, or
+    // already running on this session. A cancelled launch whose driver was stopped, or one a
+    // requeue replaced while it waited, must not overwrite or clear the record its successor
+    // delivered; it binds as it always did, with no record.
+    const task = this.registry.getTask(taskId);
+    if (this.dispatchAttempts.get(taskId) !== attempt || !task || (task.status !== "dispatching" && task.sessionId !== sessionId)) {
+      this.patch(taskId, fields);
+      return;
+    }
+    this.registry.commitTaskShaping(taskId, sessionId, shaping.summary, shaping.section, { ...task, ...fields, updatedAt: Date.now() });
+    this.announcePatch(task, fields);
   }
 
   /**
@@ -2435,18 +2840,23 @@ export class Dispatcher {
     const cur = this.registry.getTask(taskId);
     if (!cur) return;
     this.registry.upsertTask({ ...cur, ...fields, updatedAt: Date.now() });
+    this.announcePatch(cur, fields);
+  }
+
+  /** What a patch of `fields` onto `cur` sets off beyond the row, however it was written. */
+  private announcePatch(cur: Task, fields: Partial<Task>): void {
     // The one transition worth announcing: this task now has a session to be named on.
     // Read off the BEFORE and AFTER rather than off `fields`, so a patch that merely
     // restates the id it already had stays silent and the notification means "newly
     // bound" exactly once.
     if (cur.sessionId === null && typeof fields.sessionId === "string") {
-      this.notifySessionBound(taskId);
+      this.notifySessionBound(cur.id);
     }
     // The other transition with a consequence beyond this row: the launch started. Read here
     // rather than at each launch arm, because there are several - terminal, embedded, managed
     // pipeline host - and an arm that forgot would leave its retried failure on the board.
     if (cur.status === "dispatching" && fields.status === "running") {
-      this.settleEarlierLaunchFailures(taskId);
+      this.settleEarlierLaunchFailures(cur.id);
     }
   }
 
@@ -2821,6 +3231,20 @@ export function worktreeSlotPath(taskId: string, slot: number): string {
 }
 
 /**
+ * The checkout's current branch, null when HEAD is detached, or undefined when it cannot be read.
+ * `symbolic-ref -q` exits 1 for a detached HEAD and with another status for an error, so a failed
+ * read is never mistaken for a detached checkout.
+ */
+export async function headBranch(dir: string): Promise<string | null | undefined> {
+  const r = await run("git", ["-C", dir, "symbolic-ref", "--short", "-q", "HEAD"], {
+    timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
+  });
+  const branch = r.stdout.trim();
+  if (r.code === 0 && branch) return branch;
+  return r.code === 1 ? null : undefined;
+}
+
+/**
  * The full object id a freshly provisioned tree stands on, or null if it cannot be read.
  *
  * Null is "unknown", which is the same thing the column already means for every task
@@ -2831,7 +3255,7 @@ export function worktreeSlotPath(taskId: string, slot: number): string {
  * and the agent can work in it, and refusing the whole dispatch over a baseline that is
  * only consumed by later phases would trade a working session for a bookkeeping field.
  */
-async function headCommit(dir: string): Promise<string | null> {
+export async function headCommit(dir: string): Promise<string | null> {
   const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
@@ -3198,6 +3622,33 @@ export function deriveTitle(intent: string): string {
   return deriveTaskTitle(intent);
 }
 
+/** Which turn one a Pi wrapper with a fallback ran (`shaped` or `original`), or null if it never said. */
+function readTurnOneOutcome(stateHome: string): string | null {
+  try {
+    return readFileSync(turnOneOutcomePath(stateHome), "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The wrapper a dispatched terminal launch runs: `isolatedAgentArgv` around the agent, with the
+ * fallback launch beside it when there is one. Written into `stateHome`.
+ */
+export function dispatchLaunchArgv(
+  cwd: string,
+  agentBin: string,
+  agentArgs: readonly string[],
+  stateHome: string,
+  extraEnv: Readonly<Record<string, string>>,
+  fallbackAgentArgs: readonly string[] | null,
+): string[] {
+  return isolatedAgentArgv([agentBin, ...agentArgs], {
+    cwd, stateHome, extraEnv,
+    fallbackArgv: fallbackAgentArgs ? [agentBin, ...fallbackAgentArgs] : null,
+  });
+}
+
 /**
  * Spawn the agent under a session name, closing the check-then-spawn race: if a concurrent
  * dispatch claimed the bare name between our listing and our spawn, retry once under the
@@ -3221,10 +3672,12 @@ export async function spawnUniquely(
   terminalBackend: string | null = null,
   /** Capability-rendered launch variables, written into the wrapper beside the isolation. */
   extraEnv: Readonly<Record<string, string>> = {},
+  /** The arguments to launch with instead if `agentArgs` would not fit at exec (a shaped Pi turn one). */
+  fallbackAgentArgs: readonly string[] | null = null,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
-    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome, extraEnv });
+    const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);
@@ -3244,8 +3697,11 @@ export async function spawnManagedResume(
   return { ...result.value, resumeLeaseId: input.prepared.lease.id, launchOutcome: "launched" };
 }
 
-/** Shared backend mechanics. Resource ownership stays with the ordinary or managed caller. */
-async function spawnWrappedUniquely(
+/**
+ * Shared backend mechanics. Resource ownership stays with the ordinary or managed caller.
+ * Exported for the tests that pin what a spawn returns for discovery to find its worker by.
+ */
+export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,
@@ -3257,7 +3713,9 @@ async function spawnWrappedUniquely(
   const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
-      launchStateHome: first.backend.axis === "emulator" ? stateHome : undefined,
+      // On every axis: the wrapper always runs from this home, so a pane whose address the
+      // backend could not report is still found by the launch it descends from.
+      launchStateHome: stateHome,
       launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   if (first.outcomeUnknown || name === unique) throw new TerminalLaunchError(first.error, first.outcomeUnknown ?? false);
@@ -3268,7 +3726,7 @@ async function spawnWrappedUniquely(
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
-      launchStateHome: retry.backend.axis === "emulator" ? stateHome : undefined,
+      launchStateHome: stateHome,
       launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
   }
   throw new TerminalLaunchError(retry.error, retry.outcomeUnknown ?? false);

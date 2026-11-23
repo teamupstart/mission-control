@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { holdsSecretShape } from "./secret-shapes.ts";
 import { taskKindLaunchesHarness } from "./task.ts";
-import { TASK_KINDS, type TaskKind } from "./types.ts";
+import { AGENT_TYPES, TASK_KINDS, type TaskKind } from "./types.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
   SHAPING_BUILTINS,
+  SHAPING_LIFECYCLE_POINTS,
   SHAPING_ORIGINS,
   SHAPING_OUTCOMES,
+  SHAPING_PROMPT_STATES,
   SHAPING_REFERENCE_KINDS,
+  SHAPING_SKILL_STATES,
   SHAPING_STAGES,
   SHAPING_TRANSPORTS,
 } from "./shaping-registry.ts";
@@ -26,6 +29,9 @@ export type ShapingBuiltinId = (typeof SHAPING_BUILTINS)[number]["id"];
 export type ShapingOutcome = (typeof SHAPING_OUTCOMES)[number];
 export type ShapingOrigin = (typeof SHAPING_ORIGINS)[number];
 export type ShapingReferenceKind = (typeof SHAPING_REFERENCE_KINDS)[number];
+export type ShapingLifecyclePoint = (typeof SHAPING_LIFECYCLE_POINTS)[number];
+export type ShapingSkillState = (typeof SHAPING_SKILL_STATES)[number];
+export type ShapingPromptState = (typeof SHAPING_PROMPT_STATES)[number];
 
 export const SHAPING_PROTOCOL = 1;
 
@@ -75,7 +81,20 @@ export const SHAPING_LIMITS = {
   repositories: 32,
   /** The operator's prompt as carried in a request. */
   taskChars: 1_000_000,
+  /** Skills one route reply may carry, and skills one launch may announce (FR-04). */
+  routedSkills: 10,
+  /** Routed skills one launch's record keeps, whatever became of them. */
+  recordedSkills: 32,
+  /** Selected guidance ids one route request carries (D13). */
+  guidanceIds: 32,
 } as const;
+
+/**
+ * Set aside for "Skills for this task" before any context entry is allocated, while a router
+ * applies, so guidance that fills the total cannot crowd every routed skill out. A launch whose
+ * whole total is smaller reserves that total instead.
+ */
+export const SHAPING_SKILLS_RESERVE_BYTES = 3 * KIB;
 
 /** Each configurable bound's default and ceiling (D8 and D9). */
 export const SHAPING_LIMIT_RANGES = {
@@ -928,6 +947,14 @@ function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reas
   return `${at}${message}`.slice(0, maxChars);
 }
 
+/**
+ * A schema failure as one sentence that names where the problem is and never a value, for a
+ * manifest in the shapers folder as for a stored entry.
+ */
+export function describeShapingIssue(error: z.ZodError): string {
+  return issueSentence(error);
+}
+
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
 export function classifyShaper(
   stored: StoredShaper,
@@ -970,10 +997,39 @@ export interface UnsupportedShaperView {
   label: string;
   /** Why, naming the failing field and never a stored value. */
   unsupported: string;
+  /**
+   * Present, and true, only when an import under this id replaces the entry: the daemon's own
+   * upsert rule, which accepts a replacement for an entry it emptied a literal credential in and
+   * refuses one for any other entry this build cannot run.
+   */
+  replaceable?: true;
 }
 
 /** The config as it leaves the daemon: the HTTP reply, and Phase 3's snapshot field and event. */
-export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Array<Shaper | UnsupportedShaperView> };
+export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
+  shapers: Array<Shaper | UnsupportedShaperView>;
+  /**
+   * Each registered id's revision, derived by the daemon's keyed `ShapingReviser` from every definition stored
+   * under it. A window sends it back as `expect` with an intent that acts on a shaper it showed.
+   * Opaque to the browser: two stored definitions that look the same in the view - an unsupported
+   * entry's id, label and reason, say - still have different revisions.
+   */
+  revisions: Record<string, string>;
+  /**
+   * The daemon process that published this view, random per process. A window sends it back with
+   * each write (`SHAPING_WRITE_ORDER_HEADER`), so a write made against a daemon that has since
+   * restarted, whose ordering it no longer holds, is refused rather than applied out of order.
+   * Absent from a view a daemon older than it sends.
+   */
+  instance?: string;
+  /**
+   * The commit of the daemon process `instance` names that this view shows: it grows with every
+   * commit that changes the view, by any writer. A write's answer carries the commit it made, so
+   * a window can tell when the event stream has reached it, or gone past it. Absent from a view a
+   * daemon older than it sends.
+   */
+  commit?: number;
+};
 
 /**
  * The config view: known shapers in full, and each unsupported entry reduced to its id, label
@@ -983,43 +1039,71 @@ export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Arra
  */
 export function shapingConfigView(
   config: ShapingConfig,
+  revise: ShapingReviser,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
+  const classified = classifyShapers(config, definitions);
+  // One revision per id, over every entry stored under it: the first owns the id and a repeat has
+  // no row of its own to act on, but removing the owner removes the repeats too. Grouped in a
+  // Map, never by probing a plain object: an id such as `constructor` would find the object's
+  // inherited property.
+  const groups = new Map<string, StoredShaper[]>();
+  for (const entry of classified) {
+    const group = groups.get(entry.stored.id);
+    if (group) group.push(entry.stored);
+    else groups.set(entry.stored.id, [entry.stored]);
+  }
+  const owned = new Map([...groups].map(([id, entries]) => [id, revise(entries)] as const));
   return {
     ...config,
-    shapers: classifyShapers(config, definitions).map((entry) => entry.kind === "known"
+    shapers: classified.map((entry) => entry.kind === "known"
       ? entry.shaper
-      : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
+      : {
+        id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason,
+        // The upsert rule is the owning entry's: an import under an id replaces the first stored
+        // entry with it, so only that one may say it is replaceable, never a repeat behind it.
+        ...(groups.get(entry.stored.id)![0] === entry.stored && credentialsWereRemoved(entry.stored)
+          ? { replaceable: true as const } : {}),
+      }),
+    revisions: Object.fromEntries(owned),
   };
 }
 
 /**
- * A short, stable revision of one entry exactly as the config view shows it: FNV-1a (64-bit)
- * over its canonical JSON. A window sends it with an intent that acts on a shaper it showed, and
- * the daemon refuses the intent when the stored entry no longer has that revision, so a click
- * can never act on a replacement another window wrote in the meantime. Browser-safe and
- * synchronous; it identifies a definition, it does not protect one, so it is not a security hash.
+ * The revision a config view reports for `id`, or null when it reports none. Only an own,
+ * string-valued entry counts, so an id that names an inherited property, such as `constructor`,
+ * never reads a function that JSON would drop from the intent that carries it.
  */
-export function shapingEntryRevision(entry: Shaper | UnsupportedShaperView): string {
-  const text = canonicalJson(entry);
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
-  for (let at = 0; at < text.length; at++) {
-    hash ^= BigInt(text.charCodeAt(at));
-    hash = (hash * prime) & mask;
-  }
-  return hash.toString(16).padStart(16, "0");
+export function shapingViewRevision(view: { readonly revisions?: unknown }, id: string): string | null {
+  if (!shapingViewHasRevisions(view) || !Object.hasOwn(view.revisions, id)) return null;
+  const revision: unknown = view.revisions[id];
+  return typeof revision === "string" ? revision : null;
 }
 
-/** The revision of the registered entry with this id, as the view shows it, or null when none is stored. */
-export function registeredShaperRevision(
-  config: ShapingConfig,
-  id: string,
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
-): string | null {
-  const entry = shapingConfigView(config, definitions).shapers.find((candidate) => candidate.id === id);
-  return entry ? shapingEntryRevision(entry) : null;
+/**
+ * Whether a view carries the daemon's revision map. An open dashboard can meet one that does not:
+ * a daemon rolled back to a build older than the dashboard sends its view without one. Every
+ * reader asks this first, and an action bound to a revision is unavailable until one arrives.
+ */
+export function shapingViewHasRevisions(view: { readonly revisions?: unknown }): view is { revisions: Record<string, unknown> } {
+  const map = view.revisions;
+  return typeof map === "object" && map !== null && !Array.isArray(map);
+}
+
+/**
+ * Derives the revision of everything stored under one id, given those entries in stored order.
+ * Only the daemon holds one (`src/server/shaping/revisions.ts`): it is keyed with a secret of the
+ * daemon's, so a revision published in the view can be compared but never recomputed, and so
+ * cannot confirm a guess at a field the view hides. Any change to what is stored under the id -
+ * a field the view never shows, or a repeat - changes it. The daemon refuses an intent whose
+ * `expect` no longer matches, so a click never acts on a replacement written meanwhile.
+ */
+export type ShapingReviser = (entries: readonly StoredShaper[]) => string;
+
+/** The revision of every stored entry with this id, or null when none is stored. */
+export function registeredShaperRevision(config: ShapingConfig, id: string, revise: ShapingReviser): string | null {
+  const entries = config.shapers.filter((stored) => stored.id === id);
+  return entries.length > 0 ? revise(entries) : null;
 }
 
 /** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
@@ -1131,6 +1215,12 @@ export const DiscoveredShaperSchema = z.object({
 });
 export type DiscoveredShaper = z.output<typeof DiscoveredShaperSchema>;
 
+/** Where the folder scan looked, and how many entries beyond its bound it left unread. */
+export interface ShapingFolderStatus {
+  path: string;
+  ignored: number;
+}
+
 /** Set or not set, per `{env:NAME}` any shaper references. Never a value. */
 export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 
@@ -1138,31 +1228,54 @@ export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 export interface ShapingReply {
   config: ShapingConfigView;
   discovered: DiscoveredShaper[];
+  /** The folder that was scanned. Absent from a daemon older than the shapers folder. */
+  folder?: ShapingFolderStatus;
   references: ShapingReferenceStatus;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Intents
 
-/** A `shapingEntryRevision`: 16 lowercase hex digits. */
+/** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
   /**
-   * `expect`, when sent, is the `shapingEntryRevision` of the registered entry the sender showed.
+   * `expect`, when sent, is the revision the config view reported for the registered entry the sender showed.
    * The intent is refused if the stored entry has changed since, so it never removes or switches
    * a replacement written meanwhile.
    */
   z.object({ kind: z.literal("remove"), id: z.string().min(1).max(64), expect: ShapingRevisionSchema.optional() }),
-  z.object({ kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional() }),
+  /**
+   * `manifest`, when sent, is the SHA-256 of the folder manifest the sender showed. Switching on
+   * is refused once the folder holds another manifest for the id, or a registered shaper has
+   * taken the id, so a click never switches on a definition the operator was not shown.
+   */
+  z.object({
+    kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional(),
+    manifest: z.string().regex(/^[0-9a-f]{64}$/, { message: "A manifest hash is 64 hexadecimal digits." }).optional(),
+  }),
   z.object({ kind: z.literal("reorder"), order: z.array(z.string().min(1).max(64)).max(SHAPING_LIMITS.choices) }),
   /**
    * Place a registered shaper right after another of its stage, or first for null, applied to
    * the order as it is stored when the intent arrives, so moves from two windows compose.
+   * Unbound: kept for a client that sends no revision.
    */
   z.object({ kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable() }),
+  /**
+   * A move bound to the definition the sender showed, which the dashboard sends: once that is
+   * replaced, even into another stage, it is refused rather than placing the replacement. A kind
+   * of its own, never an `expect` added to `move`: a daemon older than this kind strips a field
+   * it does not know and would apply the move by id alone, but refuses a kind it does not know,
+   * so a placement in flight across a rollback is refused there instead of reordering a
+   * replacement the operator never saw.
+   */
+  z.object({
+    kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
+    expect: ShapingRevisionSchema,
+  }),
   z.object({
     kind: z.literal("settings"),
     caller: partialPatch(ShapingCallerObjectSchema).optional(),
@@ -1194,16 +1307,25 @@ export function applyShapingIntent(
   config: ShapingConfig,
   intent: ShapingIntent,
   discovered: readonly DiscoveredShaper[] = [],
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
+  options: {
+    /** The daemon's reviser. Required for an intent that carries `expect`. */
+    revise?: ShapingReviser;
+    definitions?: ShapingDefinitions;
+  } = {},
 ): ShapingIntentResult {
+  const { revise, definitions = SHAPING_DEFINITIONS } = options;
   const refuse = (error: ShapingIntentError, reason: string): ShapingIntentResult => ({ ok: false, error, reason });
   const shapers = [...config.shapers];
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
   /** Whether the registered entry differs from the revision the sender showed. */
-  const stale = (id: string, expect: string | undefined): boolean =>
-    expect !== undefined && registeredShaperRevision(config, id, definitions) !== expect;
+  const stale = (id: string, expect: string | undefined): boolean => {
+    if (expect === undefined) return false;
+    // A programming error, never an operator's: a revision is only ever checked by the daemon.
+    if (!revise) throw new Error("A revision-bound shaping intent needs the daemon's reviser.");
+    return registeredShaperRevision(config, id, revise) !== expect;
+  };
   const changed = (id: string): ShapingIntentResult => refuse("shaper_changed",
     `"${id}" changed in another window since it was shown here, so nothing was done. Review it again first.`);
   /** Choices for ids that no longer exist make room before a live one is stored. */
@@ -1255,7 +1377,11 @@ export function applyShapingIntent(
       }
       break;
     }
-    case "move": {
+    case "move":
+    case "place": {
+      // A placement checks the definition it was sent for first: one replaced since, even by an
+      // entry this build cannot run, is "changed", which tells the sender to review it.
+      if (intent.kind === "place" && index(intent.id) !== -1 && stale(intent.id, intent.expect)) return changed(intent.id);
       const known = classifyShapers(config, definitions).flatMap((entry, position) => entry.kind === "known"
         ? [{ id: entry.shaper.id, stage: entry.shaper.stage, position }] : []);
       const moved = known.find((entry) => entry.id === intent.id);
@@ -1279,6 +1405,13 @@ export function applyShapingIntent(
       const found = discovered.find((entry) => entry.id === intent.id);
       if (at === -1 && !found) return refuse("unknown_shaper", `No shaper has the id "${intent.id}".`);
       if (stale(intent.id, intent.expect)) return changed(intent.id);
+      // Bound to the manifest the sender showed: switching on what replaced it, or a registration
+      // that took its id, needs a fresh look first. Switching off is always safe.
+      if (intent.enabled && intent.manifest !== undefined && (at !== -1 || found?.sha256 !== intent.manifest)) {
+        return refuse("shaper_changed", at !== -1
+          ? `A registered shaper now has the id "${intent.id}", so the folder's shaper was not switched on. Review it again first.`
+          : `"${intent.id}" changed in the shapers folder since it was shown here, so it was not switched on. Review it again first.`);
+      }
       if (intent.enabled) {
         if (at !== -1) {
           const classified = classifyShaper(shapers[at]!, definitions);
@@ -1540,6 +1673,14 @@ export const ShapingContextSchema = z.object({
     agent: z.string().max(64).nullable(),
     conversation: z.string().max(128).nullable(),
   }),
+  /**
+   * Route requests only (D13): the entries the select stage put into the section for the
+   * target repository, as `{ shaper, id }`, ids only. Absent at every other stage.
+   */
+  guidance: z.array(z.object({
+    shaper: z.string().max(64),
+    id: z.string().max(SHAPING_LIMITS.entryIdChars),
+  })).max(SHAPING_LIMITS.guidanceIds).optional(),
 });
 export type ShapingContext = z.output<typeof ShapingContextSchema>;
 
@@ -1588,6 +1729,38 @@ export const ShapingResultSchema = z.object({
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 
+/**
+ * A routed skill's name: what Mission Control puts after the harness's sigil. Lower-case
+ * letters, digits, `-`, `_` and `:`, starting with a letter or digit, so a router can never
+ * spell a flag, a path or a Markdown construct. The words around it are Mission Control's.
+ */
+export const ShapingSkillNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_:-]*$/, {
+  message: "A skill name is lower-case letters, digits, -, _ and :.",
+});
+
+/** Why a router chose a skill, as an identifier the router owns. Never shown to a worker. */
+export const ShapingReasonIdSchema = z.string().min(1).max(128).regex(/^[a-z0-9_:./-]+$/, {
+  message: "A reason id is lower-case letters, digits, -, _, :, . and /.",
+});
+
+/**
+ * A router's reply (FR-04 section 4): skills, not guidance. Unknown fields are ignored.
+ * `lifecycle_point` is any bounded string, so a point this build does not know makes that one
+ * skill `unsupported` and leaves the reply valid; any other mismatch is the `invalid` outcome.
+ */
+export const ShapingRouteResultSchema = z.object({
+  version: z.string().max(SHAPING_LIMITS.versionChars).nullable().optional(),
+  skills: z.array(z.object({
+    name: ShapingSkillNameSchema,
+    lifecycle_point: z.string().min(1).max(64),
+    reason_id: ShapingReasonIdSchema,
+  })).max(SHAPING_LIMITS.routedSkills),
+  truncated: z.boolean().optional(),
+  degraded: z.boolean().optional(),
+  notes: z.array(z.string().max(SHAPING_LIMITS.replyNoteChars)).max(SHAPING_LIMITS.replyNotes).optional(),
+});
+export type ShapingRouteResult = z.output<typeof ShapingRouteResultSchema>;
+
 /** A shaper's reply in words, for the `invalid` outcome. */
 /**
  * A shaper's reply in words, for the `invalid` outcome. Not clipped: the path can hold a key the
@@ -1619,19 +1792,156 @@ export const ShapingShaperSummarySchema = z.object({
 });
 export type ShapingShaperSummary = z.output<typeof ShapingShaperSummarySchema>;
 
+/** One routed skill as a launch records it, whatever became of it. */
+export const ShapingSkillSummarySchema = z.object({
+  name: z.string().max(64),
+  /** As the router sent it: a point this build does not know is kept, and the skill is `unsupported`. */
+  lifecyclePoint: z.string().max(64),
+  reasonId: z.string().max(128),
+  /** The router whose reply first named it. */
+  shaper: z.string().max(64),
+  /** The repositories it was routed for, by name, less any the repository's own task skill took (D14). */
+  repositories: z.array(z.string().max(256)).max(SHAPING_LIMITS.repositories),
+  state: z.enum(SHAPING_SKILL_STATES),
+  /** True for a skill from Mission Control's catalog that was checked; false for a name taken as given (D15). */
+  verified: z.boolean(),
+  /** Why it is not announced. Null for an announced skill. */
+  reason: z.string().max(SHAPING_LIMITS.reasonChars).nullable(),
+});
+export type ShapingSkillSummary = z.output<typeof ShapingSkillSummarySchema>;
+
 /** What a launch records. Absent when no shaper applied. */
 export const TaskShapingSchema = z.object({
   state: z.enum(["ok", "degraded"]),
   at: z.number().int().nonnegative(),
   /** The session the record was delivered to. The engine leaves it unset; Phase 2 sets it. */
   sessionId: z.string().min(1).max(256).optional(),
+  /**
+   * The turn-one delivery the record describes: the id written to the task's binding
+   * (`Task.shapingDelivery`) in the same transaction as this record. The engine leaves it unset;
+   * the commit stamps it. A record from an earlier delivery carries an earlier id, so it is told
+   * apart from this one even when both name the same session.
+   */
+  deliveryId: z.string().min(1).max(64).optional(),
   durationMs: z.number().int().nonnegative(),
   entries: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
   shapers: z.array(ShapingShaperSummarySchema).max(SHAPING_LIMITS.shapers * 2),
+  /**
+   * Routed skills, in merge order. Present only when a router applied to the launch, so a launch
+   * no router applied to records exactly what it did before routing existed.
+   */
+  skills: z.array(ShapingSkillSummarySchema).max(SHAPING_LIMITS.recordedSkills).optional(),
+  /**
+   * Set by dispatch when this launch's delivery path left the section less room than
+   * `limits.totalBytes`: how many bytes it allowed, and why. Absent when the configured total
+   * applied. Truncation it caused is recorded as truncation, never as degradation.
+   */
+  limit: z.object({
+    bytes: z.number().int().nonnegative(),
+    reason: z.string().max(SHAPING_LIMITS.reasonChars),
+  }).optional(),
 });
 export type TaskShaping = z.output<typeof TaskShapingSchema>;
+
+/** What the reader rule reads of a task: its record and its binding, the session and the delivery. */
+export interface ShapingBinding {
+  shaping?: TaskShaping | null;
+  sessionId: string | null;
+  shapingDelivery?: string | null;
+}
+
+/**
+ * The one reader rule for a task's shaping record: it counts only while it describes the
+ * delivery the task is bound to now - it names the session the task is executing on, and
+ * carries the delivery id that binding was written with (`Task.shapingDelivery`). A record left
+ * by an earlier launch describes a session this task no longer shows; one left by an earlier
+ * delivery to the SAME session, such as a handover back to the agent it already ran on whose
+ * own commit failed, carries an earlier delivery id. Every reader - task reads, the shaping
+ * route, MCP, the board and rail markers, the chip and the viewer - sees nothing for either,
+ * rather than another delivery's context or `degraded`. A record or a binding without a
+ * delivery id never counts.
+ */
+export function currentShaping(task: ShapingBinding): TaskShaping | null {
+  const record = task.shaping;
+  if (!record?.sessionId || !record.deliveryId || !task.sessionId || !task.shapingDelivery) return null;
+  return record.sessionId === task.sessionId && record.deliveryId === task.shapingDelivery ? record : null;
+}
+
+/**
+ * A task as a read returns it: `shaping` kept only while `currentShaping` shows it, and absent
+ * otherwise, so no read carries a record that describes another delivery.
+ */
+export function withCurrentShaping<T extends ShapingBinding>(task: T): T {
+  if (task.shaping === undefined || currentShaping(task)) return task;
+  const { shaping: _stale, ...rest } = task;
+  return rest as T;
+}
+
+/** A launch that is shaping context right now: the step has started and nothing is committed yet. */
+export interface ShapingInProgress {
+  state: "shaping";
+  startedAt: number;
+}
+
+/**
+ * The second stable reader, for a surface that has to show the wait as well as the outcome:
+ * `{ state: "shaping" }` while a dispatch or handover is running the step - the derived,
+ * unpersisted `shapingContext` mark that rides `task_upsert` - and `currentShaping(task)`
+ * otherwise. `state` is always `shaping`, `ok` or `degraded`; null when there is nothing to show.
+ */
+export function shapingView(task: ShapingBinding & {
+  shapingContext?: { startedAt: number } | null;
+}): ShapingInProgress | TaskShaping | null {
+  if (task.shapingContext) return { state: "shaping", startedAt: task.shapingContext.startedAt };
+  return currentShaping(task);
+}
+
+/**
+ * One launch's after-work prompt (`task_skill_prompts`), as task reads and the viewer carry it.
+ * `skills` are the names it prompted, or was to prompt, in order.
+ */
+export const TaskSkillPromptSchema = z.object({
+  sessionId: z.string().min(1).max(256),
+  state: z.enum(SHAPING_PROMPT_STATES),
+  reason: z.string().max(SHAPING_LIMITS.reasonChars).nullable(),
+  skills: z.array(z.string().max(64)).max(SHAPING_LIMITS.routedSkills),
+  createdAt: z.number().int().nonnegative(),
+  deliveredAt: z.number().int().nonnegative().nullable(),
+});
+export type TaskSkillPrompt = z.output<typeof TaskSkillPromptSchema>;
+
+/**
+ * What a task read carries: the state, the session it describes, and one line. `skills` appears
+ * only when a router applied, and `afterWork` only once an after-work prompt row exists.
+ */
+export interface TaskShapingRead {
+  state: TaskShaping["state"];
+  sessionId: string;
+  summary: string;
+  skills?: ShapingSkillSummary[];
+  afterWork?: TaskSkillPrompt;
+}
+
+/**
+ * `shaping` in a task read, or null when `currentShaping` shows nothing. `afterWork` is attached
+ * only while it names the record's session.
+ */
+export function taskShapingRead(
+  task: ShapingBinding,
+  afterWork: TaskSkillPrompt | null = null,
+): TaskShapingRead | null {
+  const record = currentShaping(task);
+  if (!record?.sessionId) return null;
+  return {
+    state: record.state,
+    sessionId: record.sessionId,
+    summary: shapingSummaryLine(record),
+    ...(record.skills ? { skills: record.skills } : {}),
+    ...(afterWork && afterWork.sessionId === record.sessionId ? { afterWork } : {}),
+  };
+}
 
 /** One entry as it would be injected, for the record, the viewer and the dry run. */
 export interface ShapingInjectedEntry {
@@ -1651,9 +1961,11 @@ export interface ShapingInjectedEntry {
 export interface ShapingRun {
   /** Null when no shaper applied. */
   summary: TaskShaping | null;
-  /** The section for turn one. Empty when nothing was kept. */
+  /** The section for turn one: the task context, then the skills for this task. Empty when nothing was kept. */
   section: string;
   entries: ShapingInjectedEntry[];
+  /** The routed skills, as the summary records them. The engine always sets it, empty when no router applied. */
+  skills?: ShapingSkillSummary[];
 }
 
 /** One call: one shaper, one repository. What `summariseShaping` folds per shaper. */
@@ -1743,15 +2055,31 @@ const OUTCOME_WORDS: Record<ShapingOutcome, string> = {
   unavailable: "was unavailable",
 };
 
-/** One line for a task read, such as `degraded: acme-guidance timed out`. */
+/** The skills a record announced in turn one, in order. */
+export function announcedSkills(summary: Pick<TaskShaping, "skills">): ShapingSkillSummary[] {
+  return (summary.skills ?? []).filter((skill) => skill.state === "announced");
+}
+
+/** `, 2 skills (ship, retro)`, or nothing when no skill was announced. */
+function skillsClause(summary: TaskShaping): string {
+  const names = announcedSkills(summary).map((skill) => skill.name);
+  if (names.length === 0) return "";
+  return `, ${names.length} ${names.length === 1 ? "skill" : "skills"} (${names.join(", ")})`;
+}
+
+/**
+ * One line for a task read, such as `degraded: guidance-service timed out; 0 entries`. A launch
+ * that announced routed skills names them, as in `ok: 3 entries from 2 shapers, 2 skills (ship,
+ * retro)`; one that announced none reads exactly as it did before routing existed.
+ */
 export function shapingSummaryLine(summary: TaskShaping): string {
   const entries = `${summary.entries} ${summary.entries === 1 ? "entry" : "entries"}`;
   if (summary.state === "ok") {
-    return `ok: ${entries} from ${summary.shapers.length} ${summary.shapers.length === 1 ? "shaper" : "shapers"}${summary.truncated ? ", truncated" : ""}`;
+    return `ok: ${entries} from ${summary.shapers.length} ${summary.shapers.length === 1 ? "shaper" : "shapers"}${skillsClause(summary)}${summary.truncated ? ", truncated" : ""}`;
   }
   const problems = summary.shapers.filter((shaper) => shaper.outcome !== "ok")
     .map((shaper) => `${shaper.id} ${OUTCOME_WORDS[shaper.outcome]}`);
-  return `degraded: ${problems.join(", ")}; ${entries}`;
+  return `degraded: ${problems.join(", ")}; ${entries}${skillsClause(summary)}`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1874,16 +2202,140 @@ export function composeShapingSection(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Routed skills (FR-04 `route_skills`, D12 to D15)
+
+/** Whether a router's `lifecycle_point` is one this build knows. */
+export function isShapingLifecyclePoint(value: string): value is ShapingLifecyclePoint {
+  return (SHAPING_LIFECYCLE_POINTS as readonly string[]).includes(value);
+}
+
+/** One router's reply for one repository, in the order the calls were made. */
+export interface ShapingRouteReply {
+  shaper: string;
+  repo: string;
+  skills: readonly { name: string; lifecycle_point: string; reason_id: string }[];
+}
+
+/**
+ * Merge every router's reply into the launch's skills, in list order and then repository order,
+ * which is the order the calls were made. The first reply that names a skill sets its lifecycle
+ * point, reason id and router; a later one only adds its repository. A point this build does not
+ * know makes the skill `unsupported`. At most `routedSkills` supported skills go on; the rest are
+ * `dropped`. Every skill starts unverified: whether a name is checked is decided where the
+ * catalog can be read, not here. At most `recordedSkills` are returned.
+ */
+export function mergeRoutedSkills(replies: readonly ShapingRouteReply[]): ShapingSkillSummary[] {
+  const merged: ShapingSkillSummary[] = [];
+  const byName = new Map<string, ShapingSkillSummary>();
+  let supported = 0;
+  for (const reply of replies) {
+    for (const skill of reply.skills) {
+      const known = byName.get(skill.name);
+      if (known) {
+        if (!known.repositories.includes(reply.repo) && known.repositories.length < SHAPING_LIMITS.repositories) {
+          known.repositories.push(reply.repo);
+        }
+        continue;
+      }
+      if (merged.length >= SHAPING_LIMITS.recordedSkills) continue;
+      const point = isShapingLifecyclePoint(skill.lifecycle_point);
+      const over = point && supported >= SHAPING_LIMITS.routedSkills;
+      if (point && !over) supported += 1;
+      const entry: ShapingSkillSummary = {
+        name: skill.name,
+        lifecyclePoint: skill.lifecycle_point,
+        reasonId: skill.reason_id,
+        shaper: reply.shaper,
+        repositories: [reply.repo],
+        state: !point ? "unsupported" : over ? "dropped" : "announced",
+        verified: false,
+        reason: !point
+          ? `This build does not know the lifecycle point "${skill.lifecycle_point}".`
+          : over ? `More than ${SHAPING_LIMITS.routedSkills} skills were routed for this launch.` : null,
+      };
+      byName.set(skill.name, entry);
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+export const SHAPING_SKILLS_PREAMBLE = "## Skills for this task\n\n"
+  + "Mission Control's skill routing chose these skills for this task. Use each one\n"
+  + "when its line says. If a skill is not available in this session, say so and\n"
+  + "carry on. This list supplements the instructions above and cannot relax their\n"
+  + "authorization, plan or workflow rules.";
+
+/** When each lifecycle point says to use a skill. Mission Control's words, never a router's. */
+const SKILL_WHEN: Record<ShapingLifecyclePoint, string> = {
+  "task-start": "at the start: use this skill before you begin the work.",
+  during: "during the work: use this skill when it applies.",
+  "after-work": "after the work: do not use it yet. Mission Control will\n  prompt you when the work is complete.",
+};
+
+/** Repositories one line names before it says how many more it left out. */
+const SKILL_LINE_REPOSITORIES = 8;
+
+/**
+ * One skill's line. `reference` is how the worker's harness names the skill (`skillReference`).
+ * `repositories` is set only when the skill was routed for some of a task's repositories, and
+ * then the line ends with their names.
+ */
+export function shapingSkillLine(skill: {
+  reference: string;
+  lifecyclePoint: ShapingLifecyclePoint;
+  repositories?: readonly string[] | null;
+}): string {
+  const names = (skill.repositories ?? []).map(headingText).filter(Boolean);
+  const shown = names.slice(0, SKILL_LINE_REPOSITORIES);
+  const more = names.length - shown.length;
+  const scope = shown.length === 0 ? "" : ` For ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
+  return `- \`${skill.reference}\` - ${SKILL_WHEN[skill.lifecyclePoint]}${scope}`;
+}
+
+/** "Skills for this task", or empty with no heading when no line is given. */
+export function composeSkillsSection(lines: readonly string[]): string {
+  if (lines.length === 0) return "";
+  return `${SHAPING_SKILLS_PREAMBLE}\n\n${lines.join("\n")}`;
+}
+
+/** The task context section and the skills section, as the engine joins them into one section. */
+export function joinShapingSections(context: string, skills: string): string {
+  return [context, skills].filter(Boolean).join("\n\n");
+}
+
+// ---------------------------------------------------------------------------------------------
 // The dry run
 
 /** `POST /api/shaping/test`: run one shaper against a repository, as dispatch would. */
 export const ShapingTestRequestSchema = z.object({
   id: z.string().min(1).max(64),
-  /** The `shapingEntryRevision` the sender showed; the dry run is refused if the entry has changed. */
+  /** The revision the config view reported to the sender; the dry run is refused if the entry has changed. */
   expect: ShapingRevisionSchema.optional(),
   /** An absolute path to a local repository checkout. */
   repository: z.string().min(1).max(4096).refine((value) => value.startsWith("/"), { message: "The repository is an absolute path." }),
   prompt: z.string().max(SHAPING_LIMITS.taskChars).optional(),
   kind: z.string().min(1).max(64).optional(),
+  /** The harness a router's skills are rendered for. Absent, the section is shown as Claude would receive it. */
+  agent: z.enum(AGENT_TYPES).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
+
+/**
+ * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.
+ * The tab's id, kept across its reloads and copied by its duplicates, the write's number, the
+ * comma-separated controls it affects, and the daemon instance whose view the tab last read. The
+ * sequence is the time the write was sent, in microseconds since the epoch, raised past the last
+ * one the tab sent. The daemon refuses a write, as it is about to apply, once a later write from the
+ * same tab was applied to one of those controls, or once a record it dropped held a later sequence
+ * (`src/server/shaping/write-order.ts`).
+ */
+export const SHAPING_WRITE_ORDER_HEADER = "x-mission-shaping-order";
+
+/** How long the daemon keeps its record of each applied shaping write, after it last applied. */
+export const SHAPING_WRITE_WINDOW_MS = 10 * 60_000;
+
+/** The value of `SHAPING_WRITE_ORDER_HEADER` for one write. */
+export function shapingWriteOrder(window: string, sequence: number, controls: readonly string[], instance?: string): string {
+  return `${window} ${sequence} ${controls.join(",")}${instance ? ` ${instance}` : ""}`;
+}

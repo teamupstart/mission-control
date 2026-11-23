@@ -2,6 +2,8 @@ import { taskHasRepository } from "@shared/task.ts";
 import { dispatchPhase, type DispatchPhase } from "@shared/session.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import type { Task, TaskProvisioning } from "@shared/types.ts";
+import { shapingView } from "@shared/shaping.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { ClaimStopButton, formatElapsed, useNow } from "./ClaimProgress.tsx";
 import { AgentDot } from "./session-bits.tsx";
@@ -53,8 +55,11 @@ const PHASE_COPY: Record<DispatchPhase, (task: Task) => string> = {
  * the generic worktree line: a claim can run for many minutes, and "Provisioning its worktree"
  * for that long reads as a dispatch that hung.
  */
-function phaseCopy(task: Task, phase: DispatchPhase): string {
-  return task.provisioning ? "Installing dependencies" : PHASE_COPY[phase](task);
+function phaseCopy(task: Task, phase: DispatchPhase, shaping: boolean): string {
+  if (task.provisioning) return "Installing dependencies";
+  // Between "Provisioning its worktree" and "Launching", while task shaping asks its shapers.
+  if (shaping && shapingView(task)?.state === "shaping") return "Shaping context";
+  return PHASE_COPY[phase](task);
 }
 
 /**
@@ -147,6 +152,7 @@ function PhaseMeter({ phase }: { phase: DispatchPhase }): React.JSX.Element {
 function PendingTile({ task }: { task: Task }): React.JSX.Element {
   const phase = dispatchPhase(task);
   const title = pendingTitle(task);
+  const shaping = useFeatureFlag("task-shaping");
   return (
     <div className="tile tone-working pend-tile" data-phase={phase}>
       <span className="tile-head">
@@ -157,7 +163,7 @@ function PendingTile({ task }: { task: Task }): React.JSX.Element {
       </span>
       <span className="pend-phase">
         <PhaseMeter phase={phase} />
-        {phaseCopy(task, phase)}
+        {phaseCopy(task, phase, shaping)}
       </span>
       {task.provisioning ? (
         <ClaimLine task={task} provisioning={task.provisioning} />
@@ -190,6 +196,7 @@ function PendingTile({ task }: { task: Task }): React.JSX.Element {
 function PendingRailRow({ task }: { task: Task }): React.JSX.Element {
   const phase = dispatchPhase(task);
   const title = pendingTitle(task);
+  const shaping = useFeatureFlag("task-shaping");
   return (
     <div className="rail-row tone-working pend-rail" data-phase={phase}>
       <AgentDot agent={task.agent} />
@@ -206,7 +213,7 @@ function PendingRailRow({ task }: { task: Task }): React.JSX.Element {
           above the frames - they are not sessions, so they are in no repository span - and
           this is the rail's only line that can say where the task is going. */}
       <span className="rail-sub">
-        {phaseCopy(task, phase)}
+        {phaseCopy(task, phase, shaping)}
         <span className="pend-sep" aria-hidden>·</span>
         {taskHasRepository(task) ? repoLeaf(task.repoRoot) : "no repository"}
       </span>

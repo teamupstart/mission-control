@@ -18,7 +18,6 @@ import { FLOW_NOT_IMPLEMENTED } from "../src/mod/flows/command.ts";
 import { runDispatchCommand, runDispatchFlow, runStartDispatchTool } from "../src/mod/flows/index.ts";
 import { PANE_TABS, renderPane } from "../src/mod/pane/index.ts";
 import { PANE_NOT_IMPLEMENTED, type PaneProps } from "../src/mod/pane/types.ts";
-import { register } from "../src/mod/register.ts";
 import type { ModPaneTab, ModPanePlacement } from "../src/mod/host.ts";
 import type {
   HomeDispatchInbox,
@@ -100,11 +99,6 @@ test("build:mod writes through a symlinked output directory into the directory i
   }
 });
 
-test("the skeleton registers no hook, so an installed P2 build changes nothing in a session", () => {
-  const on = (event: unknown) => assert.fail(`the P2 skeleton hooked ${String(event)}`);
-  register(on, {});
-});
-
 test("the $.state contract matches the shared schemas in both directions", () => {
   // Type-level: `npm run typecheck` fails when either side drifts from the other.
   const registration = (a: HomeSessionRegistrationAnswer): MissionControlRegistration => a;
@@ -119,7 +113,7 @@ test("the $.state contract matches the shared schemas in both directions", () =>
   // The engine holds `$.state` keys to the contract under the plugin's own name, so the
   // contract's key must be the plugin name `build:mod` writes into plugin.json.
   const contract = readFileSync(join(root, "src/mod/types/index.d.ts"), "utf8");
-  assert.match(contract, new RegExp(`interface PluginState \\{\\s*"${MOD_NAME}": MissionControlModState;`));
+  assert.match(contract, new RegExp(`interface PluginState \\{[^]*?"${MOD_NAME}": \\{[^]*?registration: MissionControlModState\\["registration"\\]`));
 });
 
 test("npm run build:mod's script writes an installable folder marketplace that carries the pane", async () => {

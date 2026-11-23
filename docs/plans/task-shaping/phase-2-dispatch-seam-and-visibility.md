@@ -18,7 +18,9 @@ never stops the launch. With Phase 1 this completes the first slice (D3).
 - "Shaping context" in the pending tile, the chip, the viewer, the board and rail marker.
 - The `shaping` field in task reads, including the MCP tools.
 
-Not here: assignment into a live session and pipelines (non-goals), Settings (Phase 3).
+Also here: the second call site in `TaskManager.assign` (decision 21 in `phased-plan.md`).
+
+Not here: pipelines (a non-goal), Settings (Phase 3).
 
 ## Repository findings
 
@@ -83,9 +85,16 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    written to. `GET /api/tasks/:id/shaping` returns the summary and the text that exist.
    Every reader goes through one shared predicate, `currentShaping(task)` in
    `src/shared/shaping.ts`: the record counts only while its `sessionId` is the task's
-   current `sessionId`. Task reads, this route, the board and rail markers, the chip and the
-   viewer all use it, so a redispatch whose commit failed shows no earlier context or
-   `degraded` anywhere.
+   current `sessionId` and its `deliveryId` is the delivery id the task's binding was written
+   with (`Task.shapingDelivery`, column `tasks.shaping_delivery`). Each turn-one delivery, a
+   launch or a handover, gets a fresh id, written with the record and its binding, the row
+   naming the receiving session, in one transaction. A delivery that recorded nothing binds
+   under its own id. One whose commit fails binds under its own id too, through a fallback
+   write of the binding alone. If that write also fails, the task keeps its previous binding,
+   live and durable alike. Task reads, this route, MCP, the board and rail markers, the
+   chip and the viewer all use it, so a redispatch whose commit failed, or a handover back to
+   the same session whose commit failed, shows no earlier context or `degraded` anywhere, before
+   or after a restart.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip, shown only
@@ -109,6 +118,22 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   the same task is cleared when this launch reaches its worker (step 2).
 - Order with FR-05 repository task skills when both exist: kind contract, task context,
   repository task skill.
+- Schema step 42. 38 went to #1556, 39 to the asynchronous input inbox, 40 to the work unit id
+  and 41 to review-message deliveries, all of which merged first, so this phase renumbered as the
+  later one. Whichever of this phase and FR-05 merges second
+  renumbers its step.
+
+## Rebase note: FR-05 repository task skills (#1565)
+
+This phase and FR-05 share the `composeTurnOne` closure in `Dispatcher.dispatch`. Whichever
+merges second resolves it the same way:
+
+1. Run `resolveRepoTaskSkills` first, before the shaping step.
+2. Measure turn one with `appendRepoTaskSkills` applied, so the budget sees the turn as sent,
+   and call `shapeTask` with the `maxSectionBytes` that leaves.
+3. Keep FR-05's block last: the shaping helper `withTaskContext` goes inside
+   `appendRepoTaskSkills`, so the order stays kind contract, task context, repository task
+   skill.
 
 ## Tests and verification
 
@@ -157,6 +182,9 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - A dispatch that fails before turn one is handed to the worker changes no record.
 - No reader shows a record that names another session, including after a failed commit.
+- No reader shows a record from an earlier delivery to the same session, including after a
+  failed commit and a restart, and a stop between a launch's or a handover's record and its
+  binding leaves neither written.
 - No model tokens are spent by any test.
 
 ## Handoff

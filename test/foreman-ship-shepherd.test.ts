@@ -12,6 +12,7 @@ import {
   extractShipRecoveryReview,
   forbiddenRecoveryInstruction,
 } from "../src/server/foreman/ship-recovery-review.ts";
+import { heldGapRecoveryApplies, planStartsWorkflowOnCompletion } from "../src/shared/plan-publication.ts";
 import { shipRecoveryMarker } from "../src/shared/ship-recovery.ts";
 import { taskCompletionContract } from "../src/shared/task-completion.ts";
 import type {
@@ -93,6 +94,7 @@ function input(over: Partial<Parameters<typeof decideShipShepherd>[0]> = {}) {
     workflowOwnsSession: false,
     workflowEvidenceEligible: false,
     hasTaskOwnedOpenPr: false,
+    planStartsWorkflowOnCompletion: false,
     diffHasChanges: false,
     featureEnabled: true,
     mayActLive: true,
@@ -768,4 +770,134 @@ test("a blocked session gets no pre-PR recovery send until the blocker clears", 
   const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   assert.deepEqual(decideShipShepherd(input({ session: session({ blocker }) })), { kind: "skip", why: "the session is blocked" });
   assert.equal(decideShipShepherd(input()).kind, "recover");
+});
+
+test("a session awaiting its own background process gets no pre-PR recovery send until its deadline", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(decideShipShepherd(input({ session: session({ awaiting }) })), { kind: "skip", why: "the session is awaiting a background process" });
+  assert.equal(decideShipShepherd(input({ session: session({ awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }) })).kind, "recover");
+});
+
+test("a held plan whose foreman_complete workflow waits on the claim gets its gaps at once", () => {
+  // The reported stall: a plan's held verdict spends the cycle that alone would have started
+  // its Plan Validation run, and nothing else ever sends the session another turn.
+  const plan = session({
+    lastActivity: NOW - 30_000,
+    task: mkTaskSummary({ id: "task-1", kind: "plan", status: "running" }),
+  });
+  const held = queue({ promptedDecision: decision("held") });
+
+  const immediate = decideImmediateHeldGapDelivery(input({
+    session: plan,
+    queue: held,
+    diffHasChanges: true,
+    planStartsWorkflowOnCompletion: true,
+  }));
+  assert.equal(immediate.kind, "recover");
+  if (immediate.kind === "recover") {
+    assert.equal(immediate.reason, "held_gaps");
+    assert.equal(immediate.attempt, 1);
+    const payload = immediate.payload ?? "";
+    assert.match(payload, /held this plan's handoff, so its bound workflow has not started/);
+    assert.match(payload, /test\/widget\.test\.ts: Cover the retry branch/);
+    // A plan commits and pushes the artifacts its phase tasks reference, so the ship
+    // instruction "Do not commit, push" would contradict its own handoff.
+    assert.doesNotMatch(payload, /Do not commit, push/);
+    assert.match(payload, /commit-and-push rule/);
+    assert.match(payload, /bound workflow's own validation or review result is not yours to close/);
+    assert.match(payload, /Do not create a pull request, merge, or expand repository scope/);
+  }
+});
+
+test("a plan is not relayed when its workflow does not depend on Foreman's claim", () => {
+  const plan = session({ task: mkTaskSummary({ id: "task-1", kind: "plan", status: "running" }) });
+  const held = queue({ promptedDecision: decision("held") });
+  // Unbound, Manual, skill-owned, local-storage and unavailable ownership all arrive here as
+  // false: the predicate below decides them, and this policy must not reopen the question.
+  for (const decide of [decideShipShepherd, decideImmediateHeldGapDelivery]) {
+    assert.deepEqual(
+      decide(input({ session: plan, queue: held, planStartsWorkflowOnCompletion: false })),
+      { kind: "skip", why: "no running managed task is bound" },
+    );
+  }
+  // And a ship task ignores the plan flag entirely.
+  assert.deepEqual(
+    decideShipShepherd(input({ queue: held, planStartsWorkflowOnCompletion: true })),
+    decideShipShepherd(input({ queue: held })),
+  );
+});
+
+test("a workflow-owned plan is only ever sent held gaps or escalated", () => {
+  const plan = session({ task: mkTaskSummary({ id: "task-1", kind: "plan", status: "running" }) });
+  const onlyGaps = { kind: "skip", why: "a plan task is only sent its held completion gaps" };
+  // No decision on a consumed generation is the empty/ambiguous resume path, and a direct
+  // handoff is a ship path. Neither is a turn a workflow-owned plan has to take.
+  assert.deepEqual(decideShipShepherd(input({ session: plan, planStartsWorkflowOnCompletion: true })), onlyGaps);
+  assert.deepEqual(
+    decideShipShepherd(input({ session: plan, diffHasChanges: true, planStartsWorkflowOnCompletion: true })),
+    onlyGaps,
+  );
+  assert.deepEqual(decideShipShepherd(input({
+    session: plan,
+    queue: queue({ promptedDecision: decision("direct_handoff") }),
+    planStartsWorkflowOnCompletion: true,
+  })), onlyGaps);
+
+  // A verifier that kept failing is still made visible instead of leaving the plan idle.
+  const failed = decideShipShepherd(input({
+    session: plan,
+    queue: queue({ promptedDecision: decision("verification_failed") }),
+    planStartsWorkflowOnCompletion: true,
+  }));
+  assert.equal(failed.kind, "escalate");
+
+  // Every owner and authority gate still applies to a plan.
+  const held = queue({ promptedDecision: decision("held") });
+  for (const [over, why] of [
+    [{ featureEnabled: false }, "pre-PR ship recovery is off"],
+    [{ workflowOwnsSession: true }, "an active workflow owns the session"],
+    [{ humanOwnsSession: true }, "the session needs a human"],
+    [{ mayActLive: false }, "Foreman is not live in a trusted repository"],
+  ] as const) {
+    assert.deepEqual(
+      decideImmediateHeldGapDelivery(input({ ...over, session: plan, queue: held, planStartsWorkflowOnCompletion: true })),
+      { kind: "skip", why },
+    );
+  }
+  assert.deepEqual(decideShipShepherd(input({
+    session: session({ task: mkTaskSummary({ id: "task-1", kind: "plan", status: "done" }) }),
+    queue: held,
+    planStartsWorkflowOnCompletion: true,
+  })), { kind: "skip", why: "no running managed task is bound" });
+});
+
+test("only a foreman_complete workflow that owns a repository plan waits on Foreman's claim", () => {
+  const bound = {
+    owner: "workflow", bindingId: "b-1", workflowVersionId: "builtin-workflow:plan-validation@3",
+    triggerMode: "foreman_complete",
+  } as const;
+  const repositoryPlan = { kind: "plan" as const, planPolicy: { storage: "repository" as const, commitPlanHtml: false } };
+  assert.equal(planStartsWorkflowOnCompletion(repositoryPlan, bound), true);
+  // A plan with no stored policy is a repository plan, the default storage.
+  assert.equal(planStartsWorkflowOnCompletion({ kind: "plan" }, bound), true);
+
+  // A Manual binding waits for the operator's submit; a skill-owned plan opens its own PR.
+  assert.equal(planStartsWorkflowOnCompletion(repositoryPlan, { ...bound, triggerMode: "manual" }), false);
+  assert.equal(planStartsWorkflowOnCompletion(repositoryPlan, { owner: "skill" }), false);
+  // An ownership read that failed is never permission.
+  assert.equal(planStartsWorkflowOnCompletion(repositoryPlan, { owner: "unavailable", reason: "gone" }), false);
+  assert.equal(planStartsWorkflowOnCompletion(repositoryPlan, null), false);
+  // A local plan never records a hold; it waits for its publication receipt instead.
+  assert.equal(planStartsWorkflowOnCompletion({ kind: "plan", planPolicy: { version: 2, storage: "local", commitPlanHtml: false } }, bound), false);
+  assert.equal(planStartsWorkflowOnCompletion({ kind: "ship" }, bound), false);
+  assert.equal(planStartsWorkflowOnCompletion(null, bound), false);
+
+  for (const kind of ["ship", "bugfix", "document"] as const) {
+    assert.equal(heldGapRecoveryApplies(kind, false), true);
+  }
+  assert.equal(heldGapRecoveryApplies("plan", true), true);
+  assert.equal(heldGapRecoveryApplies("plan", false), false);
+  for (const kind of ["scout", "chat", "pipeline", "resident"] as const) {
+    assert.equal(heldGapRecoveryApplies(kind, true), false);
+  }
 });

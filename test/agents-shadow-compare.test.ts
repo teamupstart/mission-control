@@ -15,6 +15,7 @@ import { compareAgents, formatShadowSummary } from "../src/server/discovery/agen
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",
@@ -41,7 +42,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     firstSeen: 0,
     lastSeen: 0,
     lastActivity: null,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,

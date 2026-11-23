@@ -4,6 +4,8 @@ import {
   type EnvironmentCheckId,
 } from "./environment-checks.ts";
 import type { PipelineProviderId } from "./pipeline.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
+import { VOICE_FLAG, VOICE_REQUIRED_FLAGS } from "./voice.ts";
 
 // External tooling Mission Control can explain, split from the daemon probes for the same
 // reason `ENVIRONMENT_CHECK_INFO` is split from `server/environment`: the dashboard needs
@@ -38,6 +40,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "acli-cli",
   "acli-auth",
   "coderabbit-auth",
+  "voice-previews",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -52,6 +55,7 @@ export const SETUP_FAMILY_IDS = [
   "extensions",
   "pipelines",
   "runtime",
+  "voice",
 ] as const;
 
 export type SetupFamilyId = (typeof SETUP_FAMILY_IDS)[number];
@@ -60,6 +64,11 @@ export interface SetupFamilyInfo {
   id: SetupFamilyId;
   label: string;
   description: string;
+  /**
+   * A preview feature flag the whole family follows. While it is off the family's rows are
+   * neither probed nor listed, and the rail does not draw the family.
+   */
+  flag?: FeatureFlagId;
 }
 
 export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
@@ -103,7 +112,28 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     label: "Runtime",
     description: "The serving daemon and external runtimes for source development and independent tools.",
   },
+  voice: {
+    id: "voice",
+    label: "Voice",
+    description: "What voice addressing needs before it can listen on this machine.",
+    flag: VOICE_FLAG,
+  },
 };
+
+/**
+ * Whether a family's preview flag, if it follows one, is on.
+ *
+ * `flagOn` is the caller's reader of the resolved flags. Without one every flag counts as on,
+ * which is what a reader of the whole catalog (a test, the search index) means; the daemon's
+ * probes and the Setup rail always pass the live answer.
+ */
+export function setupFamilyFlagOn(
+  family: SetupFamilyId,
+  flagOn?: (flag: FeatureFlagId) => boolean,
+): boolean {
+  const flag = SETUP_FAMILY_INFO[family].flag;
+  return flag === undefined || flagOn === undefined || flagOn(flag);
+}
 
 export type SetupRequirement = "required" | "recommended" | "optional";
 
@@ -225,7 +255,11 @@ export type SetupRemedy =
   // Like `service`, the browser carries no argv to run: it names the action and the desktop
   // shell owns the installer. `fallback` is copy-only text for a dashboard opened outside
   // the desktop app, whose operator may be running Mission Control from a checkout instead.
-  | { kind: "integrations"; note: string; fallback: { argv: readonly string[]; note: string } };
+  | { kind: "integrations"; note: string; fallback: { argv: readonly string[]; note: string } }
+  // Turn preview feature flags on, through the same `PUT /api/feature-flags` the Feature flags
+  // panel uses. It names flags and nothing else: the browser could switch any of them anyway,
+  // and the daemon's flag route refuses an id it does not know.
+  | { kind: "feature-flags"; flags: readonly FeatureFlagId[]; label: string; note: string };
 
 /**
  * Start Herdr's default server, offered in place of the install link while the CLI is
@@ -580,7 +614,53 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       note: "Sign the CodeRabbit CLI in through your browser, then press Re-check.",
     },
   },
+  // Voice reads as unavailable while any flag it depends on is off, because a flag cannot
+  // require another. The probe names which are off and offers to turn exactly those on.
+  "voice-previews": {
+    id: "voice-previews",
+    label: "Voice previews",
+    family: "voice",
+    requirement: "optional",
+    enables: "Voice needs Ask without stopping, Reports and inbox upgrades and File plan decisions. Until all three are on, it does not listen.",
+    remedy: {
+      kind: "feature-flags",
+      flags: VOICE_REQUIRED_FLAGS,
+      label: "Turn on the previews voice needs",
+      note: "Turn on Ask without stopping, Reports and inbox upgrades and File plan decisions in Settings > Feature flags.",
+    },
+  },
 };
+
+/**
+ * Every preview flag a Setup reading depends on: a family that follows one, and the flags a
+ * `feature-flags` remedy turns on, whose probe reads them. A dashboard re-reads Setup when any
+ * of these changes, so a row never reports a flag as it was before the switch.
+ */
+export const SETUP_FLAG_INPUTS: readonly FeatureFlagId[] = [...new Set<FeatureFlagId>([
+  ...Object.values(SETUP_FAMILY_INFO).flatMap((family) => (family.flag ? [family.flag] : [])),
+  ...Object.values(SETUP_DEPENDENCY_INFO).flatMap((info) => (info.remedy.kind === "feature-flags" ? info.remedy.flags : [])),
+])];
+
+/**
+ * The resolved state of `SETUP_FLAG_INPUTS` as one string, one character per flag.
+ */
+export function setupFlagsKey(flagOn: (flag: FeatureFlagId) => boolean): string {
+  return SETUP_FLAG_INPUTS.map((flag) => (flagOn(flag) ? "1" : "0")).join("");
+}
+
+/**
+ * The flags a Setup reading is stamped with (`SetupChecksView.flagsKey`): `setupFlagsKey` while a
+ * family that follows a flag is on, and nothing otherwise. Only then does any reading depend on
+ * these flags, and with every such family off the response stays the one an install without
+ * them gave. The dashboard computes the live stamp the same way and re-reads on a mismatch.
+ */
+export function setupReadingFlags(flagOn: (flag: FeatureFlagId) => boolean): string | undefined {
+  const gated = SETUP_FAMILY_IDS.some((family) => {
+    const flag = SETUP_FAMILY_INFO[family].flag;
+    return flag !== undefined && flagOn(flag);
+  });
+  return gated ? setupFlagsKey(flagOn) : undefined;
+}
 
 /**
  * The order rows render in: id order, except that a row naming `after` moves to directly
@@ -673,6 +753,12 @@ export interface SetupChecksView {
    * as pre-shortened evidence, so a row can still show the absolute path on hover.
    */
   home: string;
+  /**
+   * The flags this reading was taken under (`setupReadingFlags`): present only while a family
+   * that follows a flag (Voice) is on. The dashboard re-reads when the live stamp differs,
+   * including a switch made between this read and its first snapshot.
+   */
+  flagsKey?: string;
 }
 
 /**

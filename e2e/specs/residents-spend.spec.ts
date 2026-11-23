@@ -7,6 +7,7 @@ import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 for (const [agent, model] of [
   ["codex", "gpt-6.1-sol"], ["codex", "gpt-6.1-terra"],
+  ["codex", "gpt-6.2-sol"], ["codex", "gpt-6.2-astra"],
   ["claude", "claude-fable-5-1"], ["claude", "claude-opus-5-5"],
   ["claude", "claude-sonnet-5-5"], ["claude", "claude-haiku-5-5"],
   ["codex", "unpriced-future-model"],
@@ -56,7 +57,15 @@ for (const [agent, model] of [
     await expect(editor.getByRole("button", { name: "Launch" })).toBeEnabled();
     const stored = ((await (await page.request.get(`${daemon.baseURL}/api/residents/profiles`)).json()) as ResidentProfile[]).find(p => p.id === profile.id)!;
     expect(stored.settings.loop.spendCapUsd).toBe(20);
-    if (model === "gpt-6.1-sol") {
+    if (model === "gpt-6.1-sol" || model === "gpt-6.2-sol" || model === "gpt-6.2-astra") {
+      expect(stored.settings.execution.model).toBe(model);
+      await expect(cap).toHaveValue("20");
+      await expect(select.locator("option:checked")).not.toContainText("spend cap unavailable");
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        mkdirSync(artifactsDir("residents-spend"), { recursive: true });
+        await cap.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: join(artifactsDir("residents-spend"), `${model}-cap.png`) });
+      }
       // Native compaction metadata belongs to the isolated fake Codex home.
       mkdirSync(join(daemon.home, ".codex"), { recursive: true });
       writeFileSync(join(daemon.home, ".codex/models_cache.json"), JSON.stringify({ models: [
@@ -67,7 +76,7 @@ for (const [agent, model] of [
       await expectContentClearsBorder(dialog);
       if (process.env.MC_E2E_EVIDENCE === "1") {
         mkdirSync(artifactsDir("residents-spend"), { recursive: true });
-        await dialog.screenshot({ path: join(artifactsDir("residents-spend"), "sol-launch.png") });
+        await dialog.screenshot({ path: join(artifactsDir("residents-spend"), `${model}-launch.png`) });
       }
       await dialog.getByRole("button", { name: "Launch resident" }).click();
       await expect(dialog).toBeHidden();
@@ -78,7 +87,7 @@ for (const [agent, model] of [
       const live = page.getByRole("region", { name: "Live run of Agent Wrangler" });
       await expect(live).toBeVisible();
       if (process.env.MC_E2E_EVIDENCE === "1") {
-        await live.screenshot({ path: join(artifactsDir("residents-spend"), "sol-running.png") });
+        await live.screenshot({ path: join(artifactsDir("residents-spend"), `${model}-running.png`) });
       }
     }
   });

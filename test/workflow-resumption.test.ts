@@ -65,6 +65,7 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 // Browser-safe and imported here on purpose: the notice is only correct if the field the
 // DAEMON puts on the detail is the field the browser reads, and asserting the two halves in
 // different files is how they drift.
@@ -686,6 +687,70 @@ test("a blocked session is not handed the next round until its blocker clears", 
   await h.manager.sweepResumptions(SETTLED());
   assert.equal(h.store.listSubmissions(h.runId).length, 2, "clearing the blocker did not release the round");
   await h.manager.stop();
+});
+
+test("a session awaiting its own background process is not handed the next round until its deadline passes", async () => {
+  const h = await personaFeedbackRun("awaiting-persona", "v-awaiting-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "awaiting-persona", h.agentSessionId, h.paneId);
+  // Further out than the sweep's settled clock, so the first sweep falls inside the deadline.
+  const expectedBy = Date.now() + 20 * 60_000;
+  const declared = h.registry.reportAwaiting("awaiting-persona", {
+    what: "CI checks on PR #7", wakeSource: "command", expectedBy, referenceUrl: null, details: null,
+  });
+  assert.equal(declared.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a session awaiting its CI was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+
+  // No wake came and the deadline passed: the hold lifts and the round is handed over.
+  await h.manager.sweepResumptions(expectedBy + 1);
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "the deadline passing did not release the round");
+  await h.manager.stop();
+});
+
+test("a wait declared while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-awaiting", "v-probe-awaiting", "auto");
+  reportIdle(h, "probe-awaiting", h.agentSessionId, h.paneId);
+  h.duringProbe.fn = () => {
+    h.registry.reportAwaiting("probe-awaiting", {
+      what: "CI checks on PR #7", wakeSource: "command", expectedBy: Date.now() + 20 * 60_000,
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for an awaiting session");
+  await h.manager.stop();
+});
+
+test("an outstanding request_input question holds the next round, snoozed or not, until it is answered (async-input)", async () => {
+  const h = await personaFeedbackRun("asked-persona", "v-asked-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "asked-persona", h.agentSessionId, h.paneId);
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  try {
+    const reviews = new ReviewManager(h.registry);
+    // A call-mode question the operator snoozed: it turns nothing amber, so only the completion
+    // hold can stop the run being resumed around it.
+    const question = reviews.create("asked-persona", "input", "Which linter?", "Which linter?", [
+      { id: "q", question: "Which linter?", options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] },
+    ], { snoozable: true });
+    reviews.snooze(question.id, 60 * 60_000);
+    assert.notEqual(h.registry.getSession("asked-persona")?.pendingReviews, 1, "a snoozed question is not pending");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1, "the run resumed around an outstanding question");
+    assert.equal(withheldReasons(h, h.runId).at(-1), "session_needs_you");
+
+    reviews.resolve(question.id, "answer", "eslint", "human");
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 2, "answering the question did not release the round");
+  } finally {
+    applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false });
+    await h.manager.stop();
+  }
 });
 
 test("a blocker reported while the repository is read holds the run, on the unchanged branch too", async () => {

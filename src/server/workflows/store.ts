@@ -1,4 +1,4 @@
-import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
@@ -127,6 +127,8 @@ import {
   WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -1020,10 +1022,11 @@ function readCommandArgv(
   id: string,
   column: string,
   raw: string | null,
+  schema = CommandArgvJsonSchema,
 ): string[] | null {
   if (raw === null) return null;
   try {
-    return parseJson(table, id, column, raw, CommandArgvJsonSchema, COMMAND_ARGV_JSON_BYTES);
+    return parseJson(table, id, column, raw, schema, COMMAND_ARGV_JSON_BYTES);
   } catch (error) {
     diagnose(error);
     return null;
@@ -1117,10 +1120,8 @@ function parseWorkflowCommandRow(
   return {
     slot: row.slot,
     defaultCommand: readCommandArgv(
-      "workflow_commands",
-      row.slot,
-      "default_command_json",
-      row.default_command_json,
+      "workflow_commands", row.slot, "default_command_json", row.default_command_json,
+      row.slot === "coderabbit" ? CodeRabbitCommandSchema : CommandArgvJsonSchema,
     ),
     maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
     timeoutMs: readCommandTimeoutMs(row.timeout_ms),
@@ -3802,7 +3803,11 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
-    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+    const validRecipe = key === "coderabbit"
+      ? (next.defaultCommand === null || CodeRabbitCommandSchema.safeParse(next.defaultCommand).success)
+        && next.overrides.every((rule) => rule.command.length === 0 && CodeRabbitTuningSchema.safeParse(rule.review).success)
+      : next.overrides.every((rule) => !rule.review && rule.command.length > 0);
+    if (!validRecipe) {
       return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
     }
     // Refused here as well as at the route, because the store is the boundary a future
@@ -5550,6 +5555,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -7152,6 +7158,7 @@ export class WorkflowStore {
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
+      const freshPublishedReview = workflowInspectorGateNeedsFreshReview(inspectorGateState(this.mustRun(input.runId)));
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
@@ -7167,6 +7174,7 @@ export class WorkflowStore {
         submissionId: input.id,
         triggerKey: input.triggerKey,
         round: input.round,
+        ...(freshPublishedReview ? { freshPublishedReview: true } : {}),
       }, input.now);
       return {
         run: this.mustRun(input.runId),
@@ -7311,11 +7319,10 @@ export class WorkflowStore {
         const latest = this.latestSubmission(run.id);
         if (latest && latest.round <= run.maxRepairRounds) {
           previousFingerprint = latest.evidenceFingerprint;
-          this.insertSubmissionInTransaction({
+          const repair = this.createRepairSubmission({
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
-            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -7323,15 +7330,8 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
-          assertRunLifecycle(run.id, "capturing", "capturing", null);
-          this.db.prepare(
-            `UPDATE workflow_runs
-                SET status = 'capturing', current_phase = 'capturing',
-                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
-              WHERE id = ?`,
-          ).run(input.now, run.id);
-          run = this.mustRun(run.id);
-          submission = this.mustSubmission(input.submissionId);
+          run = repair.run;
+          submission = repair.submission;
           state = "resubmitted";
           created = true;
         } else {
@@ -8733,13 +8733,29 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
-  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  /** Capture retries read the boundary frozen when the root left the reviewed-tree hold. */
+  submissionRequiresFreshPublishedReview(submissionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events
+      WHERE run_id = (SELECT run_id FROM workflow_submissions WHERE id = ?)
+        AND event_kind = 'submission_created'
+        AND json_extract(payload_json, '$.submissionId') = ?
+        AND json_extract(payload_json, '$.freshPublishedReview') = 1 LIMIT 1`)
+      .get(submissionId, submissionId);
+  }
+
+  /** The newest executed verdict must pass, and pre-publication-review passes cannot cross
+   * the durable fresh-review boundary recorded atomically with its root submission. */
   priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
     const row = this.db.prepare(
       `SELECT * FROM (
          SELECT a.* FROM workflow_node_attempts a
            JOIN workflow_submissions s ON s.id = a.submission_id
           WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND s.round >= COALESCE((
+              SELECT MAX(json_extract(payload_json, '$.round')) FROM workflow_events
+              WHERE run_id = s.run_id AND event_kind = 'submission_created'
+                AND json_extract(payload_json, '$.freshPublishedReview') = 1
+            ), 0)
             AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
             AND a.runner_id IS NOT NULL
           ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1
@@ -9065,6 +9081,19 @@ export class WorkflowStore {
     return row ? parseWorkflowDeliveryRow(row) : null;
   }
 
+  /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM workflow_events e
+      JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
+        AND d.run_id = e.run_id
+      WHERE e.run_id = ? AND e.event_kind = 'session_action_prompt_observed'
+        AND json_extract(e.payload_json, '$.episodeId') = ?
+        AND json_extract(e.payload_json, '$.promptedAt') = ?
+        AND json_extract(e.payload_json, '$.promptRevision') IS ?
+        AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
+        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
+  }
+
   deliveryForPacket(
     submissionId: string,
     kind: WorkflowDelivery["kind"],
@@ -9302,7 +9331,7 @@ export class WorkflowStore {
           || version?.completionPolicy.kind !== "inspector") return null;
       const updated = this.updateInspectorGate({
         runId: run.id, expectedState, state,
-        status: version.completionPolicy.onFindings === "inspector_only"
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
           ? "waiting_for_new_head" : "waiting_for_session",
         phase: "inspector_findings", now,
       });
@@ -9371,8 +9400,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9613,8 +9641,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"

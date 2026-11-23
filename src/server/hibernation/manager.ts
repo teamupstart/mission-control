@@ -193,6 +193,12 @@ export class HibernationManager {
     if (!session) return { ok: false, status: 404, error: "no such session" };
     const refusal = hibernateRefusal(session);
     if (refusal) return { ok: false, status: 409, error: refusal };
+    // A snoozed question is in neither session count, so the shared check cannot see it.
+    // Hibernating would evict the session and orphan the question, so its answer would never
+    // reach the resumed conversation. Same scope as the completion hold (`async-input`).
+    if (this.registry.completionHeldByQuestion(session)) {
+      return { ok: false, status: 409, error: "It has a question waiting for you. Answer it first." };
+    }
     // The Pause menu never offers it either: the fleet was paused for this session to run.
     if (this.options.pause?.state().priority?.sessionId === session.id) {
       return { ok: false, status: 409, error: "It is the priority session. End priority before hibernating it." };
@@ -347,7 +353,9 @@ export class HibernationManager {
     if (mismatch) return this.resumeFailed(taskId, mismatch);
     let session: Session;
     try {
-      session = await this.supervisor.wake(record.sessionId, record.agentSessionId);
+      // Named, because hibernating cleared the task's session pointer: the woken agent runs
+      // this task, so it carries this task's work unit.
+      session = await this.supervisor.wake(record.sessionId, record.agentSessionId, taskId);
     } catch (error) {
       return this.resumeFailed(taskId, error instanceof Error ? error.message : String(error));
     }

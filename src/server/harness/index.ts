@@ -6,6 +6,7 @@ import type { AgentType, PermissionMode, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { MODEL_CATALOG } from "@shared/model.ts";
 import { resolveBinSpec } from "./bin.ts";
+import { DRIVER_TURN_ONE, launchArgumentTurnOne, PASTE_TURN_ONE } from "../turn-one-budget.ts";
 import type {
   ControlSpec,
   DialogSpec,
@@ -133,6 +134,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // Non-null exactly because `HARNESS_CAPABILITIES.claude.advisor` is: the panel reads
     // what Inherit resolves to here (`harness-capabilities.test.ts` pins the pairing).
     advisorEnvironment: claudeAdvisorEnvironment,
+    // Stream-json stdin embedded, a pane paste in a terminal: neither has a byte ceiling.
+    turnOne: { sdk: DRIVER_TURN_ONE, terminal: PASTE_TURN_ONE },
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -192,6 +195,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     },
 
     advisorEnvironment: null,
+    // App-server JSON-RPC embedded, a pane paste in a terminal: neither has a byte ceiling.
+    turnOne: { sdk: DRIVER_TURN_ONE, terminal: PASTE_TURN_ONE },
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -245,6 +250,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
 
     advisorEnvironment: null,
+    // In-process embedded. In a terminal, turn one is the positional launch message
+    // (`preparePiLaunch`), bounded by the kernel per argument and with the environment.
+    turnOne: { sdk: DRIVER_TURN_ONE, terminal: launchArgumentTurnOne() },
   },
 };
 

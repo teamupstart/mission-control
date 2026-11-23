@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
 
 /**
@@ -48,6 +48,8 @@ import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
  */
 interface RememberedInjection {
   origin: TurnOrigin;
+  /** Receipt for one unambiguous prompt echo; never retained after consumption. */
+  onEcho?: () => void;
   /** Echoes delivered and not yet claimed by the Goal path. Incremented per delivery. */
   pending: number;
   /**
@@ -125,8 +127,266 @@ export function observeInjections(fn: InjectionObserver | null): void {
   observer = fn;
 }
 
+/**
+ * The origins that are Mission Control's own automation: Foreman, a workflow, the harness (the
+ * restart continuation, the skills broadcast, the retro packet) and a resident's scheduled
+ * wake. Not `session`: a controlling session is another agent speaking, like a person would.
+ */
+const AUTOMATED_ORIGINS: ReadonlySet<TurnOrigin> = new Set<TurnOrigin>(["foreman", "workflow", "harness", "resident"]);
+
+/**
+ * Every delivery Mission Control's automation has claimed into each session and not given back,
+ * oldest first: when it was claimed and which text. A LIST, not the latest claim alone, because
+ * claims overlap. Foreman can claim one delivery and a workflow another before the session's
+ * next turn, and when the second provably fails to land, the first is still on its way and its
+ * turn is still Mission Control's.
+ */
+const automatedClaims = new Map<string, Array<{ at: number; key: string; landed: boolean }>>();
+
+/** Outstanding claims kept per session: far more than overlap in practice, never unbounded. */
+const CLAIMS_PER_SESSION = 32;
+
+/**
+ * One automated delivery claimed into a session, or (`released`) the claim made at `at` that
+ * provably never landed and is given back. Each claim is announced exactly once, with `key`,
+ * the delivered text's `injectionFingerprint`, so a listener can match each one to the turn
+ * whose prompt it is: every one that lands starts a turn of Mission Control's own.
+ */
+export interface AutomatedDelivery {
+  sessionId: string;
+  at: number;
+  key: string;
+  released: boolean;
+}
+
+export type AutomatedDeliveryListener = (delivery: AutomatedDelivery) => void;
+
+const automatedListeners = new Set<AutomatedDeliveryListener>();
+
+/**
+ * Hear every delivery Mission Control's own automation claims into a session, and every such
+ * claim given back. Returns the unsubscribe.
+ *
+ * The declared-wait writer (`Registry.noteAutomatedDelivery`): a session that declared it is
+ * waiting on a background process ends that wait on its own next turn, and Mission Control's
+ * own nudges must not count as that turn. Every automated sender reserves here BEFORE it types,
+ * so this is told before the nudged turn can start, and the registry stores it on the wait
+ * itself: the turn may only be observed after a daemon restart, and this module forgets
+ * everything across one.
+ *
+ * A listener that throws on a claim about to be typed refuses that delivery: the claim is taken
+ * back and `reserveInjection` throws `AutomatedAttributionError`, so the sender types nothing.
+ * A delivery whose attribution cannot be stored must not land, or its turn would read as the
+ * session's own wake.
+ */
+export function onAutomatedDelivery(listener: AutomatedDeliveryListener): () => void {
+  automatedListeners.add(listener);
+  return () => automatedListeners.delete(listener);
+}
+
+/**
+ * An automated delivery refused before anything was typed, because a listener could not store
+ * its attribution (`onAutomatedDelivery`). Thrown by `reserveInjection`; every sender treats it
+ * as positive evidence that nothing was delivered.
+ */
+export class AutomatedAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record this delivery as its own, so it was not sent", { cause });
+    this.name = "AutomatedAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announceAutomated(delivery: AutomatedDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
+  for (const listener of automatedListeners) {
+    try {
+      listener(delivery);
+    } catch (err) {
+      // Logged whether or not the caller can still refuse: a nudge the declared-wait writer
+      // failed to store reads as the session's wake, and this line is the trace of why.
+      console.error(
+        `[injections] automated delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
+      failure ??= { error: err };
+    }
+  }
+  return failure;
+}
+
+/** A person's words Mission Control is about to write into a session (`notePersonDelivery`). */
+export interface PersonDelivery {
+  sessionId: string;
+  /** This send's own id, so a withdrawal takes back only it and not another of the same words. */
+  id: string;
+  at: number;
+  /** `injectionFingerprint` of the text, as an automated delivery's `key` is. */
+  key: string;
+  /** The send provably never landed, and is taken back (`withdrawPersonDelivery`). */
+  released: boolean;
+}
+
+export type PersonDeliveryListener = (delivery: PersonDelivery) => void;
+
+const personListeners = new Set<PersonDeliveryListener>();
+
+/**
+ * Hear every delivery of a person's own words Mission Control writes into a session: the
+ * operator's composer turns and sends, and a controlling session's messages, and each one taken
+ * back because it provably never landed. Returns the unsubscribe.
+ *
+ * The declared-wait writer's other half (`Registry.notePersonDelivery`). Its nudge matching
+ * reads a turn's prompt, and a person can send the very words an automated delivery still on
+ * its way carries. Neither turn of those words says whose it is, so the registry needs to know
+ * the two are contested, and a person's turn is always the session's wake.
+ */
+export function onPersonDelivery(listener: PersonDeliveryListener): () => void {
+  personListeners.add(listener);
+  return () => personListeners.delete(listener);
+}
+
+/**
+ * A person's send refused before anything was written, because a listener could not store that
+ * these words are a person's (`onPersonDelivery`). Thrown by `notePersonDelivery`; every door
+ * treats it as positive evidence that nothing was delivered.
+ */
+export class PersonAttributionError extends Error {
+  constructor(readonly sessionId: string, cause: unknown) {
+    super("Mission Control could not record these words as a person's, so they were not sent", { cause });
+    this.name = "PersonAttributionError";
+  }
+}
+
+/** Tell every listener; each failure is logged, and the first is returned. */
+function announcePerson(delivery: PersonDelivery): { error: unknown } | null {
+  let failure: { error: unknown } | null = null;
+  for (const listener of personListeners) {
+    try {
+      listener(delivery);
+    } catch (err) {
+      // Logged for `announceAutomated`'s reason.
+      console.error(
+        `[injections] person delivery listener failed for ${delivery.sessionId} (${delivery.key}):`,
+        err,
+      );
+      failure ??= { error: err };
+    }
+  }
+  return failure;
+}
+
+/**
+ * Announce that a person's words are about to be written into this session. Called by every
+ * door Mission Control carries them through, before the write, like `reserveInjection`: the
+ * prompt hook can report the text back while the send is still in flight. Nothing is stored
+ * here; the listeners decide what it means. The returned delivery is what
+ * `withdrawPersonDelivery` takes back. Throws `PersonAttributionError` when a listener could not
+ * store it; the door then writes nothing.
+ */
+export function notePersonDelivery(sessionId: string, text: string): PersonDelivery {
+  const delivery: PersonDelivery = {
+    sessionId, id: randomUUID(), at: Date.now(), key: injectionFingerprint(text), released: false,
+  };
+  // Not yet written, so a send whose attribution could not be stored is refused, as an
+  // automated delivery's is: written anyway, a person's turn in the words of a pending nudge
+  // would be used up as Mission Control's and leave the wait standing. Every listener that did
+  // hear it is told it is taken back.
+  const failure = announcePerson(delivery);
+  if (failure) {
+    announcePerson({ ...delivery, released: true });
+    throw new PersonAttributionError(sessionId, failure.error);
+  }
+  return delivery;
+}
+
+/**
+ * Take back a person's send with POSITIVE evidence that nothing landed, the same line
+ * `releaseInjection` and `withdrawOtherSend` draw: a send whose outcome is unknown keeps its
+ * announcement, because its turn may still start. A null delivery (a door that announced
+ * nothing, such as an automated origin) is a no-op.
+ */
+export function withdrawPersonDelivery(delivery: PersonDelivery | null): void {
+  if (!delivery || delivery.released) return;
+  announcePerson({ ...delivery, released: true });
+}
+
+/**
+ * Count one automated delivery into this session, once. A delivery recorded as landed after its
+ * own reservation (the resident loop reserves, then records on acceptance) is the same delivery,
+ * so it confirms that reservation's claim rather than adding a second turn to expect.
+ */
+function noteAutomatedClaim(sessionId: string, key: string, landed: boolean): void {
+  const claims = automatedClaims.get(sessionId) ?? [];
+  if (landed) {
+    const reserved = claims.findLast((claim) => claim.key === key && !claim.landed);
+    if (reserved) {
+      reserved.landed = true;
+      return;
+    }
+  }
+  const at = Date.now();
+  // Moved to the back on every write, so the ceiling below forgets the quietest session.
+  automatedClaims.delete(sessionId);
+  const claim = { at, key, landed };
+  claims.push(claim);
+  if (claims.length > CLAIMS_PER_SESSION) claims.shift();
+  automatedClaims.set(sessionId, claims);
+  if (automatedClaims.size > SESSIONS) {
+    const oldest = automatedClaims.keys().next();
+    if (!oldest.done) automatedClaims.delete(oldest.value);
+  }
+  const failure = announceAutomated({ sessionId, at, key, released: false });
+  // A reservation is made before anything is typed, so a claim whose attribution could not be
+  // stored is refused here: taken back, and thrown to the sender. One recorded after it already
+  // landed cannot be refused, and stays logged.
+  if (failure && !landed) {
+    const i = claims.lastIndexOf(claim);
+    if (i >= 0) claims.splice(i, 1);
+    if (claims.length === 0 && automatedClaims.get(sessionId) === claims) automatedClaims.delete(sessionId);
+    // Every listener that did store it is told it is taken back, as a refused person's send is:
+    // a pending nudge kept for a delivery never typed would be matched by the session's real wake.
+    announceAutomated({ sessionId, at, key, released: true });
+    throw new AutomatedAttributionError(sessionId, failure.error);
+  }
+}
+
+/**
+ * The automated deliveries claimed into this session since `since` whose prompt has not come
+ * back yet: each text's newest claims, as many as it still owes echoes. A wait declared while
+ * one of these is on its way must count it, or its turn would read as the session's wake.
+ */
+export function outstandingAutomatedClaims(sessionId: string, since: number): Array<{ at: number; key: string }> {
+  const claims = (automatedClaims.get(sessionId) ?? []).filter((claim) => claim.at >= since);
+  const byText = seen.get(sessionId);
+  const owed = new Map<string, number>();
+  const out: Array<{ at: number; key: string }> = [];
+  for (let i = claims.length - 1; i >= 0; i--) {
+    const claim = claims[i]!;
+    const left = owed.get(claim.key) ?? byText?.get(claim.key)?.pending ?? 0;
+    if (left <= 0) continue;
+    owed.set(claim.key, left - 1);
+    out.unshift({ at: claim.at, key: claim.key });
+  }
+  return out;
+}
+
+/** Give back the newest outstanding automated claim of this text: it provably never landed. */
+function withdrawAutomatedClaim(sessionId: string, key: string): void {
+  const claims = automatedClaims.get(sessionId);
+  if (!claims) return;
+  for (let i = claims.length - 1; i >= 0; i--) {
+    if (claims[i]!.key !== key || claims[i]!.landed) continue;
+    const [withdrawn] = claims.splice(i, 1);
+    if (claims.length === 0) automatedClaims.delete(sessionId);
+    announceAutomated({ sessionId, at: withdrawn!.at, key, released: true });
+    return;
+  }
+}
+
 /** Write the label and count one owed echo. `landed` marks the label permanent. */
-function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean): void {
+function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean, onEcho?: () => void): void {
+  if (AUTOMATED_ORIGINS.has(origin)) noteAutomatedClaim(sessionId, injectionFingerprint(text), landed);
   let byText = seen.get(sessionId);
   if (!byText) {
     // Insertion order is the Map's own, so the first key is the least recently STARTED
@@ -151,6 +411,8 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
     // had before reservations existed.
     origin: prior?.delivered && !landed ? prior.origin : origin,
     pending: (prior?.pending ?? 0) + 1,
+    // Identical outstanding sends cannot identify which delivery an echo belongs to.
+    onEcho: prior?.pending ? undefined : onEcho,
     // Sticky: one confirmed delivery makes the label permanent for every later reservation
     // of the same text, which is what stops a refused retry from erasing it.
     delivered: (prior?.delivered ?? false) || landed,
@@ -193,9 +455,13 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
  * Deliberately does NOT notify the observer. A reservation is a claim about a send that has
  * not happened yet, and the durable journal must archive turns that exist rather than turns
  * that were attempted - so the journal waits for `recordInjection` to confirm.
+ *
+ * Throws `AutomatedAttributionError` for an automated origin whose claim could not be stored
+ * on a waiting session's wait (`onAutomatedDelivery`). Nothing is reserved then, and the sender
+ * types nothing: it handles the throw as positive evidence that nothing was delivered.
  */
-export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin): void {
-  remember(sessionId, text, origin, false);
+export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: () => void): void {
+  remember(sessionId, text, origin, false, onEcho);
 }
 
 /**
@@ -212,6 +478,10 @@ export function releaseInjection(sessionId: string, text: string): void {
   const key = injectionFingerprint(text);
   const prior = byText.get(key);
   if (!prior) return;
+  // A delivery that provably never landed nudged nobody, so its automated claim is given back,
+  // and only its own: the newest outstanding claim of this text. Every other claim stays, so a
+  // delivery that did land still has its turn read as Mission Control's, not as a wake.
+  if (AUTOMATED_ORIGINS.has(prior.origin)) withdrawAutomatedClaim(sessionId, key);
   if (prior.pending > 1) {
     byText.set(key, { ...prior, pending: prior.pending - 1 });
     return;
@@ -220,7 +490,7 @@ export function releaseInjection(sessionId: string, text: string): void {
   // label with nothing owed: the earlier turn is still in the conversation, and answering
   // `undefined` for it would re-attribute machine-typed words to the operator.
   if (prior.delivered) {
-    byText.set(key, { ...prior, pending: 0 });
+    byText.set(key, { ...prior, pending: 0, onEcho: undefined });
     return;
   }
   byText.delete(key);
@@ -276,6 +546,12 @@ export function confirmReservedInjection(
   // - the reservation already counted it, and by now it may already have been spent.
   const prior = seen.get(sessionId)?.get(injectionFingerprint(text));
   if (prior) prior.delivered = true;
+  // Its automated claim landed too, so no later release of the same text may withdraw it.
+  if (AUTOMATED_ORIGINS.has(origin)) {
+    const key = injectionFingerprint(text);
+    const claim = automatedClaims.get(sessionId)?.findLast((c) => c.key === key && !c.landed);
+    if (claim) claim.landed = true;
+  }
   notifyObserver(sessionId, text, origin);
 }
 
@@ -297,6 +573,9 @@ export function claimInjectionEcho(sessionId: string, text: string): TurnOrigin 
   const prior = byText?.get(injectionFingerprint(text));
   if (!prior || prior.pending <= 0) return undefined;
   prior.pending -= 1;
+  const onEcho = prior.onEcho;
+  prior.onEcho = undefined;
+  onEcho?.();
   return prior.origin;
 }
 
@@ -651,8 +930,10 @@ export function forgetInjections(sessionId?: string): void {
   if (sessionId === undefined) {
     seen.clear();
     expected.clear();
+    automatedClaims.clear();
   } else {
     seen.delete(sessionId);
     expected.delete(sessionId);
+    automatedClaims.delete(sessionId);
   }
 }

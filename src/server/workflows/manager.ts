@@ -1,6 +1,8 @@
+import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { findingPublication } from "@shared/inspector-findings.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -17,7 +19,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -114,12 +116,15 @@ import {
   workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
+  workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunPhaseRecognized,
   type WorkflowRunPhase,
 } from "@shared/workflow-lifecycle.ts";
 import {
   PersonaVerdictSchema,
+  SessionActionCompletedOutputSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
 } from "@shared/protocol.ts";
@@ -132,6 +137,7 @@ import {
   recordInjection,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
 } from "../injections.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
@@ -184,6 +190,7 @@ import {
   completionWatchesPullRequests,
   sessionActionAdapter,
   type SessionActionAdoptedPullRequest,
+  type SessionActionRepositoryFacts,
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
@@ -343,9 +350,20 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
   previousFingerprint?: string;
 }
 
+/**
+ * Task shaping's after-work prompt (`src/server/shaping/after-work.ts`), told when the after-work
+ * step starts and when a completion claim finds no binding. Each call is once per launch on its
+ * side, and never throws.
+ */
+export interface WorkflowAfterWorkSkills {
+  prompt(sessionId: string, options?: { hold?: boolean }): unknown;
+}
+
 export interface WorkflowManagerOptions {
   /** Foreman's CI preference, read only when preparing a new PR action packet. */
   trackCiFailures?: () => boolean;
+  /** Routed after-work skills, prompted when a submission is activated or a claim finds no binding. */
+  afterWorkSkills?: WorkflowAfterWorkSkills;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -372,6 +390,7 @@ export interface WorkflowManagerOptions {
    * database, and the proof it feeds has to be provable without one.
    */
   readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  readUnchangedRepository?: typeof readUnchangedRepository;
   readRepositoryId?: typeof readWorkflowRepositoryId;
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
@@ -656,6 +675,10 @@ export class WorkflowManager {
   private resumptionTimer: ReturnType<typeof setInterval> | null = null;
   private resumptionRunning = false;
   private sessionActionSweepRunning = false;
+  /** Immutable trees are reusable; unknown objects retry after a short cooldown. */
+  private readonly publicationTrees = new Map<string, string>();
+  private readonly publicationTreeRetryAt = new Map<string, number>();
+  private readonly pendingPublicationTrees = new Map<string, Promise<string | null>>();
   /**
    * Repeat offenders, memoized on the run row's `updatedAt`.
    *
@@ -725,6 +748,11 @@ export class WorkflowManager {
         onSessionActionWaiting: (attemptId) => {
           this.scheduleSessionActionDelivery(attemptId);
           options.engine?.onSessionActionWaiting?.(attemptId);
+        },
+        onSubmissionActivated: (submissionId) => {
+          const sessionId = this.sessionForSubmission(submissionId);
+          if (sessionId) options.afterWorkSkills?.prompt(sessionId);
+          options.engine?.onSubmissionActivated?.(submissionId);
         },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
@@ -875,6 +903,11 @@ export class WorkflowManager {
     this.resumptionTimer = null;
     await this.engine.stop();
     await Promise.allSettled(this.backgroundTasks);
+  }
+
+  /** Settle scheduled manager work, including work it queues; future timer ticks are excluded. */
+  async settleBackgroundWork(): Promise<void> {
+    while (this.backgroundTasks.size > 0) await Promise.allSettled(this.backgroundTasks);
   }
 
   list(includeArchived = false): WorkflowSummary[] {
@@ -1577,6 +1610,11 @@ export class WorkflowManager {
     return archived
       ? { ok: true, value: archived.binding }
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
+  }
+
+  /** A workflow's name, for a shaper's view of the task's after-work step. Null when unknown. */
+  workflowName(workflowId: string): string | null {
+    return this.store.getWorkflow(workflowId)?.name ?? null;
   }
 
   /** Whether the selected current immutable version can consume visual evidence. */
@@ -2352,7 +2390,10 @@ export class WorkflowManager {
      * one click away. `resubmitUnchanged` is that click, which is why it skips this
      * entirely rather than getting a flag of its own to keep in step.
      */
-    if (!input.resubmitUnchanged) {
+    // The latest snapshot is packaging evidence, not a semantic review of this tree.
+    // An explicit fresh-review request must not demand another code change first.
+    const needsFreshReview = workflowInspectorGateNeedsFreshReview(activeGate);
+    if (!input.resubmitUnchanged && !needsFreshReview) {
       const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
@@ -2402,7 +2443,7 @@ export class WorkflowManager {
       created.run,
       created.submission,
       latest.evidenceFingerprint,
-      input.resubmitUnchanged,
+      input.resubmitUnchanged || needsFreshReview,
     );
   }
 
@@ -3014,6 +3055,16 @@ export class WorkflowManager {
     }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const candidateUrl = this.gateCandidateUrl(binding, session);
+    // A sealed no-change continuation has no publication for Inspector to review. Its
+    // completed action already verified this exact child's clean HEAD and content tree.
+    const sourceAction = submission.continuationNodeAttemptId
+      ? this.store.getAttempt(submission.continuationNodeAttemptId) : null;
+    const completedAction = SessionActionCompletedOutputSchema.safeParse(sourceAction?.output);
+    if (!candidateUrl && sourceAction?.state === "completed"
+      && sourceAction.sessionAction?.completion.kind === "pull_request"
+      && sourceAction.submissionId === submission.parentSubmissionId
+      && completedAction.success && completedAction.data.continuationSubmissionId === submission.id
+      && completedAction.data.expectation?.kind === "no_change") return false;
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
     const adopted = candidate ? getInspectorPr(candidate.key) : null;
     const cfg = getInspectorConfig();
@@ -3631,8 +3682,7 @@ export class WorkflowManager {
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     const inspectorOnlyDelivery =
       delivery.kind === "inspector_feedback"
-      && version?.completionPolicy.kind === "inspector"
-      && version.completionPolicy.onFindings === "inspector_only";
+      && workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
     if (
       input.resolution === "discard_and_new_round"
       && inspectorOnlyDelivery
@@ -3773,6 +3823,41 @@ export class WorkflowManager {
       : captured;
   }
 
+  /**
+   * The sessions whose work a workflow submission has durably accepted, each with its newest
+   * running submission's creation time: every submission the engine activated is `running`
+   * before it announces the activation, so this survives a restart that lost the
+   * announcement's after-work prompt. The prompter's once-per-launch guard makes prompting any
+   * of them again harmless.
+   */
+  afterWorkOwedSessions(): Array<{ sessionId: string; submittedAt: number }> {
+    const sessions = new Map<string, number>();
+    for (const submission of this.store.listSubmissionsByState("running")) {
+      const sessionId = this.sessionForSubmission(submission.id);
+      if (sessionId) sessions.set(sessionId, Math.max(sessions.get(sessionId) ?? 0, submission.createdAt));
+    }
+    return [...sessions].map(([sessionId, submittedAt]) => ({ sessionId, submittedAt }));
+  }
+
+  /** The live session a submission's run is bound to, or null. */
+  private sessionForSubmission(submissionId: string): string | null {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    return (run ? this.store.getBinding(run.bindingId)?.sessionId : null) ?? null;
+  }
+
+  /**
+   * The catalog skill ids the session's armed workflow runs itself as session-action stages, so
+   * a routed after-work skill it already runs is not prompted a second time.
+   */
+  sessionActionSkills(sessionId: string): Set<string> {
+    const session = this.registry.getSession(sessionId);
+    const binding = session ? this.store.activeBindingForNote(noteKeyFor(session)) : null;
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    return new Set(version?.graph.nodes.flatMap((node) =>
+      node.kind === "session_action" && node.action.requiredSkillId ? [node.action.requiredSkillId] : []) ?? []);
+  }
+
   async claimCompletion(
     sessionId: string,
     claim: WorkflowCompletionClaim,
@@ -3817,7 +3902,12 @@ export class WorkflowManager {
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
     const anchor = this.store.activeBindingForNote(noteKeyFor(session));
-    if (!anchor) return { claimed: false, reason: "no_binding" };
+    if (!anchor) {
+      // Foreman judged the work complete on a task with no workflow (D16). The after-work prompt
+      // is held until Foreman's wrap-up is answered, so the wrap-up reaches the session first.
+      this.options.afterWorkSkills?.prompt(session.id, { hold: true });
+      return { claimed: false, reason: "no_binding" };
+    }
     if (anchor.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };
     }
@@ -4626,7 +4716,8 @@ export class WorkflowManager {
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
-      && run.currentPhase === "inspector_head_mismatch";
+      && ["inspector_head_mismatch", "inspector_working_tree_not_pushed",
+        "inspector_reviewed_tree_changed"].includes(run.currentPhase);
     if (
       !run
       || !state
@@ -4989,6 +5080,37 @@ export class WorkflowManager {
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
       const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (publishedTree && publishedTree === workflowPublicationTree(fullContext.data.evidence)
+        && shippingOnlyContinuation && parent && accepted?.success && acceptedTree
+        && publishedTree !== acceptedTree) {
+        const changedState: WorkflowInspectorGateState = {
+          ...state,
+          targetHeadSha: submittedHead,
+          waitReason: "reviewed_tree_changed",
+          reviewedContent: {
+            submissionId: parent.id,
+            headSha: accepted.data.evidence.headSha,
+            treeOid: acceptedTree,
+            publishedTreeOid: publishedTree,
+          },
+        };
+        const changedRun = this.transitionInspectorGate(run, state, changedState,
+          "waiting_for_session", "inspector_reviewed_tree_changed", null, null, now);
+        if (!changedRun) return;
+        // Publication and completed Inspector review identify the same current head.
+        // Deliver its posted findings even though the earlier Persona review cannot approve it.
+        // Retain the review obligation through delivery, recovery and the next submission.
+        if (ledger.headSha === submittedHead) {
+          const findings = loadInspectorComments(state.prKey!).filter((row) =>
+            row.status !== "resolved" && findingPublication(row).state === "posted");
+          if (findings.length > 0) {
+            await this.handleInspectorFindings(
+              changedRun, submission, binding, version, changedState, ledger.round, findings, now,
+            );
+          }
+        }
+        return;
+      }
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
         || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
@@ -5130,12 +5252,13 @@ export class WorkflowManager {
       waitReason: "findings",
       findingFingerprints: fingerprints,
     };
-    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
+    const inspectorOnly = workflowInspectorOnlyRepair(version.completionPolicy, state);
+    const policy = inspectorOnly ? "inspector_only" : "restart_workflow";
     const findingEvent = {
       prKey: state.prKey,
       targetHeadSha: state.targetHeadSha,
       ...findingFingerprintAudit(fingerprints),
-      policy: version.completionPolicy.onFindings,
+      policy,
     };
     if (!binding.sessionId) {
       this.transitionInspectorGate(
@@ -5163,8 +5286,9 @@ export class WorkflowManager {
       targetHeadSha: state.targetHeadSha,
       inspectorRound,
       reviewPosture: nextState.reviewPosture,
-      policy: version.completionPolicy.onFindings,
+      policy,
       findings,
+      freshPublishedReview: workflowInspectorGateNeedsFreshReview(state),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const deliveryId = randomUUID();
@@ -5190,7 +5314,7 @@ export class WorkflowManager {
           deliveryId,
           payloadSha256: rendered.payloadSha256,
           ...findingFingerprintAudit(fingerprints),
-          policy: version.completionPolicy.onFindings,
+          policy,
         },
         now,
       });
@@ -5441,7 +5565,10 @@ export class WorkflowManager {
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
       && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
-      && !hasBlocker(session);
+      // An outstanding request_input question, snoozed or not, holds evidence preparation too.
+      && !this.registry.completionHeldByQuestion(session)
+      && !hasBlocker(session)
+      && !isAwaiting(session, now);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -5596,8 +5723,7 @@ export class WorkflowManager {
       }
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, this.gateState(run));
       if (
         delivery.kind !== "inspector_feedback"
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
@@ -6029,7 +6155,12 @@ export class WorkflowManager {
     const blocked = this.store.blockSessionActionAttempt({ attemptId, code, detail, now });
     if (!blocked) return;
     const submission = this.store.getSubmission(blocked.submissionId);
-    if (submission) this.publishRun(submission.runId);
+    if (submission) {
+      this.publishRun(submission.runId);
+      const run = this.store.getRun(submission.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    }
     workflowLog("error", { event: "session_action_blocked", call: attemptId, error: code });
   }
 
@@ -6121,7 +6252,7 @@ export class WorkflowManager {
     };
     if (!state.anchor) {
       this.setSessionActionWait(attempt.id, "awaiting_pickup", { anchor }, now);
-      state = { ...state, anchor };
+      state = { ...state, wait: "awaiting_pickup", anchor };
     }
 
     if (binding.state !== "active" || !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey)) {
@@ -6151,6 +6282,7 @@ export class WorkflowManager {
     }
     if (state.pickedUpAt === null) {
       this.setSessionActionWait(attempt.id, "working", { pickedUpAt }, now);
+      state = { ...state, wait: "working", pickedUpAt };
     }
     // A session parked on a question reads as idle and is the last thing that should be
     // treated as a finished turn - it has not started, it is stuck on a human.
@@ -6183,6 +6315,39 @@ export class WorkflowManager {
       ? await this.capturedContinuationHead(capturedChild, repository?.root ?? null)
       : null;
     const parentContext = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const acceptedContentTreeOid = parentContext.success
+      ? workflowPublicationTree(parentContext.data.evidence)
+      : null;
+    let unchangedRepository = null;
+    let unchangedRepositoryProblem: string | null = null;
+    if (snapshot.completion.kind === "pull_request" && repository?.headOid) {
+      try {
+        unchangedRepository = await (this.options.readUnchangedRepository ?? readUnchangedRepository)(repository.root, repository.headOid);
+      } catch (error) {
+        unchangedRepositoryProblem = error instanceof Error ? error.message : "Repository publication proof could not be read.";
+      }
+    }
+    const adoptedPullRequests = await this.adoptedPullRequestsForAction(
+      anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now,
+    );
+    // Git reads may outlive an entire active turn or another proof observation. Only the
+    // still-current observation may advance the action, especially to a terminal block.
+    const current = this.resolveSessionAction(attempt.id);
+    const currentSession = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    if (!current || current.binding.state !== "active" || current.binding.sessionId !== binding.sessionId
+      || JSON.stringify(current.state) !== JSON.stringify(state)
+      || !currentSession || currentSession.lastActivity !== session.lastActivity
+      || currentSession.state !== session.state || noteKeyFor(currentSession) !== anchor.noteKey) return;
+    // Discovery dialogs and pending reviews can change without lifecycle activity.
+    if (reportBucket(currentSession, this.registry.snapshot().sessions) === "needs-you") {
+      this.setSessionActionWait(attempt.id, "needs_operator", { pickedUpAt }, now);
+      return;
+    }
+    // Only Pull Request owns a bounded no-change proof retry. Other adapters retain the
+    // current settled observation; the existing durable wait preserves this window on restart.
+    const proofRetryStartedAt = snapshot.completion.kind === "pull_request"
+      ? state.wait === "awaiting_proof" ? state.settledAt ?? now : now
+      : undefined;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -6190,20 +6355,23 @@ export class WorkflowManager {
       deliveredAt: anchor.deliveredAt,
       pickedUpAt,
       settledAt: now,
+      proofRetryStartedAt,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
+      adoptedPullRequests,
       capturedHeadOid,
-      acceptedContentTreeOid: parentContext.success
-        ? workflowPublicationTree(parentContext.data.evidence)
-        : null,
+      acceptedContentTreeOid,
+      unchangedRepository,
+      unchangedRepositoryProblem,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
       return;
     }
     if (decision.kind === "waiting") {
-      this.setSessionActionWait(attempt.id, decision.reason, { pickedUpAt, settledAt: now }, now);
+      this.setSessionActionWait(attempt.id, decision.reason, {
+        pickedUpAt, settledAt: decision.reason === "awaiting_proof" ? proofRetryStartedAt ?? now : now,
+      }, now);
       return;
     }
     this.setSessionActionWait(attempt.id, "capturing", {
@@ -6249,18 +6417,22 @@ export class WorkflowManager {
    * timer, and a cached copy is exactly how an action would keep waiting for a head that had
    * already arrived.
    *
-   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
-   * request reachable at all. The poller retires a closed row in the statement after the one
-   * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * preserve the PR as a completed action with a warning. Anything retired before this action
-   * was even delivered
-   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
-   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
+   * Recent retirements preserve closures observed during this action. Earlier merges on the
+   * checkout's branch remain candidates too: publication may predate a later completion turn.
+   * Resolve identity once per root and merged trees only for this repository and branch.
    */
   private async adoptedPullRequestsForAction(
     observedSince: number,
+    repository: SessionActionRepositoryFacts | null,
+    resolvePublishedTrees: boolean,
+    now: number,
   ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
+    // Missing-object cooldowns expire independently of the bounded successful-tree cache.
+    // Otherwise a history larger than that cache retries every missing object on every scan.
+    for (const [key, retryAt] of this.publicationTreeRetryAt) {
+      if (retryAt <= now) this.publicationTreeRetryAt.delete(key);
+    }
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
     // repository are the ordinary case, and this runs on the settle path of every waiting
     // action.
@@ -6272,24 +6444,63 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
-    // retires a closed pull request on the same tick it first observes the closure, so without
-    // the second half the adapter could never reach the one state it is meant to block on.
-    const rows = loadAdoptedInspectorPrsSince(observedSince);
-    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
-    return rows.map((pr, index) => ({
-      key: pr.key,
-      url: pr.url,
-      number: pr.number,
-      repositoryRoot: resolved[index] ?? null,
-      branch: pr.headRefName,
-      observedHeadOid: pr.observedHeadSha,
-      observedState: pr.observedState,
-      observedAt: pr.observedAt,
-      sessionId: pr.sessionId,
-      adoptedAt: pr.adoptedAt,
-      checkout: pr.cwd,
-    }));
+    // Page retained merges without discarding older proof. Resolve sequentially so a reused
+    // branch cannot launch one Git process per historical PR in a single settle check.
+    const adopted: SessionActionAdoptedPullRequest[] = [];
+    let after: { adoptedAt: number; key: string } | null = null;
+    for (;;) {
+      const rows = loadAdoptedInspectorPrsSince(observedSince, repository?.branch ?? null, after);
+      if (!rows.length) return adopted;
+      for (const pr of rows) {
+        const repositoryRoot = await identify(pr.repoRoot);
+        let mergedContentTreeOid: string | null = null;
+        if (resolvePublishedTrees && pr.observedState === "MERGED" && pr.observedHeadSha && repository
+          && repositoryRoot === repository.repositoryId && pr.headRefName === repository.branch) {
+          const key = JSON.stringify([repository.repositoryId, pr.observedHeadSha]);
+          let treeOid = this.publicationTrees.get(key) ?? null;
+          if (!treeOid && !this.publicationTreeRetryAt.has(key)) {
+            let pending = this.pendingPublicationTrees.get(key);
+            if (!pending) {
+              pending = (this.options.resolveCommitTree ?? resolveCommitTree)(repository.root, pr.observedHeadSha).catch(error => {
+                workflowLog("warn", { event: "session_action_publication_tree_unavailable", call: pr.key,
+                  state: pr.observedHeadSha,
+                  error: error instanceof Error ? ("code" in error && typeof error.code === "string" ? error.code : error.name) : "unknown" });
+                return null;
+              });
+              this.pendingPublicationTrees.set(key, pending);
+            }
+            try {
+              treeOid = await pending;
+              if (!treeOid) this.publicationTreeRetryAt.set(key, now + 60_000);
+            } finally {
+              if (this.pendingPublicationTrees.get(key) === pending) this.pendingPublicationTrees.delete(key);
+            }
+          }
+          mergedContentTreeOid = treeOid;
+          if (treeOid) {
+            this.publicationTreeRetryAt.delete(key);
+            this.publicationTrees.delete(key);
+            this.publicationTrees.set(key, treeOid);
+            if (this.publicationTrees.size > 256) this.publicationTrees.delete(this.publicationTrees.keys().next().value!);
+          }
+        }
+        adopted.push({
+          mergedContentTreeOid,
+          key: pr.key,
+          url: pr.url,
+          number: pr.number,
+          repositoryRoot,
+          branch: pr.headRefName,
+          observedHeadOid: pr.observedHeadSha,
+          observedState: pr.observedState,
+          observedAt: pr.observedAt,
+          sessionId: pr.sessionId,
+          adoptedAt: pr.adoptedAt,
+          checkout: pr.cwd,
+        });
+      }
+      after = rows[rows.length - 1]!;
+    }
   }
 
   /**
@@ -6337,7 +6548,7 @@ export class WorkflowManager {
   }
 
   /**
-   * Record pickup the moment the bound session goes ACTIVE after a confirmed send.
+   * Record pickup and restart a proof retry when the bound session goes ACTIVE.
    *
    * Driven by the registry's own session stream - the existing lifecycle source, not a second
    * poller - because a turn can start and finish between two sweeps. A sampled observer would
@@ -6352,10 +6563,18 @@ export class WorkflowManager {
     if (!agentActive(session)) return;
     for (const attempt of this.store.waitingActionAttemptsForSession(session.id)) {
       const state = this.store.sessionActionState(attempt);
-      if (!state?.anchor || state.pickedUpAt !== null) continue;
+      if (!state?.anchor) continue;
       if (noteKeyFor(session) !== state.anchor.noteKey) continue;
       const activity = session.lastActivity ?? null;
       if (activity === null || activity <= state.anchor.deliveredAt) continue;
+      if (state.pickedUpAt !== null) {
+        // A short turn can begin and end between sweeps. Preserve the original pickup
+        // and delivery anchor, but let its next settled sweep start a fresh retry window.
+        if (state.wait === "awaiting_proof" && activity > (state.settledAt ?? state.pickedUpAt)) {
+          this.store.updateSessionActionState(attempt.id, { ...state, wait: "working", settledAt: null });
+        }
+        continue;
+      }
       this.store.updateSessionActionState(attempt.id, {
         ...state,
         wait: "working",
@@ -6521,13 +6740,19 @@ export class WorkflowManager {
         completion: snapshot.completion.kind,
       }),
     }));
-    return Boolean(this.store.completeSessionActionContinuation({
+    const completed = Boolean(this.store.completeSessionActionContinuation({
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
       warnings,
       now: Date.now(),
     }));
+    // Capture starts while the action still holds the conversation. Re-offer only after
+    // its completion is durable, including when sealing a captured child after restart.
+    const run = completed ? this.store.getRun(child.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
+    return completed;
   }
 
   private trackBackgroundTask(task: Promise<void>): void {
@@ -6781,9 +7006,33 @@ export class WorkflowManager {
     // the write is still unresolved, and an echo that arrives with no authorship on file is
     // captured as the human's Goal - which for a repair packet means the next round reviews
     // the work against Mission Control's own previous complaint.
-    reserveInjection(session.id, sending.payload, "workflow");
-    let result: InjectResult;
+    // A reservation refused because its attribution could not be stored typed nothing: refused
+    // below as a delivery that never reached the pane, without calling the transport.
+    let attributionRefused: string | null = null;
     try {
+      reserveInjection(session.id, sending.payload, "workflow", () => {
+        // The Registry consumes this receipt after recording the prompt's work episode.
+        // A later human retype has no receipt, even when its text equals this packet.
+        if (sending.kind !== "session_action") return;
+        const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+        if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+        try {
+          this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+            deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+            promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+          });
+        } catch (error) {
+          workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+            error: error instanceof Error ? error.name : "unknown" });
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof AutomatedAttributionError)) throw error;
+      attributionRefused = error.message;
+    }
+    let result: InjectResult;
+    if (attributionRefused !== null) result = { ok: false, error: attributionRefused, pasted: false, submitVerified: false };
+    else try {
       result = await this.inject(
         session,
         sending.payload,
@@ -6802,7 +7051,9 @@ export class WorkflowManager {
         // nothing reached the pane, so no echo is coming and the claim goes back. Every other
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
-        releaseInjection(session.id, sending.payload);
+        // Only a reservation this send made: a refused one recorded nothing, and releasing would
+        // give back an earlier reservation of the same text.
+        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
         if (result.error === "inspector_feedback_superseded") {
           if (this.store.getDelivery(sending.id)?.state === "sending") {
             this.store.setDeliveryState(sending.id, "prepared", null);
@@ -6840,7 +7091,7 @@ export class WorkflowManager {
           deliveryId: sending.id,
           reason,
           paneBlocked: Boolean(result.paneBlocked),
-          writeAttempted: true,
+          writeAttempted: attributionRefused === null,
         });
         this.publishRun(sending.runId);
         return;
@@ -6995,6 +7246,8 @@ export class WorkflowManager {
     // actually holds before it can say whether the capture is the one the adapter proved.
     beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    // The root's durable boundary also covers Foreman capture and interrupted retries.
+    allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling
@@ -8310,7 +8563,14 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    // `async-input`'s completion hold: an outstanding request_input question, snoozed or not,
+    // is still the operator's to answer, so the run does not resume around it. Reported as the
+    // same reason, because to the operator it is the same fact: the session is waiting on them.
+    if (this.registry.completionHeldByQuestion(session)) return held("session_needs_you");
     if (hasBlocker(session)) return held("session_blocked");
+    // Idle on purpose while its own CI or build finishes: resuming now would hand it a round
+    // before the result it is waiting for exists. Past its deadline it resumes as usual.
+    if (isAwaiting(session, now)) return held("session_awaiting");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
@@ -8626,9 +8886,25 @@ export class WorkflowManager {
       this.recordResumptionWithheld(run, latest, "session_blocked", now);
       return;
     }
+    if (current && isAwaiting(current, now)) {
+      this.recordResumptionWithheld(run, latest, "session_awaiting", now);
+      return;
+    }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
-    if (unchanged) {
+    // An evidence-only reply to delivered findings can leave Git unchanged while the
+    // published tree still owes review. Require activity after delivery so pre-send idle
+    // cannot spend a repair round. A plain reviewed-tree hold remains operator-owned.
+    const gate = this.gateState(run);
+    const reviewAfterDeliveredFindings = gate?.waitReason === "findings"
+      && workflowInspectorGateNeedsFreshReview(gate)
+      && this.store.listDeliveries(run.id).some((delivery) =>
+        delivery.submissionId === latest.id
+        && delivery.kind === "inspector_feedback"
+        && delivery.state === "delivered"
+        && delivery.deliveredAt !== null
+        && (current?.lastActivity ?? 0) > delivery.deliveredAt);
+    if (unchanged && !reviewAfterDeliveredFindings) {
       this.recordResumptionWithheld(run, latest, "repository_unchanged", now);
       this.maybeRemindParkedRound(run, binding, latest, now);
       if (run.currentPhase === "pr_handoff") {

@@ -55,7 +55,10 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeConversation } from "../lib/episodes.ts";
+import { mergeConversation, type ConversationRow, type ReviewHistory, type ReviewRowDelivery } from "../lib/episodes.ts";
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import { ReportEntryCard } from "./ReportEntryCard.tsx";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -82,7 +85,8 @@ import { SessionToolbarIcon, SessionToolbarMenu } from "./SessionToolbarMenu.tsx
 import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/conversation-view.ts";
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
-import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
+import { ReviewAnswerCard, UnavailableReviewCard, type ReviewCardDelivery } from "./ReviewAnswer.tsx";
+import { AskedQuestionCard, ClosedQuestionCard } from "./AskedQuestion.tsx";
 import { SnoozedReviewCard } from "./ReviewSnooze.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
@@ -320,6 +324,10 @@ export function TranscriptPanel({
   dialogOpen = false,
   episodes = [],
   reviews = [],
+  reviewHistory,
+  reports = [],
+  reportControls,
+  onAnswerQuestion,
   onReplyBox,
   onOpenFile,
   onCommentInFiles,
@@ -372,6 +380,24 @@ export function TranscriptPanel({
    * one is answered.
    */
   reviews?: ReviewItem[];
+  /**
+   * Whether the review history behind `reviews` has loaded, and the reviews a runtime-transfer
+   * predecessor asked (`useTimelineReviews`). Read only to draw delivered answers: while the
+   * history is loading, an answer whose review is not in hand is drawn as loading, not as gone.
+   */
+  reviewHistory?: ReviewHistory;
+  /**
+   * Every report this session posted, every version (`inbox` flag; empty while it is off), each
+   * drawn where it was posted (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening an entry and marking it read. Without them report entries are not drawn. */
+  reportControls?: ReportEntryControls;
+  /**
+   * Open the card that answers this session's open questions, from an Asked entry
+   * (`async-input`). Without it an open Asked entry has no Answer button.
+   */
+  onAnswerQuestion?: () => void;
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -619,7 +645,17 @@ export function TranscriptPanel({
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(visible), episodes, reviews);
+  const rows = mergeConversation(
+    transcriptRows(visible),
+    episodes,
+    reviews,
+    session.pendingTurns,
+    reviewHistory,
+    reportControls ? reports : [],
+  );
+  // Report rows exist only when the controls do (above), so the entries below are always drawn
+  // with real callbacks: a missing one is a wiring error to surface, never a card that does nothing.
+  const entryControls = reportControls as ReportEntryControls;
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -1354,12 +1390,41 @@ export function TranscriptPanel({
                 >
                   <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
+              ) : row.kind === "asked" ? (
+                <AskedQuestionCard key={`ask-${row.review.id}`} review={row.review} session={session} onAnswer={onAnswerQuestion} />
+              ) : row.kind === "closed" ? (
+                <ClosedQuestionCard key={`closed-${row.review.id}`} review={row.review} />
+              ) : row.kind === "report" ? (
+                <ReportEntryCard
+                  key={`report-${row.report.id}`}
+                  report={row.report}
+                  open={entryControls.openReportId === row.report.id}
+                  onToggle={() => entryControls.onToggle(row.report)}
+                  onMarkRead={() => entryControls.onMarkRead(row.report)}
+                  onOpenDocument={() => entryControls.onOpenDocument(row.report)}
+                />
               ) : row.kind === "review" ? (
-                row.review.status === "snoozed" ? (
-                  <SnoozedReviewCard key={`rv-${row.review.id}`} review={row.review} />
+                (row.delivery ? row.delivery.envelope === "remind-later" : row.review.status === "snoozed") ? (
+                  <SnoozedReviewCard
+                    key={`rv-${row.review.id}-${row.delivery?.turnId ?? "entry"}`}
+                    review={row.review}
+                    delivery={reviewCardDelivery(row, hits, find?.query ?? "", currentKey)}
+                  />
                 ) : (
-                  <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
+                  <ReviewAnswerCard
+                    key={`rv-${row.review.id}-${row.delivery?.turnId ?? "entry"}`}
+                    review={row.review}
+                    delivery={reviewCardDelivery(row, hits, find?.query ?? "", currentKey)}
+                  />
                 )
+              ) : row.kind === "delivered" ? (
+                <UnavailableReviewCard
+                  key={`rv-gone-${row.reviewId}-${row.delivery.turnId}`}
+                  envelope={row.delivery.envelope}
+                  loading={row.loading}
+                  unreadable={row.unreadable}
+                  delivery={deliveredCard(row.delivery, hits, find?.query ?? "", currentKey)}
+                />
               ) : row.kind === "tools" ? (
                 terminal ? (
                   <TerminalToolRun
@@ -1787,6 +1852,42 @@ function findFor(
   if (!query) return null;
   const hits = scoped.filter((h) => h.rowId === rowId);
   return { hits, query, currentKey, caseSensitive: false };
+}
+
+/**
+ * How one review row's card says it reached the agent, when it went as a message: still in the
+ * outbox, or delivered at the turn it is drawn at. The delivered text is disclosed on the last
+ * card of its delivery, highlighted for an open find, and held open while it has the current
+ * match so a jump lands on something visible.
+ */
+function reviewCardDelivery(
+  row: Extract<ConversationRow, { kind: "review" }>,
+  scoped: FindHit[],
+  query: string,
+  currentKey: string | null,
+): ReviewCardDelivery | undefined {
+  if (row.queued) return { state: "queued" };
+  return row.delivery ? deliveredCard(row.delivery, scoped, query, currentKey) : undefined;
+}
+
+/** A card's "Delivered to the agent" line, and on the last card of its turn the disclosure. */
+function deliveredCard(
+  delivery: ReviewRowDelivery,
+  scoped: FindHit[],
+  query: string,
+  currentKey: string | null,
+): Extract<ReviewCardDelivery, { state: "delivered" }> {
+  if (!delivery.last) return { state: "delivered", turnId: delivery.turnId, at: delivery.at };
+  const hits = findFor(scoped, delivery.turnId, query, currentKey)?.hits ?? [];
+  return {
+    state: "delivered",
+    turnId: delivery.turnId,
+    at: delivery.at,
+    received: {
+      text: hits.length ? <Highlighted text={delivery.text} hits={hits} currentKey={currentKey} /> : delivery.text,
+      open: hits.some((hit) => hit.key === currentKey),
+    },
+  };
 }
 
 /**

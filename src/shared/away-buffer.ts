@@ -7,7 +7,8 @@
 // session that finishes, restarts and finishes again produces ONE entry with a
 // count of 2. That is the difference between a log and a digest.
 
-import type { Alert, AlertKind } from "./alerts.ts";
+import { reportAlert, type Alert, type AlertKind } from "./alerts.ts";
+import { reportToRead, type ReportItem } from "./reports.ts";
 
 /**
  * One thing that happened, possibly more than once.
@@ -28,6 +29,8 @@ export interface AwayEvent {
   lastAt: number;
   /** How many times it happened. 1 unless it recurred. */
   count: number;
+  /** Who posted it, for a `report` event: the rollup names the agents with reports waiting. */
+  agentName?: string;
 }
 
 export interface AwayBuffer {
@@ -116,6 +119,24 @@ export interface AwayBufferSummary {
 export const AWAY_BUFFER_CAP = 200;
 
 /**
+ * Reports stand outside the cap entirely. A report event is never turned away - the digest
+ * promises how many reports are waiting and from whom, which a dropped report would make false -
+ * and none takes a place from anything else, so every other kind keeps exactly the allowance it
+ * had before reports existed. Report events are bounded on their own by the reports waiting to be
+ * read (`reconcileReports` removes each one as it is read or replaced).
+ */
+function overCap(kind: AlertKind, cappedHeld: number): boolean {
+  return kind !== "report" && cappedHeld >= AWAY_BUFFER_CAP;
+}
+
+/** How many of these events count against the cap: every one but a report. */
+function cappedCount(events: Iterable<AwayEvent>): number {
+  let n = 0;
+  for (const e of events) if (e.kind !== "report") n++;
+  return n;
+}
+
+/**
  * How many preview lines the away card shows. Far below `digestLines`' own limit: this
  * renders inside a 300px popover, and a panel that grows past the viewport to list
  * twenty events has stopped being a glance.
@@ -169,6 +190,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
   if (alerts.length === 0) return buf;
   const byKey = new Map(buf.events.map((e) => [e.key, e]));
   let dropped = buf.dropped;
+  let capped = cappedCount(buf.events);
 
   for (const a of alerts) {
     const existing = byKey.get(a.id);
@@ -176,10 +198,11 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
       byKey.set(a.id, absorb(existing, a, now));
       continue;
     }
-    if (byKey.size >= AWAY_BUFFER_CAP) {
+    if (overCap(a.kind, capped)) {
       dropped++;
       continue;
     }
+    if (a.kind !== "report") capped++;
     byKey.set(a.id, {
       key: a.id,
       kind: a.kind,
@@ -189,6 +212,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
       firstAt: now,
       lastAt: now,
       count: 1,
+      ...(a.agentName !== undefined ? { agentName: a.agentName } : {}),
     });
   }
 
@@ -222,6 +246,43 @@ export function refreshAlerts(buf: AwayBuffer, alerts: Alert[]): AwayBuffer {
 }
 
 /**
+ * Make the buffer's reports the reports actually waiting to be read (`inbox` flag).
+ *
+ * A report enters the buffer when its announce stamp lands, which can be up to the grace period
+ * after it was posted, and it can be read or replaced at any time after. Counted as buffered
+ * announcements, the digest would miss a report posted just before you came back and keep
+ * counting one you have since read. So, against `waiting` (every report still waiting to be
+ * read, as the daemon holds them now):
+ *
+ * - a buffered report that has since been read or replaced leaves the buffer; a replacement that
+ *   is waiting takes its place below;
+ * - with `addUnannounced`, a report waiting that was posted during this window and is not
+ *   buffered yet - its stamp still pending - joins it, worded as posted. Only when the window
+ *   closes: added while it is open, the stamp landing later would count the same report again.
+ *
+ * A report posted before you left joins only through its own announcement. Pure. With the
+ * `inbox` flag off there are no reports at all, so the caller passes none and every report event
+ * leaves, while every other event stays exactly as it was.
+ */
+export function reconcileReports(
+  buf: AwayBuffer,
+  waiting: readonly ReportItem[],
+  now: number,
+  addUnannounced: boolean,
+): AwayBuffer {
+  const live = new Map(waiting.filter(reportToRead).map((r) => [`report:${r.id}`, r]));
+  const kept = buf.events.filter((e) => e.kind !== "report" || live.has(e.key));
+  const pruned = kept.length === buf.events.length ? buf : { ...buf, events: kept };
+  if (!addUnannounced) return pruned;
+  const buffered = new Set(kept.map((e) => e.key));
+  const missing = [...live.values()]
+    .filter((r) => r.createdAt >= buf.since && !buffered.has(`report:${r.id}`))
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map(reportAlert);
+  return foldAlerts(pruned, missing, now);
+}
+
+/**
  * Fold one closed window into another, coalescing across both.
  *
  * Needed because a window can close while the last one's digest is still unread (no
@@ -231,6 +292,7 @@ export function refreshAlerts(buf: AwayBuffer, alerts: Alert[]): AwayBuffer {
 export function mergeBuffers(older: AwayBuffer, newer: AwayBuffer): AwayBuffer {
   const byKey = new Map(older.events.map((e) => [e.key, e]));
   let dropped = older.dropped + newer.dropped;
+  let capped = cappedCount(older.events);
 
   for (const e of newer.events) {
     const prior = byKey.get(e.key);
@@ -245,10 +307,11 @@ export function mergeBuffers(older: AwayBuffer, newer: AwayBuffer): AwayBuffer {
       });
       continue;
     }
-    if (byKey.size >= AWAY_BUFFER_CAP) {
+    if (overCap(e.kind, capped)) {
       dropped++;
       continue;
     }
+    if (e.kind !== "report") capped++;
     byKey.set(e.key, e);
   }
 
@@ -277,6 +340,8 @@ const KIND_ORDER: { kind: AlertKind; one: string; many: string }[] = [
   { kind: "workflow", one: "workflow update", many: "workflow updates" },
   { kind: "workflow-repeat", one: "review loop", many: "review loops" },
   { kind: "ensemble", one: "ensemble update", many: "ensemble updates" },
+  // Worded by `reportsPart` rather than one/many: the line names who posted.
+  { kind: "report", one: "report waiting", many: "reports waiting" },
   { kind: "task-failed", one: "failed", many: "failed" },
   { kind: "task-done", one: "task done", many: "tasks done" },
   { kind: "idle", one: "finished", many: "finished" },
@@ -294,10 +359,31 @@ export function rollupLine(buf: AwayBuffer): string {
   for (const { kind, one, many } of KIND_ORDER) {
     const n = counts[kind];
     if (!n) continue;
-    parts.push(`${n} ${n === 1 ? one : many}`);
+    const counted = `${n} ${n === 1 ? one : many}`;
+    parts.push(kind === "report" ? reportsPart(counted, buf) : counted);
   }
   if (buf.dropped > 0) parts.push(`+${buf.dropped} more`);
   return parts.join(" · ");
+}
+
+/**
+ * "4 reports waiting: Steve, Carol and 2 others". Each name once, in the order its first report
+ * arrived. Up to three are named outright; past that, the first two and how many others.
+ */
+function reportsPart(counted: string, buf: AwayBuffer): string {
+  const names: string[] = [];
+  for (const e of [...buf.events].sort((a, b) => a.firstAt - b.firstAt)) {
+    if (e.kind === "report" && e.agentName && !names.includes(e.agentName)) names.push(e.agentName);
+  }
+  if (names.length === 0) return counted;
+  return `${counted}: ${nameList(names)}`;
+}
+
+function nameList(names: readonly string[]): string {
+  if (names.length === 1) return names[0]!;
+  if (names.length <= 3) return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const others = names.length - 2;
+  return `${names[0]}, ${names[1]} and ${others} others`;
 }
 
 /** Whether there is anything worth telling you about - a quiet return says nothing. */

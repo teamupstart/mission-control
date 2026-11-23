@@ -57,6 +57,7 @@ const decide = (
     deliveredAt: 10,
     pickedUpAt: 2,
     settledAt: 3,
+    proofRetryStartedAt: 3,
     now: 5_000,
     repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD, headCommittedAt: 4_000 },
     adoptedPullRequests: adopted,
@@ -607,4 +608,240 @@ test("several earlier adoptions resolve to the lowest-numbered one", () => {
       && decision.continuationExpectation.pullRequestNumber,
     4,
   );
+});
+
+const oldMerge = (patch: Partial<SessionActionAdoptedPullRequest> = {}) => pr({
+  observedState: "MERGED", observedAt: 1, adoptedAt: 1, mergedContentTreeOid: TREE, ...patch,
+});
+
+for (const missing of ["review", "merged-tree"] as const) {
+  test(`a PR merged during the action wait preserves earlier adoption with missing ${missing} proof`, () => {
+    const decision = decide([oldMerge({ observedAt: 11,
+      ...(missing === "merged-tree" ? { mergedContentTreeOid: null } : {}),
+    })], missing === "review" ? { acceptedContentTreeOid: null } : {});
+    assert.equal(decision.kind, "complete");
+    if (decision.kind !== "complete") return;
+    assert.ok(decision.warnings?.length);
+    assert.equal("mergedContentTreeOid" in decision.continuationExpectation, false);
+  });
+}
+
+test("a merge during the wait still needs the earlier adoption's repository identity", () => {
+  assert.deepEqual(decide([oldMerge({ observedAt: 11, repositoryRoot: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+test("an earlier merged publication covers the reviewed tree even with a packaging commit", () => {
+  const decision = decide([oldMerge({ observedHeadOid: OTHER_HEAD })]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /Already published.*pull\/7/);
+  assert.deepEqual(SessionActionContinuationExpectationSchema.parse(decision.continuationExpectation),
+    decision.continuationExpectation, "restart preserves historical publication proof");
+});
+
+for (const patch of [
+  { mergedContentTreeOid: null }, { mergedContentTreeOid: OTHER_HEAD },
+  { repositoryRoot: "/other" }, { branch: "other" },
+]) test(`an earlier merge without matching publication waits: ${JSON.stringify(patch)}`, () => {
+  assert.deepEqual(decide([oldMerge(patch)]), { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+test("a historical merge never accepts missing review proof", () => {
+  const decision = decide([oldMerge()], { acceptedContentTreeOid: null, now: 60_003 });
+  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+for (const dirty of [false, true]) test(`historical publication rechecks continuation content, dirty=${dirty}`, () => {
+  const context = { evidence: { contentTreeOid: TREE, workingTreeDirty: dirty } } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture({ ...expectation, mergedContentTreeOid: TREE }, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: TREE,
+  });
+  assert.equal(result?.kind ?? null, dirty ? "blocked" : null);
+});
+
+test("historical publication blocks changed clean continuation content after satisfying the action", () => {
+  const decision = decide([oldMerge()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+
+  // A later commit leaves the checkout clean but changes the content already published.
+  const changedTree = "d".repeat(40);
+  const context = {
+    evidence: { contentTreeOid: changedTree, workingTreeDirty: false },
+  } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture(decision.continuationExpectation, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: changedTree,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "published_content_changed");
+});
+
+test("historical publication reports missing continuation proof as capture failure, not changed content", () => {
+  const decision = decide([oldMerge()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  const context = { evidence: { contentTreeOid: null, workingTreeDirty: false } } as WorkflowContextSnapshot;
+  const result = ADAPTER.validateCapture(decision.continuationExpectation, {
+    context, capturedHeadOid: OTHER_HEAD, capturedCommitTreeOid: null,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /publication tree could not be read/);
+});
+
+test("a settled untouched detached repository completes without borrowing a sibling PR", () => {
+  const unchangedRepository = { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" };
+  const decision = decide([pr({ repositoryRoot: "/sibling" })], {
+    repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository,
+  });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.deepEqual(decision.continuationExpectation, { kind: "no_change", ...unchangedRepository });
+  assert.equal(SessionActionContinuationExpectationSchema.safeParse(decision.continuationExpectation).success, true);
+  const capture = { capturedHeadOid: HEAD, context: { evidence: {
+    workingTreeDirty: false, contentTreeOid: TREE,
+  } } as WorkflowContextSnapshot };
+  assert.equal(ADAPTER.validateCapture(decision.continuationExpectation, capture), null);
+  for (const changed of [
+    { ...capture, capturedHeadOid: OTHER_HEAD },
+    { ...capture, context: { evidence: { workingTreeDirty: true, contentTreeOid: TREE } } as WorkflowContextSnapshot },
+    { ...capture, context: { evidence: { workingTreeDirty: false, contentTreeOid: OTHER_HEAD } } as WorkflowContextSnapshot },
+  ]) assert.equal(ADAPTER.validateCapture(decision.continuationExpectation, changed)?.kind, "blocked");
+});
+
+test("no-change proof cannot discard accepted work or replace a same-repository adoption", () => {
+  const unchangedRepository = { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" };
+  assert.equal(decide([], { unchangedRepository, acceptedContentTreeOid: OTHER_HEAD, now: 60_003 }).kind, "blocked");
+  const adopted = decide([pr()], { unchangedRepository });
+  assert.equal(adopted.kind === "complete" && adopted.continuationExpectation.kind, "pull_request");
+});
+
+
+test("an unrelated PR on another branch does not veto positive no-change proof", () => {
+  const decision = decide([pr({ branch: "unrelated", sessionId: "other-session" })], {
+    unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" },
+  });
+  assert.equal(decision.kind === "complete" && decision.continuationExpectation.kind, "no_change");
+});
+
+for (const branch of [null, BRANCH]) {
+  for (const [label, patch, detail] of [
+    ["base", { unchangedRepositoryProblem: "The default base could not be resolved." }, /default base/],
+    ["accepted tree", { acceptedContentTreeOid: null, unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" } }, /accepted content tree/],
+  ] as const) test(`missing ${label} proof on branch ${branch} blocks with a recoverable explanation`, () => {
+    const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 },
+      settledAt: 3, now: 60_003, ...patch };
+    const decision = decide([], context);
+    assert.equal(decision.kind, "blocked");
+    if (decision.kind !== "blocked") return;
+    assert.equal(decision.code, "expectation_unmet");
+    assert.match(decision.detail, detail);
+    assert.match(decision.detail, /resubmit/i);
+    assert.equal(decide([pr()], context).kind, "complete", "durable adoption still wins");
+  });
+}
+
+for (const [label, patch] of [
+  ["accepted tree", { acceptedContentTreeOid: null, unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" } }],
+  ["repository read", { repository: null }],
+  ["HEAD read", { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }],
+  ["Git timeout", { unchangedRepositoryProblem: "Git timed out while reading publication proof." }],
+  ["moving HEAD", { unchangedRepositoryProblem: "The checkout HEAD changed while reading publication proof." }],
+  ["default base", { unchangedRepositoryProblem: "The default base could not be resolved." }],
+] satisfies Array<[string, Partial<SessionActionAdapterContext>]>) {
+  test(`transient ${label} proof retries before a bounded recoverable block`, () => {
+    const context = { ...patch, proofRetryStartedAt: 5_000 };
+    for (const now of [5_000, 64_999]) {
+      assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
+      assert.equal(decide([pr()], { ...context, now }).kind, "complete", "late adoption wins during retry");
+    }
+    const expired = decide([], { ...context, now: 65_000 });
+    assert.equal(expired.kind, "blocked");
+    if (expired.kind !== "blocked") return;
+    assert.equal(expired.code, "expectation_unmet");
+    assert.match(expired.detail, /resubmit/i);
+  });
+}
+
+test("missing accepted-tree proof does not hide an unavailable Git read", () => {
+  const context = { acceptedContentTreeOid: null, unchangedRepositoryProblem: "Git timed out" };
+  assert.deepEqual(decide([], context), { kind: "waiting", reason: "awaiting_proof" });
+  const decision = decide([], { ...context, now: 60_003 });
+  assert.equal(decision.kind, "blocked");
+  if (decision.kind !== "blocked") return;
+  assert.match(decision.detail, /Git timed out/);
+});
+
+test("no-change capture reports an unreadable publication tree as capture failure", () => {
+  const result = ADAPTER.validateCapture({ kind: "no_change", headOid: HEAD, treeOid: TREE,
+    baseOid: HEAD, baseRef: "origin/main" }, {
+    capturedHeadOid: HEAD,
+    context: { evidence: { contentTreeOid: null, workingTreeDirty: false } } as WorkflowContextSnapshot,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /publication tree could not be read/);
+  assert.doesNotMatch(result.detail, /repository changed/);
+});
+
+test("known changed work on detached HEAD waits for a late adoption, beyond the proof-read retry window", () => {
+  const context = { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository: null };
+  for (const now of [5_000, 120_000]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
+  }
+  assert.equal(decide([pr()], context).kind, "complete", "a detached publication is adopted after the turn settles");
+});
+
+
+test("no-change capture reports an unreadable HEAD as capture failure", () => {
+  const result = ADAPTER.validateCapture({ kind: "no_change", headOid: HEAD, treeOid: TREE,
+    baseOid: HEAD, baseRef: "origin/main" }, {
+    capturedHeadOid: null,
+    context: { evidence: { contentTreeOid: TREE, workingTreeDirty: false } } as WorkflowContextSnapshot,
+  });
+  assert.equal(result?.kind, "blocked");
+  if (result?.kind !== "blocked") return;
+  assert.equal(result.code, "capture_failed");
+  assert.match(result.detail, /HEAD could not be read/);
+  assert.doesNotMatch(result.detail, /repository changed/);
+});
+
+
+for (const mismatch of ["accepted tree", "captured HEAD"]) test(`clean checkout with mismatched ${mismatch} allows late adoption before expiry`, () => {
+  const context = {
+    unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" },
+    ...(mismatch === "accepted tree" ? { acceptedContentTreeOid: OTHER_HEAD } : { capturedHeadOid: OTHER_HEAD }),
+    proofRetryStartedAt: 5_000,
+  };
+  for (const now of [5_000, 64_999]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
+    assert.equal(decide([pr()], { ...context, now }).kind, "complete");
+  }
+  const expired = decide([], { ...context, now: 65_000 });
+  assert.equal(expired.kind, "blocked");
+  if (expired.kind !== "blocked") return;
+  assert.equal(expired.code, "expectation_unmet");
+  assert.match(expired.detail, /does not match the accepted or captured content/);
+});
+
+
+for (const branch of [null, BRANCH]) test(`known changed work without accepted tree keeps awaiting adoption on ${branch}`, () => {
+  const context = { repository: { repositoryId: REPO, root: REPO, branch, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository: null, acceptedContentTreeOid: null, settledAt: 5_000 };
+  for (const now of [5_000, 65_000, 125_000]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
+  }
+  assert.equal(decide([pr()], { ...context, now: 125_000 }).kind, "complete");
+});
+
+test("pull-request proof retry uses its own timestamp rather than the current settled observation", () => {
+  const decision = decide([], { unchangedRepositoryProblem: "Git timed out",
+    settledAt: 65_000, now: 65_000, proofRetryStartedAt: 5_000 });
+  assert.equal(decision.kind, "blocked");
 });

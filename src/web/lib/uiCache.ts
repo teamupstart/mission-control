@@ -11,6 +11,7 @@ import {
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
 import { isSkinId, type SkinId } from "@shared/skins.ts";
+import { VOICE_UI_DEFAULTS, VoiceUiConfigSchema } from "@shared/voice.ts";
 import type {
   ConversationView,
   LayoutMode,
@@ -163,6 +164,11 @@ function parseBlockedPlacement(raw: string | undefined): BlockedPlacement {
     : UI_CONFIG_DEFAULTS.blockedPlacement;
 }
 
+function parseCachedVoice(raw: unknown): UiConfig["voice"] {
+  const parsed = VoiceUiConfigSchema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : { ...VOICE_UI_DEFAULTS, indicators: [...VOICE_UI_DEFAULTS.indicators] };
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
@@ -185,6 +191,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,
       sound: raw?.alerts?.sound ?? UI_CONFIG_DEFAULTS.alerts.sound,
+      // A cache from before the "What notifies you" switches reads as every switch on.
+      notify: { ...UI_CONFIG_DEFAULTS.alerts.notify, ...raw?.alerts?.notify },
+      reportsInInbox: raw?.alerts?.reportsInInbox ?? UI_CONFIG_DEFAULTS.alerts.reportsInInbox,
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
     keybindingHints: raw?.keybindingHints ?? UI_CONFIG_DEFAULTS.keybindingHints,
@@ -249,6 +258,11 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     pauseConsoleControls: Array.isArray(raw?.pauseConsoleControls)
       ? raw.pauseConsoleControls.filter((id): id is string => typeof id === "string")
       : [...UI_CONFIG_DEFAULTS.pauseConsoleControls],
+    // Read through the daemon's own schema, so an unknown placement is the pill and a miss is
+    // the shipped status line, exactly as `UiConfigSchema` reads them. `safeParse`, and the
+    // defaults for this field alone on a failure: a cached value this build cannot read (a newer
+    // build's longer indicator list, say) must not throw away every other cached preference.
+    voice: parseCachedVoice(raw?.voice),
   };
 }
 

@@ -137,6 +137,34 @@ Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never r
 `feature-flags` settings backup domain id is also persisted and final; its surface is
 `settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
 
+The work unit id format and its four carrier names are final, because other services
+query them by exact value: the format `wu_` and a ULID, checked by
+`^wu_[0-9A-HJKMNP-TV-Z]{26}$` (Agent Platform's check); the environment variable
+`WORK_UNIT_ID`; the HTTP header `x-work-unit-id`; the MCP `params._meta` key `work_unit_id`;
+and the span attribute `work_unit_id`. They are spelled once, in `src/shared/work-unit.ts`,
+and nowhere else. Only `TaskManager` mints or copies a work unit id, and no request body may
+choose one. See [Work units](../work-units.md).
+
+What a session emits for its work unit follows its launch record (`session_launch_work_units`),
+never the `work-unit-id` flag. The flag is read in one place, `launchWorkUnitId`, once per
+launch, and that one value goes to the agent's environment and the record. Later readers use
+`launchWorkUnitFor(session)` or `sessionWorkUnitId(session, task)` from
+`src/server/work-unit.ts`. A new launch path computes the decision where it begins, hands it to
+the registry before the session's first event (`registerSdkSession`'s `launchWorkUnitId`, or
+`expectTerminalLaunchWorkUnit` with the launch's own state home before a terminal spawn, then
+`settleTerminalLaunchWorkUnit` with the launch's outcome), and applies it with `withWorkUnit` or
+`workUnitEnv`; it never sets `WORK_UNIT_ID` any other way. A terminal hand-over is never matched
+by checkout path: only the agent beneath that launch's wrapper may take it.
+
+Telemetry exports `work_unit_id` unhashed, the one exception to per-destination `scopedRef`
+hashing. The exception lives in one list, `UNSCOPED_REF_KEYS` in `src/shared/telemetry.ts`, and a
+span exports a listed ref only through its descriptor's `unscopedRefAttributes`. The catalog lint
+(`telemetryCatalogProblems`) refuses an unscoped ref that is not listed, a listed one hashed
+through `refAttributes`, and a span-bearing event with a `session_id` or `task_id` ref that does
+not export `work_unit_id`, so a new session or task event inherits the rule. Capture reads the
+id from the launch record (`launchWorkUnitFor`) or the launch's own decision, never from the flag
+or a task. It is never a metric dimension (`FORBIDDEN_METRIC_DIMENSIONS`).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -185,8 +213,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Schedule enum values
 - Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
   transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
-  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
-  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
+  (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
+  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
+  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
+  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
+  `pending_turns` and is final. Stage, transport and
   built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
   recorded with launches. A stored shaper whose stage or transport this build does not know is
   kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
@@ -840,15 +872,41 @@ A SessionAction is a durable side effect, not an evaluator:
   child already captured - is supplied on `SessionActionAdapterContext` by the manager, which is
   where git and SQLite live. An adapter that fetched its own facts could not be tested without arranging them on a
   real machine, and "we could not look" would stop being distinguishable from "the answer is
-  no". Null means unknown, and unknown always means wait.
+  no". Null means unknown, never proof of success; each adapter owns its retry and recovery policy.
 
 ### The `pull_request` adapter
 
-- Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
-  repository root and branch as the bound checkout, whose last observed remote head is the
-  exact commit the continuation captured. That commit's resolved Git tree must also equal the
-  `contentTreeOid` captured on the parent judged submission. `Session.prUrl` is a lookup hint and satisfies
-  nothing; neither does a branch name, nor a pull request merely existing.
+- A settled Pull Request turn may complete with `no_change` when daemon-read Git facts prove
+  a clean checkout (including staged and untracked files) whose HEAD is contained in the locally
+  observed default branch, and its tree matches the accepted content. Base selection follows the
+  review diff's policy; stacked work is conservatively compared against the default branch too.
+  The persisted expectation pins HEAD, tree, base oid and base ref;
+  continuation capture must preserve the clean HEAD and tree. Unknown facts never prove absence.
+  This completion releases the existing conversation hold without creating a PR, including for
+  actions already waiting when the daemon restarts.
+  A sealed no-change continuation also completes an Inspector-policy run at End when there
+  is no candidate PR for that repository. A candidate PR still enters the normal Inspector gate.
+  Missing accepted-tree proof for a clean checkout, unavailable local reads (including timeouts, moving HEAD, and
+  an unresolved base), and clean-checkout mismatches with accepted or captured content all
+  retry for one minute after a settled turn with no adopted PR before a recoverable
+  `expectation_unmet` block with a precise diagnostic. A checkout returned to the default branch
+  after publication gets the same adoption grace period.
+  The persisted `awaiting_proof` wait and its first `settledAt` retain the retry window across
+  sweeps and restart; a recovered read or a new active turn resets it. The lifecycle observer
+  records even a short turn between sweeps without replacing the delivery anchor or first
+  pickup timestamp. Adoption can still complete the action during that window. Both completion and blocking re-offer
+  queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
+  An observation discards its Git reads if the action or session changed while it awaited them.
+  The adapter's shared `settledAt` remains the current observation; only Pull Request reads
+  `proofRetryStartedAt` for the persisted retry window.
+  A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
+  Known changed work, including commits on a detached HEAD, waits for PR adoption even when
+  the accepted content tree is missing. No timeout or agent assertion is treated as proof of publication.
+- New publication requires a durable adoption in Mission Control's ledger. Repository,
+  branch, head and content comparisons are advisory for a newly opened PR; differences are
+  recorded as warnings. Earlier open adoptions use the existing session/checkout checks.
+  `Session.prUrl` alone proves nothing. Earlier merged publication follows the stricter
+  content proof below.
 - It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
@@ -863,19 +921,41 @@ A SessionAction is a durable side effect, not an evaluator:
   expectation the immutable child can never satisfy, and the action waits forever while the
   head keeps moving.
 - Commit identity is not content identity. A packaging commit may differ from the reviewed
-  commit while preserving the accepted tree. A different published tree blocks with the
-  append-only `published_content_changed` code and must not reach End on the prior verdict.
-  Missing historical tree proof blocks as `capture_failed`; absence is never treated as
-  equivalence.
-- Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
-  including a provider that could not be reached: waiting is recoverable and a block is not.
+  commit while preserving the accepted publication tree. Historical merge satisfaction uses
+  that tree and refuses missing proof. If continuation capture discovers unpublished changes
+  or a different tree, `published_content_changed` exposes the existing resubmit recovery.
+- A historical merge can satisfy a later action only with a known matching repository,
+  branch and reviewed publication tree. The continuation persists `mergedContentTreeOid` and
+  rechecks that tree plus unpublished changes. Ordinary new-PR adoption keeps its advisory
+  comparison policy; historical publication never borrows that looser fallback.
+  A PR observed merging during the action wait retains the ordinary earlier-adoption path;
+  adoption time alone does not establish that its merge predates delivery.
+  Ledger reads require an explicit adoption-time/key cursor and use bounded pages. Git lookups run
+  sequentially per action so branch history cannot create an unbounded subprocess burst.
+  Every page remains eligible; a matching historical publication is never truncated away.
+  Successful immutable tree resolutions are cached by repository identity and commit in a
+  bounded manager cache. Unknown objects retry after a one-minute cooldown, held separately
+  until expiry so cache eviction cannot trigger immediate retries. Missing accepted trees
+  skip these lookups.
+  Overlapping sweep and Inspector observations share an in-flight lookup for the same key.
+- Rolled-over task settlement requires the latest terminal run's confirmed action delivery
+  to own the current episode's latest prompt. `reserveInjection` supplies a one-use echo
+  receipt, recorded as `session_action_prompt_observed` in the workflow event ledger after
+  the Registry records the episode. The receipt includes the human Goal revision so an
+  operator follow-up at the same timestamp cannot reuse it. Missing or ambiguous receipts
+  fail closed; retained text labels alone never establish ownership after restart.
+  Driver state events without a prompt hook do not roll an episode; an unchanged merged
+  episode retains the ordinary settlement path. Blocked runs still own recovery and keep
+  the task running until the run completes, fails, or is cancelled.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
   and retires the row in the next statement, so the open set loses a pull request on the very
-  tick the adapter needed to see it closed - and the one state that blocks becomes unreachable,
-  leaving a durable contradiction reported as an ordinary missing-PR wait for ever. Read through
-  `loadAdoptedInspectorPrsSince(deliveredAt)`, which keeps retired rows visible for exactly the
-  window this action has been waiting. Widening that bound is not free: the caller resolves a
-  repository identity per distinct root, and each one is a git subprocess.
+  tick the adapter needed to see its final state, leaving a completed publication reported
+  as an ordinary missing-PR wait. Read through
+  `loadAdoptedInspectorPrsSince(deliveredAt, branch, null)` for the first page, then pass the
+  preceding page's last row as the cursor. This keeps retired rows visible for exactly the
+  window this action has been waiting, plus older merged observations on its branch. The
+  caller resolves repository identity per distinct root and resolves merged content only
+  inside the matching repository and branch. Closed-unmerged history stays outside the window.
 - A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
   and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
   produced one somewhere else", which look identical from the ledger and are opposite problems.

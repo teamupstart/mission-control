@@ -4,9 +4,35 @@ The flag core stores one set of operator choices for this machine. The registry 
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
-[Session control requests](sessions.md#when-a-session-asks-for-control) and
-[Fold the drawer's Profiles](residents.md#the-residents-drawer) as previews.
+[Session control requests](sessions.md#when-a-session-asks-for-control),
+[Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
+[File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
+[MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
+[Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
+[Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) and
+[Voice addressing](voice.md) (`voice`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
+
+**File plan decisions** (`filed-plan-decisions`) files a `request_plan_decisions` form instead of
+holding its tool call open. It takes effect only while **Ask without stopping** is also on: the
+registry has no flag-to-flag dependency, so the one route that decides how an ask waits reads both
+flags for every ask, and with either off a plan form blocks exactly as before. A form filed while
+both were on stays filed after either is turned off; turning a flag off closes nothing.
+
+**Change pinned plan revision** (`pinned-plan-change`) enables the backlog editor and MCP
+[atomic pin change](dispatch-and-backlog.md#change-a-pinned-plan-revision-preview). Turning it off
+refuses `planInputChange` and `previewOnly` requests; it does not change saved pins or dependencies.
+This release also adds raw `planInputs` and `dependencies` edits to MCP `update_task`, independently
+of this flag. Those edits remain subject to authentication and existing task, repository, and
+dependency validation. The dashboard task-update endpoint already supported these raw atomic edits.
+
+**Recurring missions through MCP** (`mcp-schedules`) enables `create_schedule`,
+`preview_schedule` and `list_schedules`. The daemon gates their authenticated `/mcp/schedules`
+entry points on every request. Turning it off does not pause saved missions or change the
+existing dashboard API. See [Recurring missions](recurring-missions.md#creating-missions-from-a-session-through-mcp).
+`test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
+creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
 ## Operator controls
 
@@ -29,6 +55,11 @@ route answers 404 and the `home-dispatch-v1` health capability is absent.
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
 Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
+**Awaiting background work** (`session-awaiting`) lets a session declare, with `report_awaiting`,
+that it is idle on purpose while a background process finishes. Turning it off refuses new
+declarations and ends every standing wait, so no card is left holding automation it no longer
+explains. Clearing a wait, by the session or from the dashboard, keeps working either way.
 
 **Session control requests** (`session-control-requests`) lets a session ask for **Control other
 sessions** with `request_session_control`; only a desktop click on the card's Accept grants it.
@@ -56,7 +87,8 @@ answer within 10 seconds counts as failed, so Retry is never stuck behind a stal
 
 Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAGS`,
 `RETIRED_FEATURE_FLAG_IDS` and one `<FLAG>_ID` constant for each flag whose gates need to name it
-(today `HEADLESS_MODE_FLAG_ID`), so a gate imports the id instead of respelling it. It holds data
+(today `HEADLESS_MODE_FLAG_ID` and `SESSION_AWAITING_FLAG_ID`), so a gate imports the id instead
+of respelling it. It holds data
 only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
 at most 64 characters. `FeatureFlagId` is derived from the tuple.
@@ -159,13 +191,30 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
+| `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
+| `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section and the top bar's to read figure), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `voice` | preview | `/api/voice/config`, `/api/voice/mute`, `/voice/listener/hello` and `/voice/shell-report`, the `voice_state` event and snapshot field, the Settings > Voice category and the Setup panel's Voice family. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
 `e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
 a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/inbox-flag.spec.ts` checks that the `inbox` row appears off, that a toggle is stored
+and reaches a second window without a reload, and that the panel's filter finds it.
+`e2e/specs/inbox-display-name.spec.ts` checks the names the flag changes: the inbox row, the review
+modal header, the question card, an alert's title, and a resident's board colour.
+`e2e/specs/reports-inbox.spec.ts` checks agent reports: a report posted on the tool's channel
+reaches the inbox and the to read figure, opening it changes no figure, Mark read clears it, a
+replacement shows once with its note, the session never turns amber, and nothing shows with the
+flag off.
+`e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
+**to answer**, Continue reaching the agent, Mark done, the row leaving when the session works,
+Dismiss holding across a reload, and a queue-only row without Mark done.
 `e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
 in every open window.
+`e2e/specs/voice-flag-and-settings.spec.ts` checks the `voice` row, its Settings category and Setup
+family, and the voice state reaching the mode line.
 
 A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
 `settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search

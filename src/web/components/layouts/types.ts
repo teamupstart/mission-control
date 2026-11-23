@@ -1,3 +1,5 @@
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../../lib/sessionReports.ts";
 import type {
   BacklogPlan,
   FileCommentReview,
@@ -21,6 +23,7 @@ import {
 } from "@shared/pipeline.ts";
 import type { BacklogTrustView, StackShipping } from "../../lib/backlog-copy.ts";
 import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
+import type { ResidentLoopFeedbackBinding } from "../../residents/ResidentLoopControls.tsx";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -228,6 +231,13 @@ export interface SessionViewProps {
    */
   reviews: ReviewItem[];
   /**
+   * The agent reports this window has been told about (`inbox` flag; empty while it is off), the
+   * live half of a conversation's report entries (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening a report entry and marking it read: App's, shared with the inbox. */
+  reportControls?: ReportEntryControls;
+  /**
    * App-owned join from compact run SSE summaries to each live session: EVERY run the session
    * carries, one per repository a multi-repo task changed.
    *
@@ -318,6 +328,15 @@ export interface SessionViewProps {
    * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
    */
   residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /** Feedback for a Board resident's controls, shared with the fleet filter. */
+  residentLoopFeedbackFor?: (runId: string) => ResidentLoopFeedbackBinding;
+  /**
+   * The sessions under Idle's Awaiting rule, computed once by App on one clock
+   * (`awaitingSessionIds`) so the views draw the same order the arrow keys walk. A wait's
+   * membership changes at its deadline, and two views reading their own clocks could disagree
+   * for a tick. Absent means none.
+   */
+  awaitingIds?: ReadonlySet<string>;
   /**
    * App-owned join from each session Restart on new profile replaced to its replacement
    * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no

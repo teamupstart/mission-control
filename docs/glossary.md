@@ -98,7 +98,8 @@ unlike a persona, it may change the repository and has a completion condition th
 ## [Shaper](task-shaping.md)
 
 A shaper is one configured program that task shaping asks for context about a task: a gatherer
-reads the task's repositories, and a selector chooses guidance for the task. A preview behind
+reads the task's repositories, a selector chooses guidance for the task, and a router chooses
+skills for it, which turn one names and Mission Control prompts after the work. A preview behind
 the `task-shaping` flag. [Task shaping](task-shaping.md) says what the current build does with
 what a shaper returns.
 

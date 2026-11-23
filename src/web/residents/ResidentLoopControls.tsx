@@ -1,12 +1,11 @@
-import { useContext, useEffect, useState } from "react";
-import { reportBucket } from "@shared/session.ts";
+import { Fragment, useContext, useEffect, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
-import { residentAwakeAt, residentSleepingUntil, residentWakeOpeningLabel } from "@shared/resident-schedule.ts";
+import { residentRestartRequestId } from "@shared/residents.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
 import { controlResident, type ResidentControlAction } from "./api.ts";
+import { residentLoopActions, residentLoopPresentation, type ResidentLoopDetails } from "./loop-presentation.ts";
 import type { ResidentSessionMark } from "./marker.ts";
 import { ResidentRestartPromptContext } from "./restart-prompt.ts";
 
@@ -26,7 +25,7 @@ const actionDescriptions = {
  * compaction layers as one line under them.
  */
 export function ResidentLoopStatusLine({ loop, session, tags = false }: {
-  loop: ResidentLoopStatus & Partial<Pick<ResidentRunSummary, "compaction" | "settings">>;
+  loop: ResidentLoopDetails;
   session?: Session | null;
   tags?: boolean;
 }): React.JSX.Element {
@@ -38,53 +37,50 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
     return () => clearInterval(timer);
   }, [loop.nextWakeAt]);
   const activeHours = useFeatureFlag("resident-active-hours");
-  const held = loop.loopState !== "paused" && session && reportBucket(session) === "needs-you";
-  // Two separate questions. Asleep is whether a waiting resident is outside its window right now,
-  // whatever its next wake: at Friday 18:00 a wake already due Monday 10:00 is not held, yet the
-  // resident sleeps until then. The wake time is when its next wake will actually go out: the
-  // next opening when the wake falls outside the hours (held), else the wake's own time. At
-  // 16:58 in a 09:00-17:00 window a wake due at 17:03 is held until Monday, but the resident is
-  // awake until 17:00, so it reads waiting with that held time.
-  const waiting = !held && loop.loopState === "waiting";
-  const heldUntil = waiting ? residentSleepingUntil(loop.settings?.schedule, loop.nextWakeAt, now, activeHours) : null;
-  const asleep = waiting && !residentAwakeAt(loop.settings?.schedule, now, activeHours);
-  const wakesAt = heldUntil ?? (asleep ? loop.nextWakeAt : null);
-  const label = held ? "waiting on you" : asleep ? "asleep" : loop.loopState;
-  const remaining = loop.nextWakeAt === null ? null : Math.max(0, Math.ceil((loop.nextWakeAt - now) / 1000));
-  const next = held || remaining === null ? null
-    : wakesAt !== null ? `wakes ${residentWakeOpeningLabel(wakesAt, now)}`
-      : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
+  const { tone, label, iteration, next, queued, reasons, compaction, summary, compactionSummary } = residentLoopPresentation(loop, session, now, activeHours);
   if (tags) {
-    const reasons = [loop.pauseReason, loop.wakeReason].filter((reason): reason is string => !!reason);
     return <span className="resident-loop-status resident-loop-tags" aria-label="Resident loop status">
       <span className="resident-loop-tag-row">
-        <span className={`resident-loop-tag is-${asleep ? "asleep" : loop.loopState}`}>{label}</span>
-        <span className="resident-loop-tag">iteration {loop.iteration}</span>
+        <span className={`resident-loop-tag is-${tone}`}>{label}</span>
+        <span className="resident-loop-tag">{iteration}</span>
         {next && <span className="resident-loop-tag">{next}</span>}
-        {loop.runRequestedAt !== null && <span className="resident-loop-tag is-queued">run queued</span>}
+        {queued && <span className="resident-loop-tag is-queued">{queued}</span>}
       </span>
-      {reasons.map((reason) => <span key={reason} className="resident-loop-reason">{reason}</span>)}
-      {loop.compaction && <span className="resident-compaction-layers">
-        <span className="resident-compaction-layer">Compaction before wakes <b>{loop.compaction.betweenIterations ? "active" : "unavailable"}</b></span>
-        {" · "}
-        <span className="resident-compaction-layer">Native backstop <b>{loop.compaction.nativeBackstop ? "active" : "unavailable"}</b></span>
+      {reasons.map((reason, index) => <span key={index} className="resident-loop-reason">{reason}</span>)}
+      {compaction && <span className="resident-compaction-layers">
+        {compaction.map((layer, index) => <Fragment key={layer.label}>
+          {index > 0 && " · "}<span className="resident-compaction-layer">{layer.label} <b>{layer.status}</b></span>
+        </Fragment>)}
       </span>}
     </span>;
   }
   return <span className="resident-loop-status" aria-label="Resident loop status">
-    {label} · iteration {loop.iteration}
-    {next && ` · ${next}`}
-    {loop.runRequestedAt !== null && " · run queued"}
-    {loop.pauseReason && ` · ${loop.pauseReason}`}
-    {loop.wakeReason && ` · ${loop.wakeReason}`}
-    {loop.compaction && <span className="resident-compaction-layers">Compaction before wakes: {loop.compaction.betweenIterations ? "active" : "unavailable"}. Native backstop: {loop.compaction.nativeBackstop ? "active" : "unavailable"}.</span>}
+    {summary}
+    {compactionSummary && <span className="resident-compaction-layers">{compactionSummary}</span>}
   </span>;
 }
 
+export interface ResidentLoopFeedback {
+  busy: boolean;
+  error: string | null;
+}
+
+export interface ResidentLoopFeedbackBinding {
+  value: ResidentLoopFeedback | undefined;
+  onChange: (feedback: ResidentLoopFeedback) => void;
+}
+
+const idleFeedback: ResidentLoopFeedback = { busy: false, error: null };
+
 /** Every resident surface sends the same run controls and renders the same refusal. */
-export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSessionMark; menu?: boolean }): React.JSX.Element | null {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function ResidentLoopControls({ mark, menu = false, feedback }: {
+  mark: ResidentSessionMark;
+  menu?: boolean;
+  feedback?: ResidentLoopFeedbackBinding;
+}): React.JSX.Element | null {
+  const [localFeedback, setLocalFeedback] = useState(idleFeedback);
+  const { busy, error } = feedback ? feedback.value ?? idleFeedback : localFeedback;
+  const setFeedback = feedback?.onChange ?? setLocalFeedback;
   const promptToComplete = useContext(ResidentRestartPromptContext);
   if (!mark.loop) return null;
   const act = async (action: ResidentControlAction) => {
@@ -97,25 +93,23 @@ export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSes
         revision: mark.changedTo,
       });
     }
-    setBusy(true); setError(null);
+    setFeedback({ busy: true, error: null });
+    let failure: string | null = null;
     try {
       await controlResident(mark.runId, action);
       // Restart leaves the original task open; offer to complete it now, from wherever this was.
       if (action === "restart") promptToComplete?.(mark.taskId);
     }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setBusy(false); }
+    catch (err) { failure = err instanceof Error ? err.message : String(err); }
+    finally { setFeedback({ busy: false, error: failure }); }
   };
-  const paused = mark.loop.loopState === "paused";
-  const button = (label: string, action: ResidentControlAction) =>
-    <Tooltip label={actionDescriptions[action]}>
-      <button type="button" role={menu ? "menuitem" : undefined} className="btn btn-ghost" disabled={busy}
-        onClick={() => void act(action)}>{label}</button>
-    </Tooltip>;
   return <span className="resident-loop-controls" onClick={(event) => event.stopPropagation()}>
-    {button(paused ? "Resume" : "Pause", paused ? "resume" : "pause")}
-    {mark.loop.runRequestedAt === null ? button("Run now", "run-now") : button("Cancel queued run", "cancel-run-now")}
-    {mark.changedTo !== null && button("Restart on new profile", "restart")}
+    {residentLoopActions(mark).map(({ label, action }, index) => (
+      <Tooltip key={index} label={actionDescriptions[action]}>
+        <button type="button" role={menu ? "menuitem" : undefined} className="btn btn-ghost" disabled={busy}
+          onClick={() => void act(action)}>{label}</button>
+      </Tooltip>
+    ))}
     {error && <span role="alert" className="resident-loop-error">{error}</span>}
   </span>;
 }

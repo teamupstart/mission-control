@@ -96,7 +96,11 @@ test("the fold is handed that one list, and the count and the click are both the
 
   // And the click, which is the half that was a dead end: it opens the inbox, which renders
   // the SAME fold object the figure counted - there is no second query behind it.
-  assert.match(app, /onOpenInbox=\{\(\) => setInboxOpen\(true\)\}/);
+  assert.match(
+    handoff.slice(0, handoff.indexOf("/>")),
+    /onOpenInbox=\{\(\) => setInbox\(\{ focusSessionId: null \}\)\}/,
+    "clicking the chip opens the inbox without a conversation focus target",
+  );
   const inbox = app.slice(app.indexOf("<AttentionInbox"));
   assert.match(inbox.slice(0, inbox.indexOf("/>")), /fold=\{attention\}/);
 });

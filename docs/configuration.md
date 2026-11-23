@@ -9,7 +9,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
-| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, disposable Git worktrees, and the [shapers folder](#the-shapers-folder) the operator fills) |
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for the **Repositories** family in **Settings → Setup**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
@@ -94,6 +94,13 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](attention-and-alerts.md#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](sessions.md#cost-telemetry) installers edit. Overridable so tests never touch your real one |
+
+**`WORK_UNIT_ID` is set, never read.** Mission Control does not take it as a setting. With the
+`work-unit-id` preview on when an agent starts, Mission Control sets it in that agent's
+environment to the task's [work unit](work-units.md#the-launch-environment) id, so MCP config
+that references it sends the `x-work-unit-id` header. A value in the daemon's own environment, or
+in the shell of the terminal server a pane runs in, is removed from every process Mission
+Control starts: an agent carries only its own launch's value, or none.
 
 Every configurable built-in command is declared in the executable catalog. Its override uses
 `MISSION_<TOOL>_BIN`, then the compatible `FLEET_` and `HARNESS_` forms. This applies to agent
@@ -236,6 +243,41 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Task shaping references
+
+A [remote shaper](task-shaping.md#remote-shapers)'s header values hold references, never
+secrets. Each is resolved when the call is made and never stored, logged or sent to the
+dashboard, and every resolved value, caller values included, is redacted from what the shaper
+sends back.
+
+| Reference | Resolves to |
+| --- | --- |
+| `{caller.user}` | The identity declared in `app_config.shaping.caller.user`. Free text, unverified, not a secret |
+| `{caller.agent}` | The task's harness: `claude`, `codex` or `pi` |
+| `{caller.conversation}` | The task id |
+| `{env:NAME}` | The daemon's own environment variable `NAME`, read at call time |
+
+A reference that resolves to nothing, an empty value included, fails closed: the shaper is not
+called and its outcome is `unavailable`, naming the reference. `{env:NAME}` never resolves
+Mission Control's own API token, its token file, its scout credentials, or its state directory
+under any name, and never a value that carries the daemon's token. `GET /api/shaping` reports
+every referenced name as `set` or `unset`, never its value, and so it does for each variable a
+`command` shaper or a locally started MCP server passes through in its `env` list.
+
+**Where the daemon's environment comes from.** `{env:NAME}` reads the daemon process's
+environment and nothing else: not your login shell, and not a file. What that environment holds
+depends on how the daemon was started:
+
+- From a terminal (`npm run dev`, `make start`, or `npm start`), it inherits that shell's
+  exports. Export the variable before starting the daemon.
+- The desktop app and the `npm run install-service` LaunchAgent are started by `launchd`,
+  which does not read your shell's profile, so an `export` in `~/.zshrc` never reaches them.
+  Set the variable for your login session with `launchctl setenv NAME value`, then quit and
+  reopen the app, or restart the service.
+
+The daemon reads its environment once, when it starts, so a variable set or changed afterwards
+reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` until then.
+
 ## Desktop update channel
 
 **Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
@@ -306,6 +348,16 @@ The window that confirmed the restore hydrates its browser cache from the daemon
 daemon-backed settings and first-paint preferences restart from one source. Other open windows do
 not reload automatically. They keep unsaved drafts and show a persistent **Reload now** notice so
 the operator chooses when to adopt the restored state.
+
+## The shapers folder
+
+With the `task-shaping` preview on, the daemon discovers task shapers in
+`$MISSION_HOME/shapers/` (`~/.mission-control/shapers/` by default): one folder per shaper,
+each holding a `shaper.json`. The daemon reads the folder at start, when Settings > Task
+shaping opens and at every shaping run, and never creates or writes it. An isolated
+`MISSION_HOME` therefore has its own folder and never sees the default one. Settings snapshots
+carry only the on or off choice stored for a folder shaper's id, never the folder's files.
+Which folder shapers run, and when, is in [the shaper folder](task-shaping.md#the-shaper-folder).
 
 ## Commands
 

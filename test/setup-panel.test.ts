@@ -8,11 +8,14 @@ import {
   INDEXED_REPOSITORIES_INFO,
   SETUP_REPOSITORY_ANCHORS,
   homeRelative,
+  setupRowAnchor,
   type SetupChecksSnapshot,
   type SetupRowView,
 } from "../src/shared/setup-catalog.ts";
 import { SetupPanel, familyForAnchor, nextSetupSelection } from "../src/web/components/SetupPanel.tsx";
 import { CONDUCTOR_INTEGRATION_ENABLED, visibleSetupFamilyIds } from "../src/shared/conductor-integration.ts";
+import { FEATURE_FLAGS_DEFAULTS, resolveFeatureFlag, type FeatureFlagId, type FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
+import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 
 const HOME = "/home/operator";
 
@@ -27,19 +30,21 @@ function row(over: Partial<SetupRowView> & Pick<SetupRowView, "rowId" | "family"
   } as SetupRowView;
 }
 
-function render(rows: SetupRowView[], jumpAnchor: string | null = null): string {
+function render(rows: SetupRowView[], jumpAnchor: string | null = null, flags: FeatureFlagsConfig = FEATURE_FLAGS_DEFAULTS): string {
   const view: SetupChecksSnapshot = {
     snapshotToken: "00000000-0000-4000-8000-000000000000",
     rows,
     home: HOME,
     banner: { visible: true, attentionRowIds: [], attentionCount: 0 },
   };
-  return renderToStaticMarkup(createElement(SetupPanel, {
+  return renderToStaticMarkup(createElement(FeatureFlagsContext.Provider, { value: flags }, createElement(SetupPanel, {
     state: { loading: false, error: null, refresh: async () => {}, dismissBanner: async () => null, view },
     jumpAnchor,
     jumpRequestId: jumpAnchor ? 1 : null,
-  }));
+  })));
 }
+/** The shipped flags: every preview off, so a family behind one (Voice) is not drawn. */
+const flagOff = (flag: FeatureFlagId) => resolveFeatureFlag(flag, FEATURE_FLAGS_DEFAULTS);
 
 const CLAUDE = row({ rowId: { source: "dependency", id: "claude-cli" }, family: "agents" });
 const GH_CLI = row({
@@ -87,10 +92,26 @@ test("the rail lists every family always, and the pane renders only the selected
   const html = render([CLAUDE, CMUX, GH_CLI]);
   // Every family stays reachable even though only one family's rows are mounted - that is
   // what keeps a deep link and the guided tour able to ask for any of them.
-  for (const id of visibleSetupFamilyIds()) {
+  for (const id of visibleSetupFamilyIds([], undefined, flagOff)) {
     assert.match(html, new RegExp(`id="setup-family-${id}"`));
     assert.match(html, new RegExp(`data-anchor="setup/family-${id}"`));
   }
+  // A family behind a preview flag that is off is not drawn either, and appears with it.
+  assert.doesNotMatch(html, /id="setup-family-voice"/);
+  assert.match(render([CLAUDE, CMUX, GH_CLI], null, { enableAll: false, overrides: { voice: true } }), /id="setup-family-voice"/);
+  assert.equal(familyForAnchor("setup/family-voice", [], flagOff), null, "a link to it names nothing while it is off");
+  assert.equal(familyForAnchor("setup/family-voice", []), "voice");
+  // A row read while the flag was on does not keep the family drawn once it is off: the live
+  // flag outranks a cached snapshot, so no repair button outlives the feature.
+  const VOICE_PREVIEWS = row({ rowId: { source: "dependency", id: "voice-previews" }, family: "voice", requirement: "optional" });
+  assert.deepEqual(visibleSetupFamilyIds([VOICE_PREVIEWS], undefined, flagOff).includes("voice"), false);
+  const stale = render([CLAUDE, CMUX, GH_CLI, VOICE_PREVIEWS], "setup/family-voice");
+  assert.doesNotMatch(stale, /id="setup-family-voice"/);
+  assert.doesNotMatch(stale, /data-anchor="setup\/dependency-voice-previews"/);
+  assert.match(stale, /1 of 3 checks ready/, "the verdict does not count the hidden row");
+  const live = render([CLAUDE, CMUX, GH_CLI, VOICE_PREVIEWS], "setup/family-voice", { enableAll: false, overrides: { voice: true } });
+  assert.match(live, /data-anchor="setup\/dependency-voice-previews"/);
+  assert.match(live, /2 of 4 checks ready/, "with the flag on it is counted again");
   // A family emptied by a hidden integration is not drawn at all, rather than drawn empty.
   if (!CONDUCTOR_INTEGRATION_ENABLED) {
     assert.doesNotMatch(html, /id="setup-family-pipelines"/);
@@ -352,6 +373,28 @@ test("the opening family is latched once, so a repair cannot move the rail", () 
     null,
     "nothing to change: the operator stays in the family they were reading",
   );
+});
+
+test("a deep link that already resolves is latched before the first snapshot lands, and keeps its family when rows arrive", () => {
+  // The dispatch form's "Fix in Setup" names an environment-check row whose family the catalog
+  // fixes. The page stops passing the jump down as soon as it starts waiting for the row, so a
+  // first read slower than that render must not cost the jump its family.
+  const rows = [CLAUDE, CMUX, GH_CLI];
+  const noJump = { jumpRequestId: null, jumpFamily: null };
+  const jumpFamily = familyForAnchor(setupRowAnchor({ source: "environment-check", id: "mission-hook-events" }), []);
+  assert.equal(jumpFamily, "extensions", "precondition: the anchor resolves from the catalog alone");
+  assert.notEqual(nextSetupSelection({ chosen: null, seenRequest: null }, { rows, ...noJump })?.chosen, "extensions",
+    "precondition: these rows would open some other family by default");
+
+  // No rows yet, a fresh request: selected now, with its request id.
+  const latched = nextSetupSelection({ chosen: null, seenRequest: null }, { rows: [], jumpRequestId: 9, jumpFamily });
+  assert.deepEqual(latched, { chosen: "extensions", seenRequest: 9 });
+
+  // The rows arrive while the page still passes the same request: nothing changes.
+  assert.equal(nextSetupSelection(latched!, { rows, jumpRequestId: 9, jumpFamily }), null);
+  // The rows arrive after the page has stopped passing it: the family stays.
+  const settled = nextSetupSelection(latched!, { rows, ...noJump });
+  assert.equal((settled ?? latched!).chosen, "extensions", "the default does not take the rail back");
 });
 
 test("a deep link outranks the latch, and is not consumed before it can be resolved", () => {

@@ -1,3 +1,5 @@
+import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
+import type { UnchangedRepositoryProof } from "./unchanged-repository.ts";
 import { realpathSync } from "node:fs";
 import {
   SESSION_ACTION_COMPLETION_CAPABILITIES,
@@ -30,14 +32,17 @@ export interface SessionActionAdapterContext {
   anchorTranscriptBytes: number | null;
   deliveredAt: number;
   pickedUpAt: number;
+  /** This pass's settled observation, shared by every adapter. */
   settledAt: number;
+  /** Pull Request only: the first settled observation in its current no-change proof retry. */
+  proofRetryStartedAt?: number;
   now: number;
   /**
    * The bound checkout's own facts, or null when they could not be read this pass.
    *
    * Supplied rather than fetched, so an adapter stays a pure decision over stated evidence
    * and every git call lives where the rest of them do. Null is "we could not look", which
-   * every adapter must treat as a reason to wait rather than as an answer.
+   * adapters must treat as unavailable proof, never as proof that no work exists.
    */
   repository: SessionActionRepositoryFacts | null;
   /**
@@ -60,6 +65,10 @@ export interface SessionActionAdapterContext {
    * which a push can answer.
    */
   capturedHeadOid: string | null;
+  /** Fresh positive proof from the bound checkout, never an agent assertion. */
+  unchangedRepository?: UnchangedRepositoryProof | null;
+  /** Bounded daemon diagnostic when absence proof could not be read, rather than changed work. */
+  unchangedRepositoryProblem?: string | null;
   /** Content identity captured on the parent submission that received the accepted verdict. */
   acceptedContentTreeOid?: string | null;
 }
@@ -130,6 +139,8 @@ export interface SessionActionAdoptedPullRequest {
   branch: string | null;
   /** The remote head the last poll SAW, as a full object id, or null until the first poll. */
   observedHeadOid: string | null;
+  /** Resolved tree of a historical merged head, supplied by the manager. */
+  mergedContentTreeOid?: string | null;
   /** What that poll saw the pull request's state to be, or null until the first poll. */
   observedState: "OPEN" | "CLOSED" | "MERGED" | null;
   /** When that poll happened, or null until the first one. */
@@ -386,13 +397,33 @@ function completePullRequest(
   };
 }
 
+/** A settled turn must not hold sibling feedback indefinitely on unverifiable no-change proof. */
+function unprovenPullRequest(context: SessionActionAdapterContext): SessionActionCompletionDecision {
+  const missingAcceptedTree = context.unchangedRepository && !context.acceptedContentTreeOid
+    ? "The accepted content tree is missing from the reviewed submission." : null;
+  const readProblem = context.unchangedRepositoryProblem
+    ?? (!context.repository ? "The bound repository could not be read." : null)
+    ?? (!context.repository?.headOid ? "The checkout HEAD could not be verified." : null);
+  const problem = missingAcceptedTree ?? readProblem
+    ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null);
+  // Every failed no-change proof gets time for adoption to arrive after the agent settles,
+  // including a checkout returned to main. The manager preserves the first such sweep.
+  if (problem && context.now - (context.proofRetryStartedAt ?? context.now) < 60_000) {
+    return { kind: "waiting", reason: "awaiting_proof" };
+  }
+  return problem
+    ? { kind: "blocked", code: "expectation_unmet",
+      detail: `${problem} No pull request was adopted. Restore the missing proof or publish the work, then resubmit with fresh evidence.` }
+    : { kind: "waiting", reason: "awaiting_pull_request" };
+}
+
 /**
- * The completion that requires a real, adopted pull request and treats later verification as
- * advisory.
+ * The completion that proves publication or a clean repository with nothing to publish.
+ * Comparisons after a real adoption remain advisory.
  *
  * The generic observer has already proven the turn ran and settled. That is the easy half and
  * it is emphatically not the guarantee: an agent can finish a turn having said it opened a pull
- * request and not. Durable adoption is therefore still required. Once an observed adoption
+ * request and not. Work requiring publication still needs durable adoption. Once an observed adoption
  * exists, repository, branch, head, state, and reviewed-tree disagreements are warnings rather
  * than reasons to stop the graph. The PR exists, downstream stages can inspect it, and a person
  * can choose to rerun the workflow against the published ref.
@@ -415,7 +446,38 @@ const pullRequest: SessionActionAdapter = {
   validateSnapshot: () => null,
 
   decide: (context) => {
+    // An old merge is proof only when it covers the reviewed content. Do not let it
+    // enter the ordinary adoption fallback, which intentionally treats freshness as advisory.
+    const historicalMerges = context.adoptedPullRequests.filter(pr =>
+      pr.observedState === "MERGED" && pr.adoptedAt < context.deliveredAt
+      && (pr.observedAt === null || pr.observedAt < context.deliveredAt));
     const repository = context.repository;
+    if (repository && context.acceptedContentTreeOid) {
+      const published = historicalMerges.filter(pr =>
+        belongsToBranch(pr, repository.repositoryId, repository.branch ?? "")
+        && pr.mergedContentTreeOid === context.acceptedContentTreeOid);
+      const chosen = published.sort((a, b) => a.number - b.number)[0];
+      if (chosen) return {
+        kind: "complete",
+        continuationExpectation: {
+          ...pullRequestExpectation(chosen, context.acceptedContentTreeOid),
+          mergedContentTreeOid: chosen.mergedContentTreeOid,
+        },
+        warnings: [pullRequestWarning(`Already published through merged pull request ${chosen.url}. Its published tree matches the reviewed content; no new pull request is needed.`)],
+      };
+    }
+    context = { ...context, adoptedPullRequests: context.adoptedPullRequests.filter(pr => !historicalMerges.includes(pr)) };
+    const unchanged = context.unchangedRepository;
+    if (repository && unchanged && unchanged.headOid === repository.headOid
+      && (!context.capturedHeadOid || context.capturedHeadOid === unchanged.headOid)
+      && context.acceptedContentTreeOid === unchanged.treeOid
+      && !context.adoptedPullRequests.some(pr =>
+        belongsToBranch(pr, repository.repositoryId, repository.branch ?? "")
+        || earlierAdoption(pr, context.session.id, repository, context.session.cwd ?? null).matches
+        || (openedByThisTurn(pr, context.session.id, context.deliveredAt)
+          && (pr.repositoryRoot === null || pr.repositoryRoot === repository.repositoryId)))) {
+      return { kind: "complete", continuationExpectation: { kind: "no_change", ...unchanged } };
+    }
     const openedThisTurn = context.adoptedPullRequests.filter(
       (pr) => openedByThisTurn(pr, context.session.id, context.deliveredAt),
     );
@@ -432,7 +494,7 @@ const pullRequest: SessionActionAdapter = {
           "The pull request was opened, but the checked repository or branch could not be read for comparison. The workflow continued; run it again to review the published ref.",
         );
       }
-      return { kind: "waiting", reason: "awaiting_proof" };
+      return unprovenPullRequest(context);
     }
     // The head a capture already fixed wins over whatever the checkout has moved on to. See
     // `capturedHeadOid`: re-deciding against a moving HEAD never converges.
@@ -445,7 +507,7 @@ const pullRequest: SessionActionAdapter = {
           "The pull request was opened, but the checked ref could not be read for comparison. The workflow continued; run it again to review the published ref.",
         );
       }
-      return { kind: "waiting", reason: "awaiting_proof" };
+      return unprovenPullRequest(context);
     }
 
     const onBranch = context.adoptedPullRequests.filter(
@@ -549,16 +611,48 @@ const pullRequest: SessionActionAdapter = {
       );
     }
     // No pull request was adopted for this turn or identified on the checked branch.
-    return { kind: "waiting", reason: "awaiting_pull_request" };
+    return unprovenPullRequest(context);
   },
 
   validateCapture: (expectation, capture) => {
+    if (expectation.kind === "no_change") {
+      const capturedTree = workflowPublicationTree(capture.context.evidence);
+      if (!capturedTree) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: "The continuation's publication tree could not be read to verify the unchanged repository. Capture fresh evidence and resubmit the workflow." };
+      }
+      if (!capture.capturedHeadOid) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: "The continuation's HEAD could not be read to verify the unchanged repository. Capture fresh evidence and resubmit the workflow." };
+      }
+      if (capture.capturedHeadOid !== expectation.headOid
+        || capturedTree !== expectation.treeOid
+        || capture.context.evidence.workingTreeDirty) {
+        return { kind: "blocked", code: "expectation_unmet",
+          detail: "The repository changed after the no-change proof. Capture fresh evidence and resubmit the workflow." };
+      }
+      return null;
+    }
     if (expectation.kind !== "pull_request") {
       return {
         kind: "blocked",
         code: "capture_failed",
         detail: "A pull request action requires a pull request continuation expectation",
       };
+    }
+    if (expectation.mergedContentTreeOid) {
+      const capturedTree = workflowPublicationTree(capture.context.evidence);
+      if (!capturedTree) {
+        return { kind: "blocked", code: "capture_failed",
+          detail: `The continuation's publication tree could not be read to verify merged pull request ${expectation.pullRequestUrl}. Capture fresh evidence and resubmit the workflow.` };
+      }
+      if (expectation.mergedContentTreeOid !== expectation.acceptedContentTreeOid
+        || capturedTree !== expectation.mergedContentTreeOid
+        || workflowHasUnpublishedChanges(capture.context.evidence)) {
+        return { kind: "blocked", code: "published_content_changed",
+          detail: `The merged pull request ${expectation.pullRequestUrl} does not cover the continuation's content. Publish the remaining work and resubmit the workflow.` };
+      }
+      return null;
     }
     if (!capture.capturedHeadOid) {
       return {

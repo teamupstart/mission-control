@@ -154,6 +154,7 @@ function mkSchedule(
 function mkTask(over: Partial<Task> = {}): Task {
   return {
     id: uid("task"),
+    workUnitId: null,
     title: "T",
     intent: "do it",
     kind: "ship",

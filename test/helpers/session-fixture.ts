@@ -6,6 +6,18 @@ import type {
 } from "../../src/shared/types.ts";
 import type { EmulatorHandle, MuxHandle } from "../../src/shared/terminal.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "../../src/shared/ensemble.ts";
+import { terminalResourceId } from "../../src/shared/pane.ts";
+
+/**
+ * The terminal resource a fake spawn reports for the agent it discovered, as a real backend
+ * reports the pane it opened. A dispatched launch binds only the worker carrying its spawn's
+ * identity, so a fake whose spawn names no resource launches nothing the dispatcher can find.
+ */
+export function openedResource(discovered: { terminals: ReadonlyArray<MuxHandle | EmulatorHandle> }): string {
+  const pane = discovered.terminals[0];
+  if (!pane) throw new Error("a fake launch must discover its agent in a terminal pane");
+  return terminalResourceId(pane);
+}
 
 /**
  * A representative session for the board's render tests, and the one place a required
@@ -68,6 +80,7 @@ export function mkEmuHandle(over: Partial<EmulatorHandle> = {}): EmulatorHandle 
 export function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     // Pane-backed, which is what every fixture here describes: it carries a tmux handle and
@@ -99,7 +112,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     firstSeen: 0,
     lastSeen: 0,
     lastActivity: null,
-    pendingReviews: 0,
+    pendingReviews: 0, openQuestions: 0,
     task: null,
     prUrl: null,
     prNumber: null,
@@ -136,6 +149,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
   const now = 1000;
   return {
     id: "t1",
+    workUnitId: null,
     title: "T",
     intent: "do the thing",
     kind: "ship",

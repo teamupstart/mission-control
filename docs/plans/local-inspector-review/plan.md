@@ -256,9 +256,17 @@ findings are reported without blocking).
   locally and the next submission is reviewed. Nothing is pushed.
 - **Skips with a note** when Local review is off, Inspector is off, or the repository lacks the
   Commands consent every Command already needs.
-- **Blocks for the operator** on a provider failure, an oversize diff, a spent allowance, or
-  repository access being unavailable (requirement R1). None of these spends a repair round or
-  sends a code-fix packet.
+- **Blocks for the operator** on a provider failure, an oversize diff, or repository access
+  being unavailable (requirement R1). None of these spends a repair round or sends a code-fix
+  packet.
+- **A spent allowance follows the slot's exhaustion policy.** The default, Block, blocks for
+  the operator. Skip skips the stage with a note, and a skipped stage keeps the GitHub review.
+- **A spent repair budget blocks the run.** The stage's rounds also draw on the run's repair
+  rounds (default 5), which with the defaults run out before the allowance of 10. The run then
+  blocks at the existing `round_limit` phase, as it does for any reviewer that still fails:
+  nothing is pushed, no pull request opens, and the GitHub review is not a fallback. The
+  operator grants more repair rounds or takes over. The allowance matters once more rounds are
+  granted.
 
 Findings are retained as the attempt's normalized findings, read through the existing Load
 findings control and `read_workflow_command_output`.
@@ -280,7 +288,7 @@ Add a boolean to the Inspector config, `localReview`, default off. It lives in t
 | Setting | Before the pull request | After the pull request |
 | --- | --- | --- |
 | Local review off (today) | Nothing | Every pushed head is reviewed on GitHub. Live posts, Dry run records |
-| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted. This is "local only, no GitHub comments" |
+| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted. Nothing merges. This is "local only, no GitHub comments" |
 | Local review on, Live | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed and posted as today |
 
 "Other heads" are later pushes whose content differs from what was reviewed locally (CI
@@ -311,6 +319,10 @@ With Local review on, the Inspector completion gate is satisfied when both hold:
 2. the adopted, open pull request's head has Git tree T, the comparison the gate and the Pull
    Request action already make.
 
+The match is by Git tree and base branch, not by commit. A later commit with the same tree on
+the same base, such as a reworded or re-created commit, still matches. A commit whose tree
+differs does not.
+
 No remote model call and no comment. The step stays for two reasons:
 
 - **Proof of what was pushed.** It catches a session that commits something different between
@@ -337,6 +349,15 @@ head has none. Under D2 Shipping accepts a matching local review as merge proven
 review posture, `local`, appended to `INSPECTOR_POSTURES`, valid only while Local review is on
 and only for a head whose tree and base match. Until Phase 6 lands, repositories holding the
 merge grant keep the GitHub review for every head.
+
+Dry run stays dry for a locally reviewed head, and the rule is enforced twice. The merge
+predicate's first gate reads the Inspector's current posture and refuses every merge while
+the Inspector is off, in Dry run, or the repository is not on its list. That gate stays first
+and unchanged. And the worker records the `local` posture only while that current posture is
+Live. In Dry run a matched head still gets no GitHub review and no post, but it is recorded
+with the current posture (`dry-run` or `not-allowlisted`), as a dry review is today. When the
+operator switches to Live, the next sweep finds the match still holds and records `local`
+without a GitHub review, because a local review withheld nothing from publication.
 
 ### User-visible surfaces
 
@@ -510,9 +531,11 @@ is switched off.
   (R1).
 - Engine tests: stage ordering before the Pull Request action, the repair loop on fresh
   evidence, allowance and exhaustion policy, skip reasons, restart recovery.
-- Gate tests: a matching tree completes, a moved head does not, a skipped stage falls back.
+- Gate tests: a matching tree completes, a later commit with the same tree still completes, a
+  head with a different tree does not, a skipped stage falls back.
 - Worker tests: no review, reply or post for a matched head. Observation continues.
-- Shipping tests (Phase 6): refusal for an unreviewed, amended or later-pushed head.
+- Shipping tests (Phase 6): refusal for an unreviewed head, for a later push that changes the
+  tree, and for a matching local pass while the Inspector is in Dry run.
 - A Codex Local Inspector review that reads the worktree through the repository workload
   (Phase 4).
 - Playwright specs for every surface above. Typecheck, lint, build, smoke.
@@ -551,6 +574,16 @@ against the exact revision, not in this file.
   that were not adopted.
 - Earlier revisions numbered the phases differently. The numbering in "Phases (outline)" is
   the current one.
+- 2026-11-23, review of the pull request. Design item 2 stated the spent-allowance rule two
+  ways. Revision 10 states one: the slot's exhaustion policy decides, with Block as the
+  default.
+- 2026-11-23, Plan Validation review. Design item 7 did not say where Dry run is checked for a
+  locally reviewed head. Revision 12 states it: the merge predicate's current-posture gate,
+  and the worker recording `local` only under Live.
+- 2026-11-23, later reviews. Revision 13 states three things: a later commit with the same tree
+  still matches a local pass (design item 5), what happens when the run's repair budget ends
+  the loop before the stage allowance (design item 2), and, in the phased index, how each
+  revision was approved. Revision 11 had reworded that index paragraph once before.
 
 ## Evidence
 

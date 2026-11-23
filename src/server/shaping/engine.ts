@@ -3,18 +3,25 @@ import {
   allocateBudget,
   canonicalJson,
   composeShapingSection,
+  composeSkillsSection,
   cutAtLineBoundary,
   describeInvalidResult,
+  isShapingLifecyclePoint,
+  joinShapingSections,
+  mergeRoutedSkills,
   resolveShaperById,
   resolveShapers,
   SHAPING_LIMITS,
   SHAPING_PROTOCOL,
   SHAPING_SECTION_PREAMBLE,
+  SHAPING_SKILLS_RESERVE_BYTES,
   shaperIsLocal,
   shapingEntryHeading,
+  shapingSkillLine,
   shapingSlot,
   ShapingRequestSchema,
   ShapingResultSchema,
+  ShapingRouteResultSchema,
   summariseShaping,
   utf8Length,
   type DiscoveredShaper,
@@ -26,10 +33,16 @@ import {
   type ShapingInjectedEntry,
   type ShapingOutcome,
   type ShapingRequest,
+  type ShapingResult,
+  type ShapingRouteResult,
   type ShapingRun,
+  type ShapingSkillSummary,
   type ShapingStage,
 } from "@shared/shaping.ts";
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { skillReference } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The dry run's reply shape lives beside the other wire shapes, so the dashboard reads the same one.
 export type { ShapingInjectedEntry, ShapingRun };
@@ -40,6 +53,8 @@ import { getShapingConfig } from "./index.ts";
 import {
   callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
 } from "./transports/index.ts";
+import { carriedWorkUnitId } from "./transports/carriers.ts";
+import { resolveRoutedSkill, type RoutedSkillResolver } from "./skills.ts";
 
 /**
  * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
@@ -79,6 +94,27 @@ export interface ShapeTaskInput {
    * It is never logged or recorded. Phase 2 passes it in.
    */
   trace?: ShapingTraceContext | null;
+  /**
+   * The shaping run's work unit id, when the task has one. Every call of the run carries it
+   * unchanged as `ctx.workUnitId`: a header on `http` and streamable-HTTP `mcp` calls,
+   * `params._meta.work_unit_id` on every `tools/call`, and `WORK_UNIT_ID` for a local process.
+   * Opaque and not a credential, so it is never redacted, and never logged or recorded. Absent
+   * until the task that mints it lands; a value that could not travel as a header is treated
+   * as absent.
+   */
+  workUnitId?: string | null;
+  /**
+   * The attached worktrees, by path, whose own task skill for this task's kind is in this
+   * launch's turn one (FR-05's `resolveRepoTaskSkills`). A routed skill named for the kind is not
+   * announced for them (D14). By path, never by name: two attached worktrees of one repository
+   * share a name, and only one of them may carry the skill. Absent, nothing is taken.
+   */
+  repositoryTaskSkillWorktrees?: readonly string[];
+  /**
+   * The harness a dry run renders routed skills for, when the request names no harness of its
+   * own. A launch always names its harness, and this is then ignored.
+   */
+  previewAgent?: AgentType;
 }
 
 export interface ShapeTaskDeps {
@@ -87,6 +123,8 @@ export interface ShapeTaskDeps {
   transports?: ShapingTransportCalls;
   /** Overrides the `task-shaping` flag, for tests. */
   enabled?: boolean;
+  /** How a routed skill's name is checked against Mission Control's catalog. */
+  resolveSkill?: RoutedSkillResolver;
 }
 
 /** A fresh empty run for every caller: nothing a caller does to one can leak into the next. */
@@ -94,7 +132,7 @@ export interface ShapeTaskDeps {
 const MIN_CALL_MS = 10;
 
 function emptyRun(): ShapingRun {
-  return { summary: null, section: "", entries: [] };
+  return { summary: null, section: "", entries: [], skills: [] };
 }
 
 /** Shape one task. Resolves to an empty run when the flag is off or no shaper applies. */
@@ -102,12 +140,14 @@ export async function shapeTask(input: ShapeTaskInput, deps: ShapeTaskDeps = {})
   try {
     if (!(deps.enabled ?? featureEnabled("task-shaping"))) return emptyRun();
     const config = deps.config ?? getShapingConfig();
-    const discovered = deps.discovered ?? await discoverShapers();
+    // The folder is read at the start of every run, against the same config snapshot, so a
+    // folder dropped in or replaced since the last launch takes effect now, with no restart.
+    const discovered = deps.discovered ?? await discoverShapers({ config });
     const resolved = resolveShapers(config, discovered, {
       kind: input.context.kind, repositories: input.context.repositories, ...(input.turn ? { turn: input.turn } : {}),
     });
     if (resolved.length === 0) return emptyRun();
-    return await runShaping(resolved, input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS);
+    return await runShaping(resolved, input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS, deps.resolveSkill ?? resolveRoutedSkill);
   } catch (error) {
     console.warn("[shaping] the shaping step failed unexpectedly:", error);
     return emptyRun();
@@ -121,12 +161,15 @@ export type DryRunResult =
 /** Run exactly one shaper, whatever its stored choice and filters, as `shapeTask` would. */
 export async function dryRunShaper(id: string, input: ShapeTaskInput, deps: ShapeTaskDeps = {}): Promise<DryRunResult> {
   const config = deps.config ?? getShapingConfig();
-  const discovered = deps.discovered ?? await discoverShapers();
+  const discovered = deps.discovered ?? await discoverShapers({ config });
   const found = resolveShaperById(config, discovered, id, {
     kind: input.context.kind, repositories: input.context.repositories,
   });
   if (!found.ok) return found;
-  return { ok: true, run: await runShaping([found.resolved], input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS) };
+  return {
+    ok: true,
+    run: await runShaping([found.resolved], input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS, deps.resolveSkill ?? resolveRoutedSkill),
+  };
 }
 
 /** The SHA-256 of the definition that ran: canonical JSON for a registered shaper, the manifest's bytes for a discovered one. */
@@ -138,6 +181,8 @@ export function shaperSha256(resolved: Pick<ResolvedShaper, "stored" | "sha256">
 interface CallResult {
   record: ShapingCallRecord;
   entries: Array<{ id: string; title: string | null; path: string | null; body: string; truncated: boolean }>;
+  /** A router's skills, as it sent them. Empty at every other stage. */
+  skills: ShapingRouteResult["skills"];
   facts: ShapingFacts | null;
   summary: string | null;
   /** The reply said it was truncated as a whole, whether or not any entry says so. */
@@ -215,11 +260,19 @@ function orderRepositories(repositories: readonly ShapeTaskRepository[]): Array<
     .map((repo, position) => ({ ...repo, slot: shapingSlot(position) }));
 }
 
+/** The harness a run's routed skills are rendered for, or null when it names none this build knows. */
+function skillAgent(input: ShapeTaskInput): AgentType | null {
+  const harness = input.context.harness;
+  if (harness !== null) return (AGENT_TYPES as readonly string[]).includes(harness) ? harness as AgentType : null;
+  return input.previewAgent ?? null;
+}
+
 async function runShaping(
   resolved: readonly ResolvedShaper[],
   input: ShapeTaskInput,
   config: ShapingConfig,
   transports: ShapingTransportCalls,
+  resolveSkill: RoutedSkillResolver,
 ): Promise<ShapingRun> {
   // Elapsed time and every budget come from the monotonic clock, so a wall-clock correction
   // during the step neither discards an on-time reply nor skips a stage with time left. The
@@ -234,14 +287,18 @@ async function runShaping(
   input.signal?.addEventListener("abort", onCancel, { once: true });
   if (input.signal?.aborted) run.abort();
   const scope = runScope();
+  const workUnitId = carriedWorkUnitId(input.workUnitId);
   const repositories = orderRepositories(input.context.repositories);
   const multiRepo = repositories.length > 1;
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
   const facts = repositories.map((): ShapingFacts | null => null);
   const summaries = repositories.map((): string | null => null);
-  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository & { slot: string }; result: CallResult }> = [];
+  const results: Array<{ stage: ShapingStage; resolved: ResolvedShaper; repo: ShapeTaskRepository & { slot: string }; result: CallResult }> = [];
 
-  const contextFor = (local: boolean, target: string): ShapingContext => ({
+  // The selected guidance per repository slot, set once the selectors have settled (D13).
+  let guidanceBySlot: Map<string, Array<{ shaper: string; id: string }>> | null = null;
+
+  const contextFor = (local: boolean, target: string, stage: ShapingStage): ShapingContext => ({
     ...input.context,
     repositories: repositories.map((repo) => ({
       slot: repo.slot, name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
@@ -253,6 +310,8 @@ async function runShaping(
       agent: input.context.harness,
       conversation: input.context.taskId,
     },
+    // Only a route request carries it, and always, empty when nothing was selected there.
+    ...(stage === "route" ? { guidance: (guidanceBySlot?.get(target) ?? []).slice(0, SHAPING_LIMITS.guidanceIds) } : {}),
   });
 
   const callOne = async (stage: ShapingStage, entry: ResolvedShaper, repoIndex: number): Promise<CallResult> => {
@@ -264,7 +323,7 @@ async function runShaping(
       outcome, reason: reason === null ? null : bounded(reason), durationMs: Math.round(performance.now() - callStart), version, redacted,
     });
     const empty = (outcome: ShapingOutcome, reason: string, redacted = false): CallResult => ({
-      record: record(outcome, reason, null, redacted), entries: [], facts: null, summary: null, truncated: false,
+      record: record(outcome, reason, null, redacted), entries: [], skills: [], facts: null, summary: null, truncated: false,
     });
     const stopped = () => input.signal?.aborted
       ? empty("failed", "The task was cancelled while it was being shaped.")
@@ -289,7 +348,7 @@ async function runShaping(
         ...(stage !== "gather" && summaries[repoIndex] ? { summary: summaries[repoIndex]! } : {}),
       },
       ...(entry.shaper.version ? { version: entry.shaper.version } : {}),
-      context: contextFor(local, repo.slot),
+      context: contextFor(local, repo.slot, stage),
       limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
     };
     // The request is checked against the wire schema before any transport sees it. Input the
@@ -314,12 +373,21 @@ async function runShaping(
     let abandon: ReturnType<typeof setTimeout> | undefined;
     let onStop: (() => void) | undefined;
     let reply: TransportReply | "abandoned";
+    // When the transport settled: first as the transport itself reports it, where it produced the
+    // reply, then as its promise settles. The continuation below can run later than either on a
+    // busy event loop, and a reply in time must not be judged by when it was read.
+    let producedAt: number | undefined;
+    let settledAt: number | undefined;
     try {
       reply = await Promise.race([
         // The parsed request, so a transport receives only the fields the wire contract declares.
         callTransport(wire.data, entry.shaper, {
-          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
-        }, transports),
+          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null, workUnitId,
+          settled: () => { producedAt ??= performance.now(); },
+        }, transports).then((settled) => {
+          settledAt = performance.now();
+          return settled;
+        }),
         new Promise<"abandoned">((done) => {
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
           onStop = () => done("abandoned");
@@ -333,8 +401,9 @@ async function runShaping(
       if (onStop) run.signal.removeEventListener("abort", onStop);
       call.abort();
     }
-    const late = performance.now() - callStart > timeoutMs;
     if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
+    // The transport's own moment first, then the engine's, then now: each is earlier than this read.
+    const late = (producedAt ?? settledAt ?? performance.now()) - callStart > timeoutMs;
     // The call's deadline applies to every reply, not only to data. A busy event loop can let a
     // transport settle after the deadline before the overdue timer runs: whatever it says then
     // is a timeout, keeping the transport's own timeout diagnostic when it gave one.
@@ -351,9 +420,14 @@ async function runShaping(
     // place, such as an invalid fact's name kept for validation. Removing it counts as redaction.
     const redact = reply.redact ?? ((text: string) => text);
     const holdsNamed = reply.holdsNamed ?? (() => false);
+    // The record collapses whitespace, which can turn a spacing variant of a value into the
+    // value itself: the text is scrubbed as written, collapsed, and scrubbed again, and either
+    // pass removing a value marks the record.
     const scrub = (text: string): string => {
-      if (holdsNamed(text)) redacted = true;
-      return redact(text);
+      const first = redact(text);
+      const flat = first.replace(/\s+/g, " ").trim();
+      if (holdsNamed(text) || holdsNamed(flat)) redacted = true;
+      return redact(flat);
     };
     let value = reply.data;
     if (typeof value === "string") {
@@ -365,9 +439,13 @@ async function runShaping(
     withoutNul(value);
     const error = replyError(value);
     if (error !== null) return empty("failed", scrub(error), redacted);
-    const parsed = ShapingResultSchema.safeParse(value);
+    // A router answers with skills, every other stage with entries: one schema each, so a router
+    // that sends guidance, or a selector that sends skills, is refused rather than half-read.
+    const parsed = stage === "route"
+      ? ShapingRouteResultSchema.safeParse(value)
+      : ShapingResultSchema.safeParse(value);
     if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)), redacted);
-    const result = parsed.data;
+    const result: Partial<ShapingResult> & Partial<ShapingRouteResult> = parsed.data;
     const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
     // What the transport dropped while redacting, recorded whatever the outcome: a successful
     // reply that lost an entry still says so, and still answers `ok`.
@@ -378,31 +456,105 @@ async function runShaping(
     if (result.version != null && holdsNamed(result.version)) redacted = true;
     const version = result.version == null ? null
       : redact(result.version, { identifier: true }).slice(0, SHAPING_LIMITS.versionChars);
+    // What redaction dropped leads the reason: a reason is held to `reasonChars`, and the shaper's
+    // own notes can fill it, so a diagnostic placed after them could be cut while the record
+    // still says `redacted`.
     return {
       record: result.degraded
-        ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)
-        : record("ok", dropped || null, version, redacted),
-      entries: result.guidance.map((guidance) => ({
+        ? record("degraded", [dropped, notes || "The shaper reported that it is degraded."].filter(Boolean).join(" "), version, redacted)
+        // A reply that is not degraded keeps its notes too, such as the files a gatherer skipped,
+        // so the record says what the shaper left out without marking the run degraded.
+        : record("ok", [dropped, notes].filter(Boolean).join(" ") || null, version, redacted),
+      entries: (result.guidance ?? []).map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,
       })),
+      skills: result.skills ?? [],
       facts: result.repo?.facts ?? null,
       truncated: result.truncated === true,
       summary: result.repo?.summary ?? null,
     };
   };
 
+  /**
+   * Every context entry in pipeline order, fitted to what the total leaves once the skills'
+   * reserve is set aside. Pure over the results so far: the route stage calls it before routers
+   * run, to tell them what was selected, and the section is built from the same answer.
+   */
+  function allocateEntries() {
+    // Candidates in pipeline order. The allocator de-duplicates them by their keys as it keeps them.
+    const candidates: Array<{
+      group: string; groupBytes: number; body: string; overhead: number; keys: string[];
+      entry: Omit<ShapingInjectedEntry, "body" | "truncated" | "omittedBytes">; slot: string; sourceTruncated: boolean;
+    }> = [];
+    for (const { resolved: shaper, repo, result } of results) {
+      for (const item of result.entries) {
+        const entry = {
+          shaperId: shaper.shaper.id, label: shaper.shaper.label, stage: shaper.shaper.stage, repo: repo.name,
+          id: item.id, title: item.title, path: item.path,
+        };
+        const heading = shapingEntryHeading({ label: entry.label, title: entry.title ?? undefined, id: entry.id, repo: entry.repo }, multiRepo);
+        candidates.push({
+          group: shaper.shaper.id,
+          groupBytes: shaper.shaper.maxBytes ?? config.limits.maxBytes,
+          body: item.body,
+          // "\n\n" before the heading and "\n" after it, as `composeShapingSection` joins them.
+          overhead: utf8Length(heading) + 3,
+          entry,
+          slot: repo.slot,
+          sourceTruncated: item.truncated,
+          // De-duplicated per repository, and only against entries the budget keeps: the same id
+          // from the same shaper, or an identical body from any shaper, is injected once for that
+          // repository. Two repositories whose entries share an id both reach the section.
+          // Keyed by slot, not name: two attached worktrees of one repository are separate here.
+          keys: [`id\u0000${repo.slot}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.slot}\u0000${item.body}`],
+        });
+      }
+    }
+    const budget = allocateBudget(candidates, Math.max(0, totalBytes - reserve - utf8Length(SHAPING_SECTION_PREAMBLE)));
+    const kept: Array<ShapingInjectedEntry & { slot: string }> = budget.kept.map((slot) => ({
+      ...slot.item.entry, slot: slot.item.slot,
+      body: slot.body, truncated: slot.truncated || slot.item.sourceTruncated, omittedBytes: slot.omittedBytes,
+    }));
+    return { budget, entries: kept };
+  }
+
+  // The launch may lower the total, never raise it: the section fits the smaller of the two.
+  const launchCap = input.maxSectionBytes;
+  const totalBytes = typeof launchCap === "number" && Number.isFinite(launchCap)
+    ? Math.min(config.limits.totalBytes, Math.max(0, Math.floor(launchCap)))
+    : config.limits.totalBytes;
+  const callsFor = (stage: ShapingStage) => resolved.filter((entry) => entry.shaper.stage === stage).flatMap((entry) =>
+    repositories.flatMap((repo, index) => entry.repositories.includes(repo.name) ? [{ entry, index }] : []));
+  // While a router applies, its skills' room is set aside before any entry is allocated, so
+  // guidance that fills the total cannot crowd them out. With no router nothing is reserved, and
+  // the allocation is exactly what it was before routing existed.
+  const routerApplies = callsFor("route").length > 0;
+  const reserve = routerApplies ? Math.min(SHAPING_SKILLS_RESERVE_BYTES, totalBytes) : 0;
+  let allocated: ReturnType<typeof allocateEntries> | null = null;
+
   try {
     for (const stage of SHAPING_STAGES) {
-      const calls = resolved.filter((entry) => entry.shaper.stage === stage).flatMap((entry) =>
-        repositories.flatMap((repo, index) => entry.repositories.includes(repo.name) ? [{ entry, index }] : []));
+      const calls = callsFor(stage);
       if (calls.length === 0) continue;
+      if (stage === "route") {
+        // Every stage before this one has settled, so what reaches the section is known now, and
+        // each router is told which selected entries made it for its repository (D13).
+        allocated = allocateEntries();
+        guidanceBySlot = new Map();
+        for (const kept of allocated.entries) {
+          if (kept.stage !== "select") continue;
+          const list = guidanceBySlot.get(kept.slot) ?? [];
+          list.push({ shaper: kept.shaperId, id: kept.id });
+          guidanceBySlot.set(kept.slot, list);
+        }
+      }
       // At most `concurrentCalls` in flight. Results keep the call order whatever finishes first,
       // and a call that waits for a slot starts with what is left of the step's deadline.
       const settled = await mapBounded(calls, SHAPING_LIMITS.concurrentCalls, ({ entry, index }) => callOne(stage, entry, index));
       settled.forEach((result, at) => {
         const { entry, index } = calls[at]!;
-        results.push({ resolved: entry, repo: repositories[index]!, result });
+        results.push({ stage, resolved: entry, repo: repositories[index]!, result });
         if (stage !== "gather") return;
         // Facts merge by name and the later gatherer wins; the summary is the last one returned.
         // Kept within the request's own bound, first names first.
@@ -423,49 +575,18 @@ async function runShaping(
     scope.close();
   }
 
-  // Candidates in pipeline order. The allocator de-duplicates them by their keys as it keeps them.
-  const candidates: Array<{
-    group: string; groupBytes: number; body: string; overhead: number; keys: string[];
-    entry: Omit<ShapingInjectedEntry, "body" | "truncated" | "omittedBytes">; sourceTruncated: boolean;
-  }> = [];
-  for (const { resolved: shaper, repo, result } of results) {
-    for (const item of result.entries) {
-      const entry = {
-        shaperId: shaper.shaper.id, label: shaper.shaper.label, stage: shaper.shaper.stage, repo: repo.name,
-        id: item.id, title: item.title, path: item.path,
-      };
-      const heading = shapingEntryHeading({ label: entry.label, title: entry.title ?? undefined, id: entry.id, repo: entry.repo }, multiRepo);
-      candidates.push({
-        group: shaper.shaper.id,
-        groupBytes: shaper.shaper.maxBytes ?? config.limits.maxBytes,
-        body: item.body,
-        // "\n\n" before the heading and "\n" after it, as `composeShapingSection` joins them.
-        overhead: utf8Length(heading) + 3,
-        entry,
-        sourceTruncated: item.truncated,
-        // De-duplicated per repository, and only against entries the budget keeps: the same id
-        // from the same shaper, or an identical body from any shaper, is injected once for that
-        // repository. Two repositories whose entries share an id both reach the section.
-        // Keyed by slot, not name: two attached worktrees of one repository are separate here.
-        keys: [`id\u0000${repo.slot}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.slot}\u0000${item.body}`],
-      });
-    }
-  }
-  // The launch may lower the total, never raise it: the section fits the smaller of the two.
-  const launchCap = input.maxSectionBytes;
-  const totalBytes = typeof launchCap === "number" && Number.isFinite(launchCap)
-    ? Math.min(config.limits.totalBytes, Math.max(0, Math.floor(launchCap)))
-    : config.limits.totalBytes;
-  const allocation = allocateBudget(candidates, Math.max(0, totalBytes - utf8Length(SHAPING_SECTION_PREAMBLE)));
-  const entries: ShapingInjectedEntry[] = allocation.kept.map((slot) => ({
-    ...slot.item.entry, body: slot.body, truncated: slot.truncated || slot.item.sourceTruncated, omittedBytes: slot.omittedBytes,
-  }));
-  const section = composeShapingSection(entries.map((entry) => ({
+  const allocation = allocated ?? allocateEntries();
+  const entries = allocation.entries.map(({ slot: _slot, ...entry }) => entry);
+  const contextSection = composeShapingSection(entries.map((entry) => ({
     label: entry.label, title: entry.title ?? undefined, id: entry.id, repo: entry.repo, body: entry.body,
   })), multiRepo);
+  const routed = routeSkills();
+  const section = joinShapingSections(contextSection, routed.section);
   const truncatedShapers = new Set<string>([
-    ...allocation.kept.filter((slot) => slot.truncated || slot.item.sourceTruncated).map((slot) => slot.item.group),
-    ...allocation.dropped.map((drop) => drop.item.group),
+    ...allocation.budget.kept.filter((slot) => slot.truncated || slot.item.sourceTruncated).map((slot) => slot.item.group),
+    ...allocation.budget.dropped.map((drop) => drop.item.group),
+    // A router whose skill was left out for the cap or the budget supplied more than turn one carries.
+    ...routed.skills.filter((skill) => skill.state === "dropped").map((skill) => skill.shaper),
     // A shaper that says its reply was cut supplied incomplete context, entries or not. So does
     // one that marked any entry truncated, counted from every validated reply before
     // de-duplication, so a dropped duplicate's truncation is not lost with it.
@@ -474,11 +595,90 @@ async function runShaping(
   ]);
   const summary = summariseShaping({
     calls: results.map(({ result }) => result.record),
-    kept: allocation.kept.map((slot) => ({ shaperId: slot.item.group, bytes: slot.bytes, truncated: slot.truncated })),
+    kept: allocation.budget.kept.map((slot) => ({ shaperId: slot.item.group, bytes: slot.bytes, truncated: slot.truncated })),
     truncatedShapers,
     at: startedAt,
     durationMs: Math.round(performance.now() - startedMono),
     multiRepo,
   });
-  return { summary: summary && { ...summary, bytes: utf8Length(section) }, section, entries };
+  return {
+    summary: summary && { ...summary, bytes: utf8Length(section), ...(routerApplies ? { skills: routed.skills } : {}) },
+    section,
+    entries,
+    skills: routed.skills,
+  };
+
+  /**
+   * Every router's skills, merged, checked and fitted into what the task context left of the
+   * total. The words of each line are Mission Control's; a router supplies only a validated name.
+   */
+  function routeSkills(): { skills: ShapingSkillSummary[]; section: string } {
+    const routeCalls = results.filter((call) => call.stage === "route");
+    const replies = routeCalls.map(({ resolved: shaper, repo, result }) => ({ shaper: shaper.shaper.id, repo: repo.name, skills: result.skills }));
+    const skills = mergeRoutedSkills(replies);
+    const agent = skillAgent(input);
+    const ownTaskSkills = new Set(input.repositoryTaskSkillWorktrees ?? []);
+    const ownSkillIn = (repo: { path: string | null }) => repo.path !== null && ownTaskSkills.has(repo.path);
+    // The worktrees, by slot, whose router named a skill: identity, where a name can be shared.
+    const routedSlots = (name: string, keep: (repo: ShapeTaskRepository & { slot: string }) => boolean) => new Set(routeCalls
+      .filter((call) => keep(call.repo) && call.result.skills.some((skill) => skill.name === name)).map((call) => call.repo.slot));
+    const references = new Map<ShapingSkillSummary, string>();
+    for (const skill of skills) {
+      if (skill.state !== "announced") continue;
+      // D14: a routed skill named for the task's kind answers to the same invocation as a
+      // repository's own task skill for that kind, so the repository's own wins where it is in
+      // turn one. With no repository left, it is not announced at all.
+      if (skill.name === input.context.kind && ownTaskSkills.size > 0) {
+        // Per worktree: a second worktree of the same repository, without the skill, keeps it.
+        const kept = routeCalls.filter((call) => !ownSkillIn(call.repo) && call.result.skills.some((routed) => routed.name === skill.name));
+        skill.repositories = [...new Set(kept.map((call) => call.repo.name))];
+        if (skill.repositories.length === 0) {
+          Object.assign(skill, { state: "superseded", reason: "The repository's own task skill for this kind is in turn one." });
+          continue;
+        }
+      }
+      if (!agent) {
+        Object.assign(skill, { state: "unavailable", reason: "No harness was named to invoke it with." });
+        continue;
+      }
+      let resolution: ReturnType<RoutedSkillResolver>;
+      try {
+        resolution = resolveSkill(agent, skill.name);
+      } catch (error) {
+        Object.assign(skill, { state: "unavailable", reason: bounded(`The skill could not be checked: ${error instanceof Error ? error.message : String(error)}`) });
+        continue;
+      }
+      if (resolution.catalog && !resolution.ok) {
+        Object.assign(skill, { state: "unavailable", reason: bounded(resolution.reason) });
+        continue;
+      }
+      // D15: a catalog skill is checked and named as installed; any other name is taken as given.
+      const reference = skillReference(agent, resolution.catalog ? resolution.name : skill.name);
+      if (!reference) {
+        Object.assign(skill, { state: "unavailable", reason: `${AGENT_IDENTITY[agent].label} cannot invoke a skill by name.` });
+        continue;
+      }
+      skill.verified = resolution.catalog;
+      references.set(skill, reference);
+    }
+    // What the task context left of the total, the reserve included. Lines that do not fit are
+    // left out from the end, so the earliest-routed skills are the ones that reach the worker.
+    const room = totalBytes - utf8Length(contextSection) - (contextSection ? 2 : 0);
+    const announced = skills.filter((skill) => skill.state === "announced");
+    const lines = announced.map((skill) => shapingSkillLine({
+      reference: references.get(skill)!,
+      // Announced skills have a known point: `mergeRoutedSkills` made the others unsupported.
+      lifecyclePoint: isShapingLifecyclePoint(skill.lifecyclePoint) ? skill.lifecyclePoint : "during",
+      // Only a skill routed for some of a task's worktrees names them, counted by worktree.
+      repositories: multiRepo && routedSlots(skill.name, (repo) => skill.name !== input.context.kind || !ownSkillIn(repo)).size < repositories.length
+        ? skill.repositories
+        : null,
+    }));
+    let kept = lines.length;
+    while (kept > 0 && utf8Length(composeSkillsSection(lines.slice(0, kept))) > room) kept -= 1;
+    for (const skill of announced.slice(kept)) {
+      Object.assign(skill, { state: "dropped", reason: "It did not fit in the context budget for turn one." });
+    }
+    return { skills, section: composeSkillsSection(lines.slice(0, kept)) };
+  }
 }

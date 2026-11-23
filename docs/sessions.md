@@ -2511,7 +2511,8 @@ The session uses two Mission Control tools:
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
   model, effort and permission-mode changes, and the two blocker actions
-  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)), and
+  `complete` (see below). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2544,8 +2545,20 @@ arrived keeps both labels. Review answers retain
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.
 
-These tools cannot change the controller grant, global settings, delete sessions, or reset
-worktrees. The target's normal runtime and resource guards continue to apply. See
+`complete` is the **Complete** button, delegated. It records the target's current task as done
+with the controller's `outcome` (`completed` when omitted) and then closes the target session,
+in that order, through the same routes the dialog calls, so a stop that fails never leaves the
+outcome unwritten. Its two confirmations mean what the dialog's do and are never implied:
+`satisfyDependents: true` releases tasks declared to wait on this one without a merge, and a
+scout whose report is not archived is refused with the exact problems until a repeat carries
+`confirmIncompleteScout: true`. A target with no task refuses, as the dialog does.
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"complete","outcome":"Fix merged in #42"}}
+```
+
+These tools cannot change the controller grant or global settings, delete sessions, or reset
+worktrees. A session closes only through `complete`, with its task recorded first. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
 
 ### Blocked sessions
@@ -2555,8 +2568,9 @@ records a **blocker** with `report_blocker`: what it is waiting for (`reason`), 
 answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
 `dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
 lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
-through `request_input`, and `report_blocker` is refused while the session has a
-`request_input` of its own pending. It is also refused once the session's task has finished,
+through `request_input`, and `report_blocker` is refused while the session is waiting inside a
+`request_input` call of its own. A question filed with
+[Ask without stopping](#asking-without-stopping) does not refuse it, because its agent kept working. It is also refused once the session's task has finished,
 since nothing would clear a blocker stored against a done, failed or cancelled task.
 
 The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
@@ -2598,6 +2612,96 @@ clear writes one `session_events` row naming its actor: `session`, `operator`,
 kind, reason, time since the blocker started (`sinceMs`) and whether it followed a flagged reply
 (`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
 how long the blocker stood (`durationMs`) and any one-line `resolution`.
+
+### Sessions awaiting a background process (preview)
+
+A session that has handed work to a background process and will resume on its own when it
+reports back declares that with `report_awaiting`: CI checks on a pull request it pushed, a long
+build or test run started in the background, a monitor watching a deploy, or a scheduled wakeup
+it set for itself. The declaration carries `what` it waits for (one line), its `wakeSource`
+(`command`, `monitor`, `wakeup` or `other`), a required `expectedBy` (when the process should be
+done, as an ISO 8601 date-time with a time zone, which must be in the future and no more than 240
+minutes after the daemon receives it), an optional http(s) `referenceUrl` and optional Markdown
+`details`. It is not a blocker kind: nobody is asked to do
+anything. It ships behind the **Awaiting background work** preview (`session-awaiting`) in
+**Settings > Feature flags**; with the preview off the tool answers that it is turned off and
+records nothing.
+
+`report_awaiting` is refused while the session has a `request_input` question pending, while it
+stands on a blocker, and once its task has finished. A question for you never hides behind a
+wait: a `request_input` asked while a wait stands ends the wait, and so does a `report_blocker`,
+because a human answer outranks a process. A second `report_awaiting` before the session wakes
+moves the deadline and keeps the start time, under a new id, so a Clear sent from a view of the
+earlier declaration is refused rather than ending a deadline its sender never saw. Every Clear
+from the dashboard or a controlling session must name the wait it was sent from, so one that
+names none is refused as well.
+
+The wait is stored in SQLite under the note key, so it survives a daemon restart, and it moves
+with the note key whenever that rotates, as a blocker does. It ends on the
+session's own next turn: the turn that declared it is seen to end first, and a turn that starts
+after that is the wake, so the label drops with nobody clearing it. When Mission Control already
+read the session as idle at the moment it declared (a turn too short for a discovery sweep to
+catch, or hooks that arrived after the call), the declaring turn ends the first time its hooks
+or its transcript report it idle after the declaration, so the next turn is still the wake. A
+`report_status` made during that turn does not end it.
+Your own message to the session, or a controlling session's, counts as a wake too. Mission Control's own nudges do not:
+past the deadline Foreman, a workflow or a resident may type into the session again, and a turn
+that follows one of their deliveries leaves the wait standing until the next turn that nobody in
+Mission Control started. Each delivery is recorded on the stored wait as it is claimed, with a
+fingerprint of its text, and matched to the turn whose prompt it is: that turn is the nudge, and
+a turn with any other prompt, such as your message arriving first, is the wake. So two deliveries
+are two nudged turns, a delivery that never lands is not counted, and a daemon restart between a
+delivery and its turn changes nothing. A message you or a controlling session send through
+Mission Control in exactly the words of a delivery still pending contests that delivery: nothing
+says which of the two turns of those words is whose, so the first of them is read as the wake.
+A message of yours that provably never lands lifts that contest again, unless another send of the
+same words still stands; one whose outcome is unknown keeps it. A delivery claimed just before the session declares the
+wait, whose prompt has not come back yet, is carried into the wait too. A turn whose prompt
+arrives after it starts is decided when it arrives, even across a restart; a turn that never
+reports one is the session's own wake on a session whose hooks report prompts, and uses up the
+oldest delivery on one that never does (a harness without hooks, or an SDK launch with no prompt
+hook). A turn a session without hooks starts and finishes between two discovery sweeps is
+still judged, from the turn marker its transcript records, compared with the last turn already
+judged in the transcript's own time, so a sweep that reads a nudge's turn late does not hide a
+real wake that began before that sweep. Only confirmed readings of the
+session's state count:
+rediscovering a session after a restart is never itself read as a wake, and a turn already
+under way when the daemon comes back is judged once a hook or transcript confirms it. If the agent wakes and the process is still running, it declares again. A declaration made
+during a turn that Mission Control could not yet attribute still lets that turn use up the
+delivery that started it, so the agent's next real wake is not mistaken for it. It also ends on `clear_awaiting`, when you or a
+controlling session clear it, when the task it was declared for reaches a terminal status
+(including a reset that cancels it), and when the session is removed after its process exits or
+has not been seen live for three minutes, because the wake source it declared was its own and is
+presumed gone with it. The exited card a missed discovery sweep draws is not that removal: a
+process the next sweep sees again keeps its wait. Switching the preview off ends
+every wait.
+
+While a wait stands and its deadline has not passed, the same idle-triggered automation a
+blocker holds leaves the session alone: prompted completion (without consuming the work-cycle
+generation), queue drain and the wrap-up ask, pre-PR ship recovery, review follow-through,
+backlog autopilot assignment, stack readiness for dependents, workflow resumption (the run page
+says the session is waiting on a background process it started) and the stuck-session idle
+rules. The deadline is the safety net: once it passes the hold lifts, the session reads as
+**Overdue**, and the normal handling, the stuck-session alerts included, applies again.
+
+On the Board a waiting card stays in Idle, under an **awaiting background work** rule at the top
+of the column, soonest due first, and the column head counts them (**1 awaiting**), a pinned
+resident that is waiting included, though its card keeps its pinned place. The card shows
+**Awaiting** and what it waits for, its due time, and a deadline track that fills from when the
+wait was declared to when it is due. Past the deadline the track turns amber with the overrun
+hatched after the due tick, the card reads **Overdue** and how late, and it leaves the Awaiting
+section for plain Idle. A wait never enters Needs you and never counts as work you owe. The
+console rail draws the same section and a short track beside the row's state. The Conversation
+tab opens with a grey band, where a blocker's red band would be: the wait, how it wakes, how long it
+has been waiting, the same track with declared, now and due marked, an **Open** link and **Clear**,
+which ends the hold without sending the session anything. See [Sessions awaiting a background process](residents.md#sessions-awaiting-a-background-process)
+for how residents read them.
+
+Every declaration, re-declaration and clear writes one `session_events` row:
+`session_awaiting_set` and `session_awaiting_updated` record what, the wake source and the
+deadline; `session_awaiting_cleared` records the actor (`session`, `operator`,
+`session:<controller-id>`, `wake`, `exit`, `task`, `input`, `blocker` or `flag`), how long the
+wait lasted (`durationMs`) and whether it was overdue.
 
 ### Review channel (MCP)
 
@@ -2672,13 +2776,17 @@ What is stored, and what agents and Foreman read back, keeps the agent's own wor
 
 The MCP tools are:
 
-- `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
-  options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer. Every decision also has an optional note
+- `request_plan_decisions(title, plan, decisions, revises?)` - show a plan with selectable
+  options (radios / checkboxes) as a **gate** until the human submits their choices or
+  dismisses that decision set without an answer. The call waits for that answer, or, with
+  [filed plan decisions](#filed-plan-decisions) on, returns a receipt at once and the answer
+  arrives later as a message; the agent stops on the form either way. Every decision also has an optional note
   box, so the human can pick an option and send instructions with it; a note returns to the
   agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
   an empty `decisions` list to show a plan for approval with no open choices. Any decision
-  can be [moved to chat](#chat-about-it) instead of answered
+  can be [moved to chat](#chat-about-it) instead of answered. Pass `revises` with the review id
+  of the agent's earlier filed plan form to file this plan as its
+  [revision](#revising-a-filed-plan)
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2724,7 +2832,9 @@ The MCP tools are:
 - `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
   plan inputs, regardless of status or whether the task remains on the live board. Both read
   tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
-  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps, and `shaping` (`state`,
+  `sessionId` and a one-line `summary`) when [task shaping](task-shaping.md#the-record) added
+  context to the launch the linked session received. Pull request references come from
   durable work-episode bindings, so running work can report a PR before completion. See
   [MCP task-read access](security.md#mcp-task-reads) for the security contract.
   Neither tool launches, modifies, or reorders work.
@@ -2745,8 +2855,9 @@ The MCP tools are:
   rules. Running and dispatching tasks must be cancelled with `cancel_task` first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, context?, options?)` - ask a question and **block** for an answer or
-  dismissal. The human can always type an answer. With `options` the card also shows radios
+- `request_input(question, context?, options?, meanwhile?)` - ask a question. By default the call
+  **blocks** for an answer or dismissal; with the `async-input` preview flag on, it files the
+  question and returns at once (see [Asking without stopping](#asking-without-stopping)). The human can always type an answer. With `options` the card also shows radios
   (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
   Use `question` for the decision itself, which becomes the card's heading. The card prints
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
@@ -2937,8 +3048,9 @@ restored after restart is treated as detached because the stdio request owned by
 process cannot have survived it.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
-session's conversation, at the point in time you answered. What the entry shows depends on
-how you were asked:
+session's conversation, at the point in time you answered (or, for an answer delivered as a
+message, where the agent received it; see [Asking without stopping](#asking-without-stopping)).
+What the entry shows depends on how you were asked:
 
 | You answered | The entry shows |
 |---|---|
@@ -3034,6 +3146,22 @@ question it carried on without: an answer comes with the instruction to reconcil
 meanwhile, and a dismissal with the instruction to keep what it chose. A snoozed question whose
 session goes away is settled as `orphaned`, like a pending one.
 
+A question filed with [Ask without stopping](#asking-without-stopping) has an agent that never
+waited on it, so the sheet reads differently. Its first **Meanwhile** choice is **Keep doing what
+it said**, which quotes the agent's own `meanwhile` line and stays the default. Choosing it sends
+the agent nothing: it was already told to carry on when it filed the question. A provisional
+option or **Hold work that depends on this** changes what the agent does, so either is sent as a
+message, as for any question whose call has ended. Because "Keep doing what it said" tells the
+agent nothing, it does not count as the one time the agent is told: when the question comes back
+and you snooze it again, the Meanwhile choice is offered again, and a provisional option or Hold
+chosen then is still sent. The button's hint and the sheet follow the
+card's status line: while the agent is still working they say it keeps working, and once it has
+stopped on the question they say so, and that it hears nothing unless you choose a provisional
+option or **Hold**. The snoozed row and the reminder line on the returned question say what you
+chose. For **Keep doing what it said** that is "You left it to do what it said it would when it
+asked", never a claim that the agent kept working: by the time the question comes back it may have
+stopped, which the card's own status line says.
+
 Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
 you select and have no agent told how to carry on: a public product issue confirmation, a
 workflow Command override and a resident's proposed instruction changes. The operator alone can
@@ -3041,6 +3169,218 @@ snooze or bring a question back early. Session control has no snooze command. Th
 both from any other actor, such as a controlling session or Foreman, and from any request that
 carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
 operation or a page from another origin. The question stays open.
+
+#### Asking without stopping
+
+**Ask without stopping** is a preview feature behind the `async-input` flag (Settings > Feature
+flags). With it on, `request_input` files the question and returns at once with a receipt instead
+of waiting inside the call:
+
+- The receipt says the question is filed and not answered. The agent keeps doing every part of
+  its task that does not depend on the answer, proceeds only on choices that are easy to reverse
+  where the work does depend on it, holds anything irreversible or outward-facing, and does not
+  ask again or poll. An agent with nothing else to do says what is waiting on the question and
+  ends its turn.
+- The question appears in the attention inbox and the review modal exactly as before, with
+  Answer, Dismiss, Chat about it and Remind me later. The agent may pass `meanwhile`, one line of
+  at most 300 characters saying what it does while the question is open.
+- Your answer reaches the agent as a message in its conversation through the same outbox as a
+  message you type: an idle session gets a new turn, and a busy one is steered after 60 seconds
+  where the runtime supports it and interrupted after 180 seconds. An answer Foreman gives, or a
+  standing approval, is delivered the same way.
+- That message is Mission Control's, not yours, whoever answered. It is never captured as a new
+  Goal prompt for the session and is not drawn as a turn you typed. Its first line is a marker,
+  `[mission-control:answer review=<id>]` (or `reviews=<id>,<id>` when several answers travel
+  together), followed by a blank line and the answer text; the agent reads both. A **Remind me
+  later** instruction carries `[mission-control:remind-later review=<id>]`. With the flag on, an
+  answer to a question that waited inside the call and lost it, and a Remind me later instruction
+  sent as a message, carry the line too; with the flag off they are sent exactly as before.
+- In the conversation, the message is drawn as the gold answer entry, once, at the point the agent
+  received it, with **Delivered to the agent** and its time, and the agent's reply directly below.
+  Until the outbox delivers it, the entry stays where you answered and reads **On its way to the
+  agent**. Several answers delivered together draw one entry each on that one turn. A delivered
+  Remind me later instruction is drawn as the blue **Snoozed** entry rather than as its text.
+  **What the agent received** on the entry opens exactly the text the agent read, and find in
+  conversation searches it. This holds after a daemon restart and on a reload of an old
+  conversation.
+- Only a turn Mission Control recorded delivering is drawn this way. The daemon records each
+  delivery before it sends it and binds it to the turn it wrote, so a message you type that
+  starts with the same marker line, or a copy of a delivered message you send, stays your own
+  visible message and still moves the Goal. If another send of the same words races a delivery,
+  neither turn is drawn as an entry. A delivered message naming a question the dashboard can no
+  longer find (after a database restore, say) is still drawn as an entry, reading **This question
+  is no longer available**, with the delivery time and **What the agent received**. While the
+  conversation's history is still loading, or a read of it failed and is being retried (backing
+  off, for a few minutes at most), the same entry reads **Loading the question…** instead. If
+  those retries run out without an answer, or the daemon refuses the read (it no longer holds the
+  session), it reads **Couldn't load the question**: the question may still exist, so **This
+  question is no longer available** is kept for a history that was read.
+- While the agent works past its question, its session is not amber. Once it stops with the
+  question still pending, it is amber and reads **waiting on your answer**, and it holds queue
+  sends and backlog assignment like any session that needs you. A resident is the exception: it
+  keeps iterating on its cadence while its questions wait in the inbox.
+- Every new question alerts. The title says whether the agent **has a question, still working**
+  or **needs your answer**.
+- The question's card, its conversation entry and its session's state badge say which; the board
+  tile and the Residents drawer show it by the colour the session already wears. The card, in the
+  inbox and the review modal, carries a line under the title: **Still working** with the agent's `meanwhile` line, or
+  **Stopped, waiting on this answer**, and how long ago it was asked. While the agent works, the
+  state badge reads **N questions open** in the working colour and opens them, as **e** does once
+  every stopped session has been reached (or at once, when it is the selected session); a board tile carries the same count as a flag. The
+  conversation shows an **Asked** entry where the question was filed. While it is open, the entry
+  says **Still working** or **Stopped, waiting on this answer** and offers **Answer**; once it has
+  ended, the entry says how instead: answered (your answer is the gold entry, where its agent
+  received it when it went as a message, or where you gave it when the call returned it; see
+  "Your answer stays in the conversation" under [Review channel (MCP)](#review-channel-mcp)), dismissed, **Closed unanswered: pull request merged**, closed unanswered, or **Withdrawn by
+  the agent** with its reason. A question that waited in a call and was closed by a merge shows the
+  same merge line in a **Closed** entry: in place of its Snoozed entry if it had been snoozed, or
+  at the moment the merge closed it if it never was. These Closed entries show only while the flag
+  is on, because such a question was never in the conversation before this feature. All of these
+  entries come back after a reload.
+
+Each answer restates the full question and context, the agent's `meanwhile` plan, and the elapsed
+time since the ask. It tells the agent to reconcile its work and resume anything interrupted;
+a dismissal tells it to keep its provisional choice. Message-mode answers for the same
+conversation coalesce into one message only at the unclaimed answer tail of the queue, without
+passing an intervening message. Claimed deliveries keep their original text, and call-mode
+answers keep their existing delivery behavior.
+
+With the flag on, a session may have at most ten open `request_input` questions in either wait
+mode, including snoozed ones. Existing questions above the limit are retained, but new asks
+cannot grow the set. With the flag off, call-mode asks keep their previous behavior. An exact
+duplicate reattaches to the existing question even at the limit: message mode returns its
+receipt, while call mode waits on that question through the existing call path. A new ask beyond
+the limit returns an error with the open titles and tells the agent to work on what it can or
+end its turn.
+With the flag on, `list_open_questions` lists the caller's pending and snoozed `request_input`
+questions in either wait mode, including id, title, asked time and `meanwhile`.
+`withdraw_question(id, reason)` settles the caller's own open message-mode question as
+`withdrawn`, records the reason, and sends no answer. It releases that question's completion
+hold. Questions belonging to other sessions and call-mode questions cannot be withdrawn.
+The receipt names the question id and both tools; listing is for housekeeping, not polling.
+
+The daemon decides how each ask waits and says so in its response. A question is filed this way
+only when the flag is on, the ask is `request_input`'s own, the MCP child is new enough to accept
+a receipt, and the session can receive a message. Everything else waits inside the call as
+before: the other review tools (plan decisions unless [filed plan decisions](#filed-plan-decisions)
+is also on, diff review, the confirmations other tools raise),
+an MCP child from an older build, and a session no message can reach, such as a Pipeline engine
+session or a terminal session with no writable pane. The flag is read for every ask, so it takes
+effect without a restart.
+
+Two completion rules apply to **every outstanding `request_input` question** of a session, meaning
+one that is pending or snoozed, whether it waits in a call or was filed. They always apply to a
+filed question, and to a question waiting in a call while the flag is on:
+
+- **It holds completion.** Foreman's prompted completion, workflow resumption and automatic
+  evidence preparation refuse while the session has one, whatever the session is doing. This
+  includes a snoozed question, which turns nothing amber. A resident is not held.
+- **A merge still completes the task.** A merged pull request is your own conclusion, so
+  merge-driven completion is not held. Every outstanding question is closed at that moment, with
+  the status `orphaned` and the recorded reason `merged`, and leaves the inbox. The agent, if it
+  is still waiting inside a call, is told the pull request merged before anyone answered.
+
+Operator messages, workflow repair rounds and `report_blocker` are not held by a filed question.
+Turning the flag off sends new asks back to waiting inside the call. Questions already filed stay
+answerable, their answers are still delivered, and both completion rules keep applying to them
+until they are settled; questions waiting in a call return to today's completion behavior.
+
+#### Filed plan decisions
+
+**File plan decisions** is a preview feature behind the `filed-plan-decisions` flag. It takes
+effect only while **Ask without stopping** (`async-input`) is also on; with either flag off,
+`request_plan_decisions` waits inside the call exactly as before. With both on, a current MCP
+child and a session that can receive a message, the form is filed and the tool returns a receipt
+at once, so no call is held open and nothing can time out.
+
+The form is still a gate:
+
+- The receipt says the plan is filed and not answered. The agent may do read-only preparation,
+  makes no edits, commits, pushes, task creation or other outward action, does not file the form
+  again or poll, then says what is waiting and ends its turn. Nothing enforces read-only at the
+  tool level; it is an instruction, as `request_input`'s receipt is.
+- The session is amber and the form counts in **to answer** from the moment it is filed, while
+  the agent is still finishing its turn and after it stops. The session reads **to review**, and
+  the "needs review" alert fires once, at filing. A resident with a filed form is held too.
+- The form is the one a blocking plan form uses: the inbox row, the review modal, Submit and
+  Dismiss, and the check that keeps a half-filled form from being submitted. It offers no
+  **Remind me later**, and its status line reads **Waiting on your decisions**, never "Still
+  working". The conversation shows a **Plan filed** entry where it was filed, with an **Open**
+  button while it is open and how it ended afterwards.
+- Your answer reaches the agent as one message through the same outbox as a filed question's
+  answer. It names the form and how long ago it was filed, the plan's title, an excerpt of the
+  plan of about 2,000 characters cut at a line, every decision with what you chose (notes and
+  "Chat about it" included), and what to do next. A dismissal says nothing was selected or
+  approved. A form bound to a managed plan also names the plan and revision it approved or did
+  not.
+- Nothing completes the task past an open filed form except a merge. Prompted completion,
+  workflow resumption and automatic evidence preparation refuse while it is open. A merge closes
+  it as `orphaned` with the reason `merged`, shown as **Closed unanswered: pull request merged**.
+- `list_open_questions` lists the caller's filed forms with its questions, each with its kind,
+  and `withdraw_question(id, reason)` takes one back with a reason, for example when you message
+  the agent that the scope changed; the agent then files the revised plan, linked with
+  `revises` (see [Revising a filed plan](#revising-a-filed-plan)). A withdrawal sends no answer
+  and never approves. Only the asking session can withdraw its own form, and a form that waits
+  inside a call cannot be withdrawn.
+- Plan forms take no slot in the ten-question limit, and are never refused by it. There is no
+  limit across sessions.
+
+Managed final-bundle approval works on the filed path. The form is bound to its plan revision at
+filing, exactly as a blocking one is, and the approval, **Approve all future bundles**,
+`publish_plan` and the workflow freeze read the settled answer as before. A standing approval that
+covers the bundle with nothing else to ask still returns the approval as the tool result; with
+other decisions left, only those are filed, and the receipt says the bundle is already approved.
+
+Operator messages, typed or spoken, still reach an agent behind a filed form. Switching a flag never
+changes a form that already exists: switching either flag off sends new forms back to waiting inside
+the call, while a form already filed stays filed and keeps its hold. It can still be answered, and
+is listed and withdrawn while `async-input` is on. Switching a flag off closes nothing.
+
+One thing does turn a filed form into a blocking one. If an MCP child from an older build re-asks
+the same form word for word, it cannot read a receipt and waits in its call, so the form becomes a
+form that waits inside that call, like any call-mode plan form. Its session stays amber, it still
+blocks completion, and its answer becomes that call's result. It is no longer listed or
+withdrawable, and a merge leaves it open, as with any call-mode plan form. If that call ends without
+being cancelled, the form stays attached to it until a daemon restart, after which its answer arrives
+as a message.
+
+##### Revising a filed plan
+
+When scope changes after a plan is filed, the agent files the revised plan with
+`request_plan_decisions` and `revises` set to the earlier form's review id. The receipt of every
+filed form says so. You then see one card, tagged **Revision 2** (then 3, and so on), never two
+cards for one plan.
+
+- The earlier form may be still open or already withdrawn by its agent with `withdraw_question`.
+  An open one is withdrawn in the same step as the revision is filed, with the reason "Revised:
+  replaced by revision N of this plan.", through the same write path `withdraw_question` uses. If
+  filing fails, neither happens.
+- The new form's number is the earlier form's number plus one, and a form that revised nothing
+  is revision 1. A form can be revised once, so the agent always revises the latest form.
+- **Earlier version**, beside the tag on the card, in the review modal, the inbox and the
+  conversation entry, shows the form it replaced read-only: its title, when it was filed, how it
+  ended and why, its plan and its decisions, with no Submit. The conversation keeps that form as
+  a withdrawn **Plan filed** entry.
+- A revision never carries an approval or an answer forward. A revised managed bundle is a new
+  plan revision with its own binding; the withdrawn earlier form stays an unapproved record. If a
+  standing approval covers the revised bundle outright, the recorded approval carries the link
+  and an open earlier form is still withdrawn.
+- The new form waits however this ask is decided now: filed with both flags on, or inside the
+  call otherwise. Only the earlier form must be a filed form.
+
+`revises` is refused with its reason, and nothing is filed or withdrawn, when the review it names:
+
+- is unknown, or belongs to another session, including a form that session's agent withdrew;
+- is not a plan form, such as a `request_input` question;
+- waits inside a call, whether it was asked that way or an older MCP child re-asked a filed form
+  and so turned it into one. Its call returns the answer;
+- was answered, dismissed, closed by a merge, closed when its session went away (an eviction or a
+  runtime-transfer settle), or replaced as a reworded retry;
+- is withdrawn but not by its own agent;
+- was already revised, including a form a revision replaced. The refusal names the latest form.
+
+An agent on an older MCP bundle cannot send `revises` and keeps the earlier flow: withdraw, then
+file a new, unlinked form.
 
 ### The ask channel
 
@@ -3128,6 +3468,73 @@ that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same 
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.
 
+
+### Agent reports
+
+With the **Reports and inbox upgrades** preview flag (`inbox`) on, an agent tells you it has
+finished something you need to read with the Mission Control MCP tool `post_report`. It takes a
+one-line `title`, a Markdown `body` (up to 4,000 characters), and optionally a checkout-relative
+`.html` or `.md` `file`, an http(s) `url`, and `replaces`, the id of one of its own earlier
+reports. The tool returns at once with a receipt naming the report's id (`r-42`) and telling the
+agent not to wait for a reply. Its description tells the agent when to report: when asked to, or
+when it has finished something you must read to act. Progress stays on `report_status`, and
+anything urgent or needing your decision is a `request_input` question.
+
+- **Stored apart from questions.** A report has its own table and never becomes a review: the
+  session does not turn amber, nothing counts toward **need you** or **to answer**, completion is
+  not held, and Foreman never sees it. It is read in the attention inbox's
+  [Reports](attention-and-alerts.md#agent-reports) section and counted in the top bar's **to read**.
+- **An attached document is copied.** The file must be inside the session's checkout (the same
+  containment rules as the Files viewer: no symlinks, nothing outside), an `.html` or `.md` file,
+  at most 2 MiB. It is copied to `<state home>/reports/<id>/` when the report is posted, so worktree
+  cleanup does not take it away.
+- **Replacing a report.** `replaces` must name one of the agent's own reports that is still
+  waiting to be read. Anything else is refused with the list of the agent's open reports and their
+  titles, so an agent that lost the id can retry. A resident is one author across its runs.
+- **A report outlives its session.** It keeps the author's name, task, repository and resident
+  profile from when it was posted. `GET /api/sessions/:id/reports` lists every report the session
+  posted, every version, read or not, after the session has gone.
+- **In the conversation.** Each report is an entry in its session's conversation at the moment it
+  was posted, marked **Report**, with its title (click it to show the body and link), its id, its
+  version when it replaced an earlier report, and how it stands: **Waiting to be read** with
+  **Mark read**, **Replaced by a later version**, or how you cleared it (**Read**, **Replied to**,
+  or **Followed up in a new task**). Every version keeps its entry, so a replaced report stays
+  here after the inbox shows only its successor. Entries come from the history route and update
+  live as reports are posted, read and replaced. Opening an entry opens the same report in the
+  inbox: there is one open report on screen.
+- **Replying and following up.** From the report's inbox card you reply to a running agent, or
+  start a follow-up task for a session that has ended; see
+  [Answering a report](attention-and-alerts.md#answering-a-report). Who may call
+  `POST /api/reports/:id/reply` and `POST /api/reports/:id/follow-up` is set out in
+  [Agent reports](security.md#agent-reports) in the security guide. A reply is delivered as an
+  ordinary operator message, but its text is built from the report: a line naming it, the report
+  restated, then your words (see the format in
+  [Answering a report](attention-and-alerts.md#answering-a-report)).
+  Messages you type in the composer are unchanged: nothing is added to them.
+- **Open report.** A report with an attached document offers **Open report** on its inbox card
+  and its conversation entry. It reads the copy stored under `<state home>/reports/<id>/`
+  through `GET /api/reports/:id/document`, never the checkout, so it opens after the worktree is
+  gone and shows what was posted even if the checkout file changed since. An HTML document is
+  drawn in the dashboard's sandboxed preview frame, which runs none of its scripts and fetches
+  nothing; a Markdown document is drawn by the dashboard's Markdown renderer. The route serves
+  the stored copy as an attachment with `nosniff` and a `default-src 'none'; sandbox` policy, as
+  an archived page is served. A stored copy that has gone missing is a 404 whose message the
+  reader shows; one that is there but cannot be opened (a permission or I/O error) is a 500
+  naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
+  not mark it read.
+- **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
+  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
+  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
+  on the card and publishes nothing. Pressing it again returns the same archive. If that archive
+  is deleted or leaves the library, the card offers **Publish as scout** again; see
+  [How a report produces one](archives.md#how-a-report-produces-one). It does not mark the
+  report read. `POST /api/reports/:id/publish` is the operator's alone and takes nothing but
+  the report id: a request that carries a page or a path is refused. A report with no document
+  cannot be published.
+- **Flag off.** The tool is refused with a message saying where to turn the flag on, the reply,
+  follow-up, document and publish routes refuse, and no conversation entry is drawn. A session on an MCP bundle
+  older than this build does not have the tool.
 
 ### Scout reports from a session
 

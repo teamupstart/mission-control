@@ -1,8 +1,10 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import type { TaskSkillPrompt } from "./shaping.ts";
+import { INBOX_MESSAGE_KINDS, type InboxMessageKind } from "./inbox.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -42,12 +44,16 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { WORK_UNIT_ID_PATTERN } from "./work-unit.ts";
 import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
+import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
+import { VOICE_UI_DEFAULTS, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
+import { REPORT_ID_PATTERN, REPORT_LIMITS } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -100,6 +106,8 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_AWAITING_LIMITS,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
@@ -148,6 +156,8 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  CODERABBIT_COMMAND_HELP,
+  isCodeRabbitCommand,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -454,6 +464,16 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
 // Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
+/**
+ * A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The text is
+ * the daemon's, chosen by kind, so a caller can never send other words under the
+ * daemon-written turn prefix.
+ */
+export const InboxMessageSchema = z.object({
+  kind: z.enum(INBOX_MESSAGE_KINDS as [InboxMessageKind, ...InboxMessageKind[]]),
+});
+export type InboxMessageInput = z.infer<typeof InboxMessageSchema>;
+
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),
@@ -676,10 +696,37 @@ export const CreateReviewSchema = z
      * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
      */
     snoozable: z.boolean().optional(),
+    /**
+     * The MCP child can return a receipt instead of long-polling (`async-input`, and for a plan
+     * form `filed-plan-decisions` too). The daemon decides how the ask waits and answers
+     * `wait: "message"` or `wait: "call"`; a child from an older build never sends this and is
+     * always told `call`.
+     */
+    asyncCapable: z.boolean().optional(),
+    /** What the agent does while the question is open: one line, `input` only. */
+    meanwhile: z.string()
+      .transform((line) => oneLine(line))
+      .pipe(z.string().max(MEANWHILE_MAX_CHARS))
+      .optional(),
+    /**
+     * The review id of the filed plan form this one revises, `plan-decisions` only. The daemon
+     * accepts it for the same session's filed plan form that is still open, which it withdraws
+     * in the same step, or that its own agent withdrew; it refuses anything else and files
+     * nothing.
+     */
+    revises: z.string().trim().min(1).optional(),
+  })
+  .refine((r) => r.kind === "plan-decisions" || r.revises === undefined, {
+    message: "only kind 'plan-decisions' can revise an earlier form",
+    path: ["revises"],
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",
     path: ["snoozable"],
+  })
+  .refine((r) => r.kind === "input" || r.meanwhile === undefined, {
+    message: "only kind 'input' can carry a meanwhile line",
+    path: ["meanwhile"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -706,6 +753,10 @@ export const DetachReviewWaitSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
+});
+export const ListOpenQuestionsSchema = DetachReviewWaitSchema;
+export const WithdrawQuestionSchema = DetachReviewWaitSchema.extend({
+  reason: z.string().trim().min(1).max(2000),
 });
 export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
 
@@ -907,6 +958,13 @@ export const ProductIssuePreflightSchema = z.object({
 /** Defined beside the task kinds so resident launch schemas share it without a cycle. */
 export { MAX_TASK_EXTRA_REPOS };
 
+/** MCP `create_task`'s `workUnit`: join the calling session's task's work unit, or start one. */
+export const McpWorkUnitChoiceSchema = z.enum(["inherit", "new"]).describe(
+  "Work unit for the new task. \"inherit\" joins the work unit of the task this session is running; " +
+    "\"new\" starts its own. Omit it to let the session's task kind decide: a plan task's session " +
+    "shares its work unit with the tasks it creates, every other session's tasks get their own",
+);
+
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
@@ -916,6 +974,10 @@ const McpCreateTaskBaseSchema = z.object({
   intent: z.string().min(1),
   dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
+  // Which work unit the new task joins - never an id: no request body chooses one. On the base
+  // shape so all three creation routes accept it. Omitted, the calling session's task kind
+  // decides (see `mcpCreateWorkUnitSource`).
+  workUnit: McpWorkUnitChoiceSchema.optional(),
 });
 
 const mcpTaskDependenciesAreBounded = ({
@@ -1122,6 +1184,59 @@ export const McpClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
 });
 
+// ---- agent reports (`inbox` flag) ----
+
+/**
+ * What an agent sends with `post_report`. The MCP tool validates the same fields first, so the
+ * agent reads a refusal rather than a transport error; this is the daemon's own check.
+ */
+export const PostReportBodySchema = z.object({
+  /** One line: whitespace and line breaks collapse to single spaces. */
+  title: z.string().max(REPORT_LIMITS.title * 4).transform(oneLine)
+    .pipe(z.string().min(1, "a report needs a title").max(REPORT_LIMITS.title)),
+  body: z.string().trim().min(1, "a report needs a body").max(REPORT_LIMITS.body),
+  /** A checkout-relative `.html` or `.md` document, copied when the report is posted. */
+  file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional(),
+  url: z.string().trim().max(REPORT_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" }).optional(),
+  /** The id of this agent's own earlier report that this one replaces. */
+  replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional(),
+});
+export type PostReportBody = z.infer<typeof PostReportBodySchema>;
+
+/** `POST /mcp/reports`: bound to the caller the way `/mcp/reviews` is. */
+export const McpPostReportSchema = PostReportBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+});
+
+/**
+ * `POST /api/reports/:id/reply`: the operator's words, delivered as a message that names and
+ * restates the report. The cap leaves room for the restated report inside one message.
+ */
+export const ReportReplySchema = z.object({
+  text: z.string().trim().min(1, "a reply needs words")
+    .max(REPORT_LIMITS.body, `a reply can be at most ${REPORT_LIMITS.body} characters`),
+});
+
+/**
+ * `POST /api/reports/:id/follow-up`: the operator's words for the new task. Optional, because a
+ * retry dispatches the task the first call created and reads no words.
+ */
+export const ReportFollowUpSchema = z.object({
+  text: z.string().trim()
+    .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
+    .optional().default(""),
+});
+
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
@@ -1129,6 +1244,50 @@ export const FlagBlockerReplySchema = z.object({
   blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
+
+/** What a session declares about itself through `report_awaiting`. */
+export const ReportAwaitingBodySchema = z.object({
+  what: blockerLine(SESSION_AWAITING_LIMITS.what),
+  wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES),
+  /**
+   * Required: when the process should be done, as an ISO 8601 date-time with a time zone. Read
+   * on the wire as text and handed on as epoch ms. Its bounds are relative to the moment the
+   * daemon receives it (after now, at most `SESSION_AWAITING_LIMITS.maxMinutes` later), so the
+   * registry checks them where the clock is read, not here.
+   */
+  expectedBy: z.string().trim().datetime({ offset: true }).transform((v) => Date.parse(v)),
+  referenceUrl: z.string().trim().max(SESSION_AWAITING_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+    .nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportAwaitingBody = z.infer<typeof ReportAwaitingBodySchema>;
+
+/** `POST /mcp/awaiting`: bound to the caller the way `/mcp/blocker` is. */
+export const McpReportAwaitingSchema = ReportAwaitingBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/** `POST /mcp/awaiting/clear`: the session clearing its own wait. */
+export const McpClearAwaitingSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+});
+
+/**
+ * `POST /api/sessions/:id/awaiting/clear`, and the session-control action that maps to it.
+ * `awaitingId` names the wait the caller was looking at, so a replacement is refused. Required:
+ * every view that offers Clear holds the id, and a Clear without one could end a wait the
+ * session declared after the caller looked.
+ */
+export const ClearAwaitingSchema = z.object({
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+  awaitingId: z.string().min(1).max(64),
+}).strict();
+export type ClearAwaiting = z.infer<typeof ClearAwaitingSchema>;
 
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
@@ -1726,6 +1885,8 @@ const UpdateTaskFieldsSchema = z
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
+    planInputChange: TaskPlanInputChangeSchema.optional(),
+    previewOnly: z.boolean().optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
@@ -1759,6 +1920,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   title: true,
   intent: true,
   planInputs: true,
+  planInputChange: true,
+  previewOnly: true,
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
@@ -1784,7 +1947,6 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
-  planInputs: true,
   personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
@@ -1792,7 +1954,12 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).strict();
 
 /** Durable task facts plus pull request references, without session-private state. */
-export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+export type McpTaskSnapshot = Task & {
+  prUrl: string | null;
+  repoPrs: TaskRepoPrSummary[];
+  /** The after-work prompt of the launch `shaping` describes, when one was written. */
+  shapingAfterWork?: TaskSkillPrompt;
+};
 
 /** Read-only task queries share validation between the MCP child and daemon. */
 export const McpListTasksSchema = z.object({
@@ -1803,6 +1970,7 @@ export const McpListTasksSchema = z.object({
   priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
   enabled: z.boolean().optional(),
   dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  workUnitId: z.string().trim().regex(WORK_UNIT_ID_PATTERN, "workUnitId must be a work unit id (wu_ and 26 Crockford base32 characters)").optional().describe("Match the tasks of one work unit exactly"),
   limit: z.number().int().min(1).max(100).default(50),
   cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
   includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
@@ -4351,7 +4519,17 @@ export const UI_CONFIG_DEFAULTS = {
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
   keybindings: {},
-  alerts: { notifications: false, sound: true },
+  /**
+   * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
+   * defaults on, which is exactly what each kind of item did before the switches existed, and
+   * none is read while the flag is off.
+   */
+  alerts: {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  },
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
@@ -4445,6 +4623,11 @@ export const UI_CONFIG_DEFAULTS = {
    * button and the state badge's split half with its paused band, out of the box.
    */
   pauseConsoleControls: ["toolbar", "badge"] as readonly string[],
+  /**
+   * Voice's half of the UI config (contract A): the floating pill for confirmations and the
+   * status line as the one in-window indicator. Read only while the `voice` flag is on.
+   */
+  voice: VOICE_UI_DEFAULTS,
 } as const;
 
 /**
@@ -4520,6 +4703,24 @@ export const UiConfigSchema = z.object({
     .object({
       notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
       sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
+      /**
+       * Which kinds of item raise a notification (`inbox` flag). A switch only stops the
+       * notification; the item is still in the inbox. A record stored before these keys existed
+       * parses to every switch on, which is what it already did, so no migration is owed.
+       */
+      notify: z
+        .object({
+          blockingQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.blockingQuestions),
+          filedQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.filedQuestions),
+          reports: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.reports),
+          stuck: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.stuck),
+        })
+        .prefault(UI_CONFIG_DEFAULTS.alerts.notify),
+      /**
+       * Whether agent reports are listed in the inbox and counted in the to read figure. Off,
+       * they stay in each conversation and are not marked read.
+       */
+      reportsInInbox: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.reportsInInbox),
     })
     .prefault(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */
@@ -4690,6 +4891,11 @@ export const UiConfigSchema = z.object({
    */
   pauseCardControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseCardControls]),
   pauseConsoleControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseConsoleControls]),
+  /**
+   * Where voice confirmations appear and which in-window voice indicators are drawn. Owned whole
+   * by Settings > Voice. See `src/shared/voice.ts`.
+   */
+  voice: VoiceUiConfigSchema,
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4734,6 +4940,8 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: an unknown confirmation placement is a 400.
+    voice: VoiceUiConfigPatchSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -4753,7 +4961,11 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
-  config: UiConfigSchema,
+  /**
+   * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
+   * voice surface, so the response is the one an install without voice gave.
+   */
+  config: UiConfigSchema.omit({ voice: true }).extend({ voice: VoiceUiConfigSchema.optional() }),
 });
 export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
 
@@ -6276,9 +6488,11 @@ const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
  * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
  * only completion kind that could have written one refused before deciding, because its
  * capability shipped `available: false`. Nothing stored names it, so the union stays closed
- * over exactly the two shapes that are written.
+ * over the shapes that are written. `no_change` retains positive Git absence proof.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("no_change"), headOid: CommitOidSchema, treeOid: CommitOidSchema,
+    baseOid: CommitOidSchema, baseRef: z.string().min(1).max(400) }),
   z.object({ kind: z.literal("none") }),
   z.object({
     kind: z.literal("pull_request"),
@@ -6289,6 +6503,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     branch: z.string().min(1).max(400).nullable(),
     expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    mergedContentTreeOid: CommitOidSchema.nullable().optional(),
     observedAt: z.number().int(),
   }),
 ]);
@@ -7515,6 +7730,13 @@ export const WorkflowInspectorGateStateSchema = z.object({
   findingFingerprints: z
     .array(z.string().min(1).max(200))
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
+  // Gate CAS compares serialized state; append new optional fields in writer order.
+  reviewedContent: z.object({
+    submissionId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100).nullable(),
+    treeOid: z.string().min(1).max(100),
+    publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
 });
 
 /**
@@ -7537,6 +7759,10 @@ export const WorkflowCommandArgvSchema = z
     { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
   );
 
+export const CodeRabbitCommandSchema = WorkflowCommandArgvSchema.refine(isCodeRabbitCommand, {
+  message: CODERABBIT_COMMAND_HELP,
+});
+
 /** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
@@ -7549,6 +7775,7 @@ export const CodeRabbitTuningSchema = z.object({
   kind: z.literal("coderabbit"),
   baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
   severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+  command: CodeRabbitCommandSchema.optional(),
 }).strict();
 
 export const WorkflowCommandOverrideSchema = z.object({
@@ -7756,6 +7983,7 @@ export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
   baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
   empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  command: CodeRabbitCommandSchema.optional(),
   timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
 });
 export const CodeRabbitReviewSummarySchema = z.object({
@@ -8913,6 +9141,22 @@ export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
   });
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
 
+// MCP reuses the wire fields with repository omission and established policy defaults.
+// The daemon parses the complete HTTP schemas above, including cross-field refinements,
+// after the MCP process has supplied its checkout path.
+const McpScheduleFields = {
+  template: z.object({
+    ...ScheduleTemplateSchema.shape,
+    repoRoot: ScheduleTemplateSchema.shape.repoRoot.default(".").describe(
+      "Absolute local checkout path. Omit to use the calling session's working directory.",
+    ),
+  }),
+  overlapPolicy: ScheduleDefinitionSchema.shape.overlapPolicy.default("skip-active"),
+  missedPolicy: ScheduleDefinitionSchema.shape.missedPolicy.default("coalesce-latest"),
+};
+export const McpCreateScheduleSchema = CreateScheduleSchema.extend(McpScheduleFields);
+export const McpSchedulePreviewSchema = z.object({ ...SchedulePreviewSchema.shape, ...McpScheduleFields });
+
 /** Pause or resume. The service recomputes the cursor from the correct anchor. */
 export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });
 export type SetScheduleEnabledBody = z.infer<typeof SetScheduleEnabledSchema>;
@@ -9472,6 +9716,8 @@ export const SessionControlReadSchema = z.object({
   transcript: z.boolean().optional().default(false),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
+  /** List form only: true lists only sessions that declared a wait on a background process. */
+  awaiting: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -9499,6 +9745,19 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
+  z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
+  /**
+   * The dashboard's Complete dialog, delegated: record the target's task as done with the
+   * outcome the controller supplies, then close the session when completion did not already
+   * request it. The two confirmations mean exactly what the dialog's do (see
+   * `CompleteTaskSchema`): neither is ever implied, and an incomplete scout is refused first.
+   */
+  z.object({
+    action: z.literal("complete"),
+    outcome: z.string().trim().max(CONVERSATION_TEXT_MAX_LENGTH).optional(),
+    satisfyDependents: z.boolean().optional(),
+    confirmIncompleteScout: z.boolean().optional(),
+  }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

@@ -1,3 +1,4 @@
+import { questionsAwaitingOperator } from "@shared/async-input.ts";
 import type { Registry } from "../registry.ts";
 import type { PauseRelease } from "../pause/release.ts";
 import { TaskIdCollisionError, type TaskManager } from "../tasks.ts";
@@ -92,7 +93,8 @@ export function createFinalizeDeps(deps: {
       if (!session) return false;
       // The exact safe-idle predicate `TaskManager.assign` re-checks before it rebinds an agent:
       // idle, live hook instrumentation, and no review parked on a human.
-      if (session.state !== "idle" || !session.instrumented || session.pendingReviews > 0) return false;
+      // `questionsAwaitingOperator` also counts a message-mode question (`async-input`).
+      if (session.state !== "idle" || !session.instrumented || questionsAwaitingOperator(session) > 0) return false;
       const probe = await paneAcceptsPrompt(session);
       return probe.ok;
     },
@@ -169,6 +171,10 @@ export function createFinalizeDeps(deps: {
             backlog: true,
           },
           { id: request.taskId },
+          undefined,
+          undefined,
+          // The selected result continues the run's work, so it keeps the run's work unit.
+          { inherit: request.workUnitFrom },
         );
       } catch (err) {
         if (err instanceof TaskIdCollisionError) {

@@ -1,27 +1,12 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-
-/**
- * The review queue has a chord, and the badge that opens it says so.
- *
- * A pending review is the most urgent thing a session can be - it is the one state where an
- * agent has stopped dead waiting on a person - and until now the only way to open its queue
- * was to find the amber badge with a mouse. `e` is that badge's keyboard equivalent, and it
- * travels: on a fleet where the selected card has nothing waiting, it goes to the first
- * session that is asking rather than doing nothing.
- *
- * Driven end to end, because that is the only layer that can see it work: the chord is
- * dispatched by App's window keydown listener, which nothing in `test/` can reach (see
- * `lib/conversationReveal.ts` on why those decisions live in `lib/`), and the queue it opens
- * is fed by the real SSE stream. Reviews are created over the real `POST /mcp/reviews`
- * channel the agent's MCP child uses, so no model tokens are spent.
- */
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const TASK = "tune the transcript cache";
 /** A second, differently-named agent, so the travel test can name the queue that opened. */
@@ -76,12 +61,20 @@ async function dispatch(
  * an HTTP route (`src/mcp/server.ts` performs exactly this POST), and going through it keeps
  * the spec honest about the contract while every agent binary stays a cost-free fake.
  */
-async function ask(daemon: DaemonHandle, cwd: string): Promise<void> {
+async function ask(
+  daemon: DaemonHandle,
+  cwd: string,
+  question = QUESTION.title,
+  body = question,
+): Promise<void> {
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const res = await fetch(`${daemon.baseURL}/mcp/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
-    body: JSON.stringify({ env: {}, cwd, ...QUESTION }),
+    body: JSON.stringify({
+      env: {}, cwd, ...QUESTION, title: question, body,
+      decisions: QUESTION.decisions.map((decision) => ({ ...decision, question })),
+    }),
   });
   expect(res.status, `the review channel accepted the question: ${await res.clone().text()}`).toBe(
     200,
@@ -118,7 +111,7 @@ async function checkouts(
   return found;
 }
 
-test("e opens the review queue of the session that is asking", async ({ dashboard, daemon }) => {
+test("clicking the review badge opens the session review queue", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, 1);
   const [session] = await checkouts(daemon, 1);
   await ask(daemon, session.cwd);
@@ -129,8 +122,7 @@ test("e opens the review queue of the session that is asking", async ({ dashboar
   const card = dashboard.locator(".console-detail");
   await expect(card.getByRole("button", { name: "to review" })).toBeVisible();
 
-  // Nothing is selected, and the chord still finds the session asking.
-  await dashboard.keyboard.press("e");
+  await card.getByRole("button", { name: "to review" }).click();
 
   const modal = dashboard.getByRole("dialog", { name: "Review request" });
   await expect(modal).toBeVisible();
@@ -138,7 +130,7 @@ test("e opens the review queue of the session that is asking", async ({ dashboar
   await expect(modal).toContainText("Which caching strategy should the transcript reader use?");
 });
 
-test("the badge prints the chord that opens it", async ({ dashboard, daemon }) => {
+test("the review badge prints the attention shortcut", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, 1);
   const [session] = await checkouts(daemon, 1);
   await ask(daemon, session.cwd);
@@ -154,13 +146,12 @@ test("the badge prints the chord that opens it", async ({ dashboard, daemon }) =
   await expect(badge.locator("kbd.kb-hint")).toHaveText("e");
 });
 
-test("e travels to the first session asking when the selected one has nothing waiting", async ({
+test("e opens the standard inbox when the current conversation has no inbox question", async ({
   dashboard,
   daemon,
 }) => {
   await dispatch(dashboard, daemon, 1);
-  // A different task, so the two cards carry different names and the modal that opens can
-  // be identified by the session it belongs to rather than merely by being open.
+  // Give the conversations distinct names so we can detect an unwanted selection change.
   await dispatch(dashboard, daemon, 2, OTHER_TASK);
   const sessions = await checkouts(daemon, 2);
 
@@ -177,23 +168,25 @@ test("e travels to the first session asking when the selected one has nothing wa
   const asking = rows.locator("button.rail-row.tone-attention");
   await expect(asking).toHaveCount(1);
 
-  // Select the other row, the one with no queue of its own. Without the travel rule the
-  // chord would be dead here, which is the whole point of the test.
+  // Open the conversation without a question and move focus into it.
   const quiet = rows.locator("button.rail-row:not(.tone-attention)");
   await expect(quiet).toHaveCount(1);
   await quiet.click();
   await expect(quiet).toHaveClass(/selected/);
+  const opener = dashboard.locator(".cdetail").getByRole("tab", { name: "Conversation" });
+  await opener.focus();
 
   await dashboard.keyboard.press("e");
 
-  // The queue that opened is the asking session's, and the selection followed it there, so
-  // the modal and the highlighted row do not disagree about which session is being answered.
-  const modal = dashboard.getByRole("dialog", { name: "Review request" });
-  await expect(modal).toBeVisible();
-  // The queue is the SECOND session's - the one dispatched with OTHER_TASK - and not
-  // merely some queue. Names are title-cased from the task.
-  await expect(modal).toContainText(askTarget!.name);
-  await expect(asking).toHaveClass(/selected/);
+  const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox).toBeVisible();
+  await expect(inbox).toContainText(askTarget!.name);
+  await expect(inbox.getByRole("button", { name: "Close (esc)" })).toBeFocused();
+  await capture(inbox, "standard-inbox-from-conversation");
+  await dashboard.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+  await expect(quiet).toHaveClass(/selected/);
+  await expect(opener).toBeFocused();
 });
 
 test("e is left to the browser on a fleet with nothing waiting", async ({ dashboard, daemon }) => {
@@ -209,7 +202,46 @@ test("e is left to the browser on a fleet with nothing waiting", async ({ dashbo
 
   // No queue exists, so no queue opens - and the chord is left unclaimed rather than
   // swallowed, which is what keeps a bare letter usable by the page underneath it.
-  await expect(dashboard.getByRole("dialog", { name: "Review request" })).toHaveCount(0);
+  await expect(dashboard.getByRole("dialog")).toHaveCount(0);
+});
+
+test("e from a conversation opens the standard inbox with only an unread report", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, 1);
+  const [session] = await checkouts(daemon, 1);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").click();
+  const conversation = dashboard.locator(".cdetail");
+  await expect(conversation).toContainText(session.name);
+
+  const enabled = await fetch(`${daemon.baseURL}/api/feature-flags`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "inbox", enabled: true }),
+  });
+  expect(enabled.ok).toBe(true);
+  const title = "Transcript cache benchmark results";
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const posted = await fetch(`${daemon.baseURL}/mcp/reports`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, cwd: session.cwd, title, body: "The bounded cache passed the benchmark." }),
+  });
+  expect(posted.status, await posted.text()).toBe(200);
+  await expect(dashboard.getByRole("button", { name: /1 to read/ })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: /to answer/ })).toHaveCount(0);
+
+  const opener = conversation.getByRole("tab", { name: "Conversation" });
+  await opener.focus();
+  await dashboard.keyboard.press("e");
+  const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox.getByText("Nothing to answer")).toBeVisible();
+  await expect(inbox.getByRole("button", { name: title })).toHaveAttribute("aria-expanded", "false");
+  await expect(inbox.getByRole("button", { name: "Close (esc)" })).toBeFocused();
+  await expectContentClearsBorder(inbox);
+  await capture(inbox, "report-only-inbox");
+  await dashboard.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+  await expect(opener).toBeFocused();
+  await expect(conversation).toContainText(session.name);
 });
 
 /** Store UI preferences the way the dashboard does, daemon and local mirror, then reload. */
@@ -253,16 +285,90 @@ test("the Board's Needs you column prints e while a review waits, and e opens it
     await needsYou.screenshot({ path: `${dir}needs-you-keycap.png` });
   }
 
-  // Pressing it, with no card selected, opens the queue.
+  await expect(dashboard.getByRole("button", { name: /1 to answer/ })).toBeVisible();
   await dashboard.keyboard.press("e");
-  const modal = dashboard.getByRole("dialog", { name: "Review request" });
-  await expect(modal).toBeVisible();
-  await expect(modal).toContainText("Which caching strategy should the transcript reader use?");
+  const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox).toBeVisible();
+  await expectContentClearsBorder(inbox);
+  await expect(inbox).toContainText(QUESTION.title);
+  await expect(inbox.getByRole("button", { name: "Close (esc)" })).toBeFocused();
+  await capture(inbox, "board-inbox");
   await dashboard.keyboard.press("Escape");
-  await expect(modal).toBeHidden();
+  await expect(inbox).toBeHidden();
 
   // With keycaps turned off, the column prints none.
   await setUi(dashboard, daemon, { keybindingHints: false });
   await expect(heading.getByRole("heading", { name: "needs you" })).toBeVisible();
   await expect(heading.locator("kbd.kb-hint")).toHaveCount(0);
 });
+
+async function capture(target: Locator, filename: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  const dir = artifactsDir("review-shortcut");
+  mkdirSync(dir, { recursive: true });
+  await target.screenshot({ path: join(dir, `${filename}.png`) });
+}
+
+for (const layout of ["board", "console"] as const) {
+  test(`e focuses the first of two questions from the active ${layout} conversation`, async ({
+    dashboard, daemon,
+  }) => {
+    await dispatch(dashboard, daemon, 1);
+    await dispatch(dashboard, daemon, 2, OTHER_TASK);
+    const sessions = await checkouts(daemon, 2);
+    const earlier = sessions.find((session) => session.name.toLowerCase().includes("transcript cache"))!;
+    const current = sessions.find((session) => session.name.toLowerCase().includes("pane capture"))!;
+    const context = Array.from({ length: 30 }, (_, index) => `Cache benchmark ${index + 1} recorded.`).join("\n");
+    await ask(daemon, earlier.cwd, QUESTION.title, `${QUESTION.title}\n\n${context}`);
+    const currentQuestion = "How should the pane capture index be rebuilt?";
+    await ask(daemon, current.cwd, currentQuestion);
+    const laterQuestion = "When should the pane capture index refresh?";
+    await ask(daemon, current.cwd, laterQuestion);
+    const questionOrder = [QUESTION.title, currentQuestion, laterQuestion];
+    await setUi(dashboard, daemon, { layout });
+
+    const session = layout === "board"
+      ? dashboard.locator(".board-col .tile:not(.pend-tile)").filter({ hasText: current.name })
+      : dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: current.name });
+    await session.click();
+    const conversation = dashboard.locator(".cdetail");
+    await expect(conversation).toContainText(current.name);
+    const toAnswer = dashboard.getByRole("button", { name: /3 to answer/ });
+    await expect(toAnswer).toBeVisible();
+
+    // Keep the fixture's original ordering so the shortcut has to reach past a different question.
+    const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
+    const headings = inbox.locator(".inbox-entry").getByRole("heading", { level: 3 });
+    const question = inbox.getByRole("heading", { name: currentQuestion });
+    await toAnswer.click();
+    await expect(headings).toHaveText(questionOrder);
+    await expect(question).not.toBeInViewport();
+    await dashboard.keyboard.press("Escape");
+    await expect(inbox).toBeHidden();
+
+    const reply = conversation.getByRole("textbox").filter({ visible: true });
+    await reply.focus();
+    await dashboard.keyboard.press("e");
+    await expect(reply).toHaveValue("e");
+    await expect(inbox).toBeHidden();
+    await reply.clear();
+    const opener = conversation.getByRole("tab", { name: "Conversation" });
+    await opener.focus();
+    await dashboard.keyboard.press("e");
+    await expect(inbox).toBeVisible();
+    await expectContentClearsBorder(inbox);
+    await expect(question).toBeFocused();
+    await expect(inbox.getByRole("heading", { name: laterQuestion })).not.toBeFocused();
+    await expect(question).toBeInViewport();
+    await expect(headings).toHaveText(questionOrder);
+    await capture(inbox, `${layout}-conversation-first-question`);
+    await dashboard.keyboard.press("Escape");
+    await expect(inbox).toBeHidden();
+    await expect(opener).toBeFocused();
+    await expect(conversation).toContainText(current.name);
+
+    // Opening from the count again uses the standard entry point even in this conversation.
+    await toAnswer.click();
+    await expect(inbox.getByRole("button", { name: "Close (esc)" })).toBeFocused();
+  });
+}

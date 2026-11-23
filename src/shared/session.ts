@@ -7,6 +7,7 @@ import type { PaneDialog, Session, Task } from "./types.ts";
 import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 import { canWriteTo } from "./pane.ts";
+import { WAITING_ON_ANSWER_REASON, waitingOnOpenQuestion } from "./async-input.ts";
 
 /** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
 export function sessionWorkspaceRoot(
@@ -174,6 +175,26 @@ export function finishedTasks(tasks: Task[]): Task[] {
  */
 export function hasBlocker(s: Pick<Session, "blocker">): boolean {
   return s.blocker != null;
+}
+
+/**
+ * Whether this session declared a wait on a background process that is still inside its
+ * deadline. Every idle-triggered automation that holds on `hasBlocker` holds on this too.
+ *
+ * Past `expectedBy` it answers false on purpose, and that is the safety net: a watcher that
+ * died must not keep a stalled session out of the stuck-session alerts forever, so from the
+ * deadline on the normal idle handling applies again. `awaitingOverdue` names that state.
+ *
+ * Like `hasBlocker`, deliberately not folded into `reportBucket`: an awaiting session is not
+ * asking you, so it must not reach Foreman triage or count as work the operator owes.
+ */
+export function isAwaiting(s: Pick<Session, "awaiting">, now = Date.now()): boolean {
+  return s.awaiting != null && now < s.awaiting.expectedBy;
+}
+
+/** Whether this session's declared wait has passed its deadline without the session waking. */
+export function awaitingOverdue(s: Pick<Session, "awaiting">, now = Date.now()): boolean {
+  return s.awaiting != null && now >= s.awaiting.expectedBy;
 }
 
 /**
@@ -425,6 +446,10 @@ export function reportBucket(s: Session, _sessions: Session[] = [s]): ReportBuck
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }
+  // The idle clause (`async-input`): the agent filed a question and kept working, and has now
+  // stopped with it still pending. Below every working reading on purpose, so an agent still
+  // running past its question is not amber. A resident is exempt; see `waitingOnOpenQuestion`.
+  if (waitingOnOpenQuestion(s)) return "needs-you";
   return "idle"; // confirmed idle, or open without confirmed busy evidence
 }
 
@@ -440,5 +465,6 @@ export function needsYouReason(s: Session, _sessions: Session[] = [s]): string |
   if (dialog) return paneDialogReason(dialog);
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
+  if (waitingOnOpenQuestion(s)) return WAITING_ON_ANSWER_REASON;
   return null;
 }

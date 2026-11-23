@@ -2,6 +2,10 @@ import type { Session } from "@shared/types.ts";
 import { SessionControlToggle } from "../components/SessionControlToggle.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 
+export function residentControlBadge(granted: boolean): string {
+  return granted ? "Control" : "No control";
+}
+
 /**
  * Whether a resident's conversation holds session control right now: the Registry's live grant
  * (`session.sessionControlEnabled`), which a desktop Launch click gives the run and a restart of
@@ -32,7 +36,7 @@ export function ResidentControlStatus({ session, name, badge = false }: {
               <path d="M8 1.5 2.5 3.6v4.1c0 3.2 2.3 5.9 5.5 6.8 3.2-.9 5.5-3.6 5.5-6.8V3.6L8 1.5Z" />
               {granted && <path d="m5.6 8 1.7 1.7 3.2-3.3" />}
             </svg>
-            {granted ? "Control" : "No control"}
+            {residentControlBadge(granted)}
           </> : status}
         </span>
       </Tooltip>

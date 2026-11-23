@@ -123,7 +123,9 @@ const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
 const MISSION_CONTROL_REVIEW_INSTRUCTION =
   "Whenever you need a decision, a clarification or a choice from the operator, call the " +
   "Mission Control request_input MCP tool. Pass discrete choices through the tool's options " +
-  "field and wait for the structured response before continuing. Never end a turn by asking for a numbered " +
+  "field. Its result either carries the operator's answer, or says the question is filed and the " +
+  "answer will arrive later as a message; then keep working on what does not depend on it, and if " +
+  "nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered " +
   "or prose reply when the MCP tool is available. " +
   DECISION_CONTEXT_RULE +
   " If you are waiting on someone or " +
@@ -1601,6 +1603,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           ...(overlay ? { codexHome: overlay } : {}),
           ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
           traceContext: opts.traceContext ?? null,
+          workUnitId: opts.workUnitId ?? null,
         },
       );
       const config: LaunchConfig = {

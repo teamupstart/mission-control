@@ -32,10 +32,24 @@
  *
  * Raw mode, because the claim being tested is about the exact bytes that arrive: a cooked
  * pty's line discipline would eat or transform them before this saw them.
+ *
+ * `PANE_AGENT_TURNS=<file>` opts into whole turns, for a spec that reads what the agent was
+ * sent rather than how long it was. A newline inside a bracketed paste then stays in the
+ * composer, as a real composer keeps it, and only the Enter after the paste submits. Each
+ * submission's full text is appended to `<file>` as one JSON line, never drawn on the screen,
+ * so (2) above still holds. And each submission other than the clear is reported through the
+ * hook bridge as Claude reports a turn: `UserPromptSubmit` when it is taken, then `Stop`, which
+ * is the evidence the outbox waits for before it counts a delivery and goes on to the next row.
+ * A composer holding a multi-line paste is drawn as Claude draws it, `[Pasted text #N +M lines]`,
+ * because that placeholder appearing and then leaving the composer is the only evidence
+ * `injectPrompt` accepts that its Enter submitted the paste (`submitVerified`). Without it every
+ * handover would read as unconfirmed, and its shaping record as degraded with no text kept.
  */
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 
 const [baseURL, token, paneId, cwd, transcriptDir] = process.argv.slice(2);
+const TURNS = process.env.PANE_AGENT_TURNS || null;
 
 /** Claude's own clear command, as `harness/claude` declares it. */
 const CLEAR = "/clear";
@@ -52,13 +66,31 @@ const PASTE_END = `${ESC}[201~`;
 const SCROLLBACK = 20;
 
 let composer = "";
+/** A trailing marker prefix held until the next stdin chunk (at most five characters). */
+let pendingMarker = "";
 const history = [];
+/** Inside a bracketed paste, which only whole-turn mode distinguishes. */
+let pasting = false;
+/** Pastes into the composer since the last submission, which numbers the placeholder. */
+let pastes = 0;
+/** The agent session the last clear announced, which the turn hooks name. */
+let agentSession = null;
+let agentTranscript = null;
+
+/**
+ * The composer as it is drawn. In whole-turn mode a composer holding a newline holds a paste, and
+ * Claude collapses that into one placeholder rather than echoing it (`harness/claude/control.ts`).
+ */
+function composerView() {
+  if (!TURNS || !composer.includes("\n")) return composer;
+  return `[Pasted text #${Math.max(pastes, 1)} +${composer.split("\n").length - 1} lines]`;
+}
 
 /** Redraw the whole screen: the transcript, then the composer, exactly like a TUI. */
 function draw() {
   process.stdout.write(`${ESC}[2J${ESC}[H`);
   for (const line of history.slice(-SCROLLBACK)) process.stdout.write(`${line}\r\n`);
-  process.stdout.write(`\r\n> ${composer}`);
+  process.stdout.write(`\r\n> ${composerView()}`);
 }
 
 /** Report to the daemon the way the installed Claude hook bridge does. */
@@ -81,12 +113,22 @@ async function submit(text) {
   const body = text.trim();
   history.push(`[took ${body.length} chars]`);
   composer = "";
+  pastes = 0;
   draw();
-  if (body !== CLEAR) return;
+  if (TURNS) appendFileSync(TURNS, `${JSON.stringify({ text: body })}\n`);
+  if (body !== CLEAR) {
+    if (!TURNS) return;
+    await hook("UserPromptSubmit", { sessionId: agentSession, transcriptPath: agentTranscript, prompt: body });
+    await new Promise((done) => setTimeout(done, 300));
+    await hook("Stop", { sessionId: agentSession, transcriptPath: agentTranscript });
+    return;
+  }
   const id = randomUUID();
+  agentSession = id;
+  agentTranscript = `${transcriptDir}/${id}.jsonl`;
   await hook("SessionStart", {
     sessionId: id,
-    transcriptPath: `${transcriptDir}/${id}.jsonl`,
+    transcriptPath: agentTranscript,
     source: "clear",
   });
 }
@@ -95,8 +137,41 @@ process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
+  chunk = pendingMarker + chunk;
+  pendingMarker = "";
+  // A read can end anywhere inside either marker. Keep the longest possible prefix out
+  // of the composer until the next read completes it or proves it is ordinary input.
+  for (let length = Math.min(chunk.length, PASTE_START.length - 1); length > 0; length--) {
+    const suffix = chunk.slice(-length);
+    if (PASTE_START.startsWith(suffix) || PASTE_END.startsWith(suffix)) {
+      pendingMarker = suffix;
+      chunk = chunk.slice(0, -length);
+      break;
+    }
+  }
   // Bracketed-paste markers are stripped rather than rendered: `PaneWrite.paste` wraps the
   // body in them, and a real composer treats them as framing, not as content.
+  if (TURNS) {
+    // Whole turns: the paste's own newlines are content, and the Enter after it submits.
+    // Both markers are six characters long.
+    let rest = chunk;
+    while (rest.length > 0) {
+      const marks = [rest.indexOf(PASTE_START), rest.indexOf(PASTE_END)].filter((at) => at >= 0);
+      const next = marks.length > 0 ? Math.min(...marks) : -1;
+      for (const ch of next === -1 ? rest : rest.slice(0, next)) {
+        if ((ch === "\r" || ch === "\n") && pasting) composer += "\n";
+        else if (ch === "\r" || ch === "\n") void submit(composer);
+        else if (ch === "\x7f") composer = composer.slice(0, -1);
+        else if (ch >= " " || ch === "\t") composer += ch;
+      }
+      if (next === -1) break;
+      pasting = rest.startsWith(PASTE_START, next);
+      if (pasting) pastes += 1;
+      rest = rest.slice(next + PASTE_START.length);
+    }
+    draw();
+    return;
+  }
   const body = chunk.split(PASTE_START).join("").split(PASTE_END).join("");
   for (const ch of body) {
     if (ch === "\r" || ch === "\n") void submit(composer);
@@ -106,6 +181,9 @@ process.stdin.on("data", (chunk) => {
   draw();
 });
 
+// Whole turns need the paste framed, and tmux frames a paste only for an application that asked
+// for bracketed paste, as a real composer does.
+if (TURNS) process.stdout.write(`${ESC}[?2004h`);
 draw();
 // Announce idleness at once, so the card is instrumented without waiting for a sweep to
 // infer it. `instrumented` is a fresh hook overlay and nothing else - `assignReserved`

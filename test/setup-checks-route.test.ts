@@ -4,10 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { availableSetupDependencyIds } from "../src/shared/conductor-integration.ts";
+import { SETUP_DEPENDENCY_INFO, setupFamilyFlagOn } from "../src/shared/setup-catalog.ts";
 
 // Setup reports every dependency the build offers; ai-conductor is withheld while its
-// integration is hidden (`shared/conductor-integration.ts`).
-const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds();
+// integration is hidden (`shared/conductor-integration.ts`), and a family behind a preview flag
+// (Voice) while that flag is off, which it is in this fixture's fresh database.
+const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds()
+  .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, () => false));
 
 const home = mkdtempSync(join(tmpdir(), "mission-setup-route-"));
 process.env.MISSION_HOME = home;

@@ -65,6 +65,7 @@ export function previewSession(now: number): Session {
     lastSeen: 0,
     lastActivity: now - 42_000,
     pendingReviews: 0,
+    openQuestions: 0,
     // A task, so the Task type picker governs something the preview can draw. Named after
     // the session the way a dispatch names one, so the card's task pill stays silent and
     // the kind mark is the only thing the task adds.
@@ -136,6 +137,8 @@ export function previewSession(now: number): Session {
       checkedAt: null,
       reply: { flaggedAt: now - 600_000, flaggedBy: "operator", note: null, referenceUrl: null },
     },
+    // A session stands on a blocker OR a declared wait, never both, so the preview shows none.
+    awaiting: null,
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,

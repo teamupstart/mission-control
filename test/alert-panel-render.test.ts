@@ -173,3 +173,38 @@ test("without notification permission the channel is offered but not claimed", (
   assert.match(html, /Enable desktop alerts/);
   assert.match(html, /aria-label="Desktop notifications"[^>]*disabled=""/);
 });
+
+// "What notifies you" (`inbox` flag): five switches under the channels, drawn only with the flag
+// on. They are the same switch rows as the channels, so each is reachable by its label.
+const NOTIFY_ON = {
+  notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+  reportsInInbox: true,
+};
+
+test("with the inbox flag off there is no What notifies you group", () => {
+  const html = render();
+  assert.doesNotMatch(html, /What notifies you/);
+  assert.doesNotMatch(html, /Agent reports notify/);
+});
+
+test("with the inbox flag on the group draws five switches, after the channels and before Away mode", () => {
+  const html = render({ notifySettings: { ...NOTIFY_ON, notify: { ...NOTIFY_ON.notify, reports: false } } });
+  const labels = [
+    "Blocking questions notify",
+    "Questions filed while working notify",
+    "Agent reports notify",
+    "Agent reports are listed in the inbox",
+    "Stuck sessions notify",
+  ];
+  const at = (text: string) => html.indexOf(text);
+  assert.ok(at("How you&#x27;re reached") < at("What notifies you"));
+  assert.ok(at("What notifies you") < at('aria-label="Away mode"'));
+  let last = at("What notifies you");
+  for (const label of labels) {
+    const position = html.indexOf(`aria-label="${label}"`);
+    assert.ok(position > last, `${label} in order`);
+    last = position;
+  }
+  assert.match(html, /role="switch" aria-checked="false" aria-label="Agent reports notify"/);
+  assert.match(html, /role="switch" aria-checked="true" aria-label="Agent reports are listed in the inbox"/);
+});

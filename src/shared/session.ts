@@ -6,7 +6,7 @@
 import type { PaneDialog, Session, Task } from "./types.ts";
 import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
-import { canWriteTo } from "./pane.ts";
+import { canWriteTo, innermostPane } from "./pane.ts";
 import { WAITING_ON_ANSWER_REASON, waitingOnOpenQuestion } from "./async-input.ts";
 
 /** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
@@ -57,6 +57,7 @@ export function canCycleMode(session: Session): boolean {
  * finished is a no-op both drivers document tolerating.
  */
 export function canInterruptSession(session: Session): boolean {
+  if (session.runtime !== "sdk" && innermostPane(session) && !canWriteTo(session)) return false;
   return agentActive(session) && canInterrupt(session.agent, session.runtime);
 }
 

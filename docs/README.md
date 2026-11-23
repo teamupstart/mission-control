@@ -49,6 +49,7 @@ Mission Control's product reference is organized by feature below.
 - [Dispatch and runtimes](dispatch-and-runtimes.md)
 - [Harnesses and terminal backends](harnesses-and-terminals.md)
 - [Workflows, personas, actions, and ensembles](workflow-system.md)
+- [Repository review workload foundation](repository-review-workloads.md)
 - [Tasks, queues, and schedules](tasks-and-scheduling.md)
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)

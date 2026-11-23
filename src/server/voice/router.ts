@@ -61,8 +61,8 @@ export class VoiceRouter {
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
-    const unsure = this.activeCards().findLast((card) => card.state === "unsure");
-    const decision = routeUtterance(utterance, { roster, unsure });
+    const unsureCards = this.activeCards().filter((card) => card.state === "unsure");
+    const decision = routeUtterance(utterance, { roster, unsureCards });
     const entry: HeardEntry = { id, time: utterance.capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
@@ -78,8 +78,9 @@ export class VoiceRouter {
         const action = this.pendingVoiceActions.at(-1);
         if (action) { entry.detail = action.id; action.cancel(); }
         else entry.rule = "nothing-pending";
-      } else {
-        await this.pick(decision.cardId, decision.candidateId);
+      } else if (!await this.pick(decision.cardId, decision.candidateId)) {
+        entry.outcome = "ignored";
+        entry.rule = "candidate-unavailable";
       }
       return true;
     }
@@ -89,7 +90,7 @@ export class VoiceRouter {
     entry.matchedName = addressed ? decision.target.name : null;
     const card: VoiceCard = {
       id, state: addressed ? "pending" : "unsure", deadline: null, openQuestions: 0, reason: entry.rule,
-      parts: [{ target: addressed ? decision.target : null, text: addressed ? decision.text : utterance.text }],
+      parts: [{ target: addressed ? { ...decision.target } : null, text: addressed ? decision.text : utterance.text }],
       candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
     };
     await this.openCard({ card, entry, message: decision.text, command: decision.command });
@@ -145,7 +146,7 @@ export class VoiceRouter {
     item.entry.matchedName = target.name;
     item.entry.detail = "picked";
     await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
-      candidates: [], parts: [{ target, text: item.message }] } });
+      candidates: [], parts: [{ target: { ...target }, text: item.message }] } });
     return true;
   }
 
@@ -156,7 +157,9 @@ export class VoiceRouter {
     const { mode, roster } = this.state();
     if (mode === "off") return false;
     const part = item.card.parts[0]!;
-    const target = roster.find((name) => name.key === part.target?.key);
+    // A roster key can outlive the session shown on the pending card.
+    const selected = part.target;
+    const target = selected && roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
     this.delivering.set(id, item);
     let result: DeliveryResult = "not-running";
     try {
@@ -169,6 +172,7 @@ export class VoiceRouter {
     this.delivering.delete(id);
     const outcome = typeof result === "string" ? result : result.outcome;
     if (typeof result !== "string") item.entry.detail = result.detail;
+    else if (outcome === "not-running") item.entry.detail = "The selected session is unavailable.";
     item.entry.outcome = outcome;
     if (this.state().mode !== "off") this.publish({ ...item.card, state: outcome, deadline: null });
     return true;

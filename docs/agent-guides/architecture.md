@@ -662,3 +662,10 @@ attached-PR observations through Registry/SSE; it is not an Inspector finding or
 Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `/inject` route
 rebuilds ownership and consent, assembles the text, claims current root generations atomically,
 and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.
+
+## Unwired repository review workloads
+
+The [repository review foundation](../repository-review-workloads.md) owns the separate
+repository MCP bundle and isolated SDK workload adapters. It accepts an injected verified
+view lease, emits only metadata in its audit events, and has no production Workflow caller
+or database ownership. Artifact capture and durable orchestration belong to later phases.

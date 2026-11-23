@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { mcpTrustStatus } from "./mcp-trust.ts";
 import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
 import { shellCommand } from "../terminal/shell.ts";
@@ -555,6 +556,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-skills": skillStatus,
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
+  [MACOS_TERMINAL_ID]: (deps) => terminalStatus(MACOS_TERMINAL_ID, deps),
   "node-runtime": nodeRuntimeStatus,
   // Installed, answered from the filesystem alone. No `--version` run: every acli subprocess
   // is one an operator's audit of "what did it ask Jira" has to account for, and the sign-in
@@ -738,13 +740,14 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
-  // A family that follows a preview flag (Voice) is neither probed nor listed while it is off.
+  const targets = deps.terminalTargets();
+  const showMacosTerminal = targets.some(({ id }) => id === MACOS_TERMINAL_ID);
   const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
-    .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled));
-  const [probed, targets, environment, repositories] = await Promise.all([
+    .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled))
+    .filter((id) => id !== MACOS_TERMINAL_ID || showMacosTerminal);
+  const [probed, environment, repositories] = await Promise.all([
     // A fresh object per check: per-check readings shared between rows key on it.
     Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
-    Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),
   ]);

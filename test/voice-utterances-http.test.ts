@@ -164,6 +164,80 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   }
 });
 
+test("a spoken pick finds the only matching unsure card, even when it is older", async () => {
+  await say("Steven ask Will about the build", "older");
+  await say("Steven ask Bill about the release", "newer");
+  await say("Steve");
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["older", "unsure"], ["newer", "unsure"]]);
+  assert.equal((await readHeard())[0]?.rule, "ambiguous-pick");
+
+  await say("Will.");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [
+    ["newer", "unsure"], ["older", "pending"],
+  ]);
+  assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+  assert.equal((await act("older", "send-now")).status, 200);
+  assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
+});
+
+test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
+  await say('Will,"ship it"', "quote");
+  assert.equal(cards[0]?.parts[0]?.text, '"ship it"');
+  assert.equal((await act("quote", "send-now")).status, 200);
+  assert.equal(queued("Will").at(-1), '"ship it"');
+});
+
+test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const will = name("Will");
+  voiceStateStore.useRoster(() => [will, name("Steve")]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will, stop", "stop-original");
+  await say("Steven ask Will about the deployment", "picked-message");
+  await say("Will.");
+  const replacementQueue = queued("Bill");
+  const beforeInterrupts = [...interrupts];
+  will.sessionId = "sdk:Bill";
+
+  assert.equal((await act("stop-original", "send-now")).status, 200);
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.deepEqual(queued("Bill"), replacementQueue);
+  assert.deepEqual(interrupts, beforeInterrupts);
+  assert.deepEqual(cards.slice(-2).map((c) => [c.id, c.state, c.parts[0]?.target?.sessionId]), [
+    ["stop-original", "not-running", "sdk:Will"], ["picked-message", "not-running", "sdk:Will"],
+  ]);
+  const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");
+  assert.equal(deliveries.length, 2);
+  for (const entry of deliveries) {
+    assert.equal(entry.outcome, "not-running");
+    assert.equal(entry.detail, "The selected session is unavailable.");
+  }
+});
+
+test("a selected session missing from the registry is reported as unavailable", async (t) => {
+  const will = { ...name("Will"), sessionId: "sdk:gone" };
+  voiceStateStore.useRoster(() => [will]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will finish the report", "gone");
+  assert.equal((await act("gone", "send-now")).status, 200);
+  assert.equal(cards.at(-1)?.state, "not-running");
+  assert.equal((await readHeard())[0]?.outcome, "not-running");
+});
+
+test("a spoken pick for a departed candidate records why the unsure card stays open", async (t) => {
+  await say("Steven ask Will about the release", "choose");
+  voiceStateStore.useRoster(() => roster.filter((target) => target.name !== "Will"));
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Will", "departed");
+  const [pick, original] = await readHeard();
+  assert.deepEqual([pick?.id, pick?.outcome, pick?.rule], ["departed", "ignored", "candidate-unavailable"]);
+  assert.equal(original?.outcome, "unsure");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["choose", "unsure"]]);
+  await say("Steve");
+  assert.deepEqual([cards.at(-1)?.state, cards.at(-1)?.parts[0]?.target?.name], ["pending", "Steve"]);
+});
+
 test("ignored, pending and cancelled captures leave no transcript in the daemon state directory", async () => {
   const marker = randomUUID();
   await say("Morning " + marker);

@@ -46,27 +46,53 @@ type Decision =
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
   | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
   | { kind: "needs-model"; command?: VoiceAddressedCommand; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
-  | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message"; closest?: string };
+  | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
 }
 
+function closesWrapper(opener: string, closer: string): boolean {
+  if (opener === '"' || opener === "'") return closer === opener;
+  if (/\p{Ps}/u.test(opener)) return /\p{Pe}/u.test(closer);
+  return /\p{Pf}/u.test(closer);
+}
+
+// A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
+function messageAfterAddress(text: string, start: number, end: number): string {
+  let rest = text.slice(end);
+  if (rest.startsWith(",")) {
+    rest = rest.replace(/^,+/u, "");
+    const address = text.slice(start, end);
+    const opening = address.match(/^[\p{Ps}\p{Pi}"']+/u)?.[0] ?? "";
+    const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
+    // Wrappers already closed before the comma belong to the address token itself.
+    const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
+    for (const opener of [...opening].reverse().slice(closed)) {
+      const closer = rest.match(/^[\p{Pe}\p{Pf}"']/u)?.[0];
+      if (!closer || !closesWrapper(opener, closer)) break;
+      rest = rest.slice(closer.length);
+    }
+  }
+  return rest.replace(/^[,\s]+/u, "");
+}
+
 export function routeUtterance(utterance: VoiceUtterance, context: {
   roster: readonly SpokenName[];
-  unsure?: VoiceCard;
+  unsureCards?: readonly VoiceCard[];
 }): Decision {
   const { text, words } = utterance;
   const phrase = normalized(text);
   if (phrase === "cancel") return { kind: "control", command: "cancel" };
-  const picks = context.unsure?.candidates.filter((c) => normalized(c.title) === phrase);
-  if (context.unsure && picks?.length === 1) {
-    return { kind: "control", command: "pick", cardId: context.unsure.id, candidateId: picks[0]!.id };
-  }
+  const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
+    .filter((candidate) => normalized(candidate.title) === phrase)
+    .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
+  if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
+  if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
 
   // Compare whole tokens. Keep their offsets into the original so quoting, spacing and
   // punctuation inside the message survive the comparison.
-  const tokens = Array.from(text.matchAll(/[^\s,]+(?:,+[\p{Pe}\p{Pf}"']*)?/gu)).filter((m) => normalized(m[0]));
+  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
   const first = normalized(tokens[0]?.[0] ?? "");
   if (!first) return { kind: "ignored", reason: "no-name" };
@@ -106,8 +132,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     return { kind: "ignored", reason: "near-miss" };
   }
   const last = tokens[count - 1]!;
-  const body = text.slice(last.index + last[0].length).replace(/^[,\s]+/u, "");
   if (tokens.length === count) return { kind: "ignored", reason: "no-message" };
+  const body = messageAfterAddress(text, tokens[0]!.index, last.index + last[0].length);
   const before = words[count - 1];
   const after = words[count];
   const pauseMs = before && after ? after.startMs - before.endMs : null;

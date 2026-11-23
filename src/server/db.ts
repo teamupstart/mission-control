@@ -8829,7 +8829,8 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
   }
 }
 
-export function deleteTask(id: string): void {
+/** Delete a task and everything keyed on it. True when a task row was there to delete. */
+export function deleteTask(id: string): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -8855,8 +8856,9 @@ export function deleteTask(id: string): void {
     d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ?`).run(id);
-    d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+    const deleted = Number(d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id).changes) > 0;
     if (ownsTransaction) d.exec("COMMIT");
+    return deleted;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;

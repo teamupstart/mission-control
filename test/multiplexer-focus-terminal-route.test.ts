@@ -75,7 +75,7 @@ function terminals() {
     deps: {
       ...configuredTerminalDeps,
       multiplexers: { tmux, herdr: fakeMultiplexer({ id: "herdr" }), cmux: fakeMultiplexer({ id: "cmux" }) },
-      emulators: { wezterm: wezterm.backend, ghostty: ghostty.backend, iterm: iterm.backend },
+      emulators: { ...configuredTerminalDeps.emulators, wezterm: wezterm.backend, ghostty: ghostty.backend, iterm: iterm.backend },
       // Travels with the registries: `installed` probes the real filesystem for the real
       // adapters' binaries, and fake adapters carry a spec no machine has. Leaving the
       // production probe here would skip every candidate and prove only that nothing opened.

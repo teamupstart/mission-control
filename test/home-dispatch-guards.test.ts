@@ -69,10 +69,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // /api/reports/mutes/:authorKey` and `POST /api/reports/read-all`), which answer 404 with the
   // `inbox` flag off. The six utterance, card action and Recently heard routes answer
   // 404 with the voice preview off, as does GET /voice/listener/directive.
+  // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 466);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "affaaa2ed0f69549845acc1c2d82bfd513df0f1039f98fc83d08e028d76895d2");
+    "0ab057e10815ddad005d74002dc5eded22c0ebd98d12ced3236d0c515897014d");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -21,6 +21,3 @@ declare const __MOD_VERSION__: string | undefined;
  * (tests) has no definition and reads `0.0.0-dev`.
  */
 export const MOD_VERSION: string = typeof __MOD_VERSION__ === "string" ? __MOD_VERSION__ : "0.0.0-dev";
-
-/** What the pane shows until P12 draws its tabs. */
-export const PANE_PLACEHOLDER_TEXT = "The Mission Control pane is not available in this build yet.";

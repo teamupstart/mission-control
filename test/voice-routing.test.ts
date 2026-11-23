@@ -7,9 +7,9 @@ function agent(name: string): SpokenName {
   return { name, key: "resident:" + name, kind: "resident", taskId: null, sessionId: null,
     role: "Review builds", colorId: null, agent: "claude", state: "not-running" };
 }
-const route = (text: string, names = ["Will", "Steve"], words: VoiceUtterance["words"] = [], unsure?: VoiceCard) =>
+const route = (text: string, names = ["Will", "Steve"], words: VoiceUtterance["words"] = [], unsureCards: VoiceCard[] = []) =>
   routeUtterance(VoiceUtteranceSchema.parse({ id: "one", capturedAt: 1, text, words, backend: "fluidaudio" }),
-    { roster: names.map(agent), unsure });
+    { roster: names.map(agent), unsureCards });
 
 test("the exact first word addresses Will with absent, adjacent, paused or overlapping timings", () => {
   for (const gap of [null, 0, 250, -80]) {
@@ -64,9 +64,24 @@ test("weak spelling matches are ignored even when two names are equally close", 
 test("a bare cancel and a bare candidate name take precedence over addressing", () => {
   const unsure: VoiceCard = { id: "open", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
     candidates: [{ kind: "agent", id: "resident:Will", title: "Will", detail: "builds" }] };
-  assert.deepEqual(route("Cancel!", ["Cancel"], [], unsure), { kind: "control", command: "cancel" });
-  assert.deepEqual(route("Will.", undefined, [], unsure), { kind: "control", command: "pick", cardId: "open", candidateId: "resident:Will" });
-  assert.equal(route("Will, ship it.", undefined, [], unsure).kind, "addressed");
+  assert.deepEqual(route("Cancel!", ["Cancel"], [], [unsure]), { kind: "control", command: "cancel" });
+  assert.deepEqual(route("Will.", undefined, [], [unsure]), { kind: "control", command: "pick", cardId: "open", candidateId: "resident:Will" });
+  assert.equal(route("Will, ship it.", undefined, [], [unsure]).kind, "addressed");
+});
+
+test("punctuation around the address stays separate from the quoted message", () => {
+  for (const [text, body] of [
+    ['Will,"ship it"', '"ship it"'],
+    ["Will,‘ship it’", "‘ship it’"],
+    ["Will,' ship it '", "' ship it '"],
+    ['"Will","ship it"', '"ship it"'],
+    ['"Will"!,"ship it"', '"ship it"'],
+    ['"Will,""ship it"', '"ship it"'],
+    ["“Will,”  “ship   it!”", "“ship   it!”"],
+    ['「“Will,”」"ship it"', '"ship it"'],
+  ] as const) {
+    assert.deepEqual(route(text), { kind: "addressed", target: agent("Will"), match: "exact", text: body, pauseMs: null });
+  }
 });
 
 test("Release wins the exact first word even when Release Captain is listed first", () => {

@@ -642,12 +642,24 @@ export const SETUP_FLAG_INPUTS: readonly FeatureFlagId[] = [...new Set<FeatureFl
 ])];
 
 /**
- * The resolved state of `SETUP_FLAG_INPUTS` as one string, one character per flag. The daemon
- * stamps each reading with the key it read under (`SetupChecksView.flagsKey`) and the dashboard
- * computes the live key the same way, so a reading taken under other flags can be recognized.
+ * The resolved state of `SETUP_FLAG_INPUTS` as one string, one character per flag.
  */
 export function setupFlagsKey(flagOn: (flag: FeatureFlagId) => boolean): string {
   return SETUP_FLAG_INPUTS.map((flag) => (flagOn(flag) ? "1" : "0")).join("");
+}
+
+/**
+ * The flags a Setup reading is stamped with (`SetupChecksView.flagsKey`): `setupFlagsKey` while a
+ * family that follows a flag is on, and nothing otherwise. Only then does any reading depend on
+ * these flags, and with every such family off the response stays the one an install without
+ * them gave. The dashboard computes the live stamp the same way and re-reads on a mismatch.
+ */
+export function setupReadingFlags(flagOn: (flag: FeatureFlagId) => boolean): string | undefined {
+  const gated = SETUP_FAMILY_IDS.some((family) => {
+    const flag = SETUP_FAMILY_INFO[family].flag;
+    return flag !== undefined && flagOn(flag);
+  });
+  return gated ? setupFlagsKey(flagOn) : undefined;
 }
 
 /**
@@ -742,9 +754,9 @@ export interface SetupChecksView {
    */
   home: string;
   /**
-   * The flags this reading was taken under (`setupFlagsKey`). The dashboard re-reads when the
-   * live flags differ, including a switch made between this read and its first snapshot.
-   * Absent from an older daemon.
+   * The flags this reading was taken under (`setupReadingFlags`): present only while a family
+   * that follows a flag (Voice) is on. The dashboard re-reads when the live stamp differs,
+   * including a switch made between this read and its first snapshot.
    */
   flagsKey?: string;
 }

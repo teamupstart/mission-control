@@ -79,7 +79,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
 import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
-import { setupFlagsKey, setupRowAnchor } from "@shared/setup-catalog.ts";
+import { setupReadingFlags, setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
@@ -454,7 +454,7 @@ export function App(): React.JSX.Element {
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
   // Re-read when a flag Setup depends on is switched in any window (the Voice family).
   const liveSetupFlags = useMemo(
-    () => (hasSnapshot ? setupFlagsKey((id) => resolveFeatureFlag(id, featureFlags)) : null),
+    () => (hasSnapshot ? setupReadingFlags((id) => resolveFeatureFlag(id, featureFlags)) ?? "" : null),
     [hasSnapshot, featureFlags],
   );
   const setup = useSetupChecks(true, liveSetupFlags);

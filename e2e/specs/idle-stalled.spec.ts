@@ -195,30 +195,12 @@ test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section
     return resident?.state;
   }, { timeout: 60_000 }).toBe("idle");
 
-  // The daemon never reports a resident's own standing task as an idle stall, but it does report a
-  // resident whose explicit queue work is open. No route opens a resident's queue from here, so
-  // the browser's copy of `/api/away/stalls` carries that stall, with the facts the daemon gives a
-  // queue-only stall (`detectStall`, pinned in `test/stall.test.ts`), as `inbox-stuck.spec.ts`
-  // does for its queue-only row. The ordinary session's stall below is the daemon's own.
-  const residentFacts = { kind: "unfinished-work", task: null, queueOpen: 1 };
-  await page.route("**/api/away/stalls", async (route) => {
-    const response = await route.fetch();
-    const stalls = await response.json() as Array<{ sessionId: string }>;
-    await route.fulfill({
-      response,
-      json: [
-        ...stalls.filter((stall) => stall.sessionId !== resident.id),
-        {
-          sessionId: resident.id, kind: "unfinished-work", forMs: 25 * 60_000,
-          reason: "idle 25m with work unfinished", facts: residentFacts,
-          fingerprint: JSON.stringify({ ...residentFacts, since: 1 }),
-        },
-      ],
-    });
-  });
+  // The resident's standing task never stalls on its own. An explicit queue item does.
+  const queuePath = `/api/sessions/${encodeURIComponent(resident.id)}/queue`;
+  const item = await api<{ id: string }>(daemon, queuePath, { intent: "Inspect the parser" });
 
   const a = await dispatch(daemon, "Fix the parser");
-  await stalled(daemon, a.session);
+  await stalled(daemon, resident, a.session);
   await useBoardLayout(page, daemon);
 
   // Both stalls are Stalled cards: the resident left its pinned place for the section, with the
@@ -242,4 +224,13 @@ test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section
   await expect(queue).toHaveAccessibleDescription("Open this session's work queue");
   await queue.click();
   await expect(page.getByRole("tab", { name: /Work queue/ })).toHaveAttribute("aria-selected", "true");
+
+  // Keep serving the last real poll while the live queue removal arrives over SSE.
+  const reported = await api(daemon, "/api/away/stalls");
+  await page.route("**/api/away/stalls", route => route.fulfill({ json: reported }));
+  await api(daemon, `${queuePath}/${item.id}`, undefined, "DELETE");
+  await expect(page.getByRole("region", { name: "Session stalled" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to the board" }).click();
+  await expect(residentFactsCard).toHaveCount(0);
+  await expect(idleColumn(page).locator(".fleet-section-stalled .fleet-section-n")).toHaveText("1");
 });

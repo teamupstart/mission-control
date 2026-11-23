@@ -234,11 +234,11 @@ function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outst
   const parked = parkedRunFor(s, runs);
   if (parked) return { kind: "workflow-parked", run: parked };
   if (hasOpenStallTask(s)) return { kind: "unfinished-work" };
-  return queueOpen(s) > 0 ? { kind: "unfinished-work" } : null;
+  return openStallQueueCount(s) > 0 ? { kind: "unfinished-work" } : null;
 }
 
 /** Open queue items that still count as outstanding: none once the queue has drained. */
-function queueOpen(s: Session): number {
+export function openStallQueueCount(s: Session): number {
   const q = s.queue;
   return q && q.openCount > 0 && !q.drained ? q.openCount : 0;
 }
@@ -266,7 +266,7 @@ function factsFor(
       return {
         kind,
         task: hasOpenStallTask(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
-        queueOpen: queueOpen(s),
+        queueOpen: openStallQueueCount(s),
       };
     case "workflow-parked": {
       const observed = unpushed.get(run!.id);

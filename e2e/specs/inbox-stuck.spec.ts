@@ -137,6 +137,7 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   const a = await dispatch(daemon, "Fix the parser");
   const c = await dispatch(daemon, "Tidy the changelog");
   const b = await dispatch(daemon, "Drain the queue");
+  await api(daemon, `/api/sessions/${encodeURIComponent(b.session.id)}/queue`, { intent: "Inspect the queue" });
   await page.route("**/api/away/stalls", async (route) => {
     const response = await route.fetch();
     const stalls = await response.json() as Array<{ sessionId: string; facts?: unknown; fingerprint?: string }>;

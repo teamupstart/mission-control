@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -33,10 +33,10 @@ export function currentStalls(stalls: ObservedStall[] | undefined, sessions: rea
     if (stall.legacy && (!session || legacyStallFingerprint(stall, session) !== stall.fingerprint)) return false;
     if (session && isIdleStall(stall) && stall.since !== undefined &&
         (session.lastActivity ?? session.firstSeen) > stall.since) return false;
-    const task = stall.facts?.kind === "unfinished-work" ? stall.facts.task : null;
-    // SSE can reassign or finish a task before the next away poll. Its old card and
-    // Mark done action expire together. A poll may also arrive before the SSE snapshot.
-    return !task || !session || (task.id === session.task?.id && hasOpenStallTask(session));
+    if (!session || stall.facts?.kind !== "unfinished-work") return true;
+    // The work named by the poll can disappear before the next poll reaches the browser.
+    const task = stall.facts.task;
+    return task ? task.id === session.task?.id && hasOpenStallTask(session) : openStallQueueCount(session) > 0;
   });
   return current.length === stalls.length ? stalls : current;
 }

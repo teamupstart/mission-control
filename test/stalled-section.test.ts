@@ -159,6 +159,11 @@ test("a cached open-task stall expires when the session changes or closes its ta
   }
 });
 
+test("a queue-only stall expires when the last open item leaves the session", () => {
+  const cached: Stall[] = [{ ...IDLE_WORK, facts: { kind: "unfinished-work", task: null, queueOpen: 1 } }];
+  assert.deepEqual(currentStalls(cached, [idleSession("s-idle")]), []);
+});
+
 test("a new activity episode retires an idle stall even if the session returns to the same task", () => {
   const session = { ...idleSession("s-idle"), lastActivity: 100 };
   const moved = { ...session, lastActivity: 200 };

@@ -160,7 +160,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = normalized(body) === "stop" ? { command: "stop" as const } : {};
+  const stop = normalized(body) === "stop" && !/\p{Quotation_Mark}/u.test(body);
+  const command = stop ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {

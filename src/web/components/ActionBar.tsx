@@ -1,3 +1,4 @@
+import { VoiceIndicator, useVoiceComposerHint } from "./VoiceIndicators.tsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { PendingMessageDelivery } from "./MessageDelivery.tsx";
@@ -144,6 +145,7 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const voiceHint = useVoiceComposerHint(session.id);
   const composerActivity = useComposerActivity(session.id);
   const releaseComposerActivity = composerActivity.release;
   const closeComposer = useCallback((): void => {
@@ -490,10 +492,11 @@ export function ActionBar({
               })}
             </div>
           )}
+          <VoiceIndicator id="composer" />
           <textarea
             ref={inputRef}
             className="compose-input"
-            placeholder="Message to send…"
+            placeholder={voiceHint ?? "Message to send…"}
             rows={1}
             autoFocus
             // Cancel and Escape only close this box - they unmount the input, so

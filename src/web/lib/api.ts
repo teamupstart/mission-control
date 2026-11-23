@@ -2,6 +2,7 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { HeardEntry } from "@shared/voice-routing.ts";
 import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
@@ -498,6 +499,7 @@ export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shippin
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+export const fetchRecentlyHeard = () => fetchJson<{ entries: HeardEntry[] }>("/api/voice/heard");
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 
@@ -2502,6 +2504,7 @@ export const api = {
   // --- Voice, behind its preview flag (404 while it is off) ---
   setVoiceConfig: (patch: VoiceConfigPatch) =>
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
+  clearRecentlyHeard: () => del("/api/voice/heard"),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   /** A 409 carries `reason` when there is no model to download. */

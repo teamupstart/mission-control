@@ -9,6 +9,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
@@ -900,6 +901,7 @@ export function App(): React.JSX.Element {
     },
     [navigate],
   );
+  const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),
     [openSettingsAnchor],
@@ -4953,6 +4955,7 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
+      <VoiceWindowProvider enabled={spokenNames} state={voice} openSetup={openVoiceSetup}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
@@ -4964,6 +4967,7 @@ export function App(): React.JSX.Element {
       >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
+        <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}
           layout={topbarLayout}
@@ -5849,12 +5853,15 @@ export function App(): React.JSX.Element {
           onShow={showLaunchFailure}
           onReport={setReportingLaunchFailure}
         />
+        <VoiceIndicator id="floating" />
+        <VoiceIndicator id="status-line" />
       </div>
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
       </VoiceRosterContext.Provider>
+      </VoiceWindowProvider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>

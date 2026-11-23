@@ -201,3 +201,14 @@ export async function startModelServer(): Promise<ModelServer> {
     },
   };
 }
+
+/** Enable the same prerequisite previews as Settings > Setup. */
+export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
+  for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"]) {
+    const response = await fetch(daemon.baseURL + "/api/feature-flags", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "flag", id, enabled: true }),
+    });
+    if (!response.ok) throw new Error(`Could not enable ${id}: ${response.status}`);
+  }
+}

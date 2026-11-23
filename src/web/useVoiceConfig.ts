@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
 import { api, fetchVoiceConfig, fetchVoiceDevices } from "./lib/api.ts";
 
-// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
+// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the dashboard shows voice, for the reason
 // `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
@@ -35,7 +35,8 @@ interface PendingEdit {
 }
 
 /**
- * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
+ * The dashboard shares one config between the registered-hotkey hints and Settings > Voice.
+ * Nothing is read or polled with the preview off.
  *
  * Edits are saved one at a time, in the order they were made. Each controls a different field,
  * and the panel allows a second edit while the first is still being saved, so answers settling in

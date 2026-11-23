@@ -372,7 +372,7 @@ export function Tooltip({
     <>
       {trigger}
       {typeof document === "undefined" ? describedBy : createPortal(describedBy, document.body)}
-      {tip &&
+      {tip && painted != null &&
         createPortal(
           <span
             ref={measure}

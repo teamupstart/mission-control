@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
+import { enableVoice } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -482,4 +483,20 @@ test("a fifth pulse segment, to read, still never stacks the bar while rungs rem
     stacked.push(`${width}px (rungs applied: "${bar.rung}")`);
   }
   expect(stacked, "the five-segment bar stacked while it still had rungs in hand").toEqual([]);
+});
+
+test("adding the voice segment keeps the busy title bar on one row", async ({ dashboard, daemon }) => {
+  await busyFleet(dashboard, daemon);
+  await enableVoice(daemon);
+  await dashboard.goto(daemon.baseURL + "/#/settings/voice");
+  await dashboard.getByRole("checkbox", { name: "Top-bar segment" }).check();
+  await expect(dashboard.locator(".pulse .pulse-seg")).toHaveCount(5);
+  await dashboard.evaluate(() => document.documentElement.classList.add("is-desktop"));
+  for (const width of [1500, 1280, 1024, 900, 760, 720]) {
+    await dashboard.setViewportSize({ width, height: 700 });
+    expect((await readBar(dashboard)).rows, `voice segment at ${width}px`).toBe(1);
+    if (width === 720 && process.env.MC_E2E_EVIDENCE) {
+      await dashboard.locator("header.topbar").screenshot({ path: artifactsDir("voice-window") + "narrow-topbar.png" });
+    }
+  }
 });

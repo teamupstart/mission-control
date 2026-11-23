@@ -26,6 +26,11 @@
   --dim: #6c5f4a;
 
   /* Session states and the tones that ride on them, in muted inks rather than screen hues. */
+  --voice-listening: #3a7334;
+  --voice-muted: #6c5f4a;
+  --voice-call: #9a5300;
+  --voice-talk: #2c5c99;
+
   --working: #2c5c99;
   --idle: #3a7334;
   --attention: #9a5300;

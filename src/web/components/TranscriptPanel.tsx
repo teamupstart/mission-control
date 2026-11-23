@@ -1,3 +1,4 @@
+import { VoiceIndicator, useVoiceComposerHint } from "./VoiceIndicators.tsx";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ComposerPauseButton, ComposerPausedBand } from "./PauseControls.tsx";
 import { usePauseConsoleControls } from "../lib/pause-controls.ts";
@@ -429,6 +430,7 @@ export function TranscriptPanel({
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
+  const voiceHint = useVoiceComposerHint(sessionId);
   const agent = session.agent;
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
@@ -1612,6 +1614,7 @@ export function TranscriptPanel({
         {pauseControls.has("composer") && <ComposerPausedBand session={session} />}
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
         <div className="compose-row">
+          <VoiceIndicator id="composer" />
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
               "mission (s) >" would replace that sentence with a prompt. The key is the
@@ -1631,13 +1634,13 @@ export function TranscriptPanel({
                 ? "No pane to send to"
                 : dialogOpen
                   ? "Waiting on a menu - pick an option above to answer it"
-                  : terminal
+                  : voiceHint ?? (terminal
                     ? // The prompt metaphor, with the keys moved out to the hint beside the
                       // box the way a shell's own footer carries them. The two BLOCKED
                       // placeholders above are deliberately identical in both renderings:
                       // they are the reason you cannot type, and that reason is the same.
                       "Send the next instruction to this process…"
-                    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)")
             }
             rows={terminal ? 1 : 2}
             disabled={!canSend || dialogOpen}

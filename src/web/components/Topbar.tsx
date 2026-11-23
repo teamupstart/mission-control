@@ -1,3 +1,4 @@
+import { VoiceIndicator } from "./VoiceIndicators.tsx";
 import type { Ref, RefObject } from "react";
 
 import { FleetPauseControl } from "./FleetPauseControl.tsx";
@@ -564,6 +565,7 @@ function FleetPulse({
         />
       )}
       {lostTasks > 0 && <LostTasksControl count={lostTasks} onOpenSitrep={onOpenLostTasks} />}
+          <VoiceIndicator id="topbar" />
     </div>
   );
 }

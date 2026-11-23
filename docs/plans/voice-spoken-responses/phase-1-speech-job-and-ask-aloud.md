@@ -7,8 +7,9 @@ plan. Owns the ask-aloud half of V14, the capture rule and stopping by a click.
 ## 1. Outcome
 
 When routing is unsure and the operator chose Ask aloud, the daemon opens a speech job, tells the
-listener to stop capture and speak, and returns capture when the listener says it has finished or
-a time limit passes. The card shows that it is asking and can stop it. Everything is proven with
+listener to stop capture and speak, and returns capture only when the listener confirms that
+playback has ended. A time limit or a stop asks the listener to stop; it never returns capture
+by itself. The card shows that it is asking and can stop it. Everything is proven with
 a fake listener that plays, so it runs on Linux CI with no audio.
 
 ## 2. Entry criteria
@@ -53,19 +54,26 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    unavailable: no listener, a listener that cannot speak the voice, no voice ready.
 3. **Speech manager.** `src/server/voice/speech.ts`: one live job at a time and a queue in
    opening order; `open(purpose, text, cardId)`; `stop(id)`; the events route's `started` and
-   `ended`; a timer per job that ends it as `timed-out` at the start limit after it became
-   `ready`, or, after `started`, at the audio length plus the end margin, or at the system
-   limit when the length is unknown. A job whose
-   card is settled before it starts is dropped. Clocks and timers are injected, as in the state
-   store.
+   `ended`; a timer per job that expires at the start limit after it became `ready`, or, after
+   `started`, at the audio length plus the end margin, or at the system limit when the length
+   is unknown. An expired timer and a stop both move the job to `stopping`, as contract L's
+   stop handshake defines: the job becomes final only on the listener's `ended`, or when a
+   hello arrives from a different listener instance. A late `started` leaves it `stopping`.
+   With no `ended` by the confirm limit the manager tells the state store the listener is not
+   answering, and the store treats it as absent until a late `ended` or a new instance. A job
+   whose card is settled while it is still `preparing` is dropped. Clocks and timers are
+   injected, as in the state store.
 4. **Voice and audio.** The manager resolves the voice with `resolveSpeechVoice`. For a neural
    voice it calls the `VoiceSynthesizer` and holds the audio in memory for the audio route until
    the job is final. A synthesizer that rejects ends the job as `failed`. This phase ships one
    that refuses, and an empty neural catalog, so only system voices can be spoken.
-5. **Directive.** Extend Phase 9's directive: `speak` carries the ready job, `capture` is false
-   while a job is `ready` or `speaking`, and a change to either ends the long poll.
+5. **Directive.** Extend Phase 9's directive: `speak` carries the ready job, or
+   `{ id, stop: true }` while the job is `stopping`. `capture` is false while a job is `ready`,
+   `speaking` or `stopping`, so it cannot return before the listener's `ended`. A change to
+   either field ends the long poll.
 6. **Utterance guard.** The utterance route ignores an utterance whose `capturedAt` falls
-   between a job becoming `ready` and its end, with the Recently heard reason `while-speaking`.
+   between a job becoming `ready` and its becoming final, with the Recently heard reason
+   `while-speaking`.
 7. **Ask aloud.** When a card becomes `unsure`, `whenUnsure` is `ask`, the mode is `listening`
    and `speech-output` is available, open one `ask` job with `askSentence` of the candidates'
    names. A null sentence opens no job. A card gets at most one ask. Muting, a pick, a cancel
@@ -76,15 +84,18 @@ As of `f34b14043`, where Phase 1 has merged as #1671:
    the capability's reason when nothing can speak. The two token routes of contract L: the
    events route, and the audio route, which serves the WAV the manager holds for a `ready` or
    `speaking` job and answers 404 for any other job.
-9. **Card.** `VoiceCardView` marks an `unsure` card whose id is the live job's `cardId` with
-   "Asking aloud" and a Stop button. A candidate row and Cancel work as before and also stop the
+9. **Card.** `VoiceCardView` marks an `unsure` card whose id is the `cardId` of a job that is
+   `ready` or `speaking` with "Asking aloud" and a Stop button. The mark goes as soon as the job
+   is `stopping`. A candidate row and Cancel work as before and also stop the
    speech.
 10. **Setting.** In the "When routing is unsure" row the Ask aloud choice is disabled, with the
     capability's reason as its description, while `speech-output` is unavailable. A stored `ask`
     is kept and behaves as `show` until speech is available.
-11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`. Its hello says it can play and lists
-    one system voice, so a voice resolves in this phase, where no neural voice exists. It has
-    options to delay or withhold `started` and `ended`.
+11. **Fixture.** `beSpeaker` in `e2e/fixtures/voice.ts`. Its hello says it can play, lists one
+    system voice, so a voice resolves in this phase, where no neural voice exists, and carries
+    an instance id. It answers a stop request with `ended`, as a listener must. It has options
+    to delay `started`, to keep playing past the limit until told to end, to ignore a stop
+    request altogether, and to come back as a new instance.
 12. **Docs.** `docs/voice.md`: how ask aloud works, the capture rule, the limits, what stops
     speech.
 
@@ -100,24 +111,42 @@ runs.
   rule for each catalog; the job's state transitions; each time limit with an injected clock;
   the queue; a dropped job; stop before and after `started`; an ask does not start while muted
   and an audition does.
-- `test/voice-speech-http.test.ts`: the directive shows `capture` false and `speak` while a job
-  is live and returns to true after `ended`; a late `ended` for a timed-out job is ignored; an
-  utterance captured during the job is refused with `while-speaking`; the audition route's 409;
+- `test/voice-speech-http.test.ts`, the ordering the S9 rule needs, with a fake listener and an
+  injected clock:
+  a listener that keeps playing past the end limit: at the limit the job is `stopping`, the
+  directive reads `{ id, stop: true }` with `capture` false, and an utterance posted then is
+  refused with `while-speaking`; `capture` turns true only after the listener posts `ended`,
+  and the job ends `timed-out`;
+  a late start: `started` arriving after the start limit leaves the job `stopping` and
+  `capture` false until `ended`;
+  a stop request for a job the listener never received is answered with `ended` and ends it;
+  a listener that ignores the stop: at the confirm limit the mode is `unavailable` with the
+  `listener` reason and its sentence, `capture` is still false, and a hello from a new instance
+  ends the job as `failed` and lets `capture` return;
+  a click on Stop follows the same order;
+  the next queued job does not start until the one before it is final.
+- The same file: the directive shows `capture` false and `speak` while a job is live and returns
+  to true after `ended`; an utterance captured during the job is refused with `while-speaking`;
+  the audition route's 409;
   the audio route serves a held job's WAV from a fake synthesizer and answers 404 once the job
   is final.
 - `test/voice-state.test.ts`: `speech-output` for each reason; a shell's claim is dropped.
 - `renderToStaticMarkup` tests for the asking mark.
 - `e2e/specs/voice-ask-aloud.spec.ts`, with `beSpeaker`: an unsure card reads "Asking aloud",
-  and the mark goes when the fixture reports `ended`; Stop ends it at once; with the fixture
-  withholding `ended` the mark goes at the limit and a following sentence routes; with no
-  speaker the Ask aloud choice is disabled and says why.
+  and the mark goes when the fixture reports `ended`; Stop removes the mark at once; with the
+  fixture still playing past the limit the mark goes at the limit, a sentence said then is
+  listed in Recently heard as heard while speaking and does not route, and a sentence said
+  after the fixture reports `ended` routes; with no speaker the Ask aloud choice is disabled
+  and says why.
 - Run `npm run typecheck`, `npm run lint`, `npm run build` and the tests and spec above.
 
 ## 8. Merge and exit criteria
 
-With a fake listener that plays, one question is asked per unsure card, capture is off for
-exactly the life of the job, and a silent listener cannot hold capture off past the limit. With
-no listener that can play, the card behaves as it did before this phase.
+With a fake listener that plays, one question is asked per unsure card, and capture is off from
+the moment the job is handed over until the listener confirms it has ended. No limit, stop or
+late start returns capture before that confirmation. A listener that never confirms leaves voice
+not listening with the reason shown, and a new listener instance restores it. With no listener
+that can play, the card behaves as it did before this phase.
 
 ## 9. Downstream handoff
 
@@ -135,3 +164,6 @@ and fetches audio from this phase's audio route. Speech 4 writes
 - After Speech 3: the hotkey tap calls this phase's stop route.
 - Completion review: the audio route is owned here and nowhere else, so Speech 3 can fetch
   audio without waiting for Speech 2.
+- Plan validation round 1: a limit used to clear `speak` and let capture resume while the
+  listener might still be playing. It now only requests a stop, and capture waits for the
+  listener's `ended` or its replacement. Steps 3 and 5, the fixture and the tests changed.

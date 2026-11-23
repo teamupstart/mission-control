@@ -212,17 +212,30 @@ helper synthesizes, and the listener plays.
 3. The daemon's directive to the listener changes: `capture` is false and `speak` names the job.
 4. The listener stops capture, plays the audio (or speaks the text with the system voice),
    and posts `started` and then `ended` with how it ended: finished, stopped or failed.
-5. On `ended` the daemon clears `speak`, and `capture` returns to what the mode says. The
-   listener restarts capture with a fresh segment and replays nothing it buffered, as S9 chose.
+5. On `ended`, and only then, the daemon clears `speak`, and `capture` returns to what the mode
+   says. The listener restarts capture with a fresh segment and replays nothing it buffered, as
+   S9 chose.
 6. The card stays on screen throughout, marked as asking. The answer is a candidate's name by
    voice once speech has ended, or a click at any time.
 
 ### Rules that keep capture correct
 
-- **A time limit on every job.** With no `started` within 2 seconds of the job being ready, or
-  no `ended` after `started` within the audio's length plus 1.5 seconds (10 seconds for a system
-  voice, whose length is unknown), the daemon ends the job as timed out and clears `speak`. Capture resumes. Silence is the failure
-  mode, never a stuck microphone.
+- **Capture stays off until the listener confirms playback has stopped.** The daemon never
+  resumes capture on its own clock. The only thing that ends a job the listener has been given
+  is the listener's `ended` report, or that listener process being replaced.
+- **A time limit turns into a stop request, not into capture.** With no `started` within
+  2 seconds of the job being ready, or no `ended` after `started` within the audio's length plus
+  1.5 seconds (10 seconds for a system voice, whose length is unknown), the daemon stops asking
+  on screen and tells the listener, through the directive, to stop that job. The listener stops
+  playback if it is playing, does not start if it has not started, and reports `ended` either
+  way, even for a job it never received. Capture stays off until that report. A `started` that
+  arrives after the limit changes nothing: the job is still being stopped.
+- **A listener that does not confirm is treated as gone.** With no `ended` within 5 seconds of
+  a stop request, voice reads as not listening, with the reason that the listener did not
+  confirm speech had stopped, and capture stays off. It returns when that listener confirms
+  late, or when a new listener process says hello, because the old process and any sound it was
+  making are gone. On a Mac the shell restarts the listener when this happens. The failure
+  mode is not listening with the reason shown, never capture during playback.
 - **An utterance captured during speech is discarded.** The utterance route ignores one
   captured while a job was live, and Recently heard lists the reason. This is a second guard
   behind the listener's own pause.
@@ -238,7 +251,9 @@ helper synthesizes, and the listener plays.
 A click on the card's Stop control, on a candidate row or on Cancel stops the job. So does
 muting. A tap of the mute hotkey while a job is live stops the speech and does not toggle mute;
 with no job live the tap toggles mute as Phase 11 defines. A stop reaches the listener through
-the directive, and the listener reports `ended` as stopped.
+the directive as a stop request, and the listener reports `ended` as stopped. The card stops
+showing that it is asking at once. Capture stays off until that report arrives, by the same
+rule as a time limit.
 
 ### When nothing can speak
 
@@ -258,9 +273,14 @@ none to disk. It is not started for a system voice. It touches no database.
 
 ### What the listener gains
 
-- The directive (contract I) gains `speak`: null, an audio job, or a system-voice job.
+- The directive (contract I) gains `speak`: null, an audio job, a system-voice job, or a
+  request to stop a job.
 - The hello (contract B) gains an optional `speech` part: whether the listener can play audio,
-  and on macOS the installed English system voices with their quality tier.
+  on macOS the installed English system voices with their quality tier, and an instance id that
+  changes each time the listener process starts.
+- The listener never opens the microphone while it is playing or holds a job it has not ended,
+  whatever the directive's `capture` says. This is a second guard, in the process that owns
+  both the microphone and the playback.
 - The macOS helper plays audio with `AVAudioPlayerNode` and speaks system voices with
   `AVSpeechSynthesizer`. Both are in the operating system, so the helper gains no dependency.
 - The sherpa-onnx listener (Phase 16) gains nothing in this plan. The Linux follow-on adds its
@@ -331,8 +351,9 @@ Spoken replies
 - **The "When routing is unsure" setting.** `whenUnsure` keeps its two values and its storage.
   Ask aloud is enabled when `speech-output` is available, as Phase 12 step 6 said. In a browser
   with no shell it now works whenever a listener that can play is running.
-- **The shell report.** No new field. The shell stops reporting `speech-output`. The shell's
-  one new duty is to call the stop route on a hotkey tap while a job is live.
+- **The shell report.** No new field. The shell stops reporting `speech-output`. The shell
+  gains two duties: to call the stop route on a hotkey tap while a job is live, and to restart
+  a listener that the daemon reports did not confirm speech had stopped.
 - **Contracts.** A gains `speech`. B gains the hello's `speech` part and the speech state. H
   gains a speech model entry. I gains `speak`. A new contract L fixes the speech job, its
   states and its routes. A and B are merged and the others are not. Each change is an addition
@@ -378,9 +399,9 @@ The work is phased in `phased-plan.md`, with one file per phase beside it.
 
 | Phase | Delivers | Depends on |
 | --- | --- | --- |
-| Speech 1 | Contract L, the `speech` config field, the speech job and its time limits, the capture rules, the audio, events, stop and audition routes, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
+| Speech 1 | Contract L, the `speech` config field, the speech job, its time limits and the stop handshake, the capture rules, the audio, events, stop and audition routes, the `speak` directive, ask aloud on an `unsure` card, a fake listener that plays for tests, the card's asking mark | 6, 9 |
 | Speech 2 | The speech model entry and its download routes, the synthesizer helper, attribution, a Linux CI synthesis test | 8, 16, Speech 1 |
-| Speech 3 | The macOS listener plays audio and system voices, lists system voices in its hello, and the hotkey tap stops speech. A leak check on a Mac with the new playback path | 10, 11, Speech 1 |
+| Speech 3 | The macOS listener plays audio and system voices, confirms every stop, lists system voices in its hello, and the hotkey tap stops speech. The shell restarts a listener that does not confirm. A leak check on a Mac with the new playback path | 10, 11, Speech 1 |
 | Speech 4 | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 |
 
 ## Adopted decisions
@@ -400,7 +421,8 @@ The operator decided these on 2026-11-23, on the review of this plan's first rev
 | After this plan | Phase and schedule the work | Stop after the plan |
 
 Defaults adopted without a question: the helper's 10 minute idle exit; the 2 second and
-1.5 second limits; a hotkey tap stops speech without muting; system-voice audio is never cached
+1.5 second limits and the 5 second wait for a listener to confirm a stop; a hotkey tap stops
+speech without muting; system-voice audio is never cached
 or written to a file, which Apple's licence forbids.
 
 ## Unknowns

@@ -77,9 +77,9 @@ Node helper, the Swift listener, the shell and the dashboard. Four phases:
 
 | Phase | File | Delivers | Depends on | Runs on | Est. lines |
 | --- | --- | --- | --- | --- | --- |
-| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, the audio, events, stop and audition routes, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
+| Speech 1 | `phase-1-speech-job-and-ask-aloud.md` | Contract L, the `speech` config field, the speech job, capture rules, the stop handshake, the audio, events, stop and audition routes, ask aloud, the asking mark, the setting rule, a fake listener that plays | Phase 6, Phase 9 | Opus | 500 to 650 |
 | Speech 2 | `phase-2-mission-control-voices.md` | The speech model entry and its download routes, the synthesizer helper, attribution, the Linux CI synthesis test | Phase 8, Phase 16, Speech 1 | Astra | 450 to 600 |
-| Speech 3 | `phase-3-macos-listener-playback.md` | The macOS listener plays audio and system voices and lists them; the hotkey tap stops speech; the leak check | Phase 10, Phase 11, Speech 1 | Astra | 350 to 500 |
+| Speech 3 | `phase-3-macos-listener-playback.md` | The macOS listener plays audio and system voices, confirms every stop and lists the voices; the hotkey tap stops speech; the shell restarts a listener that does not confirm; the leak check | Phase 10, Phase 11, Speech 1 | Astra | 350 to 500 |
 | Speech 4 | `phase-4-voice-picker.md` | The picker, the Play sample button, the download row, the unavailable states, docs | Speech 2, Speech 3 | Opus | 400 to 550 |
 
 "Opus" is Claude Opus 5.5 at extra-high effort, for a phase with a dashboard part. "Astra" is
@@ -148,8 +148,9 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
 - `VOICE_SPEECH_DEFAULT_NEURAL`: `supertonic-3/F4`.
 - `askSentence(names)`: "A or B?" for two names, "A, B or C?" for three, null otherwise.
 - `VoiceSpeechJob { id, purpose, text, voice, cardId, state, durationMs }`. `purpose` is `ask`
-  or `audition`. States: `preparing`, `ready`, `speaking`, `finished`, `stopped`, `failed`,
-  `timed-out`. The last four are final.
+  or `audition`. States: `preparing`, `ready`, `speaking`, `stopping`, `finished`, `stopped`,
+  `failed`, `timed-out`. The last four are final. `stopping` means the daemon has asked the
+  listener to stop the job and is waiting for its `ended`.
 - `VoiceState.speech { voice, reason, job, catalog, model }`: the resolved voice or the reason
   there is none, the live job's `{ id, purpose, state, cardId }` or null, the catalog, and the
   speech model's `VoiceModelState` (`missing` until Speech 2). It travels in the existing
@@ -160,12 +161,30 @@ Names are fixed here. A phase file refers to a contract by its letter and does n
   `ask` job also needs the mode `listening`; an `audition` job does not.
 - Limits: `VOICE_SPEECH_START_LIMIT_MS` 2000, counted from the job becoming `ready`;
   `VOICE_SPEECH_END_MARGIN_MS` 1500, added to the audio's length and counted from `started`;
-  `VOICE_SPEECH_SYSTEM_LIMIT_MS` 10000, counted from `started`, for a system voice.
-- The hello (contract B) gains optional `speech { audio, systemVoices }`. `audio` says the
-  listener can play an audio job. A system voice is `{ id, name, language, quality }` with
-  quality `premium`, `enhanced` or `default`.
-- The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`, or
-  `{ id, kind: "system", voiceId, text }`. While `speak` is set, `capture` is false.
+  `VOICE_SPEECH_SYSTEM_LIMIT_MS` 10000, counted from `started`, for a system voice;
+  `VOICE_SPEECH_CONFIRM_LIMIT_MS` 5000, counted from a stop request.
+- The stop handshake. A job the directive has named ends only when the listener posts `ended`
+  for it, or when that listener is replaced. A stop (a click, the hotkey, muting, a settled
+  card) or an expired limit moves the job to `stopping`: the directive's `speak` becomes
+  `{ id, stop: true }` and `capture` stays false. The listener stops playback or does not start
+  it, and posts `ended` as `stopped`, also for an id it never received. On that `ended` the job
+  becomes `stopped` or, when a limit caused it, `timed-out`; `speak` clears and `capture`
+  follows the mode. A `started` for a `stopping` job is recorded and changes nothing. With no
+  `ended` by the confirm limit, the daemon treats the listener as absent: the `listener` reason
+  holds, the `listener` capability carries "the listener did not confirm that speech had
+  stopped", and capture stays false. A late `ended` from the same listener, or a hello whose
+  `speech.instance` differs from the one that was given the job, ends the job (`failed` in the
+  second case) and lifts the condition. A job still `preparing` has not been named by the
+  directive and ends at once.
+- The hello (contract B) gains optional `speech { audio, systemVoices, instance }`. `audio`
+  says the listener can play an audio job. A system voice is `{ id, name, language, quality }`
+  with quality `premium`, `enhanced` or `default`. `instance` is a random id the listener
+  chooses when its process starts.
+- The directive (contract I) gains `speak`: null, `{ id, kind: "audio", durationMs }`,
+  `{ id, kind: "system", voiceId, text }`, or `{ id, stop: true }`. While `speak` is set,
+  `capture` is false.
+- The listener's own rule: it does not open the microphone while it is playing or holds a job
+  it has not ended, whatever `capture` says.
 - Token routes, both built by Speech 1: `GET /voice/speech/jobs/:id/audio`, which serves the
   WAV the daemon holds for a `ready` or `speaking` job, and `POST
   /voice/speech/jobs/:id/events { type, outcome }`, where `type` is `started` or `ended` and
@@ -195,7 +214,7 @@ voice plan.
 | Requirement | Owner |
 | --- | --- |
 | V14, the ask-aloud half: one spoken question per unsure card, answered by a name or a click | Speech 1 |
-| Capture is stopped before playback and restarted after real completion (S9) | Speech 1 (the rule and its limits), Speech 3 (the macOS listener and the leak check) |
+| Capture is stopped before playback and restarted after real completion (S9), including when a limit expires or speech is stopped | Speech 1 (the rule, its limits and the stop handshake), Speech 3 (the macOS listener, its confirmation of every stop, and the leak check) |
 | The hotkey or a click cuts speech off | Speech 1 (click and route), Speech 3 (hotkey) |
 | A better voice on macOS and Linux, downloaded on demand, pinned and verified | Speech 2 |
 | macOS system voices, Enhanced and Premium included | Speech 3 |
@@ -205,8 +224,9 @@ voice plan.
 
 ## Not scheduled here
 
-- **Playback on Linux.** The Linux follow-on plan adds it to the sherpa-onnx listener and
-  verifies it on a Linux desktop. Until then `speech-output` reads unavailable on Linux with the
+- **Playback on Linux.** The Linux follow-on plan adds it to the sherpa-onnx listener, with
+  the same stop handshake and the restart of a listener that does not confirm, and verifies it
+  on a Linux desktop. Until then `speech-output` reads unavailable on Linux with the
   reason "this listener cannot play speech", and the card is used.
 - **Playback in the sherpa-onnx listener on macOS.** Same work, same owner. With `backend` set
   to `sherpa-onnx` on a Mac, ask aloud uses the card.
@@ -237,10 +257,32 @@ spoken. With the `voice` flag off, specs that predate this work pass unchanged.
   model, a loudspeaker or macOS.
 - The default voice, the limits and the route names read the same in `plan.md`, this file and
   each phase file.
+- After plan validation round 1: no path in `plan.md`, contract L, Speech 1 or Speech 3 lets
+  capture return before the listener's `ended` or its replacement. The 2 second, 1.5 second,
+  10 second and 5 second limits read the same in each.
 - After the completion review: the audio route has one owner, Speech 1, in the phase table,
   contract L and the Speech 1 file, so Speech 3 does not wait for Speech 2. The download starts
   when a Mission Control voice is chosen or Download is pressed, in `plan.md`, contract M and
   the Speech 4 file.
+
+## Plan validation round 1
+
+One finding was accepted and applied across the bundle.
+
+- **Capture resumed on a timeout before playback was known to have stopped.** The plan had the
+  daemon end a job at a limit, clear `speak` and let capture resume, while the listener might
+  still be playing, or might start a job it had already received. That broke the spike's S9
+  rule. A limit, like a click, now only asks the listener to stop. Capture stays off until the
+  listener posts `ended` for the job, or until that listener process is replaced. A late
+  `started` changes nothing. A listener that does not confirm within 5 seconds is treated as
+  absent, so voice reads as not listening instead of capturing, and on a Mac the shell restarts
+  it. The listener also refuses, on its own, to open the microphone while it is playing.
+  Contract L gained the `stopping` state, the stop form of `speak`, the confirm limit and the
+  hello's `instance`. `plan.md`, Speech 1 and Speech 3 say the same, and Speech 1's tests now
+  drive a fake listener that keeps playing past the limit and one that starts late.
+
+This replaces an earlier default, "silence is the failure mode, never a stuck microphone". The
+cost is stated: a listener that never confirms leaves voice not listening until it is replaced.
 
 ## Completion review
 

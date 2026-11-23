@@ -22,6 +22,9 @@ import type {
 import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
 import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { formatBytes } from "@shared/format-bytes.ts";
+import type { VoiceModelState, VoiceState } from "@shared/voice.ts";
+import { voiceModelSetupStatus } from "@shared/voice-models.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
@@ -613,10 +616,141 @@ function FeatureFlagsRemedy({
   );
 }
 
-function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element {
+/**
+ * The voice state from the event stream, so the speech model's row follows a download as it runs
+ * instead of waiting for a Re-check. Null outside Settings or before the first snapshot.
+ */
+const SetupVoiceContext = createContext<VoiceState | null>(null);
+
+/** "45 s left", "3 min left". */
+function timeLeft(seconds: number): string {
+  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} s left`;
+  return `${Math.round(seconds / 60)} min left`;
+}
+
+export function voiceModelProgressText(model: Pick<VoiceModelState, "status" | "doneBytes" | "totalBytes" | "bytesPerSecond">): string {
+  const amount = `${formatBytes(model.doneBytes)} of ${formatBytes(model.totalBytes)}`;
+  if (model.status === "verifying") return `Checked ${amount}`;
+  if (model.bytesPerSecond === null || model.bytesPerSecond <= 0) return amount;
+  const left = Math.max(0, model.totalBytes - model.doneBytes) / model.bytesPerSecond;
+  return `${amount} · ${formatBytes(model.bytesPerSecond)}/s · ${timeLeft(left)}`;
+}
+
+/**
+ * The daemon owns the download; this draws `VoiceState.model` as the event stream delivers it, so
+ * every window shows the same bar.
+ */
+function VoiceModelRemedy({ label, note }: { label: string; note: string }): React.JSX.Element | null {
+  const voice = useContext(SetupVoiceContext);
+  const model = voice?.model ?? null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function start(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.startVoiceModelDownload();
+      if (!result.ok) setError(result.reason ?? result.error ?? "The download could not start.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function cancel(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.cancelVoiceModelDownload();
+      if (!result.ok) setError(result.error ?? "The download could not be cancelled.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Nothing to download for this backend: the row's sentence says so, and a button would fail.
+  if (model && model.status === "missing" && model.revision === null) return null;
+  const notice = error && <RemedyNotice tone="error" detail={error} hint="Press Re-check, then try again." />;
+  if (model && (model.status === "downloading" || model.status === "verifying")) {
+    const downloading = model.status === "downloading";
+    const percent = model.totalBytes > 0 ? Math.min(100, Math.floor((model.doneBytes / model.totalBytes) * 100)) : 0;
+    const figures = voiceModelProgressText(model);
+    return (
+      <div className="setup-remedy-actions voice-model-progress">
+        <div
+          className="app-banner-progress"
+          role="progressbar"
+          aria-label={downloading ? "Downloading the speech model" : "Checking the speech model"}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          aria-valuetext={figures}
+        >
+          <span className="app-banner-progress-fill" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="voice-model-progress-line">
+          <span className="voice-model-figures">{figures}</span>
+          {downloading && (
+            <Tooltip label="Stop the download and delete what it has written">
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void cancel()}>Cancel</button>
+            </Tooltip>
+          )}
+        </div>
+        {notice}
+      </div>
+    );
+  }
+  const failed = model?.status === "failed";
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void start()}>
+            {failed ? "Retry" : label}
+          </button>
+        </Tooltip>
+        {model && model.totalBytes > 0 && (
+          <span className="voice-model-figures">{formatBytes(model.totalBytes)} from Hugging Face</span>
+        )}
+      </div>
+      {notice}
+    </div>
+  );
+}
+
+/**
+ * Microphone access. Nothing in the dashboard can grant it: macOS asks when voice first listens,
+ * and a denial is undone in System Settings. Check again re-reads what the listener or the desktop
+ * app last reported.
+ */
+function MicrophoneRemedy({ label, note, onRepaired }: { label: string; note: string; onRepaired(): void }): React.JSX.Element {
+  return (
+    <div className="setup-remedy-actions">
+      <p className="setup-remedy-note">{note}</p>
+      <div className="setup-run-controls">
+        <Tooltip label="Read the microphone permission again">
+          <button type="button" className="btn btn-ghost" onClick={onRepaired}>{label}</button>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
+/** The pill a row reads while the live state is mid-way through something the snapshot cannot say. */
+function liveStatusLabel(row: SetupRowView, voice: VoiceState | null): string | null {
+  if (row.remedy.kind !== "voice-model-download" || !voice) return null;
+  if (voice.model.status === "downloading") return "Downloading";
+  if (voice.model.status === "verifying") return "Verifying";
+  return null;
+}
+
+function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element | null {
   const remedy = row.remedy;
   if (remedy.kind === "feature-flags") {
     return <FeatureFlagsRemedy flags={remedy.flags} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+  }
+  if (remedy.kind === "voice-model-download") {
+    return <VoiceModelRemedy label={remedy.label} note={remedy.note} />;
+  }
+  if (remedy.kind === "microphone-access") {
+    return <MicrophoneRemedy label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
   }
   if (remedy.kind === "service") {
     return (
@@ -847,6 +981,7 @@ function SetupRow({
 }): React.JSX.Element {
   const status = row.status;
   const satisfied = status.state === "satisfied";
+  const liveLabel = liveStatusLabel(row, useContext(SetupVoiceContext));
   const main = (
     <div className="setup-row-main">
       <div className="setup-row-title">
@@ -865,7 +1000,7 @@ function SetupRow({
             worth repeating on a row that is already fine - "recommended" on ten healthy
             rows describes a decision made long ago and says nothing about now. */}
         {!satisfied && (
-          <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
+          <span className={`setup-status setup-status-${status.state}`}>{liveLabel ?? STATUS_LABEL[status.state]}</span>
         )}
         {(!satisfied || row.requirement === "required") && (
           <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
@@ -1120,10 +1255,13 @@ function VerdictHeader({
 
 export function SetupPanel({
   state,
+  voice = null,
   jumpAnchor = null,
   jumpRequestId = null,
 }: {
   state: SetupChecksState;
+  /** `MissionState.voice`, which the Voice family's speech model row follows live. */
+  voice?: VoiceState | null;
   /** A deep link asking for one row or one family. See `familyForAnchor`. */
   jumpAnchor?: string | null;
   jumpRequestId?: number | null;
@@ -1157,10 +1295,16 @@ export function SetupPanel({
   // until the re-read lands. The live flag wins: those rows leave the rail, the pane and the
   // verdict's counts at once, so no repair button outlives the feature it repairs.
   const readRows = state.view?.rows ?? NO_ROWS;
+  // The speech model's row reads the live model state over the snapshot's: a download runs for
+  // minutes, and the bar, the rail's count and the verdict should all move with it, in every
+  // window, rather than at the next Re-check. The daemon's probe gives the same reading.
+  const liveModel = voice && voice.mode !== "off" && voice.model.backend !== null ? voice.model : null;
   const rows = useMemo(() => {
     const shown = readRows.filter((row) => setupFamilyFlagOn(row.family, flagOn));
-    return shown.length === readRows.length ? readRows : shown;
-  }, [readRows, flagOn]);
+    const flagged = shown.length === readRows.length ? readRows : shown;
+    if (!liveModel) return flagged;
+    return flagged.map((row) => (row.remedy.kind === "voice-model-download" ? { ...row, status: voiceModelSetupStatus(liveModel) } : row));
+  }, [readRows, flagOn, liveModel]);
   const home = state.view?.home ?? "";
   const families = useMemo(() => visibleSetupFamilyIds(rows, undefined, flagOn), [rows, flagOn]);
 
@@ -1214,6 +1358,7 @@ export function SetupPanel({
   const repoIndex = useRepoIndex(active === "repositories");
 
   return (
+    <SetupVoiceContext.Provider value={voice}>
     <SetupTerminalTargetsContext.Provider value={terminalTargets}>
     <section className="settings-section setup-panel">
       {/* No standing intro paragraph. It spent the top of the panel restating the question
@@ -1349,5 +1494,6 @@ export function SetupPanel({
       </div>
     </section>
     </SetupTerminalTargetsContext.Provider>
+    </SetupVoiceContext.Provider>
   );
 }

@@ -43,8 +43,8 @@ For isolated validation, set `PI_CODING_AGENT_DIR` to a disposable directory bef
 If UMT is already installed, `umt artifacts --tools npm` is an alternative authentication
 setup; do not combine its persistent npm config with the temporary override above. See the
 [Pi package consumer instructions](https://github.com/nigel-upstart/pi-buildout/blob/main/packages/README.md#consumer-setup-read-only).
-The package enables logs, traces and metrics by default, including full prompt and tool content,
-and sends them to `https://corp-otel-staging-1.upstart.com` using OTLP HTTP/protobuf. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
+The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
+all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
 overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
 However, the gateway fails open silently.
 

@@ -6,7 +6,8 @@ The flag core stores one set of operator choices for this machine. The registry 
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
-[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`) and
+[Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
+[Work unit id](work-units.md#the-launch-environment) (`work-unit-id`) and
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
@@ -168,6 +169,7 @@ gates, not by resolving an unknown id as on.
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the session's Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
+| `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, and its launch record, which the session detail's "work unit" row shows. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `inbox` | preview | The one naming rule on alert titles, inbox row headers, the review modal header and question cards. Agent reports and Stuck rows join it in later releases | [Attention inbox](attention-and-alerts.md#one-name-for-an-agent) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fsPromises from "node:fs/promises";
@@ -83,5 +83,28 @@ test("a short name on a stalled mount with no scan held is refused with the reas
     process.env.MISSION_WORKSPACE_DIRS = previous;
     t.mock.restoreAll();
     syncBuiltinESMExports();
+  }
+});
+
+test("a short name whose checkout git did not answer for is refused as unanswered, not as missing", async () => {
+  invalidateReposCache();
+  const repo = cloneInto("probe-stopped");
+  assert.ok((await listRepos({ fresh: true })).includes(repo));
+
+  const bin = join(home, "bin-dies", "git");
+  mkdirSync(join(home, "bin-dies"), { recursive: true });
+  writeFileSync(bin, '#!/usr/bin/env node\nprocess.kill(process.pid, "SIGKILL");\n');
+  chmodSync(bin, 0o755);
+  const previous = process.env.MISSION_GIT_BIN;
+  process.env.MISSION_GIT_BIN = bin;
+  try {
+    const result = await resolveTaskRepositorySelector("probe-stopped");
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? 0 : result.status, 409);
+    assert.doesNotMatch(result.ok ? "" : result.error, /no local repository named/);
+    assert.match(result.ok ? "" : result.error, /could not tell whether .*probe-stopped is a git repository/);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = previous;
   }
 });

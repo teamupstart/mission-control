@@ -652,7 +652,9 @@ export async function resolveRepoPath(
 }
 
 /** A resolved repo root a task may be filed against, or the sentence refusing it. */
-export type TaskRepoRoot = { ok: true; repoRoot: string } | { ok: false; error: string };
+export type TaskRepoRoot =
+  | { ok: true; repoRoot: string }
+  | { ok: false; error: string; unanswered?: true };
 
 /**
  * Resolve a repo root for a task, and refuse one that is not a repo's main checkout.
@@ -755,6 +757,7 @@ export async function resolveTaskRepoRoot(p: string): Promise<TaskRepoRoot> {
   if (probed.kind === "unanswered") {
     return {
       ok: false,
+      unanswered: true,
       error:
         `could not tell whether ${p} is a git repository: \`${probed.command}\` was stopped ` +
         `before it answered (it is allowed ${REPO_ROOT_TIMEOUT_MS / 1000}s). Try again.`,

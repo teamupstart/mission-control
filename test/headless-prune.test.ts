@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { headlessTranscriptDir, pruneHeadlessTranscripts } from "../src/server/goal/prune.ts";
 import { HEADLESS_CWD } from "../src/server/claude-cli.ts";
+import { claudeProjectDir } from "../src/server/harness/claude/project-dir.ts";
 
 // This module DELETES files, so the tests are about what it must never touch at least as much
 // as about what it removes.
@@ -36,7 +37,8 @@ test("the headless dir is derived from the REAL path of the cwd our runs spawn i
   // not exist, so the sweep silently removes nothing forever. Verified against a real
   // `claude -p`: it wrote to the `-private-` form.
   const dir = headlessTranscriptDir("/projects");
-  assert.equal(dir, join("/projects", realpathSync(HEADLESS_CWD).replace(/[^a-zA-Z0-9]/g, "-")));
+  // Through the shared encoder so a cwd past Claude's 200-character cut is expected cut too.
+  assert.equal(dir, claudeProjectDir(realpathSync(HEADLESS_CWD), "/projects"));
   assert.doesNotMatch(dir, /[/.]$/);
 
   // Pin the symlink resolution itself where the platform actually has one, rather than only
@@ -44,7 +46,7 @@ test("the headless dir is derived from the REAL path of the cwd our runs spawn i
   if (realpathSync(HEADLESS_CWD) !== HEADLESS_CWD) {
     assert.notEqual(
       dir,
-      join("/projects", HEADLESS_CWD.replace(/[^a-zA-Z0-9]/g, "-")),
+      claudeProjectDir(HEADLESS_CWD, "/projects"),
       "derived from the unresolved path - this sweep would be a silent no-op",
     );
   }

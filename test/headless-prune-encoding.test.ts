@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 // What the sweep deletes once the headless dir is encoded the way Claude encodes it.
 //
@@ -45,7 +45,7 @@ test("one sweep removes exactly the old transcript in Claude's encoded directory
   const realCwd = realpathSync(HEADLESS_CWD);
   const swept = headlessTranscriptDir();
   assert.equal(swept, claudeProjectDir(realCwd));
-  assert.doesNotMatch(swept, /[_+ ]/, "the encoded name kept a character Claude replaces");
+  assert.doesNotMatch(basename(swept), /[_+ ]/, "the encoded name kept a character Claude replaces");
 
   const old = seed(swept, "old.jsonl", 3 * DAY);
   const fresh = seed(swept, "fresh.jsonl", 60_000);

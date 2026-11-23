@@ -44,12 +44,16 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
     };
   }
   const candidates = new Set<string>();
+  let unanswered: string | null = null;
   for (const match of matches) {
     const resolved = await resolveTaskRepoRoot(match);
     if (resolved.ok) candidates.add(resolved.repoRoot);
+    else if (resolved.unanswered) unanswered ??= resolved.error;
   }
   const canonical = [...candidates].sort();
   if (canonical.length === 0) {
+    // A checkout by that name exists; git just did not answer for it, so it is not "no such repository".
+    if (unanswered) return { ok: false, status: 409, error: unanswered };
     return {
       ok: false,
       status: 400,

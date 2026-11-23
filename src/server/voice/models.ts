@@ -331,15 +331,19 @@ export class VoiceModelManager {
       await this.markReady(backend, manifest, dir, signal);
     }, (error) => {
       this.set({ ...base, status: "failed", error: errorText(error) });
-    }, async (reason) => {
+    }, async (reason, current) => {
       // The operator's Cancel removes the revision: none of it verified as a whole, and a
       // download stopped on purpose leaves nothing behind. Superseded work keeps the files it
       // completed, each already checked, so the next Download resumes rather than starts over.
-      if (reason === "cancel") {
-        await rm(dir, { recursive: true, force: true });
-        this.target = null;
-        this.check();
-      }
+      if (reason !== "cancel") return;
+      await rm(dir, { recursive: true, force: true });
+      // The files go either way, but the disk is read again only while this is still the
+      // manager's job and voice is on. A flag switched off or a backend changed during the
+      // removal has already set the state, and a re-read here would overwrite it (or restart the
+      // verification `sync` just began).
+      if (!current() || !this.deps.active()) return;
+      this.target = null;
+      this.check();
     });
   }
 
@@ -466,7 +470,8 @@ export class VoiceModelManager {
 
   /**
    * Run one job at a time. A job that was stopped publishes nothing of its own; `onStopped` runs
-   * after its work has unwound, so a Cancel can remove files no write is still holding.
+   * after its work has unwound, so a Cancel can remove files no write is still holding, and its
+   * `current()` says whether the manager has since moved on to another job or none.
    */
   private run(
     kind: Job["kind"],
@@ -474,7 +479,7 @@ export class VoiceModelManager {
     revision: string,
     work: (signal: AbortSignal) => Promise<void>,
     onError: (error: unknown) => void,
-    onStopped?: (reason: StopReason) => Promise<void>,
+    onStopped?: (reason: StopReason, current: () => boolean) => Promise<void>,
   ): void {
     const controller = new AbortController();
     const job: Job = { kind, backend, revision, controller, done: Promise.resolve() };
@@ -485,7 +490,7 @@ export class VoiceModelManager {
       } catch (error) {
         const stopped = stopReasonOf(controller.signal);
         if (stopped) {
-          try { await onStopped?.(stopped); }
+          try { await onStopped?.(stopped, () => this.job === job); }
           catch (cleanup) { console.warn("[voice] could not clean up a stopped model download:", errorText(cleanup)); }
         } else if (this.job === job) {
           onError(error);

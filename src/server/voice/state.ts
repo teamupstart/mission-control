@@ -57,6 +57,7 @@ export class VoiceStateStore {
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
    * allows the microphone does not change because a listener stopped, and the Setup row reads it.
+   * See `microphoneReading` for how a lapsed denial gives way.
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
@@ -103,16 +104,24 @@ export class VoiceStateStore {
   }
 
   /**
-   * The microphone permission the `voice-microphone` Setup row reports: the latest reading from a
-   * listener's hello or the shell's report, except that a denial from either wins, as it does for
-   * the `microphone` reason. Null until one of them has said anything.
+   * The microphone permission the `voice-microphone` Setup row reports. A live denial from either
+   * source wins, as it does for the `microphone` reason. Otherwise the newest reading counts, so
+   * a denial that has lapsed gives way to a newer grant from the other source (the app was
+   * allowed in System Settings and quit, then a listener said granted), while a lapsed denial
+   * with nothing newer still stands. Null until one of them has said anything.
    */
   microphoneReading(): VoiceMicrophoneReading | null {
+    const now = this.deps.now();
+    const lapse: Record<VoiceMicrophoneReading["source"], number> = {
+      listener: VOICE_HELLO_LAPSE_MS,
+      shell: VOICE_SHELL_REPORT_LAPSE_MS,
+    };
     const readings = Object.values(this.microphone).filter((entry) => entry !== undefined);
-    const denied = readings.find((entry) => entry.reading.permission === "denied");
-    if (denied) return { ...denied.reading };
-    const latest = readings.sort((a, b) => b.at - a.at)[0];
-    return latest ? { ...latest.reading } : null;
+    const liveDenial = readings.find((entry) =>
+      entry.reading.permission === "denied" && now - entry.at < lapse[entry.reading.source]);
+    if (liveDenial) return { ...liveDenial.reading };
+    const newest = readings.sort((a, b) => b.at - a.at)[0];
+    return newest ? { ...newest.reading } : null;
   }
 
   /** The input devices the live listener listed, or null with no live hello. */

@@ -29,8 +29,11 @@ Voice family appears as soon as the flag is switched and the row reports the swi
 The family has two more rows, both optional:
 
 - **Microphone access** reads the microphone permission from the latest listener hello or desktop
-  shell report. A denial from either wins, as it does for the mode line's `microphone` reason;
-  otherwise the newer reading counts. Until either has reported, the row reads **Not checked yet**.
+  shell report. A denial from either wins while its report is live, as it does for the mode
+  line's `microphone` reason; otherwise the newest reading counts. A denial that has lapsed
+  therefore gives way to a newer grant from the other source, so allowing Mission Control in System
+  Settings and pressing **Check again** clears it, while a lapsed denial with nothing newer still
+  stands. Until either has reported, the row reads **Not checked yet**.
   Its fix says where macOS keeps the switch (System Settings > Privacy & Security > Microphone) and
   **Check again** re-reads it. Asking macOS from the app belongs to the desktop shell's phase.
 - **Voice speech model** downloads and verifies the speech model. See [The speech model](#the-speech-model).

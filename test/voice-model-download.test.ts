@@ -314,6 +314,24 @@ test("Cancel stops the download, removes everything it wrote, and reads missing 
   assert.equal(h.published.at(-1)?.status, "missing");
 });
 
+test("Cancel while voice is switched off removes the download and does not read the disk again", async () => {
+  const h = harness();
+  h.manager.sync();
+  server.behavior.set("vocab.json", "hold");
+  h.manager.download();
+  await until(h.manager, (model) => model.status === "downloading" && model.doneBytes > FILES[0]!.body.length);
+  // The flag goes off while Cancel is still removing the files: `sync` has set the state, and
+  // the cancelled job must not publish a model over it once its cleanup ends.
+  const cancelling = h.manager.cancel();
+  h.active.on = false;
+  h.manager.sync();
+  assert.deepEqual(await cancelling, VOICE_MODEL_STATE_NONE);
+  await h.manager.idle();
+  assert.deepEqual(h.manager.state(), VOICE_MODEL_STATE_NONE);
+  assert.deepEqual(h.published.at(-1), VOICE_MODEL_STATE_NONE, "nothing was published after voice went off");
+  assert.equal(existsSync(h.dir()), false, "the cancelled download is still removed");
+});
+
 test("Retry after a failure fetches only what is missing or wrong, and verifies", async () => {
   const h = harness();
   h.manager.sync();

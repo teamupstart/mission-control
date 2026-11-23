@@ -275,7 +275,7 @@ test("with no model manager the model reads as nothing known, and the roster is 
   assert.deepEqual(h.store.state().roster, []);
 });
 
-test("the microphone reading is the latest report's, a denial from either source wins, and it outlives a lapse", () => {
+test("the microphone reading is the newest report's, and a live denial from either source wins", () => {
   const h = harness();
   assert.equal(h.store.microphoneReading(), null, "nothing has reported yet");
   h.store.acceptHello({ ...HELLO, microphone: "granted" });
@@ -287,11 +287,32 @@ test("the microphone reading is the latest report's, a denial from either source
   h.store.acceptHello({ ...HELLO, microphone: "denied" });
   h.advance(1000);
   h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "granted" }));
-  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a denial wins");
-  h.advance(VOICE_HELLO_LAPSE_MS * 2);
-  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a lapse does not change macOS's answer");
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a live denial wins");
   h.store.acceptShellReport(VoiceShellReportSchema.parse({}));
   assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a report with no permission says nothing");
+});
+
+test("a lapsed denial with nothing newer still stands: a listener stopping does not change macOS's answer", () => {
+  const h = harness();
+  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  h.advance(VOICE_HELLO_LAPSE_MS * 2);
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" });
+});
+
+test("a lapsed denial gives way to a newer grant from the other source, so Check again can clear it", () => {
+  // The desktop app reports denied. The operator allows Mission Control in System Settings and
+  // quits the app, and a listener then reports granted.
+  const h = harness();
+  h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "denied" }));
+  h.advance(1000);
+  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "shell" }, "while the app's report is live it still wins");
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
+  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  assert.deepEqual(h.store.microphoneReading(), { permission: "granted", source: "listener" }, "once it lapses the newer grant counts");
+  assert.deepEqual(voiceMicrophoneSetupStatus(h.store.microphoneReading()), {
+    state: "satisfied", evidence: "Allowed, as the voice listener reports",
+  });
 });
 
 test("a shell's microphone denial wins over a later listener grant", () => {

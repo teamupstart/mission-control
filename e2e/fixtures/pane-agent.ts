@@ -82,9 +82,18 @@ export function startPaneAgent(daemon: DaemonHandle, opts: { prefix?: string; tu
     join(bin, "claude"), agent, daemon.baseURL, token, paneId, daemon.repo, dir,
   ].map(quote).join(" ");
   const tmux = (args: string[]) => execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
-  tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
-  const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
-  tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
+  let id: string;
+  try {
+    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
+    id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
+    tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
+  } catch (error) {
+    // A half-started agent is never handed back, so nothing else would ever stop it. By name:
+    // nothing has renamed the session yet, and the pane id may be the step that failed.
+    spawnSync("tmux", ["kill-session", "-t", name], { stdio: "ignore" });
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
   return {
     name,
     id,

@@ -342,6 +342,10 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
 
+A resident's standing task stays open between iterations and does not count as unfinished
+work. Its scheduled waits therefore do not produce a Stuck row. An open queue, a parked
+workflow, an unanswered escalation, or a silent active turn can still flag a resident.
+
 A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from the two idle
 rules (open work and a parked run): it is waiting on someone other than you, and its blocker
 already explains the silence, with its age on the card. A blocker raises no alert of its own,

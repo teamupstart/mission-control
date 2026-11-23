@@ -40,7 +40,8 @@ As of `2088bd522`:
    toggles mute. A longer hold sets `pushToTalk` in the shell report while held. `voiceMode`
    honours push-to-talk during auto-mute, as Phase 1 defines; elsewhere a hold does nothing.
 3. **Registration.** The shell registers the chord from the config and re-registers when it
-   changes. On failure it keeps the previous chord registered and reports `hotkeyError`. When
+   changes. On failure it keeps the previous chord registered and reports `hotkeyError` as
+   contract B shapes it, with the reason and the chord still in force. When
    the first registration fails, of the default `ctrl+alt+m` for instance, there is no previous
    chord: none is in force, and the row in step 5 says so. A null `hotkey` registers nothing.
 4. **Call addon.** `native/mic-activity/`: on macOS 14.2 or later, list the processes with running
@@ -51,7 +52,8 @@ As of `2088bd522`:
    saves through the config route. When the shell reports `hotkeyError`, the row shows the
    warning and names the chord still in force. Without the `hotkey` capability the row reads
    "Needs the desktop app". The auto-mute row gains the unavailable reason.
-6. **Capabilities.** Report `hotkey` and `call-detection`.
+6. **Capabilities.** Report `hotkey` and `call-detection`. Reporting `hotkey` is what makes
+   Phase 7's indicators print the keycap, through `hotkeyShown`; a `hotkeyError` hides it again.
 7. **Docs.** `docs/voice.md` (what auto-mute can and cannot know about a call), `docs/ui.md`.
 
 ## 6. Data and compatibility

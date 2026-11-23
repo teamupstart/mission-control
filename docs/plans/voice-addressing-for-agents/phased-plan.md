@@ -137,6 +137,13 @@ A seventh review raised one more, accepted.
   routed message, a filled form and then "cancel". Contract D also says what the order does
   hold and does not: an open `unsure` card is an entry, and a spoken submit is not.
 
+An eighth review raised one more, accepted.
+
+- **A keycap for a hotkey that is not registered.** Phase 7's indicators printed the keycap
+  whenever a chord was configured, and Phase 1 configures one by default while Phase 11 is
+  the first to register it. The keycap and each mention of the hotkey now appear only when
+  the shell reports the `hotkey` capability and no `hotkeyError`.
+
 ## Sizing and phase count
 
 Estimated 8,800 to 11,400 non-test implementation lines across shared contracts, the daemon, the
@@ -238,11 +245,13 @@ phase file decides behaviour.
 `voice` app-config entry: `muted`, `hotkey` (a chord string, default `ctrl+alt+m`, or null),
 `autoMuteDuringCalls`, `cancelWindow { enabled,
 seconds }`, `whenUnsure` (`show` or `ask`), `planFormsByVoice`, `inputDevice`, `decisionProvider`
-(null for automatic, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT /api/voice/config`. `ui.voice` in the UI config: `confirmation`
+(null for automatic, `off`, `openai` or `jev`), `backend`. Routes `GET` and `PUT
+/api/voice/config`. `ui.voice` in the UI config: `confirmation`
 (`pill`, `toast` or `popover`) and `indicators` (a list of indicator ids). Later phases read and
 write these fields and add none.
 
-**B. Voice state (Phase 1).** `VoiceState { mode, reasons, capabilities, model, roster }`. Modes:
+**B. Voice state (Phase 1).** `VoiceState { mode, reasons, capabilities, hotkeyError, model,
+roster }`. Modes:
 `off`, `unavailable`, `listening`, `muted`, `auto-muted`, `push-to-talk`. Reasons: `flags` (a
 required flag is off), `listener` (no hello in the last 30 seconds), `model` (the listener's hello
 says no model is loaded), `microphone` (a hello or a shell report says access is denied).
@@ -253,8 +262,11 @@ field `voice` and the event `voice_state` exist while the flag is on. `POST /api
 muted }`. `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`
 (token), sent every 10 seconds by a listener. `POST /voice/shell-report` (token) carries
 capabilities, microphone permission, `callActive`, `pushToTalk` and `hotkeyError`; a report lapses
-15 seconds after the last one. `e2e/fixtures/voice.ts` exports `beListener`, which sends hellos
-so a spec sees the mode `listening` on any platform.
+15 seconds after the last one. The capabilities a shell reports and its `hotkeyError` (null, or
+`{ reason, chordInForce }`) are copied into the state from the latest report, which is how a
+dashboard learns of them; with no report those capabilities are absent and `hotkeyError` is
+null. `e2e/fixtures/voice.ts` exports `beListener`, which sends hellos so a spec sees the mode
+`listening` on any platform.
 
 **C. Names (Phase 2).** `Task.callSign` and `TaskSummary.callSign`; `identity.referenceName` on a
 resident profile; `validateSpokenName(name, roster)`, `phoneticKey(name)` and

@@ -34,13 +34,20 @@ As of `2088bd522`:
 ## 5. Implementation steps
 
 1. **Shared part.** `VoiceIndicatorButton`: a button whose accessible name is the mode ("Voice:
-   listening. Mute"), which toggles mute, shows the hotkey's keycap when one is set, and for
-   `unavailable` opens Setup. New tokens `--voice-listening`, `--voice-muted`, `--voice-call` and
-   `--voice-talk` in `src/web/styles.css`, each set in each skin. Each mode also prints its glyph
+   listening. Mute"), which toggles mute, shows the hotkey's keycap when the hotkey works, and
+   for `unavailable` opens Setup. One shared rule, `hotkeyShown(state, config)`, decides
+   "works": the voice state's capabilities include `hotkey`, its `hotkeyError` is null, and
+   the configured `hotkey` is not null. A configured chord is not enough: Phase 1 stores
+   the default `ctrl+alt+m` and nothing registers it until Phase 11 reports the capability, and
+   a dashboard with no desktop shell never has it. When the rule is false no indicator prints
+   a keycap or names the hotkey, in text or in an accessible name. New tokens
+   `--voice-listening`, `--voice-muted`, `--voice-call` and `--voice-talk` in
+   `src/web/styles.css`, each set in each skin. Each mode also prints its glyph
    and word, so colour is not the one cue.
 2. **Five indicators**, each mounted when its id is in `ui.voice.indicators`:
-   - `status-line`: a thin line on the window's bottom edge with the mode, a hint and what the
-     hotkey does next;
+   - `status-line`: a thin line on the window's bottom edge with the mode, a hint and, when
+     `hotkeyShown` is true, what the hotkey does next. Otherwise the line says what a click
+     does;
    - `topbar`: a segment at the end of the pulse figures; its label drops at narrow rungs;
    - `floating`: a round button in the bottom-left corner that opens to a pill on hover or focus;
    - `edge`: a hairline on the window's top edge with a small named tab;
@@ -62,13 +69,19 @@ as it was.
 
 ## 7. Tests and verification
 
-- `renderToStaticMarkup` tests for each indicator in each mode.
+- `renderToStaticMarkup` tests for each indicator in each mode, with and without the hotkey
+  shown.
+- `test/voice-hotkey-shown.test.ts`: false with no `hotkey` capability though the default chord
+  is configured; false with a `hotkeyError`; false with a null `hotkey`; true otherwise.
 - A geometry test in `test/*-electron.test.ts` style for the status line: it does not cover the
   page's last row at the smallest supported window.
 - `e2e/specs/voice-indicators.spec.ts`, with `beListener` running: the status line shows by
   default and reads listening; clicking it mutes and the mode reads muted in a second window;
   ticking the top-bar indicator adds a segment and the bar stays on one row; unticking the five
-  removes them.
+  removes them. With no shell report, so no `hotkey` capability, no indicator shows a keycap
+  and the status line names no chord; after a shell report through `POST /voice/shell-report`
+  that offers `hotkey`, the keycap reads ⌃⌥M; after one that carries a `hotkeyError`, it is
+  gone again.
 - `e2e/specs/voice-recently-heard.spec.ts`: say a routed sentence, a sentence with no pause and a
   cancelled one; the table lists the three with their reasons; Clear empties it.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, the specs and
@@ -76,14 +89,19 @@ as it was.
 
 ## 8. Merge and exit criteria
 
-Each ticked indicator shows the live mode and mutes on click. The table explains each utterance.
+Each ticked indicator shows the live mode and mutes on click. No indicator names a hotkey that
+is not registered. The table explains each utterance.
 
 ## 9. Downstream handoff
 
-Phase 11 supplies the hotkey the keycap prints. Phase 12 reuses the table's row formatter in the
-popover.
+Phase 11 registers the hotkey and reports the `hotkey` capability, which is when the keycap
+first appears. Phase 12 reuses the table's row formatter in the popover.
 
 ## 10. Cross-phase audit record
 
 - After Phase 10: with no shell, the indicators are where the mode is shown, which is the Linux
   path the source plan describes.
+- Pull request review, eighth round: Phase 1 stores a default chord that nothing registers
+  before Phase 11, and this phase can merge long before that, so a keycap drawn "when one is
+  set" would have told the operator to press a chord that does nothing. The keycap and each
+  mention of the hotkey now wait for the shell's `hotkey` capability and no `hotkeyError`.

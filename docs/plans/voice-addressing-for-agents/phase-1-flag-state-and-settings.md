@@ -61,7 +61,9 @@ As of `2088bd522`:
    when a reason holds; then muted; then, during a call with auto-mute on, push-to-talk while held
    and auto-muted otherwise; else listening. A server `VoiceStateStore` computes contract B's
    state from the flags, the config, the latest hello and the latest shell report, with the
-   reasons as contract B defines them, and publishes the snapshot field and `voice_state`. `roster`
+   reasons as contract B defines them, and publishes the snapshot field and `voice_state`. The
+   capabilities a shell reports and its `hotkeyError` come from the latest shell report; with
+   no report those capabilities are absent and `hotkeyError` is null. `roster`
    is empty and `model` is `missing` until phases 2 and 8 drive them.
 4. **Routes.** `POST /api/voice/mute`, `POST /voice/shell-report` and `POST
    /voice/listener/hello`. A hello carries a protocol version; one with an unknown major version

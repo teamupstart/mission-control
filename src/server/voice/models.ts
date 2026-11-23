@@ -418,7 +418,8 @@ export class VoiceModelManager {
     try {
       let response: Response;
       try {
-        response = await fetchImpl(url, { signal: combined, redirect: "follow" });
+        // The pinned size and digest are of the file's own bytes, so ask for them uncompressed.
+        response = await fetchImpl(url, { signal: combined, redirect: "follow", headers: { "accept-encoding": "identity" } });
       } catch (error) {
         if (signal.aborted) throw error;
         if (stall.signal.aborted) throw new Error(`The download of ${file.path} stalled: nothing arrived for ${duration(stallMs)}.`);
@@ -428,7 +429,11 @@ export class VoiceModelManager {
         await response.body?.cancel().catch(() => undefined);
         throw new Error(`The download of ${file.path} failed: the server answered ${response.status}.`);
       }
-      const length = response.headers.get("content-length");
+      // A server that compresses anyway reports the compressed length, while `fetch` hands over the
+      // decoded body; the length is compared only when the body is sent as is. The running byte
+      // count and the digest check the decoded body either way.
+      const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+      const length = encoding && encoding !== "identity" ? null : response.headers.get("content-length");
       if (length !== null && Number(length) !== file.bytes) {
         await response.body.cancel().catch(() => undefined);
         throw new Error(`The server offered ${file.path} as ${length} bytes, and its pinned size is ${file.bytes}. Nothing was kept.`);

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -62,12 +63,13 @@ function manifest(revision: string, files: readonly Fixture[] = FILES): VoiceMod
   };
 }
 
-type Behavior = "ok" | "corrupt" | "short" | "long" | "wrong-length" | "hold" | "missing";
+type Behavior = "ok" | "corrupt" | "short" | "long" | "wrong-length" | "hold" | "missing" | "gzip";
 
 const server = {
   origin: "",
   behavior: new Map<string, Behavior>(),
   requests: [] as string[],
+  acceptEncodings: [] as string[],
   holds: [] as Array<() => void>,
   bodies: new Map<string, Buffer>(),
 };
@@ -77,6 +79,7 @@ function handle(request: IncomingMessage, response: ServerResponse): void {
   const file = (request.url ?? "").startsWith(prefix) ? request.url!.slice(prefix.length) : null;
   const body = file === null ? undefined : server.bodies.get(file);
   server.requests.push(file ?? request.url ?? "");
+  server.acceptEncodings.push(String(request.headers["accept-encoding"] ?? ""));
   const behavior = (file && server.behavior.get(file)) ?? "ok";
   if (!body || behavior === "missing") {
     response.writeHead(404).end("not found");
@@ -97,6 +100,14 @@ function handle(request: IncomingMessage, response: ServerResponse): void {
       response.writeHead(200, { "transfer-encoding": "chunked" });
       response.end(body.subarray(0, Math.floor(body.length / 2)));
       return;
+    case "gzip": {
+      // Compressed whatever the request asked for, as a CDN in between might: the length header
+      // is the compressed size, and `fetch` decodes the body.
+      const packed = gzipSync(body);
+      response.writeHead(200, { "content-encoding": "gzip", "content-length": packed.length });
+      response.end(packed);
+      return;
+    }
     case "long":
       // The whole file and then more, with no length header to refuse it up front: only the
       // running count can tell it went past its pinned size.
@@ -126,6 +137,7 @@ afterEach(() => {
   for (const release of server.holds.splice(0)) release();
   server.behavior.clear();
   server.requests.length = 0;
+  server.acceptEncodings.length = 0;
 });
 after(async () => {
   http.closeAllConnections();
@@ -300,6 +312,17 @@ test("a body that runs past its pinned size fails as too large, and nothing of i
   assert.equal(existsSync(join(h.dir(), "parakeet-fixture/vocab.json")), false, "the oversized file was not renamed into place");
   assert.deepEqual(partFiles(h.root), [], "and its temporary file is gone");
   assert.equal(failed.directory, null);
+});
+
+test("files are asked for uncompressed, and one compressed anyway is checked by its decoded bytes", async () => {
+  const h = harness();
+  h.manager.sync();
+  server.behavior.set("vocab.json", "gzip");
+  h.manager.download();
+  const ready = await until(h.manager, (model) => model.status === "ready" || model.status === "failed");
+  assert.equal(ready.status, "ready", ready.error ?? "");
+  assert.deepEqual(readFileSync(join(h.dir(), "parakeet-fixture/vocab.json")), FILES[1]!.body);
+  assert.ok(server.acceptEncodings.length > 0 && server.acceptEncodings.every((value) => value === "identity"), server.acceptEncodings.join(", "));
 });
 
 test("a 404 fails with the status, and a stalled download fails instead of hanging", async () => {

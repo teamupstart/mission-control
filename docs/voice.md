@@ -65,10 +65,12 @@ whose backend has no model reads so on the row, with nothing to download.
 `VoiceModelManager` in `src/server/voice/models.ts` owns the files and `VoiceState.model`. It
 works only while the `voice` flag is on.
 
-- **Download** fetches each file to a temporary name beside its destination, hashes it while it
-  writes, and refuses it if the server offers a different size, sends more or fewer bytes than the
-  manifest pins, or the digest differs. A refused file is deleted and the row reads the reason
-  with **Retry**. Only a file that matches is renamed into place.
+- **Download** fetches each file uncompressed (`accept-encoding: identity`) to a temporary name
+  beside its destination, hashes it while it writes, and refuses it if the server offers a
+  different size, sends more or fewer bytes than the manifest pins, or the digest differs. A server
+  that compresses anyway reports a compressed length, so that response is checked by its decoded
+  bytes and digest alone. A refused file is deleted and the row reads the reason with **Retry**.
+  Only a file that matches is renamed into place.
 - While it runs, the row shows a progress bar with the bytes done, the rate and the time left, and
   **Cancel**. Progress reaches every window through `voice_state` at most four times a second.
 - **Cancel** stops the download and removes the revision's directory, so nothing unverified is

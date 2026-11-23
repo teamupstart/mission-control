@@ -663,6 +663,20 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /**
+   * The work unit this session's agent was started with: the `WORK_UNIT_ID` in its
+   * environment, from the launch record (`session_launch_work_units`). Null or absent when the
+   * agent was started with none - a discovered session, a resident run, a launch with the
+   * `work-unit-id` preview off, or a session that was running before the record existed.
+   *
+   * RESOLVED by the registry from the record, never from the flag or the task: an agent's
+   * environment is fixed when it starts, so this changes only when a launch of this session
+   * succeeds. READ AS POLICY by the reuse guard - `TaskManager.assign` and the backlog's
+   * selection - which never hands such an agent a task of another work unit (decision D7). The
+   * id a session EMITS for its task is `task.workUnitId`, which is this value only while the
+   * task has the same one. Optional so an older snapshot parses.
+   */
+  launchWorkUnitId?: string | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
   /**
@@ -2883,6 +2897,14 @@ export interface TaskSummary {
    * failed, so every other card's payload is what it was before claims existed.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * The work unit this session emits for this task: the id its agent was started with
+   * (`Session.launchWorkUnitId`), while the task has that same id, and null otherwise - also
+   * when the task has an id but the agent was started without the variable. Never the task's
+   * id on its own, so the session detail never shows an id the agent's MCP calls do not carry.
+   * Optional so an older snapshot parses.
+   */
+  workUnitId?: string | null;
   /**
    * `Task.shaping`, carried to the session card only while `currentShaping` shows it. Absent
    * otherwise, so every unshaped card's payload is what it was before shaping existed. Readers

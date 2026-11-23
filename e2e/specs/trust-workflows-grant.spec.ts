@@ -50,7 +50,6 @@ async function shoot(
     // the exact visual state the surrounding assertions just proved was present.
     await page.waitForTimeout(250);
     await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED e2e/.artifacts/trust-workflows-grant/${name}.png`);
     return;
   }
@@ -66,7 +65,6 @@ async function shoot(
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
   await page.setViewportSize(original);
   await page.waitForTimeout(150);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/trust-workflows-grant/${name}.png`);
 }
 

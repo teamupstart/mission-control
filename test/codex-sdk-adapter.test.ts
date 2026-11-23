@@ -98,24 +98,23 @@ class FakeServer implements AppServerTransport {
   }
 
   get frames(): AsyncIterable<unknown> {
-    const self = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        for (;;) {
-          const next = self.queued.shift();
-          if (next !== undefined) {
-            yield next;
-            continue;
-          }
-          if (self.ended) return;
-          const m = await new Promise<IteratorResult<unknown>>((r) => {
-            self.waiting = r;
-          });
-          if (m.done) return;
-          yield m.value;
-        }
-      },
-    };
+    return this.readFrames();
+  }
+
+  private async *readFrames(): AsyncIterableIterator<unknown> {
+    for (;;) {
+      const next = this.queued.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      if (this.ended) return;
+      const m = await new Promise<IteratorResult<unknown>>((r) => {
+        this.waiting = r;
+      });
+      if (m.done) return;
+      yield m.value;
+    }
   }
 
   async close(): Promise<void> {
@@ -306,7 +305,7 @@ test("a launch initializes, starts a thread, binds it, and delivers turn one", a
   });
 
   const turn = server.calls("turn/start")[0];
-  assert.deepEqual((turn?.params as { input: unknown[] }).input, [
+  assert.deepEqual((turn?.params as { input: unknown[] })?.input, [
     { type: "text", text: "do the thing", text_elements: [] },
   ]);
 
@@ -454,7 +453,7 @@ test("an unusable config/read still tells the session to ask its decisions throu
     assert.equal(opened.developerInstructions, undefined, `${name}: the operator's own value is untouched`);
     const turns = server.calls("turn/start");
     assert.equal(turns.length, 1, `${name}: exactly one turn one`);
-    const text = String((turns[0]?.params as { input: { text?: string }[] }).input[0]?.text);
+    const text = String((turns[0]?.params as { input: { text?: string }[] })?.input[0]?.text);
     if (rest === null) {
       assert.match(text, ROUTING, `${name}: the routing is turn one by itself`);
     } else {
@@ -765,7 +764,7 @@ test("a request this build cannot answer is refused rather than left hanging", a
   await settle();
   assert.equal(events.some((e) => e.kind === "request"), false);
   const answered = server.responseTo(3);
-  assert.equal((answered?.error as { code: number }).code, -32601);
+  assert.equal((answered?.error as { code: number })?.code, -32601);
   await handle.stop();
   await drained;
 });
@@ -1077,7 +1076,7 @@ test("clearContext starts a new thread on the same connection and re-binds the c
   assert.equal(bounds[1]?.kind === "bound" && bounds[1].transcriptPath, SECOND_THREAD.path);
   // Codex's own word for the case, so its analytics do not read a second cold start.
   assert.equal(
-    (server.calls("thread/start")[1]?.params as Record<string, unknown>).sessionStartSource,
+    (server.calls("thread/start")[1]?.params as Record<string, unknown>)?.sessionStartSource,
     "clear",
   );
   assert.deepEqual(server.responseTo(9), {
@@ -1107,7 +1106,7 @@ test("clearContext starts a new thread on the same connection and re-binds the c
   await handle.send({ text: "new thread work" });
   assert.equal(server.calls("turn/steer").length, 0);
   assert.equal(
-    (server.calls("turn/start").at(-1)?.params as { threadId: string }).threadId,
+    (server.calls("turn/start").at(-1)?.params as { threadId: string })?.threadId,
     SECOND_THREAD.id,
   );
   server.notify("turn/completed", { threadId: SECOND_THREAD.id, turn: { id: "turn-2" } });
@@ -1124,7 +1123,7 @@ test("a resume continues the thread it names and never re-sends the intent", asy
   const { handle, events, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
   await settle();
   assert.equal(server.calls("thread/start").length, 0);
-  assert.equal((server.calls("thread/resume")[0]?.params as { threadId: string }).threadId, THREAD.id);
+  assert.equal((server.calls("thread/resume")[0]?.params as { threadId: string })?.threadId, THREAD.id);
   // Re-sending the original intent would make the agent start the task over on top of
   // whatever it had already done.
   assert.equal(server.calls("turn/start").length, 0);
@@ -1732,7 +1731,7 @@ test("a rejected clear keeps the old thread bound and usable", async () => {
   assert.equal(server.calls("turn/steer").length, 0);
   assert.equal(server.calls("turn/start").length, 2);
   assert.equal(
-    (server.calls("turn/start")[1]?.params as Record<string, unknown>).threadId,
+    (server.calls("turn/start")[1]?.params as Record<string, unknown>)?.threadId,
     THREAD.id,
   );
   await handle.stop();
@@ -1774,8 +1773,8 @@ test("an unreadable request is answered with an error, not left blocking the tur
     params: { threadId: THREAD.id, reason: { not: "a string" } },
   });
   await settle();
-  assert.equal((server.responseTo(5)?.error as { code: number }).code, -32601);
-  assert.equal((server.responseTo(6)?.error as { code: number }).code, -32602);
+  assert.equal((server.responseTo(5)?.error as { code: number })?.code, -32601);
+  assert.equal((server.responseTo(6)?.error as { code: number })?.code, -32602);
   assert.equal(events.some((e) => e.kind === "request"), false);
   assert.equal(events.some((e) => e.kind === "exited"), false);
   await handle.stop();
@@ -1991,8 +1990,8 @@ test("two questions sharing a text are refused rather than silently collapsed", 
   // Codex can read and re-ask differently.
   assert.equal(events.some((event) => event.kind === "request"), false);
   const refusal = server.responseTo(13);
-  assert.equal((refusal?.error as { code: number }).code, -32602);
-  assert.match((refusal?.error as { message: string }).message, /share the text "Which branch\?"/);
+  assert.equal((refusal?.error as { code: number })?.code, -32602);
+  assert.match((refusal?.error as { message: string })?.message, /share the text "Which branch\?"/);
   await handle.stop();
   await drained;
 });
@@ -2024,9 +2023,9 @@ test("a secret question is refused explicitly instead of rendered as ordinary te
   await settle();
   assert.equal(events.some((event) => event.kind === "request"), false);
   const response = server.responseTo(12);
-  assert.equal((response?.error as { code: number }).code, -32602);
+  assert.equal((response?.error as { code: number })?.code, -32602);
   assert.match(
-    (response?.error as { message: string }).message,
+    (response?.error as { message: string })?.message,
     /secret question "Enter the deployment password" cannot be shown safely/,
   );
   await handle.stop();

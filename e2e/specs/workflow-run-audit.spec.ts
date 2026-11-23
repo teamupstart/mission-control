@@ -50,7 +50,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-run-audit/${name}.png`);
 }
 
@@ -175,7 +174,6 @@ async function seedRun(
       )).run.status,
     { message: `round 1 should settle in ${settled}`, timeout: 40_000 }).toBe(settled);
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }

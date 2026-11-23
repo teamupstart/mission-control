@@ -48,6 +48,7 @@ const { ConsensusResultSchema } = await import("../src/shared/ensemble-strategie
 const { BestOfNComparisonResultSchema } = await import(
   "../src/shared/ensemble-strategies/best-of-n.ts"
 );
+const { PersonaWorkloadProviderResultSchema } = await import("../src/shared/repository-access.ts");
 const { PanelBallotSchema } = await import("../src/shared/ensemble-strategies/panel-vote.ts");
 
 /**
@@ -62,6 +63,7 @@ const { PanelBallotSchema } = await import("../src/shared/ensemble-strategies/pa
  * thing a hand-maintained list quietly stops covering.
  */
 const SCHEMAS = [
+  { identifier: "PersonaWorkloadProviderResultSchema", schema: PersonaWorkloadProviderResultSchema },
   { identifier: "InspectorVerdictSchema", schema: InspectorVerdictSchema },
   { identifier: "InspectorReplySchema", schema: InspectorReplySchema },
   { identifier: "BacklogReportSchema", schema: BacklogReportSchema },

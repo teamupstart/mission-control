@@ -12,28 +12,30 @@ obligation:
    modal draws, diff/plan/question and option menus included. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
-3. **Parked on a menu** - a session sitting on a terminal
+3. **Session control requests** - with the preview enabled, each request shows who asked and why.
+   **Accept** grants control from the desktop app. **Decline** answers the session from any dashboard.
+4. **Parked on a menu** - a session sitting on a terminal
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
    inbox: it deep-links to the session detail, while an ensemble member's live lane in the run
    detail also renders the verified pane dialog in place.
-4. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
+5. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
    you: a launch blocked on readiness, a failure, lifecycle evidence that conflicts with the task,
    a missing workspace, or a held Engineer. **Open Pipeline** opens the commission.
-5. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+6. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
    resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
    time anybody looks. Nothing here clears a halt: that stays with the engine's own CLI. The
    row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
-6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+7. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-7. **Stuck** - with the `inbox` preview flag on, a session the daemon's
+8. **Stuck** - with the `inbox` preview flag on, a session the daemon's
    [stuck rules](#stuck-sessions) flagged, with the fix on the row. See
    [Stuck rows](#stuck-rows). With the **Stalled section in Idle** preview on as well, idle stalls
    are drawn in Idle instead of here.
-8. **Stuck finalizations** - a promotion that stopped on an error.
-9. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
+9. **Stuck finalizations** - a promotion that stopped on an error.
+10. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
    on. See [Agent reports](#agent-reports) below. They are read, not answered, so they are never
    in the **to answer** count.
 
@@ -186,6 +188,47 @@ count toward no question limit, close on no merge, and Foreman never reads, answ
 With the flag off, `post_report` is refused, the inbox has no Reports section, the top bar has no
 **to read** figure, and stored reports are kept for when it is turned on again.
 
+A report also raises a notification, and **Agent reports are listed in the inbox** can take
+reports out of the inbox list and the **to read** figure; see
+[What notifies you](#what-notifies-you).
+
+#### When reports get chatty
+
+Three controls, all behind the same flag:
+
+- **Report guidance.** Settings > **Reports** holds the text that tells agents when to post a
+  report, in a box with **Save** and **Reset to default**, up to 2,000 characters. It replaces
+  only the when-to-report sentence of `post_report`'s description; the rest (progress goes to
+  `report_status`, and anything urgent or anything you must decide is a question) is fixed and
+  shown beneath the box. A session reads the guidance once, when its Mission Control tools
+  start, so a change reaches sessions started afterwards and a session already running keeps the
+  guidance it started with. If the daemon does not answer that read in time, the session gets the
+  default guidance.
+- **Mute an agent.** An open report offers **Mute Steve's reports**. A muted agent can still post,
+  and nothing it posts is refused. From the moment of the mute its reports raise no notification,
+  are left out of the inbox's Reports section, the **to read** figure and the Away digest, and stay
+  in its conversation. A mute hides reports and never marks them read, so **Unmute** brings back
+  every report still waiting. Because a muted agent's rows leave the inbox, **Unmute** is in
+  Settings > **Reports**, which lists every muted agent by the name its reports carried. A mute is
+  keyed like the reports: a resident across all of its runs, any other agent by its session.
+- **Mark all read.** The **Reports** heading has **Mark all read**, which marks read exactly the
+  reports listed when you press it, however many there are, recorded as read with **Mark all
+  read** in each conversation. The dashboard sends them in batches of up to 1,000 ids, the most
+  one `POST /api/reports/read-all` accepts.
+  A report that arrives after the click is not cleared, and neither is a report shown only under
+  "Opened from a notification". There is no per-agent Mark all read.
+
+A mute does not withdraw a notification that already arrived: the operating system keeps it, and
+clicking it still opens its report. The inbox no longer lists that report, so it is drawn on its
+own under "Opened from a notification", readable and unread, without a Mute control and with a
+line saying the agent is muted and that Unmute is in Settings. The click leaves the Reports
+section and the **to read** figure as they were. A mute stops only later notifications.
+
+**Mute** has the spoken form "Steve, mute reports". **Mark all read** names no agent, so it is
+click-only. With the flag off the Reports panel is hidden, the guidance and mute routes refuse,
+sessions get the default guidance, and stored guidance and mutes are kept for when it is turned
+on again.
+
 ### Stuck rows
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, every session the daemon's
@@ -263,7 +306,8 @@ else is waiting.
 
 ### Dismiss a row without resolving it
 
-Every row ends its header with **Dismiss**. It takes the row out of the inbox and out of the
+Most rows have a **Dismiss** button. Session control requests stay visible until answered or withdrawn,
+and reports have **Mark read**. **Dismiss** takes the row out of the inbox and out of the
 **to answer** count without resolving anything: no answer is sent, the agent keeps waiting, a
 halted pipeline stays halted, and the session keeps its colour on the board. Use it for something
 you have read and cannot or will not act on from here, such as a Pipeline lifecycle problem the
@@ -347,6 +391,58 @@ idle, a task finishing) are detected but never notify; they're digest material. 
 fire on the *transition* into attention (once, not every tick) and de-dupe, so a
 waiting session pings you once. The chime is synthesized with the Web Audio API (no
 asset, no network).
+
+### What notifies you
+
+With the **Reports and inbox upgrades** flag (`inbox`) on, the alerts popover has a **What
+notifies you** group under **How you're reached**, with five switches, all on by default:
+
+| Switch | Off means |
+| --- | --- |
+| **Blocking questions notify** | A question the agent waits on inside the call raises no notification. |
+| **Questions filed while working notify** | A question filed with [Ask without stopping](sessions.md#asking-without-stopping) raises no notification. |
+| **Agent reports notify** | A report raises no notification. To silence one agent rather than all of them, [mute it](#when-reports-get-chatty). |
+| **Agent reports are listed in the inbox** | Reports leave the inbox's Reports section and the **to read** figure. They stay in each conversation and are not marked read, and a report notification still arrives. |
+| **Stuck sessions notify** | A [stuck session](#stuck-sessions) raises no notification. |
+
+A notify switch only stops the notification: the item is still in the inbox. Every other alert
+is unchanged, and with the flag off the group is hidden and the switches are not read.
+
+**A report notification** is named by the agent's display name and worded by what the agent did
+after posting. An agent calls `post_report` mid-turn, so the daemon waits up to 20 seconds: if
+the session is seen working and then stops in that time, is seen stopped or blocked on you (a
+confirmed idle state, an open question, a menu), or leaves, the notification reads
+**Steve's back: Build failure diagnosed**, and otherwise, when the time is up, **Steve posted a
+report: Build failure diagnosed**. A session that reports no working state at all, such as one
+without hooks, gives no evidence that it stopped: while it is still present when the time is up,
+its report takes the second wording, and if it leaves first, the first. After an ordinary post,
+"back" can therefore trail it by up to 20 seconds. A report read or replaced within that time
+raises nothing, and a session that stops without posting a report stays silent.
+A report the daemon had not yet worded when it stopped is worded from its session's state after a
+restart, against its original 20-second deadline: a restart neither extends nor restarts it. If
+that deadline has passed before the restarted daemon sees the session again, the wording waits
+for the session's first sighting, up to one more 20-second period, after which a session still
+unseen is taken to have left and the report is worded "back". Only a report whose deadline
+passed at most 20 seconds before the restart is recovered this way; an older one that was never
+worded, including every report posted before this build, is left alone and raises no notification.
+
+**Clicking a report notification** opens the inbox at that report. The first row that matches
+decides:
+
+| At the time of the click | What opens |
+| --- | --- |
+| The **Reports and inbox upgrades** flag is off | Nothing: the click only focuses the window. |
+| The report was replaced | The latest report of its chain, then the rows below apply to it. The older version is not shown in the inbox. |
+| The Reports section lists the report | The inbox, with that report's row open. |
+| The inbox does not list it, for any reason: reports are unlisted, or it was already read | The inbox, with that one report drawn open above the sections under **Opened from a notification**. |
+| The report cannot be loaded | The inbox, with a line saying so. |
+
+The click records that the report was opened and never marks it read. The **Opened from a
+notification** band changes neither the Reports section nor the **to read** figure, offers
+**Mark read** while the report is unread, and is gone when the inbox closes. A report the
+dashboard no longer holds is read from `GET /api/reports/:id`, which returns the report and, when
+it was replaced, the latest report of its chain. Like opening a report, that lookup is the
+operator's: an agent's token, credential or attribution is refused with 403.
 
 ### Stuck sessions
 
@@ -526,7 +622,9 @@ question, still working** while the agent works past it, and **needs your answer
 stopped. No second alert fires when a working session later stops on it. Other
 reviews show their title rather than their raw diff or plan. Reconnect summaries retain
 that question or review detail. Opening the dashboard adopts existing questions silently. Reconnecting
-an already-open dashboard coalesces missed attention into one catch-up notification.
+an already-open dashboard coalesces missed attention into one catch-up notification. With the
+**Reports and inbox upgrades** flag on, a report missed while disconnected is the exception: it
+keeps its own notification, worded and opened like any report notification.
 The desktop window can be hidden, but quitting the app stops dashboard notification
 delivery. The daemon alone does not send desktop notifications.
 
@@ -551,8 +649,22 @@ Switch away mode on and the session detail expands to show how long you have bee
 unfolds a preview of what is waiting. That preview is a *look*: the real digest is
 written when you return, and reading it is what consumes it.
 
-While away, anything blocked on you still notifies immediately - everything else
-accumulates. When you come back, you get **one card** summarising the window: a couple
+While away, anything blocked on you still notifies immediately, unless you turned its switch off
+under [What notifies you](#what-notifies-you) - everything else accumulates. With the **Reports and inbox upgrades** flag on, agent reports wait too: they raise
+no notification while you are away, stay in the inbox, and the digest's rollup says how many are
+waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). A
+[muted agent's](#when-reports-get-chatty) reports are never counted. It counts the reports
+waiting as you return: one posted just before you came back is included before its notification
+wording is settled, and one you read or that was replaced while you were away is not. A report
+the digest counted raises no notification afterwards, even when its wording settles after you are
+back, after a page reload, a reconnect or another away window, or after a daemon restart: once a
+dashboard claims the digest, the daemon stores on the report that a digest counted it. Until then
+the mark is held in memory beside the digest, so a restart before any dashboard claims it loses
+both, and those reports are treated as never counted. A report announced while a dashboard is still
+loading, before it knows whether you are away, waits for that answer: it notifies only if you are
+not. Turning the flag off while you are away takes reports out of the digest; everything else in it
+stays. Stuck sessions still break
+through unless **Stuck sessions notify** is off. When you come back, you get **one card** summarising the window: a couple
 of sentences written by Haiku over what actually happened, a deterministic rollup
 beneath it ("1 stuck · 3 finished"), and the per-event lines with what needs you
 first. Repeats coalesce, so a session that finished twice is one line with a count,

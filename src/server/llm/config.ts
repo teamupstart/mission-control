@@ -1,7 +1,7 @@
 import { envVar } from "@shared/harness-runtime.mjs";
 import { LlmConfigSchema } from "@shared/protocol.ts";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
-import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel, resolveLlmJobModels } from "@shared/llm-jobs.ts";
+import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel } from "@shared/llm-jobs.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "@shared/llm-jobs.ts";
 import {
   CLAUDE_TRANSPORT_ENV,

@@ -1079,7 +1079,7 @@ export class PendingTurnManager {
   private scanSteerReceipts(): void {
     this.steerTimer = null;
     if (this.stopped) return;
-    for (const key of [...this.steerScans.keys()]) this.scanSteerReceiptsFor(key);
+    for (const key of Array.from(this.steerScans.keys())) this.scanSteerReceiptsFor(key);
     if (this.steerScans.size > 0) {
       this.steerTimer = unref(setTimeout(() => this.scanSteerReceipts(), this.deps.steerReceiptPollMs));
     }

@@ -7,6 +7,8 @@ import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 import type { UnpushedCommits } from "../src/shared/unpushed.ts";
+import type { ReportItem } from "../src/shared/reports.ts";
+import { mkReport } from "./helpers/report-fixture.ts";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
 // how it survives the moment of return. Real db for the config (as
@@ -234,6 +236,191 @@ test("with the inbox flag on, a resident's digest line is named by the one namin
   };
   assert.equal(titleWith(false), "Watch lint went idle");
   assert.equal(titleWith(true), "Linter watcher went idle");
+});
+
+test("with the inbox flag on, a report is buffered while away and the digest names who posted", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const steve = mkReport({ id: "r-1", createdAt: 1500, author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } });
+  let reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const w = startAwayWatcher(src, () => clock);
+  setAwayConfig({ away: true }, 500);
+  w.tick(); // opens the window
+  // Posted and stamped between two reads: the watcher never saw it unstamped, and it is still news.
+  reports = [{ ...steve, announcedAs: "back", announcedAt: 1600 }];
+  clock = 2000;
+  w.tick();
+  // Posted, read once unstamped, then stamped: news exactly once.
+  const carol = mkReport({ id: "r-2", createdAt: 2500, author: { key: "session:s2", name: "Carol", residentProfileId: null } });
+  reports = [...reports, carol];
+  clock = 3000;
+  w.tick();
+  reports = [reports[0]!, { ...carol, announcedAs: "working", announcedAt: 3500 }];
+  clock = 4000;
+  w.tick();
+  w.tick();
+  const buf = w.buffer()!;
+  assert.deepEqual(buf.events.map((e) => [e.key, e.title, e.count]), [
+    ["report:r-1", "Steve's back: Report r-1", 1],
+    ["report:r-2", "Carol posted a report: Report r-2", 1],
+  ]);
+  assert.equal(rollupLine(buf), "2 reports waiting: Steve and Carol");
+  w.stop();
+  setAwayConfig({ away: false }, 5000);
+});
+
+test("the return digest counts the reports waiting on return, not the announcements buffered", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const named = (id: string, name: string, createdAt: number) =>
+    mkReport({ id, createdAt, author: { key: `session:${name}`, name, residentProfileId: null } });
+  let reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  // Steve's report is announced and buffered.
+  reports = [{ ...named("r-1", "Steve", 1500), announcedAs: "back", announcedAt: 1600 }];
+  clock = 2000;
+  w.tick();
+  assert.equal(rollupLine(w.buffer()!), "1 report waiting: Steve");
+  // Carol posts just before you return; her stamp's grace period is still running.
+  reports = [...reports, named("r-2", "Carol", 2500)];
+  clock = 3000;
+  w.tick();
+  // Read from the phone while away: Steve's leaves, and the preview stops counting it.
+  reports = reports.filter((r) => r.id !== "r-1");
+  clock = 4000;
+  w.tick();
+  assert.equal(rollupLine(w.buffer()!), "");
+  setAwayConfig({ away: false }, 4500);
+  w.flush();
+  const digest = w.takePending()!;
+  assert.equal(rollupLine(digest), "1 report waiting: Carol");
+  assert.deepEqual(counted, [["r-2"]], "every waiting report it counted is reported, so none notifies afterwards");
+  assert.deepEqual(digestLines(digest), ["Carol posted a report: Report r-2 - What I found."]);
+  w.stop();
+});
+
+test("a report stamped while away is reported as counted too, so a window that missed its stamp stays quiet", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  let reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  let claimed = 0;
+  const w = startAwayWatcher(src, () => clock, {
+    reportsCountedInDigest: (ids) => { counted.push(ids); },
+    reportsDigestClaimed: () => { claimed++; },
+  });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  reports = [mkReport({ id: "r-7", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: { key: "session:x", name: "Xan", residentProfileId: null } })];
+  clock = 2000;
+  w.tick();
+  setAwayConfig({ away: false }, 2500);
+  w.flush();
+  // Counted as the window closes, but kept only once a dashboard claims the digest: until then
+  // the mark lives and dies with the digest, which is only in memory.
+  assert.deepEqual([counted, claimed], [[["r-7"]], 0]);
+  assert.equal(rollupLine(w.takePending()!), "1 report waiting: Xan");
+  assert.equal(claimed, 1);
+  // Nothing left to claim: no second claim.
+  assert.equal(w.takePending(), null);
+  assert.equal(claimed, 1);
+  w.stop();
+});
+
+test("turning the inbox flag off while away takes buffered reports out of the digest and keeps everything else", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  let reports: ReportItem[] = [];
+  let sessions = [mkSession({ id: "a", name: "auth", state: "working" as SessionState })];
+  const src = { snapshot: () => ({ sessions, tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  reports = [mkReport({ id: "r-8", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: { key: "session:x", name: "Yara", residentProfileId: null } })];
+  sessions = [{ ...sessions[0]!, state: "idle" as SessionState }];
+  clock = 2000;
+  w.tick();
+  assert.equal(rollupLine(w.buffer()!), "1 report waiting: Yara · 1 finished");
+  // The flag goes off before you return.
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false });
+  clock = 3000;
+  w.tick();
+  assert.equal(rollupLine(w.buffer()!), "1 finished", "the open window's preview stops counting it");
+  setAwayConfig({ away: false }, 3500);
+  w.flush();
+  const digest = w.takePending()!;
+  assert.equal(rollupLine(digest), "1 finished");
+  assert.ok(!digestLines(digest).some((line) => line.includes("Yara")));
+  assert.deepEqual(counted, [], "nothing is marked counted while the flag is off");
+  w.stop();
+});
+
+test("a failed write marking reports counted still closes the window, so the digest is not merged twice", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  t.mock.method(console, "error", () => undefined);
+  let clock = 1000;
+  const reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  let calls = 0;
+  const w = startAwayWatcher(src, () => clock, {
+    reportsCountedInDigest: () => { calls++; throw new Error("database is locked"); },
+  });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  reports.push(mkReport({ id: "r-9", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: { key: "session:z", name: "Zed", residentProfileId: null } }));
+  clock = 2000;
+  w.tick();
+  setAwayConfig({ away: false }, 2500);
+  assert.doesNotThrow(() => w.flush(), "the return that closes the window does not fail with the write");
+  clock = 3000;
+  w.tick(); // a later close finds no window left open
+  w.flush();
+  const digest = w.takePending()!;
+  assert.equal(calls, 1);
+  assert.deepEqual(digest.events.map((e) => [e.key, e.count]), [["report:r-9", 1]]);
+  assert.equal(rollupLine(digest), "1 report waiting: Zed");
+  w.stop();
+});
+
+test("a report posted at the desk between two unclaimed away windows is not counted in their merged digest", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const reports: ReportItem[] = [];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  // First window [1000, 2000], closed and never claimed.
+  setAwayConfig({ away: true }, 1000);
+  w.tick();
+  setAwayConfig({ away: false }, 2000);
+  clock = 2000;
+  w.flush();
+  // At the desk: a report is posted and stays unread.
+  reports.push(mkReport({ id: "r-desk", createdAt: 2500, author: { key: "session:d", name: "Desk", residentProfileId: null } }));
+  // Second window [3000, 4000], also with nothing posted during it.
+  clock = 3000;
+  setAwayConfig({ away: true }, 3000);
+  w.tick();
+  setAwayConfig({ away: false }, 4000);
+  clock = 4000;
+  w.flush();
+  const digest = w.takePending();
+  assert.ok(!digest || !digest.events.some((e) => e.key === "report:r-desk"), "a desk-time report is not away activity");
+  assert.deepEqual(counted, [], "and it is not marked counted");
+  w.stop();
 });
 
 test("workflow transitions use the same away window and coalesce stable ids", () => {
@@ -775,5 +962,41 @@ test("the daemon's repeat-offender channel reaches the buffer", () => {
     (w.buffer()?.events ?? []).filter((event) => event.kind === "workflow-repeat").length,
     1,
   );
+  w.stop();
+});
+
+test("a muted author's reports are never buffered, one muted after buffering leaves, and the digest neither counts nor marks them", (t) => {
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: false }); });
+  applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
+  let clock = 1000;
+  const author = (key: string, name: string) => ({ key, name, residentProfileId: null });
+  let reports: ReportItem[] = [];
+  let reportMutes: { authorKey: string; authorName: string; mutedAt: number }[] = [{ authorKey: "session:loud", authorName: "Loud", mutedAt: 900 }];
+  const src = { snapshot: () => ({ sessions: [], tasks: [], reports, reportMutes }) } as unknown as Parameters<typeof startAwayWatcher>[0];
+  const counted: string[][] = [];
+  const w = startAwayWatcher(src, () => clock, { reportsCountedInDigest: (ids) => { counted.push(ids); } });
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  // Loud is muted: its stamped report is never buffered. Quiet's is.
+  reports = [
+    mkReport({ id: "r-1", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: author("session:loud", "Loud") }),
+    mkReport({ id: "r-2", createdAt: 1500, announcedAs: "back", announcedAt: 1600, author: author("session:quiet", "Quiet") }),
+  ];
+  clock = 2000;
+  w.tick();
+  assert.deepEqual(w.buffer()!.events.map((e) => e.key), ["report:r-2"]);
+  assert.equal(rollupLine(w.buffer()!), "1 report waiting: Quiet");
+  // Quiet is muted too, after its report was buffered: it leaves at the next read.
+  reportMutes = [...reportMutes, { authorKey: "session:quiet", authorName: "Quiet", mutedAt: 2500 }];
+  clock = 3000;
+  w.tick();
+  assert.deepEqual(w.buffer()!.events.map((e) => e.key), []);
+  // An unannounced report posted while away from a muted author is not added when the window closes.
+  reports = [...reports, mkReport({ id: "r-3", createdAt: 3500, author: author("session:loud", "Loud") })];
+  setAwayConfig({ away: false }, 4000);
+  w.flush();
+  const digest = w.takePending();
+  assert.equal(digest ? rollupLine(digest) : "", "");
+  assert.deepEqual(counted, [], "a report the digest did not count is not marked counted, so it would still notify once unmuted");
   w.stop();
 });

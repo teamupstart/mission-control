@@ -182,7 +182,7 @@ export function useForeman(): ForemanState {
           ...patch,
           backlogDefaultModel: {
             ...before.backlogDefaultModel,
-            ...(patch.backlogDefaultModel ?? {}),
+            ...patch.backlogDefaultModel,
           },
         });
         const res = await api.setForemanConfig(patch);

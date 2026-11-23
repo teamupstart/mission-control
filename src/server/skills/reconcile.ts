@@ -6,7 +6,6 @@ import {
   readlinkSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -14,7 +13,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
-import { envVar, stateDir } from "@shared/harness-runtime.mjs";
+import { envVar } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { SkillsSpec, ExtensionsSpec } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";

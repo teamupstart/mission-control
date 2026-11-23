@@ -177,7 +177,6 @@ test("the scrollbar thumb resolves, and paints, a different colour under the poi
   );
 
   if (!painted) {
-    // eslint-disable-next-line no-console
     console.log("paintedStates skipped: the compositor returned no usable frame");
     return;
   }

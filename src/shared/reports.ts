@@ -36,9 +36,18 @@ export type ReportReadBy = (typeof REPORT_READ_BY)[number];
 export const REPORT_DOCUMENT_KINDS = ["html", "markdown"] as const;
 export type ReportDocumentKind = (typeof REPORT_DOCUMENT_KINDS)[number];
 
-/** How a report was announced once its session settled or kept working. Written by a later phase. */
+/**
+ * How a report was announced: `back` when its session stopped within the grace period after
+ * posting, `working` when the grace period ended with it still going. Stamped once by the daemon.
+ */
 export const REPORT_ANNOUNCEMENTS = ["back", "working"] as const;
 export type ReportAnnouncement = (typeof REPORT_ANNOUNCEMENTS)[number];
+
+/**
+ * How long after a post the daemon waits to see the session stop before announcing the report as
+ * still working. A post always happens mid-turn, so "back" can trail the post by up to this.
+ */
+export const REPORT_ANNOUNCE_GRACE_MS = 20_000;
 
 /**
  * Who posted a report, as it was known at post time, so the report can be named after its
@@ -82,6 +91,14 @@ export interface ReportItem {
   followUpTaskId: string | null;
   announcedAs: ReportAnnouncement | null;
   announcedAt: number | null;
+  /**
+   * When a return digest counted this report, or null. The digest already told the operator about
+   * it, so it raises no notification in any window afterwards: not when a stamp still pending
+   * lands, and not when a window that missed its stamp reconnects, reloads, or outlives a daemon
+   * restart. Held by the daemon in memory until a dashboard claims the digest, and stored from
+   * then on: a restart before the claim loses the digest, so it loses the mark too.
+   */
+  countedInDigestAt: number | null;
   /** The scout archive key it was published under (a later phase writes it). */
   publishedArchiveKey: string | null;
 }
@@ -133,14 +150,67 @@ export function reportUpdatedNote(version: number): string | null {
 }
 
 /**
- * When to post a report: the paragraph the tool's description carries. Progress belongs on
- * `report_status`, and anything urgent or anything the operator must decide is a question.
+ * When to post a report, as shipped: the part of the tool's description the operator may edit in
+ * Settings > Reports (`reports.guidance`), and what Reset to default puts back.
  */
-export const REPORT_GUIDANCE =
+export const DEFAULT_REPORT_GUIDANCE =
   "Post a report when your operator asked you for one, or when you have finished something they " +
   "must read in order to act: a diagnosis, the result of an investigation, a summary of work to " +
-  "review. Do not post progress here; use report_status for that. Anything urgent, or anything " +
+  "review.";
+
+/**
+ * The fixed half of the when-to-report paragraph, which no edit replaces: progress belongs on
+ * `report_status`, and anything urgent or anything the operator must decide is a question.
+ */
+export const REPORT_GUIDANCE_RULES =
+  "Do not post progress here; use report_status for that. Anything urgent, or anything " +
   "that needs the operator's decision, is a question: use request_input instead.";
+
+/**
+ * The most report ids one `POST /api/reports/read-all` carries. Mark all read sends the ids the
+ * Reports section lists in batches of this size, so a section of any length is cleared while
+ * each request stays bounded.
+ */
+export const REPORT_READ_ALL_BATCH = 1000;
+
+/** The longest report guidance the operator may save. */
+export const REPORT_GUIDANCE_LIMIT = 2000;
+
+/**
+ * The guidance in force: the operator's own text, or the default while none is saved. Blank
+ * text counts as none, so a cleared box never leaves the tool with nothing to say.
+ */
+export function effectiveReportGuidance(stored: string | null | undefined): string {
+  const text = stored?.trim();
+  return text ? text : DEFAULT_REPORT_GUIDANCE;
+}
+
+/** The when-to-report paragraph `post_report`'s description carries, for a stored guidance. */
+export function postReportGuidance(stored: string | null | undefined): string {
+  return `${effectiveReportGuidance(stored)} ${REPORT_GUIDANCE_RULES}`;
+}
+
+/** The paragraph with the default guidance: what the tool says when the daemon does not answer. */
+export const REPORT_GUIDANCE = postReportGuidance(null);
+
+/**
+ * One muted author (`report_mutes`). A muted agent can still post; from the moment of the mute
+ * its reports raise no notification, are left out of the inbox list, the to read figure and the
+ * Away digest, and stay in its conversation. A mute never marks a report read, so unmuting brings
+ * back every report still waiting.
+ */
+export interface ReportMute {
+  /** The author key the reports carry: `resident:<profileId>` or `session:<sessionId>`. */
+  authorKey: string;
+  /** The author's display name when it was muted, so Settings can name it after it is gone. */
+  authorName: string;
+  mutedAt: number;
+}
+
+/** The muted author keys, for the fold, the notifier and the Away watcher to test against. */
+export function mutedAuthorKeys(mutes: readonly Pick<ReportMute, "authorKey">[] | undefined): ReadonlySet<string> {
+  return new Set((mutes ?? []).map((mute) => mute.authorKey));
+}
 
 /** The tool result: the report's id, and that nothing waits on a reply. */
 export function reportReceipt(report: Pick<ReportItem, "id" | "version">): string {

@@ -1311,7 +1311,7 @@ test("a Persona failing a submission the preflight passed records an operator-vi
     .filter((event) => event.kind === "readiness_review_disagreement");
   assert.equal(advisoryDisagreements.length, 1);
   assert.equal(
-    (advisoryDisagreements[0]?.payload as { policy: string }).policy,
+    (advisoryDisagreements[0]?.payload as { policy: string })?.policy,
     "off",
     "the advisory disagreement records the policy that did not enforce it",
   );
@@ -1692,7 +1692,6 @@ test("sequential A and B preflight repairs retain A's winner through real frozen
   }
   assert.deepEqual(submissionCoverageSelection(h.store, h.store.getSubmission(current.id)!)?.criteria.map((row) => row.matchedClientCriterionIds), [["a1"], ["b1"]]);
 });
-
 
 async function captureFailureHarness(t: TestContext, id: string, options: Parameters<typeof harness>[3] & {
   failure?: "changed" | "missing" | "invalid_utf8";
@@ -2107,7 +2106,6 @@ for (const succeeds of [false, true]) test(`automatic mapping recovery ${succeed
     h.store.listSubmissionTextArtifacts(submission.id).map((v) => v.sha256));
 });
 
-
 test("uncertain capture repair cannot recapture until the operator confirms delivery", async (t) => {
   const id = "capture-uncertain";
   const h = await captureFailureHarness(t, id, { uncertainDelivery: true });
@@ -2248,7 +2246,6 @@ test("restart resumes an atomically reserved capture child without spending a se
   assert.equal(h.injected.length, 1);
 });
 
-
 test("restaging the already-correct registration repairs capture without changing its bytes or generation", async (t) => {
   const id = "capture-restage-identical";
   const h = await captureFailureHarness(t, id);
@@ -2264,7 +2261,6 @@ test("restaging the already-correct registration repairs capture without changin
   assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
   assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((v) => v.clientItemId === "original-handoff"), false);
 });
-
 
 test("registration rejects unknown ids atomically and freezes an authoritative repair id", async (t) => {
   const id = "authoritative-registration";
@@ -2382,7 +2378,6 @@ for (const publicationAction of [true, false]) {
     }
   });
 }
-
 
 for (const priorOverride of [false, true]) test(`existing eight-criterion run recovers publication timing without repeated overrides (prior override: ${priorOverride})`, async (t) => {
   const id = `legacy-publication-${priorOverride}`;

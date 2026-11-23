@@ -76,7 +76,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   const seen = "innerText" in target
     ? (await target.innerText()).split("\n").map((line) => `  | ${line}`).join("\n")
     : "  | (whole page - see the image)";
-  // eslint-disable-next-line no-console
   console.log(
     `CAPTURED e2e/.artifacts/workflow-run-blocker-worklist/${name}.png\n`
     + `OBSERVED ${name}, as the browser rendered it:\n${seen}`,

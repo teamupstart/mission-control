@@ -83,7 +83,6 @@ test("a card derived from a dictated task is named for the work", async ({ dashb
     await dashboard.mouse.move(0, 0);
     await column.screenshot({ path: `${EVIDENCE}01-backlog-cards.png` });
     if (restore) await dashboard.setViewportSize(restore);
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/backlog-card-title/01-backlog-cards.png");
   }
 });

@@ -168,6 +168,5 @@ async function shoot(page: import("@playwright/test").Page, name: string): Promi
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled", fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/telemetry-diagnostics-dashboard/${name}.png`);
 }

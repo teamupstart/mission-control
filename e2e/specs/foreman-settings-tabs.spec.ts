@@ -90,7 +90,6 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
     `a field's explanation is printing under it again: ${JSON.stringify(Object.fromEntries(heights))}`)
     .toBeLessThan(1_300);
   if (process.env.MC_E2E_EVIDENCE) {
-    // eslint-disable-next-line no-console
     console.log(`OBSERVED Foreman control heights: ${JSON.stringify(Object.fromEntries(heights))}`);
   }
 

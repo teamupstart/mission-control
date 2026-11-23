@@ -44,7 +44,7 @@ type Decision =
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
   | { kind: "addressed"; command?: "stop"; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
   | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
-  | { kind: "ignored"; reason: "near-miss" | "no-name"; closest?: string };
+  | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message"; closest?: string };
 
 function normalized(text: string): string {
   return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
@@ -105,10 +105,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     const near = names.filter(({ name }) => Math.abs(name.length - first.length) <= 1 && editDistance(first, name) === 1);
     if (!near.length) return { kind: "ignored", reason: "no-name" };
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
-    candidates = near.map(({ target }) => target);
+    return { kind: "ignored", reason: "near-miss" };
   }
   const last = tokens[count - 1]!;
   const body = text.slice(last.index + last[0].length).replace(/^[,\s]+/u, "");
+  if (tokens.length === count) return { kind: "ignored", reason: "no-message" };
   const before = words[count - 1];
   const after = words[count];
   const pauseMs = before && after ? after.startMs - before.endMs : null;

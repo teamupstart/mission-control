@@ -27,7 +27,9 @@ over a longer call sign. A later mention alone (“Please ask Will”) is ignore
 descriptive only. A two-word name can also match, and a phonetic match such as “Steven” or
 “Steve’s” can address Steve. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
-Ambiguous matches open an unsure card, as does a later agent mention after a phonetic or
+A spelling near-miss is ignored even when several names are one edit away. A bare name picks an
+open unsure card’s candidate when it matches one; otherwise it leaves a `no-message` entry.
+Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with

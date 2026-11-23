@@ -53,9 +53,11 @@ test("two-word call signs and a subsequent agent name", () => {
   }
 });
 
-test("a weak match names its nearest candidate, and two plausible names require a pick", () => {
+test("weak spelling matches are ignored even when two names are equally close", () => {
   assert.deepEqual(route("Pat go", ["Cat"]), { kind: "ignored", reason: "near-miss", closest: "Cat" });
-  assert.equal(route("Pat go", ["Cat", "Rat"]).kind, "needs-model");
+  for (const text of ["fill in the form", "till tomorrow"]) {
+    assert.deepEqual(route(text, ["Will", "Bill"]), { kind: "ignored", reason: "near-miss" });
+  }
   assert.deepEqual(route("Morning everyone"), { kind: "ignored", reason: "no-name" });
 });
 
@@ -71,4 +73,11 @@ test("Release wins the exact first word even when Release Captain is listed firs
   assert.deepEqual(route("Release Captain, run tests", ["Release Captain", "Release"]), {
     kind: "addressed", target: agent("Release"), match: "exact", text: "Captain, run tests", pauseMs: null,
   });
+});
+
+
+test("a bare name without an unsure card has no message", () => {
+  for (const text of ["Steve.", "Will?", "Steven,", "Release Captain"]) {
+    assert.deepEqual(route(text, ["Steve", "Will", "Release Captain"]), { kind: "ignored", reason: "no-message" });
+  }
 });

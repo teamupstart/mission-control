@@ -40,7 +40,7 @@ const readHeard = async () => (await (await app.request("/api/voice/heard", { he
 const act = (id: string, action: string, body?: unknown) => post(`/api/voice/cards/${id}/${action}`, body);
 const name = (name: string): SpokenName => ({ key: "task:" + name, name, kind: "session", taskId: name,
   sessionId: "sdk:" + name, role: "", colorId: null, agent: "claude", state: "running" });
-const roster = ["Steve", "Will"].map(name);
+const roster = ["Steve", "Will", "Bill"].map(name);
 for (const target of roster) registry.registerSdkSession({ id: target.sessionId!, agent: "claude", name: target.name, cwd: home, agentSessionId: target.key });
 voiceStateStore.useRoster(() => roster);
 pending.start();
@@ -196,4 +196,16 @@ test("the downstream say fixture establishes a listener and posts contiguous or 
   const entries = await readHeard();
   assert.equal(entries[0]?.pauseMs, -30);
   assert.deepEqual(entries.map((entry) => [entry.matchedName, entry.rule]), [["Will", "exact"], ["Will", "exact"]]);
+});
+
+test("two weak matches followed by a bare name leave only ignored history", async () => {
+  const before = queued("Will");
+  for (const text of ["fill in the form", "till tomorrow", "Will?"]) await say(text);
+  assert.deepEqual((await readHeard()).map(({ outcome, rule }) => [outcome, rule]), [
+    ["ignored", "no-message"], ["ignored", "near-miss"], ["ignored", "near-miss"],
+  ]);
+  assert.deepEqual(cards, []);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.deepEqual(registry.voiceRouter!.pendingVoiceActions, []);
+  assert.deepEqual(queued("Will"), before);
 });

@@ -67,16 +67,20 @@ async function call<T>(
   } catch {
     return { kind: "down" };
   }
-  // While the flag is off the whole group answers 404 `{ feature: "headless-mode" }`.
-  if (reply.status === 404) return { kind: "off" };
-  if (reply.status === 401) return { kind: "unauthorized" };
-  if (reply.status !== 200) return { kind: "error", status: reply.status };
   let body: unknown;
   try {
     body = JSON.parse(reply.text);
   } catch {
-    return { kind: "error", status: reply.status };
+    body = undefined;
   }
+  // While the flag is off the whole group answers 404 `{ feature: "headless-mode" }`. Any other 404
+  // (a route that is not there, a session the daemon forgot) is an error, not the flag being off.
+  if (reply.status === 404) {
+    const featured = body && typeof body === "object" && (body as { feature?: unknown }).feature === "headless-mode";
+    return featured ? { kind: "off" } : { kind: "error", status: 404 };
+  }
+  if (reply.status === 401) return { kind: "unauthorized" };
+  if (reply.status !== 200 || body === undefined) return { kind: "error", status: reply.status };
   const value = parse(body);
   return value === null ? { kind: "error", status: reply.status } : { kind: "ok", value };
 }

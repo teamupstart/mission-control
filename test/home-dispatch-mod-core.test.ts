@@ -556,3 +556,19 @@ test("stopping an active core closes its pane, and stopping an inert one calls n
   off.core.stop();
   assert.equal(off.fake.paneCloses, 0);
 });
+
+test("a 404 that is not the flag-off answer is an error, not the flag being off", async () => {
+  const { daemon, fake, core } = setup();
+  await core.start();
+  assert.equal(core.phase(), "active");
+  // The daemon forgets the route: not the flag, so nothing is cleared and the poll keeps trying.
+  daemon.override("GET /dispatch/inbox", () => ({ status: 404, body: { error: "not found" } }));
+  const bandsBefore = fake.bands.length;
+  await core.tick();
+  assert.equal(core.phase(), "active");
+  assert.equal(fake.bands.length, bandsBefore);
+  // The flag-off answer is the one that clears it.
+  daemon.setFlag(false);
+  await core.tick();
+  assert.equal(core.phase(), "connecting");
+});

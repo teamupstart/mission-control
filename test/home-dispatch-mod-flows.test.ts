@@ -79,6 +79,7 @@ function world(options: { host?: Omit<FakeModHostOptions, "daemon">; refuseRepo?
     const draft = drafts.get(request.params.id!);
     if (!draft) return { status: 404, body: { error: "no such draft" } };
     const body = HomeDispatchDraftUpdateSchema.parse(request.body);
+    if (body.repo !== undefined && options.refuseRepo?.includes(body.repo)) return { status: 400, body: { error: `unknown repository ${body.repo}` } };
     if (body.kind !== undefined) draft.kind = body.kind;
     if (body.workflowId !== undefined) draft.workflowId = body.workflowId;
     if (body.repo !== undefined) draft.repo = body.repo;
@@ -509,6 +510,33 @@ test("a draft that still needs a repository asks for one, updates the draft, and
   assert.ok(fake.notices.some((n) => n.startsWith("Repo: /fake/other\n")));
   assert.deepEqual(filed.map((f) => f.choice), ["start"]);
   assert.match(fake.notices.at(-1)!, /^Started mc-new1: .+, in other\.$/);
+});
+
+test("a draft that needs a repository retries a refused name, three attempts in all", async () => {
+  const typed = ["bad1", "bad2", "/fake/other"];
+  const recovered = world({
+    needsRepo: true,
+    refuseRepo: ["bad1", "bad2", "bad3"],
+    host: { answers: (q) => q.header === "Repo" ? { kind: "other", text: typed.shift()! } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  await runDispatchCommand(recovered.fake.host, SESSION, "ship add retries");
+  const repoAsks = recovered.fake.dialogs.filter((d) => d.header === "Repo");
+  assert.equal(repoAsks.length, 3);
+  assert.match(repoAsks[1]!.question, /^unknown repository bad1\./);
+  assert.deepEqual(recovered.filed.map((f) => f.choice), ["start"]);
+
+  const typedBad = ["bad1", "bad2", "bad3"];
+  const refused = world({
+    needsRepo: true,
+    refuseRepo: ["bad1", "bad2", "bad3"],
+    host: { answers: (q) => q.header === "Repo" ? { kind: "other", text: typedBad.shift()! } : { kind: "pick", label: q.options[0]!.label } },
+  });
+  await runDispatchCommand(refused.fake.host, SESSION, "ship add retries");
+  const updates = refused.daemon.requests.filter((r) => r.pattern === "/dispatch/drafts/:id");
+  assert.deepEqual(updates.map((r) => (r.body as { repo: string }).repo), ["bad1", "bad2", "bad3"]);
+  assert.equal(refused.fake.notices.at(-1), "unknown repository bad3");
+  assert.equal(refused.fake.dialogs.some((d) => d.header === "Confirm"), false);
+  assert.deepEqual(refused.filed, []);
 });
 
 test("dismissing the repository question cancels the draft and files nothing", async () => {

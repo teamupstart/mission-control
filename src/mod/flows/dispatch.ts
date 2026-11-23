@@ -243,11 +243,20 @@ export async function completeDraft(
 ): Promise<FlowResult> {
   let summary = first;
   if (summary.needs.includes("repo")) {
-    const named = await askText(host, "Repo", NEEDS_REPO_QUESTION);
-    if (named === undefined) return cancel(host, session, summary.draftId);
-    const updated = await updateDraft(host, session, summary.draftId, { repo: named });
-    if (!updated.ok) return fail(host, updated);
-    summary = updated.value;
+    // The same three attempts createDraftAsking gives: a refused name is asked about again, and
+    // the last refusal is shown as written.
+    let question = NEEDS_REPO_QUESTION;
+    for (let tries = 0; ; tries += 1) {
+      const named = await askText(host, "Repo", question);
+      if (named === undefined) return cancel(host, session, summary.draftId);
+      const updated = await updateDraft(host, session, summary.draftId, { repo: named });
+      if (updated.ok) {
+        summary = updated.value;
+        break;
+      }
+      if (updated.kind !== "refused" || !isRepoSelectorRefusal(updated) || tries === 2) return fail(host, updated);
+      question = `${updated.error}. ${NEEDS_REPO_QUESTION}`;
+    }
   }
   return summary.needs.includes("description")
     ? requestDescription(host, session, summary)

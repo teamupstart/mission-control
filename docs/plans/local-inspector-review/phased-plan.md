@@ -3,11 +3,12 @@
 Source plan: `docs/plans/local-inspector-review/plan.md`. The operator approved its design and
 decisions on 2026-11-23 as managed plan revision 7. The text beside this index is later:
 revisions 8 and 9 added this index and the phase files, revision 10 changed the wording of one
-rule after review of the pull request (the spent-allowance rule in design item 2), and
-revision 11 changed only this paragraph. None changed a decision. Mission Control records the
-approval of each exact revision. Revisions 9 and 10 were approved on 2026-11-23 under the
-operator's standing approval for this plan, and the source plan's review record lists every
-change to it.
+rule after review of the pull request (the spent-allowance rule in design item 2), revision 11
+changed only this paragraph, and revision 12 states where Dry run is checked for a locally
+reviewed head (design item 7, Phases 5 and 6). None changed a decision. Mission Control
+records the approval of each exact revision. Revisions 9 to 11 were approved on 2026-11-23
+under the operator's standing approval for this plan, and the source plan's review record
+lists every change to it.
 
 Six serial merge units. Phases 1 to 3 are the three phases of the approved repository-access
 plan and keep their existing phase files. Phases 4 to 6 are new and have phase files beside
@@ -153,6 +154,9 @@ until the Phase 4 measurement is in.
 - Until Phase 6, a repository holding the merge grant is never treated as locally reviewed:
   the gate and the worker keep the GitHub review for every head there. Phase 6 removes that
   exception in the same change that teaches the merge predicate the `local` posture.
+- The posture `local` is recorded only while the Inspector's current posture is `live`. In
+  Dry run a matched head is recorded as `dry-run`. Phase 6 keeps the merge predicate's
+  current-posture gate first, so nothing merges in Dry run, a matching local pass included.
 
 ## Final verification strategy
 
@@ -164,4 +168,5 @@ until the Phase 4 measurement is in.
 - After Phase 5: a converged change produces one push and one CI run and completes with no
   GitHub review. A binding pinned to version 22 behaves as before. A repository
   holding the merge grant still gets a GitHub review for every head.
-- After Phase 6: a locally reviewed head merges under YOLO, and an amended head does not.
+- After Phase 6: a locally reviewed head merges under YOLO, and an amended head does not. In
+  Dry run nothing merges.

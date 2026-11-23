@@ -277,7 +277,7 @@ Add a boolean to the Inspector config, `localReview`, default off. It lives in t
 | Setting | Before the pull request | After the pull request |
 | --- | --- | --- |
 | Local review off (today) | Nothing | Every pushed head is reviewed on GitHub. Live posts, Dry run records |
-| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted. This is "local only, no GitHub comments" |
+| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted. Nothing merges. This is "local only, no GitHub comments" |
 | Local review on, Live | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed and posted as today |
 
 "Other heads" are later pushes whose content differs from what was reviewed locally (CI
@@ -334,6 +334,15 @@ head has none. Under D2 Shipping accepts a matching local review as merge proven
 review posture, `local`, appended to `INSPECTOR_POSTURES`, valid only while Local review is on
 and only for a head whose tree and base match. Until Phase 6 lands, repositories holding the
 merge grant keep the GitHub review for every head.
+
+Dry run stays dry for a locally reviewed head, and the rule is enforced twice. The merge
+predicate's first gate reads the Inspector's current posture and refuses every merge while
+the Inspector is off, in Dry run, or the repository is not on its list. That gate stays first
+and unchanged. And the worker records the `local` posture only while that current posture is
+Live. In Dry run a matched head still gets no GitHub review and no post, but it is recorded
+with the current posture (`dry-run` or `not-allowlisted`), as a dry review is today. When the
+operator switches to Live, the next sweep finds the match still holds and records `local`
+without a GitHub review, because a local review withheld nothing from publication.
 
 ### User-visible surfaces
 
@@ -509,7 +518,8 @@ is switched off.
   evidence, allowance and exhaustion policy, skip reasons, restart recovery.
 - Gate tests: a matching tree completes, a moved head does not, a skipped stage falls back.
 - Worker tests: no review, reply or post for a matched head. Observation continues.
-- Shipping tests (Phase 6): refusal for an unreviewed, amended or later-pushed head.
+- Shipping tests (Phase 6): refusal for an unreviewed, amended or later-pushed head, and for a
+  matching local pass while the Inspector is in Dry run.
 - A Codex Local Inspector review that reads the worktree through the repository workload
   (Phase 4).
 - Playwright specs for every surface above. Typecheck, lint, build, smoke.
@@ -551,6 +561,9 @@ against the exact revision, not in this file.
 - 2026-11-23, review of the pull request. Design item 2 stated the spent-allowance rule two
   ways. Revision 10 states one: the slot's exhaustion policy decides, with Block as the
   default.
+- 2026-11-23, Plan Validation review. Design item 7 did not say where Dry run is checked for a
+  locally reviewed head. Revision 12 states it: the merge predicate's current-posture gate,
+  and the worker recording `local` only under Live.
 
 ## Evidence
 

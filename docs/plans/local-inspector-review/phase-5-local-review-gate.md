@@ -49,10 +49,15 @@ No change to Personas, to the slot, or to what Phase 4 records.
    existing `head_mismatch` wait. A skipped or absent stage keeps the GitHub path. Record
    which path the gate took.
 4. Append `local` to `INSPECTOR_POSTURES` in `src/shared/inspector.ts`. Make
-   `reviewNeedsLiveRerun` leave a matched `local` head alone while `localReview` is on.
+   `reviewNeedsLiveRerun` leave a matched `local` head alone while `localReview` is on. A
+   matched head recorded under Dry run is recorded again as `local` on the first sweep after
+   the operator switches to Live, with no GitHub review, because the match still holds.
 5. In `processPr`, ask the manager for the match after observation. On a match: answer no
-   thread, run no review, post nothing, and record the head with posture `local`.
-   Observation, CodeRabbit follow-up, the stack lifecycle and the merge check still run.
+   thread, run no review and post nothing. Record the head with posture `local` only while the
+   Inspector's current posture for the repository is `live`. In Dry run, or on a repository not
+   on the Inspector's list, record the current posture (`dry-run` or `not-allowlisted`), as a
+   dry review is recorded today, so Dry run never produces a `local` head. Observation,
+   CodeRabbit follow-up, the stack lifecycle and the merge check still run.
 6. Show the state: the session chip and the Completion tab say the head was reviewed locally
    and list the attempt's findings. Update the Settings copy for the Local review control.
 7. Decide and record whether local findings are mirrored into the Inspections table at
@@ -66,13 +71,16 @@ No change to Personas, to the slot, or to what Phase 4 records.
 - With the flag or setting off, version 23 behaves as version 22: the stage skips.
 - A head that does not match is an "other head" and keeps today's GitHub review.
 - Until Phase 6, a repository holding the merge grant keeps the GitHub review for every head.
+- A `local` posture is only ever recorded under a Live Inspector. Dry run records `dry-run`
+  for a matched head, so the merge predicate's existing checks keep Dry run dry.
 
 ## 7. Tests and verification
 
 - Gate tests in `test/workflow-inspector-gate.test.ts`: a matching tree completes, a moved head
   does not, a skipped stage falls back, a repository holding the merge grant falls back, a
   restart keeps the recorded path.
-- Worker tests: a matched head gets no review, reply or post, and observation continues.
+- Worker tests: a matched head gets no review, reply or post, and observation continues. A
+  matched head in Dry run is recorded as `dry-run`, and as `local` after a switch to Live.
 - Built-in catalog tests for version 23 and for unchanged earlier versions.
 - Playwright: the version 23 pipeline, the Completion tab's local state and the chip.
 - Run `npm run typecheck`, `npm run lint`, the focused tests, `npm run build`,
@@ -85,12 +93,14 @@ No change to Personas, to the slot, or to what Phase 4 records.
 - A later push with different content is reviewed on GitHub as today.
 - Shipping still refuses a `local` posture, and no repository holding the merge grant records
   one.
+- With the Inspector in Dry run, a matched head gets no GitHub review and is never recorded as
+  `local`.
 
 ## 9. Downstream handoff
 
 Phase 6 may rely on the manager's match question and on the `local` posture recorded for a
-matched head. It must not add a second owner of the match. It removes the
-merge-grant exception.
+matched head, which is only ever recorded under a Live Inspector. It must not add a second
+owner of the match. It removes the merge-grant exception.
 
 ## 10. Cross-phase audit record
 
@@ -101,3 +111,6 @@ merge-grant exception.
 - 2026-11-23: reconciled with the source plan's design item 7. Until Phase 6, a repository
   holding the merge grant keeps the GitHub review for every head, so no head is left without
   merge provenance between the two phases.
+- 2026-11-23: reconciled with the source plan's rule that Dry run means dry for the merge. The
+  `local` posture is recorded only under a Live Inspector, and Phase 6 keeps the merge
+  predicate's current-posture gate first.

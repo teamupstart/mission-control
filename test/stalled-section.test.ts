@@ -11,7 +11,7 @@ import { captureStalls, currentStalls } from "../src/web/lib/stalls.ts";
 import { orderSessions, stalledInOrder } from "../src/web/lib/fleet-order.ts";
 import { attentionDismissalKeys, foldAttention, stallDismissalKey } from "../src/web/lib/attention.ts";
 import type { Session } from "../src/shared/types.ts";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 function stall(sessionId: string, kind: Stall["kind"], fingerprint = `${kind}-${sessionId}`): Stall {
   return { sessionId, kind, forMs: 30 * 60_000, reason: `stall ${kind}`, fingerprint };
@@ -147,6 +147,16 @@ test("new session activity retires a cached legacy occurrence until a fresh poll
   const fresh = captureStalls([legacy], [advanced]);
   assert.deepEqual(currentStalls(fresh, [advanced]), fresh);
   assert.notEqual(fresh[0]!.fingerprint, cached[0]!.fingerprint);
+});
+
+test("a cached open-task stall expires when the session changes or closes its task", () => {
+  const task = mkTaskSummary();
+  const session = { ...idleSession("s-idle"), task };
+  const cached: Stall[] = [{ ...IDLE_WORK, facts: { kind: "unfinished-work", task, queueOpen: 0 } }];
+  assert.equal(currentStalls(cached, [session]), cached);
+  for (const changed of [mkTaskSummary({ id: "new-task" }), mkTaskSummary({ status: "done" }), null]) {
+    assert.deepEqual(currentStalls(cached, [{ ...session, task: changed }]), []);
+  }
 });
 
 test("board and inbox honor the old reason hash only for a fingerprintless daemon response", () => {

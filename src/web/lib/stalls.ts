@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import { hasOpenStallTask, legacyStallFingerprint, type Stall } from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -21,13 +21,17 @@ export function captureStalls(stalls: Stall[], sessions: readonly Session[]): Ob
 
 /** A session update can retire a cached stall. Only a fresh poll can report a new occurrence. */
 export function currentStalls(stalls: ObservedStall[] | undefined, sessions: readonly Session[]): Stall[] | undefined {
-  if (!stalls?.some(stall => stall.legacy)) return stalls;
+  if (!stalls?.length) return stalls;
   const byId = new Map(sessions.map(session => [session.id, session]));
-  return stalls.filter(stall => {
-    if (!stall.legacy) return true;
+  const current = stalls.filter(stall => {
     const session = byId.get(stall.sessionId);
-    return session && legacyStallFingerprint(stall, session) === stall.fingerprint;
+    if (stall.legacy && (!session || legacyStallFingerprint(stall, session) !== stall.fingerprint)) return false;
+    const task = stall.facts?.kind === "unfinished-work" ? stall.facts.task : null;
+    // SSE can reassign or finish a task before the next away poll. Its old card and
+    // Mark done action expire together. A poll may also arrive before the SSE snapshot.
+    return !task || !session || (task.id === session.task?.id && hasOpenStallTask(session));
   });
+  return current.length === stalls.length ? stalls : current;
 }
 
 /**

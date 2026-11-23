@@ -206,12 +206,11 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
     return session?.agentSessionId ? session.state : null;
   }, { timeout: 60_000 }).toBe("idle");
 
-  // An idle stall on the session's own open task, served as the daemon reports one
-  // (`detectStall`'s unfinished-work facts), so Mark done has the real task to complete.
-  const facts: StallFacts = { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 0 };
+  // The poll still names a previous assignment until it catches up with the live session.
+  let observedTask = { id: "previous-task", title: "Previous assignment" };
   await page.route("**/api/away/stalls", (route) => route.fulfill({ json: [{
     sessionId: session.id, kind: "unfinished-work", forMs: 21 * 60_000, reason: "idle 21m with work unfinished",
-    facts, fingerprint: "open-task",
+    facts: { kind: "unfinished-work", task: observedTask, queueOpen: 0 }, fingerprint: observedTask.id,
   } satisfies Stall] }));
   const completions: unknown[] = [];
   page.on("request", (request: Request) => {
@@ -222,9 +221,15 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
 
   const { config } = await api<{ config?: { layout?: string } }>(daemon, "/api/ui/config", { layout: "board" }, "PUT");
   expect(config?.layout).toBe("board");
-  await page.reload();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/away/stalls")),
+    page.reload(),
+  ]);
   await expect(page.locator("main.board")).toBeVisible();
   const card = page.getByRole("group", { name: `Why ${session.name} stalled` });
+  await expect(page.getByRole("button", { name: `Open ${session.name}`, exact: true })).toBeVisible();
+  await expect(card).toHaveCount(0);
+  observedTask = { id: task.id, title: task.title };
   await expect(card).toContainText("Tidy the changelog", { timeout: 15_000 });
   expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
 

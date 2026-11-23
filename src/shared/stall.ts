@@ -169,7 +169,7 @@ export type StallFacts =
   };
 
 /** Open work that needs completion, rather than a resident's standing role. */
-function taskOpen(s: Session): boolean {
+export function hasOpenStallTask(s: Session): boolean {
   // A resident keeps its task running between iterations. That alone is not a stall;
   // explicit queue work and parked workflows still count in workOutstanding.
   if (s.task?.kind === "resident") return false;
@@ -231,7 +231,7 @@ type Outstanding =
 function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outstanding | null {
   const parked = parkedRunFor(s, runs);
   if (parked) return { kind: "workflow-parked", run: parked };
-  if (taskOpen(s)) return { kind: "unfinished-work" };
+  if (hasOpenStallTask(s)) return { kind: "unfinished-work" };
   return queueOpen(s) > 0 ? { kind: "unfinished-work" } : null;
 }
 
@@ -263,7 +263,7 @@ function factsFor(
     case "unfinished-work":
       return {
         kind,
-        task: taskOpen(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
+        task: hasOpenStallTask(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
         queueOpen: queueOpen(s),
       };
     case "workflow-parked": {

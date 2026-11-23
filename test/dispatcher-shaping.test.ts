@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task } from "../src/shared/types.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 
 // Task shaping at dispatch, end to end through the real `Dispatcher` on every harness and
 // runtime: where the section lands in turn one, that nothing changes with the flag off or no
@@ -25,6 +25,9 @@ process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
 process.env.MISSION_PI_BIN = "/bin/echo";
+// Run from inside a Mission Control worker, the suite inherits that worker's own work unit,
+// and a launch "without" one would then still export it to the budget being measured.
+delete process.env.WORK_UNIT_ID;
 process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
 writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 
@@ -199,7 +202,7 @@ async function terminalDispatch(options: DispatchOptions): Promise<Run> {
         agent: options.agent, event: "SessionStart", sessionId: nativeId, cwd, transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}-${seq}`, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}-${seq}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (session, text) => {
       pasted = text;
@@ -963,7 +966,10 @@ test("Pi's launch argument: a terminal whose own environment leaves too little r
         registry.applyDiscovery([discovered]);
         registry.applyHook({ agent: "pi", event: "SessionStart", sessionId: `native-pi-pane-env-${seq}`, cwd, transcriptPath: null,
           env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
-        return { homeName: `home-pi-pane-env-${seq}`, homeBackend: "tmux", terminalResourceId: null, launchStateHome: stateHome! };
+        // The wrapper has already exited, so the launch is identified by the pane it opened.
+        const opened = discovered.terminals[0] as { session: string };
+        return { homeName: `home-pi-pane-env-${seq}`, homeBackend: "tmux", terminalResourceId: `multiplexer:tmux:${opened.session}`,
+          launchStateHome: stateHome! };
       },
       inject: async () => { throw new Error("Pi's turn one travels in its launch argument"); },
     }).dispatch("pi-pane-env");
@@ -1020,7 +1026,7 @@ test("a Pi outcome file that cannot be removed never fails a launched dispatch",
         registry.applyDiscovery([discovered]);
         registry.applyHook({ agent: "pi", event: "SessionStart", sessionId: `native-pi-outcome-${seq}`, cwd, transcriptPath: null,
           env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
-        return { homeName: `home-pi-outcome-${seq}`, homeBackend: "tmux", terminalResourceId: null };
+        return { homeName: `home-pi-outcome-${seq}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
       },
       inject: async () => { throw new Error("Pi's turn one travels in its launch argument"); },
     }).dispatch("pi-outcome-cleanup");
@@ -1286,12 +1292,15 @@ test("a terminal launch replaced while its prompt was being delivered retires it
     spawn: async (_label, _short, cwd) => {
       const n = homes.length;
       const nativeId = `native-replaced-terminal-${n}`;
-      const discovered = mkDiscovered({ agent: "claude", cwd, syntheticId: `sid-replaced-terminal-${n}-${++seq}` });
+      const muxSession = `launch-${n}-${++seq}`;
+      // The pane its spawn opened, so discovery can tell this launch's worker from the other's.
+      const discovered = mkDiscovered({ agent: "claude", cwd, syntheticId: `sid-replaced-terminal-${n}-${seq}`,
+        terminals: [mkMuxHandle({ session: muxSession, paneId: `%${400 + n}` })] });
       registry.applyDiscovery([discovered]);
       registry.applyHook({ agent: "claude", event: "SessionStart", sessionId: nativeId, cwd, transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId } });
       homes.push(`home-replaced-terminal-${n}`);
-      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: `multiplexer:tmux:launch-${n}-${seq}` };
+      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: `multiplexer:tmux:${muxSession}` };
     },
     inject: async (session, text) => {
       const n = sessions.push(session.id) - 1;
@@ -1366,7 +1375,7 @@ test("a terminal launch replaced while it waited for readiness never writes its 
       homes.push(`home-replaced-ready-${n}`);
       // The first agent proves it can read only when the test says so.
       if (n === 0) { readyHooks.push(hook); firstSpawned(); } else hook();
-      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: homes[n]!, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (session, text) => {
       registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: session.agentSessionId ?? session.id, cwd: session.cwd,
@@ -1387,15 +1396,15 @@ test("a terminal launch replaced while it waited for readiness never writes its 
   // The first agent becomes ready while its replacement has no terminal yet.
   readyHooks[0]!();
   await original;
-  // Its spawn reported no launch identity, so nothing was closed: never a terminal by its name.
-  assert.deepEqual(killed, [], "a home with no launch identity is left standing, not closed by name");
+  // It retired its own home, by the identity its spawn returned, and only that one.
+  assert.deepEqual(killed, [homes[0]], "the replaced attempt closed its own home, and only that");
   assert.equal(registry.getTask(taskId)?.terminalResourceId ?? null, null, "and wrote no terminal onto the replacement");
   assert.equal(registry.getTask(taskId)?.homeName ?? null, null);
   releaseSecondShaping();
   await replacement;
   assertRunning(registry.getTask(taskId)!);
   assert.equal(registry.getTask(taskId)?.homeName, homes[1]);
-  assert.deepEqual(killed, []);
+  assert.deepEqual(killed, [homes[0]]);
 });
 
 test("a section the final check drops counts nothing as delivered, and keeps each shaper's outcome", async () => {

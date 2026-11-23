@@ -6,8 +6,14 @@ initial intent without hiding a failed choice behind an unrelated fallback.
 
 The [dispatcher](../src/server/dispatcher.ts) coordinates launch. Runtime selection lives
 with the [harness configuration](../src/server/harnesses.ts), while the [SDK supervisor](../src/server/sdk/supervisor.ts)
-owns embedded turns after launch. Terminal execution uses a home and waits for discovery;
-an SDK turn has no terminal home or discovery wait.
+owns embedded turns after launch. Terminal execution uses a home and waits for discovery
+of the worker that home's own spawn started. That worker is matched by the terminal resource
+the spawn returned, or by descent from the spawn's launch wrapper, never by the checkout
+alone, which a cancelled launch can still share. The spawn returns its launch state home on
+every backend, so discovery can read the wrapper's identity from it when the backend reports
+no terminal resource; only emulator spawns also return the wrapper's process directly. The
+[dispatch runtime contract](agent-guides/architecture.md#dispatch-runtime) has the full rule.
+An SDK turn has no terminal home or discovery wait.
 
 This split lets the dashboard offer one task experience without pretending the runtimes are
 identical. A terminal runtime is controlled through a pane. An SDK runtime is driven by

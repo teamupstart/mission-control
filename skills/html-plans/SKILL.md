@@ -56,7 +56,8 @@ apply only to plans owned by this Mission Control workflow.
    cleanup. Do not copy excluded HTML into a normal checkout path or stage it manually.
 6. For final local approval, call `request_plan_decisions` with `managedPlan: {repoSlot,
    planId, revision}` for the complete final bundle. The daemon adds its explicit final-approval
-   decision and exact preview. Dismissal and choices from an earlier revision are not approval.
+   decision and exact preview. Dismissal and choices from an earlier revision are not approval,
+   and neither is a filed receipt: wait for the answer message before reading the revision back.
    If phasing or repairs change any file, save the complete new revision and obtain approval again.
    Save is neither approval nor publication. Commit and verify only returned `requiredPaths`
    when the task's completion handoff permits it. Cite repository Markdown in downstream tasks;
@@ -126,9 +127,15 @@ human selects and submits, and act on what comes back.
 
 Call the Mission Control MCP tool **`request_plan_decisions`**. It shows the plan in the
 dashboard with your decision points rendered as radio buttons (choose one) or checkboxes
-(choose many) plus Submit and Dismiss buttons, **blocks until the human submits or dismisses
-that decision set**, and returns either their selections or an explicit dismissal as the
-tool result. You do not need to know your session id or post anything yourself - the
+(choose many) plus Submit and Dismiss buttons, and is a **gate until the human submits or
+dismisses that decision set**. The tool result is one of two things. Either it carries their
+selections or an explicit dismissal, because the call waited for them; or it is a receipt
+saying the plan is filed and not answered. On a receipt, do only read-only preparation - no
+edits, saves, commits, pushes or tasks - do not file the form again or poll, then say what is
+waiting and end your turn. The answer arrives later as a message that restates the plan and
+each decision, and you act on it exactly as you would on the tool result. If the operator tells
+you the scope changed, take the form back with `withdraw_question` and its review id and a
+reason, then file the revised plan. You do not need to know your session id or post anything yourself - the
 dashboard binds the resolution straight back to this session. On the root plan's first review,
 append the phased implementation follow-up above after these plan-specific decisions. If the request is
 dismissed, stop without applying a choice or invoking `phased-plan`; never infer selections

@@ -135,7 +135,7 @@ async function postReview(input: {
   decisions?: unknown;
   managedPlan?: unknown;
   snoozable?: boolean;
-  /** This child can hand back a receipt instead of long-polling. Only `request_input` says so. */
+  /** This child can hand back a receipt instead of long-polling. `request_input` and `request_plan_decisions` say so. */
   asyncCapable?: boolean;
   meanwhile?: string;
 }): Promise<CreatedReview> {
@@ -496,8 +496,13 @@ server.registerTool(
     description:
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
       "human can resolve by selecting options and clicking Submit, or dismiss without an " +
-      "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
-      "their selections or an explicit dismissal so you can proceed appropriately. The human " +
+      "answer when the decision set is stale. The result says which of two things happened. " +
+      "Either it carries their selections or an explicit dismissal, because this call waited " +
+      "for them; or it is a receipt saying the plan is filed and NOT answered. The form is a " +
+      "gate either way: on a receipt, do only read-only preparation, make no edits, commits, " +
+      "pushes or other outward action, do not file it again or poll, then say what is waiting " +
+      "and end your turn. The answer arrives later as a message in this conversation, restating " +
+      "the plan and each decision. A dismissal is not approval. The human " +
       "may move any decision to chat instead of choosing; the result then names it and says " +
       "how to discuss it, and you must not decide or re-ask it. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
@@ -542,8 +547,11 @@ server.registerTool(
   },
   async ({ title, plan, decisions, managedPlan }, extra) => {
     try {
-      const id = await createReview("plan-decisions", title, plan, decisions, managedPlan);
-      const review = await waitForResolution(id, extra);
+      // `asyncCapable`: the daemon decides how this form waits (`filed-plan-decisions`). Told
+      // `message`, the plan is filed and the receipt is the whole result - nothing long-polls.
+      const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true });
+      if (created.wait === "message") return textResult(created.receipt);
+      const review = await waitForResolution(created.id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
@@ -1085,7 +1093,7 @@ server.registerTool(
   "list_open_questions",
   {
     title: "List your open questions",
-    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
+    description: "List your own outstanding request_input questions, including snoozed questions and questions waiting in a call, and your filed request_plan_decisions forms. Each entry names its kind. Requires async-input. Use for housekeeping, never to poll for answers: answers arrive as messages.",
     inputSchema: {},
   },
   async () => {
@@ -1102,7 +1110,7 @@ server.registerTool(
   "withdraw_question",
   {
     title: "Withdraw your question",
-    description: "Withdraw one of your own open message-mode questions that you no longer need, with a reason. Requires async-input. Cannot withdraw another session's question or a question whose tool call waits for an answer. No answer message is sent.",
+    description: "Withdraw one of your own open message-mode questions, or a filed request_plan_decisions form, that you no longer need, with a reason - for example because the operator told you the plan's scope changed. Requires async-input. Cannot withdraw another session's ask or one whose tool call waits for an answer. No answer message is sent.",
     inputSchema: { id: z.string().min(1), reason: z.string().trim().min(1).max(2000) },
   },
   async ({ id, reason }) => {

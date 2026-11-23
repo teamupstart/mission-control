@@ -679,9 +679,10 @@ export const CreateReviewSchema = z
      */
     snoozable: z.boolean().optional(),
     /**
-     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
-     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
-     * older build never sends this and is always told `call`.
+     * The MCP child can return a receipt instead of long-polling (`async-input`, and for a plan
+     * form `filed-plan-decisions` too). The daemon decides how the ask waits and answers
+     * `wait: "message"` or `wait: "call"`; a child from an older build never sends this and is
+     * always told `call`.
      */
     asyncCapable: z.boolean().optional(),
     /** What the agent does while the question is open: one line, `input` only. */

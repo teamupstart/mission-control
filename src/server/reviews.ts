@@ -9,7 +9,7 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { ASYNC_INPUT_FLAG, asyncInputAnswer, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
+import { ASYNC_INPUT_FLAG, asyncInputAnswer, filedPlanAnswer, isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -197,7 +197,10 @@ export class ReviewManager {
     // Only settled, deliverable answers use the answer formatter. Snooze instructions have
     // their own delivery path and must never acquire an answer heading.
     const answer = review.waitMode === "message" && deliversContinuation(review);
-    return (answer ? asyncInputAnswer(review) : `${lead}\n\n${result.text}`) + addenda.map((text) => `\n\n${text}`).join("");
+    // A filed plan form's agent stopped on it, so its answer restates the plan and each decision
+    // rather than reconciling work done meanwhile.
+    const text = !answer ? `${lead}\n\n${result.text}` : isFiledGate(review) ? filedPlanAnswer(review) : asyncInputAnswer(review);
+    return text + addenda.map((addendum) => `\n\n${addendum}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
@@ -299,9 +302,10 @@ export class ReviewManager {
       snoozable?: boolean;
       now?: number;
       /**
-       * `"message"`: the agent's `request_input` call returns at once and the answer reaches it
-       * as a message (`async-input`). Decided by the route (`decideWaitMode`), applied only to
-       * `request_input`'s own asks; absent is today's call-mode wait.
+       * `"message"`: the agent's call returns at once and the answer reaches it as a message.
+       * Decided by the route (`decideWaitMode`), applied only to `request_input`'s own asks
+       * (`async-input`) and to plan forms (`filed-plan-decisions`); absent is today's call-mode
+       * wait.
        */
       waitMode?: "message";
       /** The agent's one line on what it does while a message-mode question is open. */
@@ -341,7 +345,8 @@ export class ReviewManager {
       selections: null,
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
-      ...(options.waitMode === "message" && options.snoozable === true && kind === "input" ? { waitMode: "message" as const } : {}),
+      ...(options.waitMode === "message" && ((options.snoozable === true && kind === "input") || kind === "plan-decisions")
+        ? { waitMode: "message" as const } : {}),
       // Only a filed question keeps it: a question its agent waits on inside the call must not
       // tell the operator the agent is carrying on.
       ...(options.meanwhile && options.waitMode === "message" && options.snoozable === true && kind === "input"
@@ -377,13 +382,29 @@ export class ReviewManager {
     return review;
   }
 
-  /** Both wait modes, including questions parked by the operator. */
+  /**
+   * The `request_input` questions the ten-question limit counts: both wait modes, including
+   * questions parked by the operator. Never a plan form, filed or not.
+   */
   openQuestions(sessionId: string): ReviewItem[] {
     return this.registry.outstandingReviews(sessionId).filter(isRequestInputQuestion);
   }
 
+  /**
+   * What an agent may list and withdraw as its own (`isAgentAsk`): its `request_input` questions
+   * and its filed plan forms. Not the limit's count, which stays `openQuestions`.
+   */
+  openAsks(sessionId: string): ReviewItem[] {
+    return this.registry.outstandingReviews(sessionId).filter(isAgentAsk);
+  }
+
+  /**
+   * The one place that writes the status `withdrawn`: the asking agent taking back its own filed
+   * ask, a question or a plan form. It admits only the calling session's own ask and refuses a
+   * call-mode one, so a `withdrawn` review was always withdrawn by its own agent.
+   */
   withdrawQuestion(sessionId: string, id: string, reason: string): ReviewItem {
-    const review = this.openQuestions(sessionId).find((r) => r.id === id);
+    const review = this.openAsks(sessionId).find((r) => r.id === id);
     if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
     if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
     if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
@@ -781,11 +802,12 @@ export class ReviewManager {
   }
 
   /**
-   * A merge completed this session's task: close every outstanding `request_input` question as
-   * `orphaned`, with the close reason `merged`, at that moment rather than at a later eviction.
+   * A merge completed this session's task: close every outstanding `request_input` question and
+   * filed plan form as `orphaned`, with the close reason `merged`, at that moment rather than at a
+   * later eviction.
    *
    * The scope is the completion rules' (`questionHoldsCompletion`): pending or snoozed, a
-   * message-mode question always and a call-mode question while the flag is on. With the flag
+   * message-mode ask always and a call-mode question while the flag is on. With the flag
    * off a call-mode question is left exactly as before, to be orphaned without a reason when its
    * session goes. Merging is the operator's own conclusion, so nothing here holds the
    * completion; it only makes sure no question outlives it unexplained.

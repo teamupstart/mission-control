@@ -68,7 +68,7 @@ test("an upgraded database gains the column and the table, and an old row reads 
   assert.equal(db.getTaskShapingText("legacy"), null);
 });
 
-test("a schema 41 database upgrades with the column and the table, and a second open changes nothing", () => {
+test("a schema 41 database upgrades to the current version with the column and the table, and a second open changes nothing", () => {
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 42);
   db.upsertTask(mkTask({ id: "before-39", status: "backlog" }));
   db.closeDb();

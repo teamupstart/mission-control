@@ -1,4 +1,5 @@
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
+import { launchWorkUnitId } from "../work-unit.ts";
 import type { PauseRelease } from "../pause/release.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -536,6 +537,12 @@ export class SdkSupervisor {
       repoTaskSkills?: RepoTaskSkillRecord | null;
     };
     taskId: string | null;
+    /**
+     * The launch's one work unit decision (`launchWorkUnitId`, made by the caller where its
+     * launch began). The agent gets it as `WORK_UNIT_ID`, and it becomes the session's launch
+     * record once the driver has started. Omitted or null launches with none.
+     */
+    workUnitId?: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
     repoRoot?: string | null;
@@ -586,6 +593,7 @@ export class SdkSupervisor {
         // `mission.session.started` is captured under the same derived ids when this id is
         // first published, so the agent's spans join that span's trace.
         traceContext: sessionTraceContext(id),
+        workUnitId: input.workUnitId ?? null,
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -613,6 +621,8 @@ export class SdkSupervisor {
           gitBranch: input.gitBranch ?? null,
           gitRoot: input.gitRoot ?? null,
           repoRoot: input.repoRoot ?? null,
+          // The driver has started, so this is what the agent carries.
+          launchWorkUnitId: input.workUnitId ?? null,
         },
         handle,
         stateHome,
@@ -1265,7 +1275,7 @@ export class SdkSupervisor {
    * `hibernated` so the operator can retry. On success the session is registered idle and the
    * row is live again; binding it back to its task is the caller's.
    */
-  async wake(id: string, conversation: string): Promise<Session> {
+  async wake(id: string, conversation: string, ownerTaskId: string | null = null): Promise<Session> {
     if (this.shuttingDown) throw new Error("Mission Control is shutting down");
     if (this.handles.has(id)) throw new Error("its agent is already running");
     if (this.waking.has(id)) throw new Error("it is already resuming");
@@ -1287,7 +1297,7 @@ export class SdkSupervisor {
     this.unboundWakes.add(id);
     try {
       // No continuation turn is owed: only an idle session is hibernated.
-      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false });
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false }, ownerTaskId);
     } catch (error) {
       // Adopted, then something after the adoption threw: the conversation IS open again and
       // its pump owns it from here, so this is a resume, not a failure to report.
@@ -1602,7 +1612,7 @@ export class SdkSupervisor {
    * queue, goal and work episode are all keyed on it, and a fresh id would strand every one
    * of them. A row that never got that far has nothing to continue and is refused here.
    */
-  private async resume(row: SdkSessionRow): Promise<void> {
+  private async resume(row: SdkSessionRow, ownerTaskId: string | null = null): Promise<void> {
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
@@ -1610,6 +1620,18 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    // A restore is a start, so it decides again, here and once. The process this replaces
+    // ended with the daemon, so what it carried no longer describes anything. Decided from the
+    // task that OWNS the session now, not from `row.taskId`, which is launch provenance: an
+    // agent started with no work unit may since have been assigned another unit's task, and the
+    // restored agent runs that task, so it must carry that task's id. With no current owner,
+    // the launch task is what the session last worked for.
+    // A hibernation wake names its task: hibernating cleared the task's session pointer, so the
+    // lookup would otherwise fall back to the launch task.
+    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
+    // The registry first, then SQLite: the registry may already have dropped a finished task.
+    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
+    const workUnitId = launchWorkUnitId(owner);
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
@@ -1710,6 +1732,9 @@ export class SdkSupervisor {
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
     let adopted = false;
+    // Held outside the `try` so a failure between launch and adoption can stop the driver it
+    // started: nothing else owns it, and a retried wake would start a second one.
+    let launched: SdkSessionHandle | null = null;
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
@@ -1764,7 +1789,9 @@ export class SdkSupervisor {
         // The same session id derives the same parent, so the restored process continues the
         // trace its first launch started rather than opening a second one.
         traceContext: sessionTraceContext(row.id),
+        workUnitId,
       });
+      launched = handle;
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
       // existing ownership boundary instead of briefly adopting an actionable card.
@@ -1790,6 +1817,7 @@ export class SdkSupervisor {
           gitBranch: task?.branch ?? null,
           gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
           repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+          launchWorkUnitId: workUnitId,
         },
         handle,
         stateHome,
@@ -1817,6 +1845,15 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      // A driver that started but was never taken by `adopt` (its row or registration write
+      // threw) is stopped before its state home goes, as the shutdown branch does. The home goes
+      // even when the stop fails: nothing will ever adopt that driver, and nothing else removes
+      // a launch's private home, so keeping it would only strand it. A failed stop is logged.
+      if (!adopted && launched && this.handles.get(row.id) !== launched) {
+        await launched.stop().catch((stopError: unknown) => {
+          console.error(`[sdk] could not stop the unadopted driver for ${row.id}:`, stopError);
+        });
+      }
       if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
@@ -1842,7 +1879,18 @@ export class SdkSupervisor {
       // substitution the record exists to prevent, still reachable through its own path. The
       // reservation closes that window; the release below gives it back when the driver is
       // known to have taken nothing.
-      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      // A reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) recorded nothing: the continuation is not sent, and nothing
+      // is released, since a release would give back an earlier reservation of the same text.
+      try {
+        reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      } catch (err) {
+        console.error(
+          `[sdk] could not continue interrupted turn for ${row.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
@@ -2111,7 +2159,20 @@ export class SdkSupervisor {
     if (this.handles.get(id) !== handle || this.shuttingDown) return;
     // Harness-authored, like the restart continuation: the agent's prompt echo must not be
     // captured as the operator's Goal or read back to a workflow as their words.
-    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    // A reservation refused because its attribution could not be stored
+    // (`AutomatedAttributionError`) recorded nothing: the retry is not sent and is settled as one
+    // that could not be delivered, and nothing is released, since a release would give back an
+    // earlier reservation of the same text.
+    try {
+      reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    } catch (err) {
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
     const busy = new Error("the driver was already running a turn");
     try {
       // Asked again at send time: the send waits its turn on the session's chain, and a pause can

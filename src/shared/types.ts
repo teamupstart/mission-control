@@ -612,6 +612,58 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/**
+ * How a session that declared a wait expects to be woken: a background command's completion
+ * notification, a monitor, a scheduled wakeup it set for itself, or something else. Recorded so
+ * the dashboard and residents can judge whether the wait is plausible.
+ */
+export const SESSION_AWAITING_WAKE_SOURCES = ["command", "monitor", "wakeup", "other"] as const;
+export type SessionAwaitingWakeSource = (typeof SESSION_AWAITING_WAKE_SOURCES)[number];
+
+/** Field limits a declared wait is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_AWAITING_LIMITS = {
+  what: 160,
+  details: 4000,
+  url: 2048,
+  resolution: 200,
+  /**
+   * How far past the declaration `expectedBy` may be, in minutes. A wait silences the
+   * stuck-session alerts, so it must be bounded: a dead watcher must not hide a stalled session
+   * for longer than this. The other bound is the present: `expectedBy` must be in the future.
+   */
+  maxMinutes: 240,
+} as const;
+
+/**
+ * A session idle on purpose: it handed work to a background process (CI checks, a long build,
+ * a monitor, a scheduled wakeup) and will resume on its own when that process reports back.
+ *
+ * Durable session state keyed by the note key, like `SessionBlocker`, but deliberately not a
+ * blocker kind: nobody is asked to do anything. It ends on the session's own next turn, on a
+ * clear, when its task reaches a terminal status, or when the agent process exits. While it
+ * stands and `expectedBy` is in the future, idle-triggered automation holds the session
+ * (`isAwaiting` in `session.ts`). Past `expectedBy` the hold lifts and the session reads as
+ * overdue until it wakes or is cleared.
+ */
+export interface SessionAwaiting {
+  /**
+   * This declaration's identity: a new one for every declaration, re-declarations included, so
+   * a Clear sent from a view of an earlier one (an older reason or deadline) is refused.
+   */
+  id: string;
+  /** One line: what the session is waiting for, for example "CI checks on PR #1612". */
+  what: string;
+  wakeSource: SessionAwaitingWakeSource;
+  /** Epoch ms: when the session said the process should be done. The safety net. */
+  expectedBy: number;
+  referenceUrl: string | null;
+  details: string | null;
+  /** First declaration; kept across re-declarations. */
+  startedAt: number;
+  /** Last declaration. */
+  updatedAt: number;
+}
+
 /** A session's pending ask for Control other sessions, as the dashboard card draws it. */
 export interface SessionControlRequestView {
   id: string;
@@ -663,6 +715,20 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /**
+   * The work unit this session's agent was started with: the `WORK_UNIT_ID` in its
+   * environment, from the launch record (`session_launch_work_units`). Null or absent when the
+   * agent was started with none - a discovered session, a resident run, a launch with the
+   * `work-unit-id` preview off, or a session that was running before the record existed.
+   *
+   * RESOLVED by the registry from the record, never from the flag or the task: an agent's
+   * environment is fixed when it starts, so this changes only when a launch of this session
+   * succeeds. READ AS POLICY by the reuse guard - `TaskManager.assign` and the backlog's
+   * selection - which never hands such an agent a task of another work unit (decision D7). The
+   * id a session EMITS for its task is `task.workUnitId`, which is this value only while the
+   * task has the same one. Optional so an older snapshot parses.
+   */
+  launchWorkUnitId?: string | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
   /**
@@ -813,12 +879,14 @@ export interface Session {
    */
   workCycle?: WorkCycleSummary;
   /**
-   * Count of pending review items this session's agent is waiting on inside a tool call
-   * (denormalized for the card). Excludes message-mode questions, which `openQuestions` counts.
+   * Count of pending review items this session's agent has stopped on (denormalized for the
+   * card): a review it waits on inside a tool call, or a filed plan form (`isFiledGate`), which
+   * is a gate though no call is held. Excludes message-mode questions, which `openQuestions`
+   * counts.
    */
   pendingReviews: number;
   /**
-   * Count of pending message-mode `request_input` questions (`ReviewItem.waitMode`): filed by an
+   * Count of pending message-mode `request_input` questions (`agentKeepsWorking`): filed by an
    * agent that kept working rather than waiting in the call. A snoozed question is in neither
    * count. A snapshot from an older daemon may lack it; read it as zero.
    */
@@ -916,6 +984,12 @@ export interface Session {
    * the session alone (`hasBlocker` in `session.ts`).
    */
   blocker: SessionBlocker | null;
+  /**
+   * The wait this session declared on a background process, or null. Denormalized like
+   * `blocker` and keyed on the same note key. While it stands and is not overdue every
+   * idle-triggered automation leaves the session alone (`isAwaiting` in `session.ts`).
+   */
+  awaiting: SessionAwaiting | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**
@@ -2882,6 +2956,14 @@ export interface TaskSummary {
    */
   claimWarnings?: TaskClaimWarning[];
   /**
+   * The work unit this session emits for this task: the id its agent was started with
+   * (`Session.launchWorkUnitId`), while the task has that same id, and null otherwise - also
+   * when the task has an id but the agent was started without the variable. Never the task's
+   * id on its own, so the session detail never shows an id the agent's MCP calls do not carry.
+   * Optional so an older snapshot parses.
+   */
+  workUnitId?: string | null;
+  /**
    * `Task.shaping`, carried to the session card only while `currentShaping` shows it. Absent
    * otherwise, so every unshaped card's payload is what it was before shaping existed. Readers
    * still compare its `sessionId` with the session they draw.
@@ -3155,11 +3237,12 @@ export interface ReviewItem {
   /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
   snooze?: ReviewSnooze | null;
   /**
-   * How the agent waits for this question's answer. `"message"`: `request_input` returned at
-   * once with a receipt (the `async-input` preview flag) and the answer reaches the agent later
-   * as a message in its conversation. Absent: the agent waits inside its tool call, which is
-   * every other review and every question asked with the flag off. Persisted
-   * (`reviews.wait_mode`).
+   * How the agent waits for this review's answer. `"message"`: the tool returned at once with a
+   * receipt and the answer reaches the agent later as a message in its conversation - a
+   * `request_input` question (the `async-input` preview flag), which its agent works past, or a
+   * `request_plan_decisions` form (`filed-plan-decisions` as well), which is still a gate its
+   * agent stops on (`isFiledGate`). Absent: the agent waits inside its tool call, which is every
+   * other review and every ask made with the flags off. Persisted (`reviews.wait_mode`).
    */
   waitMode?: "message";
   /**

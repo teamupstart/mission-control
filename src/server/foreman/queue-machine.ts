@@ -9,7 +9,7 @@ import type {
   WorkItemState,
 } from "@shared/types.ts";
 import { isPaused } from "@shared/pause.ts";
-import { hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
@@ -352,6 +352,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   // 2b. A durable blocker holds the queue whole: no next item, no in-flight verdict and no
   //     wrap-up. Items stay queued exactly as they are until the blocker is cleared.
   if (hasBlocker(session)) return { kind: "none" };
+  // 2c. A declared wait on a background process holds it the same way until its deadline: the
+  //     session resumes on its own, and draining the next item or asking to wrap up would
+  //     interrupt work that is not finished, only waiting.
+  if (isAwaiting(session, now)) return { kind: "none" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

@@ -308,7 +308,7 @@ for (const [name, nextName] of [
     const body = toolSource(name, nextName);
     assert.match(
       body,
-      /waitForResolution\((?:id|reviewId|\(id: string\) => waitForResolution\(id), extra\)/,
+      /waitForResolution\((?:id|reviewId|created\.id|\(id: string\) => waitForResolution\(id), extra\)/,
       "the wait cannot report progress for a call it was not told about",
     );
   });

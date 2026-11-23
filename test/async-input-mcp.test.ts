@@ -115,6 +115,40 @@ test("told call, or told nothing by an older daemon, request_input long-polls fo
   }
 });
 
+test("request_plan_decisions says it can take a receipt, returns it when told message, and long-polls otherwise", async () => {
+  const plan = async () => {
+    const from = seen.length;
+    const result = await client.callTool({ name: "request_plan_decisions", arguments: {
+      title: "Linter plan", plan: "# Linter plan",
+      decisions: [{ id: "q", question: "Which linter?", options: [{ id: "a", label: "eslint" }] }],
+    } });
+    const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
+    return { text, requests: seen.slice(from) };
+  };
+  mode = "message";
+  const filed = await plan();
+  assert.equal(filed.text, RECEIPT);
+  assert.deepEqual(filed.requests.map((r) => `${r.method} ${r.path}`), ["POST /mcp/reviews"], "no /wait request");
+  assert.equal(filed.requests[0]!.body.kind, "plan-decisions");
+  assert.equal(filed.requests[0]!.body.asyncCapable, true);
+  assert.equal(filed.requests[0]!.body.snoozable, undefined, "never snoozable");
+  for (const told of ["call", "legacy"] as const) {
+    mode = told;
+    const waited = await plan();
+    assert.equal(waited.text, "Answered: eslint", told);
+    assert.deepEqual(waited.requests.map((r) => `${r.method} ${r.path.replace(/rev-[a-z]/, "ID")}`), [
+      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait",
+    ], told);
+  }
+  const { tools } = await client.listTools();
+  const description = tools.find((t) => t.name === "request_plan_decisions")!.description ?? "";
+  assert.doesNotMatch(description, /BLOCK until/);
+  assert.match(description, /filed and NOT answered/);
+  assert.match(description, /gate either way/);
+  assert.match(tools.find((t) => t.name === "withdraw_question")!.description ?? "", /request_plan_decisions form/);
+  assert.match(tools.find((t) => t.name === "list_open_questions")!.description ?? "", /request_plan_decisions forms/);
+});
+
 test("the tool describes both outcomes and bounds meanwhile", async () => {
   const { tools } = await client.listTools();
   const tool = tools.find((t) => t.name === "request_input")!;

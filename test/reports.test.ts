@@ -59,11 +59,11 @@ const upserts = (events: ServerEvent[]) =>
 test("a database from before reports gains the empty table on open, at the current schema", () => {
   db.closeDb();
   const raw = new DatabaseSync(join(home, "harness.db"));
-  raw.exec("DROP TABLE IF EXISTS reports; PRAGMA user_version = 42;");
+  raw.exec("DROP TABLE IF EXISTS reports; PRAGMA user_version = 45;");
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 43);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 46);
   const columns = (upgraded.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>).map((c) => c.name);
   for (const column of [
     "id", "session_id", "task_id", "repository", "author_key", "author_name", "author_resident_profile_id",

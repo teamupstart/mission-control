@@ -257,6 +257,8 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `report_status` | Explicitly excluded liveness/status update |
 | `report_blocker` | Session blocker owner, `session.blocker_report` |
 | `clear_blocker` | Session blocker owner, `session.blocker_clear` |
+| `report_awaiting` | Session awaiting owner, `session.awaiting_report` |
+| `clear_awaiting` | Session awaiting owner, `session.awaiting_clear` |
 | `respond_to_file_comments` | File-comment owner, `file.comment_reply` |
 | `adopt_pipeline_run` | Pipeline owner, `pipeline.adopt` |
 | `report_pipeline_workspace` | Pinned workspace owner, `pipeline.workspace` |

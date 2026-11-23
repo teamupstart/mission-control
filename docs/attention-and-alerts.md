@@ -59,6 +59,13 @@ until they are settled. The row's own
 **Dismiss** says the questions stay open and, like the cards, whether the agent keeps working or
 has stopped on them, rather than that it keeps waiting.
 
+A plan form filed with [File plan decisions](sessions.md#filed-plan-decisions) is a gate, not a
+question its agent works past. Its session is amber, reading **to review**, and the form counts in
+**to answer** from the moment it is filed, even while the agent is still finishing its turn. Its
+card reads **Waiting on your decisions**, its row is listed with the stopped sessions, and the
+"needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
+request closes it unanswered with the reason `merged`.
+
 ### One name for an agent
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, one rule names an agent
@@ -218,6 +225,12 @@ A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from t
 rules (open work and a parked run): it is waiting on someone other than you, and its blocker
 already explains the silence, with its age on the card. A blocker raises no alert of its own,
 a flagged reply is a card pill only, and neither counts as an answer you owe.
+
+A session [awaiting a background process](sessions.md#sessions-awaiting-a-background-process-preview) is
+exempt from the same two rules only until the deadline it declared. Once that passes the card
+reads Overdue and the rules apply again from that point, so a watcher that died cannot keep a
+stalled session out of the alerts. An Overdue wait raises no alert of its own; the stuck-session
+alert is the one that fires.
 
 The parked-run rule is the backstop for a review loop that quietly stopped. A run
 waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's

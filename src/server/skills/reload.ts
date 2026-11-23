@@ -13,6 +13,7 @@ import {
   confirmReservedInjection,
   releaseInjection,
   reserveInjection,
+  AutomatedAttributionError,
 } from "../injections.ts";
 import type { PaneModeLine } from "../discovery/pane-mode.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -290,7 +291,15 @@ export async function reloadOne(
   deps.ack(noteKeyFor(session), generation);
   // Claimed before the write, for the reason every other sender claims before its own: the
   // prompt hook can report the command back while this send is still unresolved.
-  reserveInjection(session.id, skills.reloadCommand, "harness");
+  try {
+    reserveInjection(session.id, skills.reloadCommand, "harness");
+  } catch (error) {
+    if (!(error instanceof AutomatedAttributionError)) throw error;
+    // Refused before anything was typed: its attribution could not be stored. The ack goes
+    // back exactly as it does for a send that never reached the pane.
+    deps.ack(noteKeyFor(session), prior);
+    return false;
+  }
   const sent = await deps.inject(session, skills.reloadCommand);
   if (sent.ok) {
     // Nobody asked for this one - the dashboard typed it because a skill changed on

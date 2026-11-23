@@ -6,6 +6,8 @@
 //   degraded  one fallback entry, and says it is degraded
 //   slow      waits `ms` (default 20 s) before answering, so its call times out
 //   garbage   prints something that is not JSON
+//   route     a router: `route <name>:<point>[,<name>:<point>...]` answers those skills, each
+//             with a fixed reason id, as FR-04's `route_skills` would
 //
 // `--wait <file>` holds the answer until that file exists, so a spec can look at the dispatch
 // while it is still shaping context, then release it.
@@ -43,6 +45,15 @@ switch (mode) {
     break;
   case "garbage":
     process.stdout.write("this is not json");
+    break;
+  case "route":
+    reply({
+      version: "e2e-route-1",
+      skills: String(ms ?? "").split(",").filter(Boolean).map((pair) => {
+        const [name, point] = pair.split(":");
+        return { name, lifecycle_point: point, reason_id: `e2e/${name}` };
+      }),
+    });
     break;
   default:
     process.stderr.write(`unknown mode ${mode}`);

@@ -1,5 +1,12 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
+import { workUnitEnv } from "./agent-work-unit.ts";
+import { launchWorkUnitId } from "./work-unit.ts";
+import {
+  expectTerminalLaunchWorkUnit,
+  settleTerminalLaunchWorkUnit,
+  type TerminalLaunchWorkUnit,
+} from "./terminal-launch-work-units.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -474,6 +481,16 @@ export class Dispatcher {
     // a refusal BEFORE it (a missing binary, an unavailable tool bundle) stays distinguishable
     // from a launch that resolved a model and then failed.
     let resolution: DispatchResolution | null = null;
+    // This launch's one work unit decision, made here where the launch begins and never again:
+    // the agent's environment, the launch record the registry installs when the agent
+    // appears, and the shaping run all take this value, so a switch of the preview while this
+    // launch is in flight cannot give them different answers. `TaskManager.dispatch` has
+    // already given an older row its id, so its first dispatch decides with it.
+    const workUnitId = launchWorkUnitId(task);
+    // A terminal launch's hand-over to the registry, and whether the launch got as far as a
+    // task running on its agent - the only outcome that confirms it (see the `finally`).
+    let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
+    let launchSucceeded = false;
     noteDispatchStarted(taskId);
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
@@ -500,7 +517,7 @@ export class Dispatcher {
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);
       if (task.kind === "pipeline") {
-        await this.dispatchPipeline(taskId, task);
+        await this.dispatchPipeline(taskId, task, workUnitId);
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
         // dispatch this facility ever recorded - and a launch-success rate computed from
         // failures alone is worse than no rate at all. Nothing is resolved on this path: the
@@ -765,15 +782,24 @@ export class Dispatcher {
       // Repository task skills (spec 7.15): resolved ONCE per launch, from each attached
       // worktree in manifest order, and only with the headless-mode flag on. Null leaves
       // turn one byte-identical to what it was before this existed.
+      const repoSkillWorktrees = [
+        { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
+        ...extras
+          .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
+          .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
+      ];
       const repoSkills =
         taskHasRepository(provisioned) && (this.deps.headlessModeEnabled ?? (() => featureEnabled(HEADLESS_MODE_FLAG_ID)))()
-          ? resolveRepoTaskSkills(provisioned.kind, [
-              { repoRoot: provisioned.repoRoot, worktreePath: wt.path },
-              ...extras
-                .filter((entry): entry is typeof entry & { worktreePath: string } => entry.worktreePath !== null)
-                .map((entry) => ({ repoRoot: entry.repoRoot, worktreePath: entry.worktreePath })),
-            ])
+          ? resolveRepoTaskSkills(provisioned.kind, repoSkillWorktrees)
           : null;
+      // D14 needs to know WHICH attached worktree contributed a skill, and the reader's record
+      // names a repository by folder (or by root when two share one), which two worktrees of one
+      // repository share. So each worktree is asked on its own, only when some skill was included.
+      const ownTaskSkillWorktrees = repoSkills && repoSkills.blocks.length > 0
+        ? repoSkillWorktrees
+          .filter((repo) => resolveRepoTaskSkills(provisioned.kind, [repo]).blocks.length > 0)
+          .map((repo) => repo.worktreePath)
+        : [];
       // Turn one up to and including the kind contract. The task context section, when this
       // launch is shaped, follows it through `withTaskContext` below, and the repository task
       // skills come last: kind contract, task context, repository task skill.
@@ -932,7 +958,9 @@ export class Dispatcher {
       // byte-identical to one from before shaping. It never throws and never blocks the launch.
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
         agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
-        currentAttempt,
+        currentAttempt, workUnitId,
+        // D14: the worktrees whose own task skill for this kind turn one carries.
+        repositoryTaskSkillWorktrees: ownTaskSkillWorktrees,
       });
       // A cancel and a redispatch while shapers ran put the task back in `dispatching`, but under
       // a later attempt that owns it now: this one launches nothing and tears nothing down.
@@ -992,6 +1020,7 @@ export class Dispatcher {
           // unshaped launch always has.
           shaping.summary ? sdkSessionId : null,
           currentAttempt,
+          workUnitId,
         );
         // A later attempt took the task while this driver started: `dispatchEmbedded` stopped
         // the worker, and nothing of this attempt is recorded or reported as a launch.
@@ -1103,6 +1132,11 @@ export class Dispatcher {
         : null;
       let home: SpawnedHome;
       try {
+        // Handed over immediately before the spawn, keyed by this launch's own state home -
+        // the one its wrapper runs from. The agent is discovered, and announced, before this
+        // function gets control back, and the registry installs the launch record when it
+        // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
+        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId);
         home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
@@ -1111,7 +1145,7 @@ export class Dispatcher {
           agentArgs,
           stateHome,
           terminalBackend,
-          advisorEnv,
+          { ...advisorEnv, ...workUnitEnv(workUnitId) },
           piFallbackArgs,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
@@ -1272,6 +1306,7 @@ export class Dispatcher {
       // and nothing more. Provenance lives in the work-episode bindings used by
       // `bindTaskToWorkEpisode` and `mergedPrFor`.
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      launchSucceeded = true;
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
       observeDispatchFinished({
         taskId,
@@ -1388,6 +1423,12 @@ export class Dispatcher {
         await this.teardownTaskResources(taskId, cur, message);
       }
     } finally {
+      // The terminal launch's verdict on its work unit hand-over. Every exit short of the task
+      // running on its agent - a failure, or a task settled underneath the launch - is
+      // "failed", never "not-started": a failed dispatch keeps its terminal, so its agent may
+      // be running with the variable, and its record must outlive the failure for as long as
+      // that agent does. A no-op for an embedded launch.
+      settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
       // Settled: nothing of this attempt writes after here. A successor's entry is its own.
       if (currentAttempt()) this.dispatchAttempts.delete(taskId);
       // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
@@ -1402,8 +1443,17 @@ export class Dispatcher {
     }
   }
 
-  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
-  private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
+  /**
+   * Launch Conductor's Engineer host, leaving provider worktree creation to the engine.
+   *
+   * `workUnitId` is the launch's one decision. The managed host is an agent this supervisor
+   * starts, so it carries the id and gets a launch record. The terminal host is Conductor's own
+   * CLI, not an agent: the agents it starts are its engine's, discovered rather than launched by
+   * Mission Control, so no launch record could follow them - and a variable they inherited from
+   * the host would tag their MCP calls with a work unit their sessions never emit. It therefore
+   * carries none (and inherits none: `agentSubprocessEnv` and the wrapper remove it).
+   */
+  private async dispatchPipeline(taskId: string, task: Task, workUnitId: string | null): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
     }
@@ -1824,6 +1874,7 @@ export class Dispatcher {
         if (problem) throw new Error(problem);
         session = await supervisor.start({
           sessionId,
+          workUnitId,
           agent: task.agent,
           name: task.title.trim() || launch.cwd,
           cwd: launch.cwd,
@@ -2121,6 +2172,8 @@ export class Dispatcher {
     sessionId: string | null = null,
     /** Whether this dispatch is still the task's current attempt. */
     currentAttempt: () => boolean = () => true,
+    /** The launch's one work unit decision, from the top of `dispatch`. */
+    workUnitId: string | null = null,
   ): Promise<string | null> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -2224,6 +2277,7 @@ export class Dispatcher {
         ...(repoTaskSkills ? { repoTaskSkills } : {}),
       },
       taskId,
+      workUnitId,
       gitBranch: wt.branch,
       gitRoot: taskHasRepository(task) ? wt.path : null,
       repoRoot: taskHasRepository(task) ? task.repoRoot : null,
@@ -2486,6 +2540,13 @@ export class Dispatcher {
       terminalBackend: string | null;
       /** Whether this dispatch is still the task's current attempt. */
       currentAttempt: () => boolean;
+      /**
+       * This launch's one work unit decision, made where `dispatch` began. The shapers are handed
+       * it, and the agent is launched with it, so neither can see the preview differently.
+       */
+      workUnitId: string | null;
+      /** Worktrees whose own task skill for the kind is in this turn one (D14). */
+      repositoryTaskSkillWorktrees: readonly string[];
     },
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
@@ -2498,10 +2559,15 @@ export class Dispatcher {
     return shapeLaunch({
       task: provisioned,
       runtime,
+      repositoryTaskSkillWorktrees: launch.repositoryTaskSkillWorktrees,
       workflowName: () => (provisioned.workflowId ? this.deps.workflowName?.(provisioned.workflowId) ?? null : null),
       // Exactly what the agent is launched under: an embedded session's derived context, and
       // none for a terminal launch, which carries none.
       trace: launch.sdkSessionId ? sessionTraceContext(launch.sdkSessionId) : null,
+      // The decision itself, never a second reading of the preview: the work unit every shaper
+      // call carries is the one this launch's agent is started with, and it stays the task's own
+      // when the agent then fails to start.
+      workUnitId: launch.workUnitId,
       delivery,
       turnOnes: carried,
       launch: launchArgument
@@ -2518,7 +2584,8 @@ export class Dispatcher {
               ...isolatedAgentEnvironment({
                 cwd: provisioned.worktreePath ?? provisioned.repoRoot,
                 stateHome: launch.terminal!.stateHome,
-                extraEnv: launch.terminal!.advisorEnv,
+                // As the terminal arm spawns it, the work unit included.
+                extraEnv: { ...launch.terminal!.advisorEnv, ...workUnitEnv(launch.workUnitId) },
               }),
             },
             argMax: await (this.deps.argMax ?? platformArgMax)(),

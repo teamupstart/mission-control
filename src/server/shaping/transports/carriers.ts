@@ -1,3 +1,4 @@
+import { WORK_UNIT_ENV_VAR, WORK_UNIT_HEADER, WORK_UNIT_META_KEY } from "@shared/work-unit.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import type { ShapingTraceContext } from "./types.ts";
 
@@ -7,14 +8,12 @@ import type { ShapingTraceContext } from "./types.ts";
  * variable of the same name, compared without case, is always removed first, with or without a
  * value to send, so only the launch's own values ever leave. Neither is a credential or a
  * reference: nothing here is resolved, redacted or recorded.
+ *
+ * The work unit's three carriers are the shared ones (`src/shared/work-unit.ts`), the same names
+ * a worker's own launch and MCP calls use: `WORK_UNIT_ID` for a `command` shaper and an MCP
+ * server started locally, `x-work-unit-id` on `http` and streamable-HTTP `mcp` requests, and
+ * `work_unit_id` in a `tools/call`'s `params._meta`.
  */
-
-/** The work unit id as an environment variable, for a `command` shaper and an MCP server started locally. */
-export const WORK_UNIT_ID_ENV = "WORK_UNIT_ID";
-/** The work unit id as a request header, for `http` and streamable-HTTP `mcp` calls. */
-export const WORK_UNIT_ID_HEADER = "x-work-unit-id";
-/** The work unit id inside an MCP `tools/call`'s `params._meta`. */
-export const WORK_UNIT_ID_META = "work_unit_id";
 
 /** The bound on a work unit id. An id outside it is treated as absent rather than sent. */
 const WORK_UNIT_ID_MAX_CHARS = 256;
@@ -31,14 +30,17 @@ export function carriedWorkUnitId(value: unknown): string | null {
     : null;
 }
 
+const CARRIED_ENV_NAMES: ReadonlySet<string> = new Set(["traceparent", "tracestate", WORK_UNIT_ENV_VAR.toLowerCase()]);
+const CARRIED_HEADER_NAMES: ReadonlySet<string> = new Set(["traceparent", "tracestate", WORK_UNIT_HEADER.toLowerCase()]);
+
 /** A variable a carrier owns, in any case: `TRACEPARENT`, `TRACESTATE` or `WORK_UNIT_ID`. */
 export function carriedEnvName(name: string): boolean {
-  return /^(?:trace(?:parent|state)|work_unit_id)$/i.test(name);
+  return CARRIED_ENV_NAMES.has(name.toLowerCase());
 }
 
 /** A header a carrier owns, in any case: `traceparent`, `tracestate` or `x-work-unit-id`. */
 export function carriedHeaderName(name: string): boolean {
-  return /^(?:trace(?:parent|state)|x-work-unit-id)$/i.test(name);
+  return CARRIED_HEADER_NAMES.has(name.toLowerCase());
 }
 
 /**
@@ -49,7 +51,7 @@ export function withCarriedEnv(env: NodeJS.ProcessEnv, trace: ShapingTraceContex
   // Built from entries, so a variable named `__proto__` stays an own property.
   const next: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !carriedEnvName(name)));
   const traced = withAgentTraceContext(next, trace);
-  if (workUnitId) traced[WORK_UNIT_ID_ENV] = workUnitId;
+  if (workUnitId) traced[WORK_UNIT_ENV_VAR] = workUnitId;
   return traced;
 }
 
@@ -63,7 +65,7 @@ export function carriedHeaders(trace: ShapingTraceContext | null, workUnitId: st
   return {
     ...(trace ? { traceparent: trace.traceparent } : {}),
     ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
-    ...(workUnitId ? { [WORK_UNIT_ID_HEADER]: workUnitId } : {}),
+    ...(workUnitId ? { [WORK_UNIT_HEADER]: workUnitId } : {}),
   };
 }
 
@@ -72,7 +74,7 @@ export function carriedMeta(trace: ShapingTraceContext | null, workUnitId: strin
   const meta: Record<string, string> = {
     ...(trace ? { traceparent: trace.traceparent } : {}),
     ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
-    ...(workUnitId ? { [WORK_UNIT_ID_META]: workUnitId } : {}),
+    ...(workUnitId ? { [WORK_UNIT_META_KEY]: workUnitId } : {}),
   };
   return Object.keys(meta).length > 0 ? meta : undefined;
 }

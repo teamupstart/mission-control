@@ -29,6 +29,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",

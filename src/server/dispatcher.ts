@@ -3665,8 +3665,11 @@ export async function spawnManagedResume(
   return { ...result.value, resumeLeaseId: input.prepared.lease.id, launchOutcome: "launched" };
 }
 
-/** Shared backend mechanics. Resource ownership stays with the ordinary or managed caller. */
-async function spawnWrappedUniquely(
+/**
+ * Shared backend mechanics. Resource ownership stays with the ordinary or managed caller.
+ * Exported for the tests that pin what a spawn returns for discovery to find its worker by.
+ */
+export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,

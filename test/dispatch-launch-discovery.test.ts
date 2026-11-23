@@ -197,6 +197,63 @@ test("launch discovery takes only the spawn's own resource, never another worker
   assert.equal(none, null);
 });
 
+test("a worker whose pane handle arrives on a later sighting is bound only once that sighting carries the spawn's resource", async () => {
+  const registry = new Registry();
+  const cwd = "/wt/discovery-late-handle";
+  const resource = "multiplexer:tmux:$50@late-pane";
+  const spawned = { homeName: "h", homeBackend: "tmux" as const, terminalResourceId: resource };
+  let bound: string | null = null;
+  const waiting = registry.waitForLaunchedSessionAtCwd(cwd, spawned, 5_000)
+    .then((session) => { bound = session?.id ?? null; return session; });
+  // First sighting: the process, before discovery could tie it to any pane.
+  const first = discovered(cwd, "unused", { terminals: [] });
+  registry.applyDiscovery([first]);
+  assert.ok(registry.getSession(first.syntheticId), "the worker is in the registry");
+  // Every check the first sighting started has settled once the next macrotask runs.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(bound, null, "a sighting without the spawn's resource binds nothing");
+  // The same worker again, now reachable through the pane the spawn opened.
+  registry.applyDiscovery([{ ...first, terminals: [mkMuxHandle({ session: "$50@late-pane", paneId: "%550" })] }]);
+  const session = await waiting;
+  assert.equal(session?.id, first.syntheticId);
+  assert.equal(session?.terminals.some((t) => t.kind === "multiplexer" && t.session === "$50@late-pane"), true,
+    "bound by the sighting that carried the resource");
+});
+
+test("the real multiplexer spawner returns its launch state home when the backend reports no terminal resource, on retry too", async () => {
+  const { spawnWrappedUniquely } = await import("../src/server/dispatcher.ts");
+  const { fakeMultiplexer, fakeEmulator, fakeTerminals, OK, FAIL } = await import("./helpers/terminal-fakes.ts");
+  const { PLAIN_NAMES } = await import("../src/server/terminal/names.ts");
+  const stateHome = mkdtempSync(join(home, "spawn-state-"));
+  // A tmux whose `new-session` output carried no session address: the launch succeeds, but the
+  // backend can name no resource. `outcomes` is what each spawn attempt answers, in order.
+  const backend = (outcomes: Array<typeof OK>) => {
+    const names: string[] = [];
+    const deps = fakeTerminals(fakeMultiplexer({
+      sessions: {
+        spawnDetached: async (spec: { name: string }) => { names.push(spec.name); return outcomes.shift()!; },
+        attachArgv: () => [], rename: async () => OK, kill: async () => OK, alive: null, closeIfOnlyPane: null, names: PLAIN_NAMES,
+      },
+    }), fakeEmulator());
+    return { deps: deps as Parameters<typeof spawnWrappedUniquely>[6], names };
+  };
+
+  const once = backend([OK]);
+  const first = await spawnWrappedUniquely("api", "abc123", process.cwd(), ["/bin/echo"], stateHome, "tmux", once.deps);
+  assert.deepEqual(once.names, ["api"]);
+  assert.equal(first.terminalResourceId, null, "the backend named no resource");
+  assert.equal(first.launchStateHome, stateHome, "the launch is still identified by the state home its wrapper runs from");
+  assert.equal(first.launchProcess, null, "a multiplexer's wrapper is read lazily, only when discovery needs it");
+
+  // The bare name is refused, and the unique name launches with no resource either.
+  const retried = backend([FAIL("duplicate session: api"), OK]);
+  const second = await spawnWrappedUniquely("api", "abc123", process.cwd(), ["/bin/echo"], stateHome, "tmux", retried.deps);
+  assert.deepEqual(retried.names, ["api", "api-abc123"], "the retry ran under the unique name");
+  assert.equal(second.homeName, "api-abc123");
+  assert.equal(second.terminalResourceId, null);
+  assert.equal(second.launchStateHome, stateHome, "the retried launch carries the state home as well");
+});
+
 test("launch discovery accepts a worker by its spawn's launch process when the terminal resource is not observed", async () => {
   const registry = new Registry();
   const cwd = "/wt/discovery-process";

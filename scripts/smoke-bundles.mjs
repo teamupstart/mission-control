@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
+import { findDisallowedModCalls } from "./mod-calls.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -525,6 +526,16 @@ async function smokeSatellitePaths() {
   }
 }
 
+/** The `mod-calls` check (spec 7.10): the mod's source reaches only the daemon paths in `src/mod/allowed-calls.json`. */
+function smokeModCalls() {
+  const refused = findDisallowedModCalls(resolve("."));
+  if (refused.length > 0) {
+    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+    return;
+  }
+  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
+}
+
 /**
  * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
  * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's
@@ -854,6 +865,7 @@ await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+smokeModCalls();
 await smokeModBuild();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");

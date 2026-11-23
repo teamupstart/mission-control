@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -26,9 +27,9 @@ test("the Reports and inbox upgrades row appears off and its toggle reaches a se
   await expect(toggle(page)).toHaveAccessibleName("Reports and inbox upgrades: on");
   await expect(toggle(peer)).toHaveAttribute("aria-pressed", "true");
   expect(await stored()).toBe(true);
-  if (process.env.MC_E2E_EVIDENCE) {
+  if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(artifactsDir("inbox"), { recursive: true });
-    await peer.locator('[data-anchor="feature-flags/inbox"]').screenshot({ path: `${artifactsDir("inbox")}flag-on-peer.png` });
+    await peer.locator('[data-anchor="feature-flags/inbox"]').screenshot({ path: join(artifactsDir("inbox"), "flag-on-peer.png") });
   }
 
   await toggle(peer).click();

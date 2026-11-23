@@ -32,6 +32,9 @@ obligation:
    [stuck rules](#stuck-sessions) flagged, with the fix on the row. See
    [Stuck rows](#stuck-rows).
 8. **Stuck finalizations** - a promotion that stopped on an error.
+9. **Reports** - agent reports waiting to be read, with the **Reports and inbox upgrades** flag
+   on. See [Agent reports](#agent-reports) below. They are read, not answered, so they are never
+   in the **to answer** count.
 
 The count is the obligations the inbox is showing you, not its rows: a session holding three
 questions is one row and three. A row you dismissed is not in it, even while what it reports is
@@ -59,6 +62,13 @@ until they are settled. The row's own
 **Dismiss** says the questions stay open and, like the cards, whether the agent keeps working or
 has stopped on them, rather than that it keeps waiting.
 
+A plan form filed with [File plan decisions](sessions.md#filed-plan-decisions) is a gate, not a
+question its agent works past. Its session is amber, reading **to review**, and the form counts in
+**to answer** from the moment it is filed, even while the agent is still finishing its turn. Its
+card reads **Waiting on your decisions**, its row is listed with the stopped sessions, and the
+"needs review" alert fires once, at filing. It offers no **Remind me later**. A merged pull
+request closes it unanswered with the reason `merged`.
+
 ### One name for an agent
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, one rule names an agent
@@ -79,7 +89,35 @@ name to change.
 
 The inbox's sections follow one fixed order, `INBOX_SECTION_ORDER` in
 `src/web/lib/attention.ts`, whatever order the fold derives them in. Later sections are inserted at
-fixed places in it rather than appended.
+fixed places in it rather than appended. **Reports** is its last entry, directly after **Stuck
+finalizations**, so the inbox's own **Snoozed** heading always comes right after it.
+
+### Agent reports
+
+With the **Reports and inbox upgrades** flag (`inbox`) on, an agent can post a report with the
+[`post_report`](sessions.md#agent-reports) tool when it has finished something you need to read in
+order to act. The tool returns at once and the agent carries on: a report is not a question and
+nothing waits on it.
+
+- **Reports** in the inbox lists every report waiting to be read, one row per agent, agents in
+  the order of their oldest report. A resident is one agent across all of its runs. Each report is
+  collapsed to its title, the agent's name and its age; clicking the title opens it to show the
+  body, the link and **Mark read**, and clicking it again closes it.
+- The top bar shows a separate, neutral **to read** figure, which opens the inbox. It never counts
+  toward **need you** or **to answer**, and a report never turns a session amber.
+- A report stays in **to read** until you press **Mark read**. Opening it, or opening the inbox,
+  does not clear it; Mission Control records only when you first opened it, with no visible count.
+  A report row has no **Dismiss**: **Mark read** is how it leaves.
+- An agent that posts again with `replaces` set to its earlier report's id replaces it: the inbox
+  shows only the latest, with a note such as **updated 2 times**, and it keeps the first report's
+  place in the queue. Reports posted without `replaces` stack.
+- A report outlives its session. An exited session, or one whose pull request merged, leaves its
+  reports in **to read**, named as the agent was named when it posted.
+
+Reports never enter the review channel, so they raise no `pendingReviews`, hold no completion,
+count toward no question limit, close on no merge, and Foreman never reads, answers or marks them.
+With the flag off, `post_report` is refused, the inbox has no Reports section, the top bar has no
+**to read** figure, and stored reports are kept for when it is turned on again.
 
 ### Stuck rows
 
@@ -242,6 +280,12 @@ A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from t
 rules (open work and a parked run): it is waiting on someone other than you, and its blocker
 already explains the silence, with its age on the card. A blocker raises no alert of its own,
 a flagged reply is a card pill only, and neither counts as an answer you owe.
+
+A session [awaiting a background process](sessions.md#sessions-awaiting-a-background-process-preview) is
+exempt from the same two rules only until the deadline it declared. Once that passes the card
+reads Overdue and the rules apply again from that point, so a watcher that died cannot keep a
+stalled session out of the alerts. An Overdue wait raises no alert of its own; the stuck-session
+alert is the one that fires.
 
 The parked-run rule is the backstop for a review loop that quietly stopped. A run
 waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's

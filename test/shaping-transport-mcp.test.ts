@@ -156,10 +156,12 @@ function leaves(schema: z.ZodType, path: Array<string | number> = []): Array<{ p
 function setAt(value: any, path: Array<string | number>, leaf: unknown): any {
   const copy = structuredClone(value);
   let node = copy;
-  for (const key of path.slice(0, -1)) {
-    node[key] ??= typeof key === "number" ? [] : {};
+  // A missing container is an array when the next key indexes it, so an optional list the base
+  // context leaves out, such as a route request's selected guidance, is walked as a list.
+  path.slice(0, -1).forEach((key, at) => {
+    node[key] ??= typeof path[at + 1] === "number" ? [] : {};
     node = node[key];
-  }
+  });
   node[path.at(-1)!] = leaf;
   return copy;
 }
@@ -1474,4 +1476,53 @@ test("an echoed credential is absent from the engine's section and summary, and 
     assert.equal(JSON.stringify(result.summary).includes(KEY), false);
     assert.equal(result.summary?.shapers[0]?.redacted, true, JSON.stringify(result.summary));
   } finally { await http.close(); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The route stage over MCP (Phase 7)
+
+/** A route request: the select request plus the selected guidance ids (D13). */
+function routeRequest(local = false, guidance = [{ shaper: "guidance-service", id: "payments/idempotency" }, { shaper: "guidance-service", id: "retry (budget)" }]): ShapingRequest {
+  const base = request(local);
+  return { ...base, stage: "route", context: { ...base.context, guidance } };
+}
+
+test("a route request's folded block gains one line, Selected guidance, and no other request has it", () => {
+  const block = foldedContextBlock(routeRequest().context);
+  assert.equal(block, `${foldedContextBlock(context(false))}\n- Selected guidance: guidance-service payments/idempotency, guidance-service "retry (budget)"`);
+  assert.equal(foldedContextBlock(routeRequest(false, []).context).split("\n").at(-1), "- Selected guidance: none");
+  assert.equal(foldedContextBlock(context(false)).includes("Selected guidance"), false);
+});
+
+test("route_skills keeps its three arguments in folded mode, and argument mode carries the ids inside context", async () => {
+  const router = (server: Server, delivery: Delivery) => shaper(server, delivery, { id: "skill-router", stage: "route", transport: {
+    type: "mcp", server: server.type === "stdio"
+      ? { type: "stdio", command: process.execPath, args: [FIXTURE, server.mode, ...(server.args ?? [])], env: [] }
+      : { type: "http", url: server.url, headers: {} },
+    tool: "route_skills", contextDelivery: delivery,
+  } });
+  await eachServer("echo", [], async (server, label) => {
+    const folded = echoed(await callMcp(routeRequest(server.type === "stdio"), router(server, "folded"), ctx()));
+    assert.deepEqual(Object.keys(folded.arguments).sort(), ["repo", "task", "version"], label);
+    assert.match(String(folded.arguments.task), /- Selected guidance: guidance-service payments\/idempotency/);
+    const argument = echoed(await callMcp(routeRequest(server.type === "stdio"), router(server, "argument"), ctx()));
+    assert.deepEqual(Object.keys(argument.arguments).sort(), ["context", "repo", "task", "version"], label);
+    assert.deepEqual((argument.arguments.context as ShapingContext).guidance, routeRequest().context.guidance);
+  });
+});
+
+test("a selector and a router on one server share the run's connection", async () => {
+  const raw = await startRawMcpServer((res, id) => res.writeHead(200, { "content-type": "application/json" })
+    .end(JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT })));
+  try {
+    const run = ctx();
+    const selector = shaper({ type: "http", url: raw.url });
+    const router = shaper({ type: "http", url: raw.url }, "folded", {
+      id: "skill-router", stage: "route",
+      transport: { type: "mcp", server: { type: "http", url: raw.url, headers: {} }, tool: "route_skills", contextDelivery: "folded" },
+    });
+    assert.equal(data(await callMcp(request(false), selector, run)).guidance[0].id, "raw");
+    assert.equal(data(await callMcp(routeRequest(), router, run)).guidance[0].id, "raw");
+    assert.equal(raw.initializes(), 1, "keyed by the server definition, not by the shaper");
+  } finally { await raw.close(); }
 });

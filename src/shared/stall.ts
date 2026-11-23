@@ -12,7 +12,7 @@
 
 import { isActiveTask } from "./task-status.ts";
 import type { Session } from "./types.ts";
-import { hasBlocker, reportBucket } from "./session.ts";
+import { hasBlocker, isAwaiting, reportBucket } from "./session.ts";
 import { workflowRunParkedOnSession, workflowRunResumesItself } from "./workflow.ts";
 import type { WorkflowExternalSourceKind, WorkflowRunSummary } from "./workflow.ts";
 import { unpushedClause } from "./unpushed.ts";
@@ -413,8 +413,10 @@ export function detectStall(
   //    point of resuming. The runs that will never resume do not wait for this clock at all -
   //    `workflowRunWaitsOnOperator` puts them on the Line the moment they park.
   //    A blocked session is exempt: its blocker already explains the silence, and its age is
-  //    on the card. It is not stuck, it is waiting on someone else.
-  const outstanding = reportBucket(s, sessions) === "idle" && !hasBlocker(s)
+  //    on the card. It is not stuck, it is waiting on someone else. A session awaiting its own
+  //    background process is exempt until the deadline it declared, and only until then: past
+  //    it this rule applies again, so a watcher that died cannot hide a stalled session.
+  const outstanding = reportBucket(s, sessions) === "idle" && !hasBlocker(s) && !isAwaiting(s, now)
     ? workOutstanding(s, runs)
     : null;
   if (outstanding) {

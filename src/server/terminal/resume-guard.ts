@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { readFileSync } from "node:fs";
+import { WORK_UNIT_ENV_VAR } from "@shared/work-unit.ts";
 import { run } from "../util/exec.ts";
 import { claimResumeLease, completeResumeLease, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
 import { parseResumeProcesses, resumeDescendantsExited } from "./resume-processes.ts";
@@ -25,8 +26,10 @@ async function main(): Promise<number> {
   if (!executable || !isAbsolute(executable) || !isAbsolute(input.cwd)) throw new Error("invalid prepared resume command");
   // Actual pane variables come from this terminal. Explicit daemon/session identities do not.
   const env = { ...process.env };
+  // The work unit too: the pane's terminal server may hold another unit's id, and the resume's
+  // own decision, when it carries one, is in the prepared environment applied next.
   for (const key of ["FLEET_HOME", "HARNESS_HOME", "MISSION_SESSION_ID", "FLEET_SESSION_ID", "HARNESS_SESSION_ID",
-    "MISSION_AGENT_SESSION_ID", "MISSION_API_TOKEN", "MISSION_SCOUT_SUBMISSION_CREDENTIAL"])
+    "MISSION_AGENT_SESSION_ID", "MISSION_API_TOKEN", "MISSION_SCOUT_SUBMISSION_CREDENTIAL", WORK_UNIT_ENV_VAR])
     delete env[key];
   Object.assign(env, input.env);
   // Node mode belongs to this guard, never the independent agent it launches.

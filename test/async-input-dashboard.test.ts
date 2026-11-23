@@ -530,3 +530,60 @@ test("a paused resident's badge, card and drawer entry say it has stopped, and t
   assert.equal(residentEntryAmber({ run: run("paused"), session: watcher }), true);
   assert.equal(residentEntryAmber({ run: run("waiting"), session: watcher }), false, "a working resident is never amber for its questions");
 });
+
+// ---- filed plan decisions (`filed-plan-decisions`): a filed plan form is a gate ----
+
+function filedPlan(over: Partial<ReviewItem> = {}): ReviewItem {
+  return question({
+    id: "p1", kind: "plan-decisions", title: "Linter plan", body: "# Linter plan\n\nAdopt one linter.",
+    snoozable: undefined, meanwhile: undefined, ...over,
+  });
+}
+
+test("a filed plan form reads Waiting on your decisions, stopped, with no meanwhile line, even while its agent finishes its turn", () => {
+  for (const session of [working({ pendingReviews: 1, openQuestions: 0 }), stopped({ pendingReviews: 1, openQuestions: 0 }), resident({ pendingReviews: 1, openQuestions: 0 })]) {
+    assert.deepEqual(questionStatusLine(filedPlan(), session, NOW), {
+      status: "stopped", label: "Waiting on your decisions", meanwhile: null, asked: "filed 4m ago",
+    }, session.state);
+  }
+  const html = renderToStaticMarkup(createElement(ReviewCard, { review: filedPlan(), session: working({ pendingReviews: 1, openQuestions: 0 }) }));
+  assert.match(html, /class="review-wait review-wait-stopped"/);
+  assert.match(html, />Waiting on your decisions</);
+  assert.doesNotMatch(html, /Still working/);
+  assert.doesNotMatch(html, /Remind me later/, "no snooze on a plan form");
+});
+
+test("a filed plan form's session leads the inbox and its actions say the agent keeps waiting", () => {
+  const sessions = [
+    working({ id: "busy", name: "busy" }),
+    working({ id: "planner", name: "planner", pendingReviews: 1, openQuestions: 0 }),
+  ];
+  const reviews = [
+    question({ id: "a", sessionId: "busy", createdAt: NOW - 30 * MIN }),
+    filedPlan({ id: "b", sessionId: "planner", createdAt: NOW - 5 * MIN }),
+  ];
+  const fold = foldAttention({ sessions, reviews, ensembles: [] });
+  assert.deepEqual(fold.items.flatMap((item) => (item.kind === "session_reviews" ? [item.session.id] : [])), ["planner", "busy"]);
+  assert.equal(fold.total, 2, "counted in to answer from filing");
+  assert.equal(stoppedOnQuestions(working(), [filedPlan()]), true);
+  assert.equal(questionWait(filedPlan(), working()), "call");
+  assert.equal(stateDisplay(sessions[1]!).tone, "attention", "amber while its agent is still working");
+  assert.equal(stateDisplay(sessions[1]!).label, "to review");
+});
+
+test("a filed plan is drawn where it was filed as Plan filed, with an Open button and no plan body", () => {
+  assert.deepEqual(reviewEntries(filedPlan()).map((entry) => entry.kind), ["asked"]);
+  const open = renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan(), session: working(), onAnswer: () => {} }));
+  assert.match(open, /aria-label="Plan filed: Linter plan"/);
+  assert.match(open, />Plan filed</);
+  assert.match(open, />Open</);
+  assert.match(open, />Waiting on your decisions</);
+  assert.doesNotMatch(open, /Adopt one linter/);
+  const withdrawn = renderToStaticMarkup(createElement(AskedQuestionCard, {
+    review: filedPlan({ status: "withdrawn", response: "Scope changed" }), onAnswer: () => {},
+  }));
+  assert.match(withdrawn, /Withdrawn by the agent/);
+  assert.match(withdrawn, /Scope changed/);
+  const merged = renderToStaticMarkup(createElement(AskedQuestionCard, { review: filedPlan({ status: "orphaned", closedReason: "merged" }) }));
+  assert.match(merged, /Closed unanswered: pull request merged/);
+});

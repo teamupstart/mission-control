@@ -157,5 +157,5 @@ test("a dry run reads the folder too, and runs the discovered definition", async
 
 test("with the flag off nothing runs, whatever the folder holds", async () => {
   dropShaper("acme-notes", "Never.");
-  assert.deepEqual(await shapeTask(input, { enabled: false }), { summary: null, section: "", entries: [] });
+  assert.deepEqual(await shapeTask(input, { enabled: false }), { summary: null, section: "", entries: [], skills: [] });
 });

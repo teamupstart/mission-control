@@ -1,6 +1,7 @@
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
+import { WorkUnitRow } from "../WorkUnitRow.tsx";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
@@ -29,6 +30,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
+import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -489,11 +491,17 @@ export function ConsoleDetail({
   // `silent` is already true for a session with no task, so this needs no separate guard.
   const showTaskChip = !pill.silent;
   const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
+  // The id this session emits. `task.workUnitId` is already that id - the agent's launch
+  // record while the task has the same one, never the task's own - so the row follows the
+  // agent, not the live preview: an agent started while it was on keeps the variable until its
+  // next start, and switching the preview off must not hide an id it is still sending. With
+  // the preview never on, no agent has a record and the detail is exactly as before.
+  const workUnitId = session.task?.workUnitId ?? null;
   // Guarded as an element rather than with CSS `:empty`. The band carries padding and a
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || workUnitId !== null;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -762,6 +770,7 @@ export function ConsoleDetail({
             <dd className="mono branch">{workspaceBranch}</dd>
           </div>
         )}
+        {workUnitId !== null && <WorkUnitRow workUnitId={workUnitId} />}
         {session.task && (
           <>
           {/* The chip survives as long as it is hosting something - a kind, a title, the
@@ -928,6 +937,9 @@ export function ConsoleDetail({
                 and scrolls past that (`.detail-conv > .blocker-band`), so long details
                 cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
+            {/* A declared wait on a background process. Never beside the blocker band: a
+                blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
+            <SessionAwaitingBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {/* The session's own ask for Control other sessions: answered before reading on,
                 like the menu above. Capped and scrolled like the blocker band below its

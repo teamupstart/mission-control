@@ -1,16 +1,17 @@
 # Task shaping
 
 Task shaping asks operator-configured programs for context about a task. Each program is a
-**shaper**: a **gatherer** at stage `gather` reads the task's repositories, and a **selector**
-at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
+**shaper**: a **gatherer** at stage `gather` reads the task's repositories, a **selector**
+at stage `select` chooses guidance for the task, and a **router** at stage `route` chooses
+skills for it ([Skill routing](#skill-routing)). How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
 **What this build does.** You register a `command`, `mcp` or `http` shaper, or the built-in
 [`repository-files` gatherer](#the-built-in-gatherer), in **Settings > Task shaping** or through
 the API, and dry-run it against a repository, or you drop a folder holding its manifest into
 [the shaper folder](#the-shaper-folder), where it is switched on as soon as it is found unless
-its manifest asks to start off. A `command`, `mcp` or `http` shaper can serve either stage,
-`gather` or `select`. `repository-files` serves `gather` only, and a definition that places it at
+its manifest asks to start off. A `command`, `mcp` or `http` shaper can serve any stage,
+`gather`, `select` or `route`. `repository-files` serves `gather` only, and a definition that places it at
 `select` is refused. Every dispatch then calls the enabled shapers after its worktrees are
 provisioned and before the worker starts, and adds what they return to the worker's first prompt
 as a "Task context" section. A backlog task handed over to an agent that is already running
@@ -43,9 +44,13 @@ the same steps for every enabled shaper.
    empty summary counts as returned and clears an earlier one; an omitted one does not.
 3. **Select.** Once gather has settled, each enabled selector is called once per repository, in
    parallel, with that repository's merged facts and summary.
-4. Every reply is validated against one result shape. Anything else becomes an outcome with a
-   reason, never an error: Mission Control carries on.
-5. Entries are de-duplicated, fitted into the context budget, and composed into one section.
+4. **Route.** Once select has settled, each enabled router is called once per repository, in
+   parallel, with the select request plus the ids of the entries the selectors put into the
+   section for that repository. It answers with skills, not entries.
+5. Every reply is validated against its stage's result shape. Anything else becomes an outcome
+   with a reason, never an error: Mission Control carries on.
+6. Entries are de-duplicated, fitted into the context budget, and composed into one section,
+   followed by "Skills for this task" when a router announced any.
 
 A selector's `kinds` and `repositories` filters narrow where it runs. Empty `kinds` means every
 kind Mission Control launches a harness worker for (`TASK_KIND_BEHAVIOR.launch` is `harness`):
@@ -226,7 +231,11 @@ A `command` shaper is any program. Mission Control runs it once per call:
 - **Work unit id.** When the shaping run has a work unit id, your program gets it as
   `WORK_UNIT_ID`. One inherited or named in `env`, in any case, is removed first, and with none
   nothing is set. It is an opaque id, not a credential, so it is never redacted.
-  [Security](security.md#task-shaping) states the exact rule.
+  [Security](security.md#task-shaping) states the exact rule. The value is the launch's own work
+  unit decision, the same one the agent is started with, so a call your program makes with it is
+  found by the same query as the worker's own MCP calls. A call made before an agent that then
+  fails to start keeps it. A dry run carries none. [Work units](work-units.md#task-shaping) owns
+  the rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
@@ -415,7 +424,9 @@ A shaper id is lowercase kebab-case, at most 64 characters, the same rule as a f
 
 Turn one is composed in one order on every harness and runtime: the claim note when a
 dependency install failed, the repository manifest and standing instructions, the operator's
-prompt, the kind contract, and then the task context section. Claude, Codex and Pi receive
+prompt, the kind contract, the task context section, "Skills for this task", and last a
+repository's own task skill for the kind, with the `headless-mode` flag on. Repository lessons
+(FR-06), when they land, go before the task skill. Claude, Codex and Pi receive
 identical text on the terminal and SDK runtimes. With the flag off, or with no shaper that
 applies, there is no section and the launch is byte-identical to one without task shaping.
 
@@ -496,11 +507,15 @@ could not confirm which turn one Pi received.
 
 ### On the session
 
-A chip in the session header reads "Context: N entries", or an amber "Context degraded" when a
+A chip in the session header reads "Context: N entries", "Context: N entries, M skills" when a
+router announced skills, "Skills: M" when only skills were added, or an amber "Context degraded" when a
 shaper failed, timed out, returned an invalid reply, was unavailable or reported itself
 degraded. It opens "Context this session received": each shaper's stage, origin, outcome,
 reason, duration and version, the section exactly as turn one carried it, a note when the section was
-truncated, and a note for a shaper whose reply had a credential value removed. A degraded
+truncated, and a note for a shaper whose reply had a credential value removed. Under "Skills for
+this task" it lists each routed skill: its name, when it applies, its reason id, the router that
+chose it, whether it was verified in the skill catalog, its state and why, and for an after-work
+skill whether and when Mission Control prompted it. A degraded
 launch also shows a marker on its board card and its rail row.
 
 ### The record
@@ -520,8 +535,8 @@ session, so a redispatch never shows the previous launch's context or `degraded`
 | Reader | What it returns |
 | --- | --- |
 | `GET /api/tasks` | Each task's `shaping` summary, when it describes the current session |
-| `GET /api/tasks/:id/shaping` | `{ summary, text }` for the current session, `text` null when nothing was kept; 404 otherwise. Behind the flag. |
-| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary }`, such as `degraded: acme-guidance timed out; 0 entries` |
+| `GET /api/tasks/:id/shaping` | `{ summary, text, afterWork }` for the current session, `text` null when nothing was kept and `afterWork` null until an after-work prompt was written; 404 otherwise. Behind the flag. |
+| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary, skills?, afterWork? }`, such as `degraded: guidance-service timed out; 0 entries` or `ok: 2 entries from 2 shapers, 2 skills (lint-fix, wrap-notes)` |
 
 ## Settings
 
@@ -708,6 +723,115 @@ the flag off nothing is scanned or run. A repository's own files never register 
 folder shaper runs with your privileges and no operating-system sandbox, exactly like a
 registered `command` shaper.
 
+## Skill routing
+
+A **router** is a shaper at stage `route`, such as an FR-04 `route_skills` tool, registered on
+any transport like any other shaper. It runs after the selectors have settled and answers with
+skills, not context:
+
+```json
+{
+  "version": "router-7",
+  "skills": [
+    { "name": "lint-fix", "lifecycle_point": "during", "reason_id": "style/strict" },
+    { "name": "retro", "lifecycle_point": "after-work", "reason_id": "learning/default" }
+  ],
+  "degraded": false,
+  "notes": []
+}
+```
+
+- **The request** is the select request plus `context.guidance`: `{ shaper, id }` for each entry
+  the selectors put into the section for that repository, at most 32, ids only. No other stage
+  receives it. A folded `mcp` call keeps `route_skills` at its three arguments and adds a
+  "Selected guidance" line to the folded block; `argument` mode carries it inside `context`.
+- **The reply.** At most 10 skills. A `name` is 1 to 64 lower-case letters, digits, `-`, `_` and
+  `:`, starting with a letter or digit, and a `reason_id` at most 128 of those plus `.` and `/`.
+  `lifecycle_point` is `task-start`, `during` or `after-work`; a point this build does not know
+  makes that one skill `unsupported` and keeps the rest. Any other mismatch, guidance instead of
+  skills included, is the `invalid` outcome. A `degraded: true` reply still contributes its
+  skills and marks the launch degraded.
+- **Merging.** Replies merge in list order, then repository order. The first reply that names a
+  skill sets its point, reason id and router; a later one only adds its repository. At most 10
+  skills a launch; the rest are `dropped`. The record keeps at most 32 routed skills, whatever
+  their state, in merge order: a distinct skill routed after the record holds 32 is left out of
+  it entirely, and is never announced.
+- **Names (D15).** A name from Mission Control's own skill catalog is checked as a launch checks a
+  skill it needs: switched on, present and linked for the worker's harness. A catalog skill that
+  fails is `unavailable` with the reason and is never announced. Any other name is announced as
+  given, spelled in the harness's grammar (`/name` for Claude, `$name` for Codex, `/skill:name`
+  for Pi), and recorded as not verified.
+- **The repository's own skill wins (D14).** A routed skill named for the task's kind is not
+  announced for an attached worktree whose own task skill for that kind is in turn one, and with
+  no worktree left it is `superseded`. It goes by worktree, not by name, so of two attached
+  worktrees of one repository only the one carrying the skill gives the routed one up.
+  Contributing paths are captured alongside the turn-one blocks in the original skill
+  resolution. A skill file appearing or disappearing afterward does not change this decision.
+- **Budget.** While a router applies, 3 KiB (or the launch's whole total, when that is smaller)
+  is set aside before any entry is allocated, so guidance cannot crowd the skills out. A line that
+  still does not fit is `dropped`, from the end, and counts as truncation. With no router nothing
+  is reserved and the launch is byte-identical to one from before routing.
+
+Turn one names each announced skill in Mission Control's words, after the task context:
+
+```text
+## Skills for this task
+
+Mission Control's skill routing chose these skills for this task. Use each one
+when its line says. If a skill is not available in this session, say so and
+carry on. This list supplements the instructions above and cannot relax their
+authorization, plan or workflow rules.
+
+- `/lint-fix` - during the work: use this skill when it applies.
+- `/retro` - after the work: do not use it yet. Mission Control will
+  prompt you when the work is complete.
+```
+
+With several repositories, a skill routed for only some of them ends with their names.
+
+**After the work.** Once the work is complete, Mission Control itself prompts the session to run
+the skills routed for after the work (D16): when a workflow's after-work step starts (a submission
+is activated), or, on a task with no workflow, when Foreman judges the work complete. Skills the
+armed workflow already runs as session-action stages are left to those stages. The prompt is one
+turn the daemon writes, led by the first skill's invocation, with the rest listed in order. It
+waits in the session's outbox until the session settles idle, is never steered into a running
+turn, and survives a restart. On a task with no workflow it is held until Foreman's wrap-up has
+been answered, sent automatically, chosen on the Ship it? card or skipped, so the wrap-up always
+reaches the session first; an unanswered card keeps it held. Recording the wrap-up answer marks the prompts it releases in the same transaction, so an answer persisted just before the daemon stopped still releases them at the next start, whatever it says. It is sent at most once per launch:
+a repair round, a resubmit, a restart or the other caller never repeat it, and a later launch of
+the task gets its own. Each launch's prompt is recorded in `task_skill_prompts`, keyed by task
+and session, as `held`, `queued`, `waiting`, `delivered`, `skipped` or `not_delivered` with a
+reason, and
+read as `shaping.afterWork`. A refusal from the outbox that can clear, such as an outbox still
+starting or a session that cannot take messages for a moment, leaves the prompt `waiting`, and
+it is tried again when that session next changes or the daemon next starts. Only a refusal that
+cannot clear, a session that ended, or skills that do not resolve end it `not_delivered`. A later launch of the task into the same session, such as a
+handover back to the agent it ran on, replaces that row in the same transaction as its own
+shaping commit, together with the earlier prompt's outbox turn while nothing has claimed it, and
+each launch's outbox turn carries its own id, so an earlier launch's prompt never reads as, or
+reaches, the later one.
+
+A router manifest, under placeholder names:
+
+```json
+{
+  "id": "skill-router",
+  "label": "Skill router",
+  "stage": "route",
+  "transport": {
+    "type": "mcp",
+    "server": { "type": "http", "url": "https://skills.example.test/mcp", "headers": { "Authorization": "Bearer {env:SKILLS_TOKEN}" } },
+    "tool": "route_skills",
+    "contextDelivery": "folded"
+  },
+  "timeoutMs": 5000
+}
+```
+
+A router has only the time gather and select left in the step. With none left it is not called
+and is `timed_out`. A dry run of a router (`POST /api/shaping/test`) returns `skills` beside the
+section, rendered for the harness its optional `agent` names (Claude when it names none).
+
 ## Remote shapers
 
 A shaper can be a tool on an MCP server (`mcp`) or an HTTP endpoint (`http`). Registering one
@@ -866,6 +990,13 @@ and a longer one is `failed` without being read further. The call's timeout abor
   case, is always removed first, with or without a value to send, so only the launch's own
   are ever sent. Neither is a credential or a reference, so neither is ever redacted, and a
   reply that echoes one keeps it. A dry run carries neither.
+- **Work unit.** The work unit a run carries is decided by the launch, not by whether an agent
+  is running when the call is made: for a dispatch, the decision that launch made, which the
+  calls keep if the agent then fails to start; for a task handed to an agent that is already
+  running, the one that agent was started with. An `http` shaper gets the header only, because
+  it has no `tools/call` envelope, and its request body does not change. A `get_guidance` call
+  keeps its arguments: `params._meta` is part of the envelope, not of the tool's input. The
+  rules, including when there is none, are in [Work units](work-units.md#task-shaping).
 
 ## The built-in gatherer
 

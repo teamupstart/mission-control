@@ -66,3 +66,47 @@ export function encodeWorkUnitId(timeMs: number, random: Uint8Array): string {
   }
   return `${WORK_UNIT_ID_PREFIX}${time}${entropy}`;
 }
+
+/** What `TaskManager.assign` says when `launchWorkUnitConflicts` refuses an agent. */
+export const WORK_UNIT_REUSE_REFUSAL =
+  "that agent was started for another work unit, so its MCP calls would be tagged with it - dispatch this task to a new agent instead";
+
+/**
+ * Whether a session whose agent was started with `launched` would tag a task of `taskWorkUnit`
+ * with the wrong work unit (decision D7). An agent's environment is fixed when it starts, so an
+ * agent started with one work unit must not run a task of another: its MCP calls would carry
+ * the first. An agent started with none takes any task. A task with no id yet is given a new one
+ * when it is assigned, which is another work unit by construction.
+ *
+ * Not gated by the preview: it protects against an environment that is already set.
+ */
+export function launchWorkUnitConflicts(launched: string | null | undefined, taskWorkUnit: string | null): boolean {
+  return Boolean(launched) && launched !== taskWorkUnit;
+}
+
+/**
+ * The work unit a session emits for `taskWorkUnit`: the id its agent was started with, while the
+ * task has that same id, and otherwise none. Every reader with a task in hand uses this, so it
+ * can never name a work unit the agent's environment does not carry.
+ */
+export function emittedWorkUnitId(launched: string | null | undefined, taskWorkUnit: string | null): string | null {
+  return launched && launched === taskWorkUnit ? launched : null;
+}
+
+/**
+ * `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}`, as the whole value: the reference the config guide
+ * tells an MCP server owner to write for Claude Code (`docs/work-units.md`).
+ */
+const CLAUDE_REFERENCE = new RegExp(`^\\$\\{${WORK_UNIT_ENV_VAR}(?::-[^}]*)?\\}$`);
+
+/**
+ * Whether one header of an MCP config is the work unit reference: named `x-work-unit-id` in any
+ * case, with a value that is only the reference. For Claude Code (`form: "claude"`) that value is
+ * `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}`; for a Codex `env_http_headers` entry
+ * (`form: "codex-env"`) it is the variable's name. A literal value an operator wrote is not the
+ * reference.
+ */
+export function isWorkUnitHeaderReference(name: string, value: unknown, form: "claude" | "codex-env"): boolean {
+  if (name.toLowerCase() !== WORK_UNIT_HEADER || typeof value !== "string") return false;
+  return form === "claude" ? CLAUDE_REFERENCE.test(value) : value === WORK_UNIT_ENV_VAR;
+}

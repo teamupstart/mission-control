@@ -284,6 +284,18 @@ Like every review, the answer arrives on the dashboard's loopback route. That is
 single-user local trust boundary described above: it keeps Mission Control's own agents and
 delegated sessions from approving a change, not arbitrary shell code running as the operator.
 
+## Agent reports
+
+An agent posts a [report](sessions.md#agent-reports) on its own MCP channel, bound to its own
+session; it never names another session. Taking a report out of **to read** is the operator's:
+`POST /api/reports/:id/opened` and `POST /api/reports/:id/read` refuse the machine token, a signed
+agent credential, and a request attributed to an agent or to Foreman. That is the same single-user
+local trust boundary that review answers rely on. It keeps Mission Control's own agents, Foreman
+and delegated sessions from marking a report read; it does not verify that a header-less loopback
+request came from the dashboard, so shell code running as the operator can still call these
+routes. An attached document is accepted only from inside the posting session's checkout, using
+the same containment rules as the Files viewer.
+
 ## Resident MCP secrets
 
 A custom MCP server's secret values - environment variables and headers marked **Secret**, and
@@ -566,6 +578,18 @@ contract. Nothing a shaper does can stop the launch: a shaper that fails, times 
 something else is recorded as `degraded` and the worker starts without its text, and the
 section is cut to what the delivery path can carry, so it never makes a launch that works today
 fail. What each session received is recorded on the task and shown only for that session.
+
+**A routed skill is a name, never text.** A router supplies only a skill name and a reason id,
+both held to strict character sets, and Mission Control writes every word around them. A name
+from Mission Control's catalog is checked before it is announced, and a catalog skill the
+operator switched off never is. Any other name is announced as given and marked not verified,
+because a skill installed some other way is not inventoried. A router can therefore point the
+worker at any skill installed for its harness; the record and the viewer show each routed skill
+and who routed it, up to 32 a launch. A distinct skill routed past that limit is left out of the
+record and is never announced, so nothing reaches turn one that the record does not show. The after-work prompt Mission Control sends is its own text, delivered only
+when the session is idle, once per launch, and recorded as daemon-written, never as the
+operator's words. A name or reason id that holds a resolved credential value is dropped, never
+rewritten.
 
 **The shapers folder carries the operator's authority.** A shaper dropped into `shapers/` under
 the state home can run at the next dispatch without a click, so anything that can write that

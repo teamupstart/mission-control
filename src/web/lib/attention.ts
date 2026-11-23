@@ -13,6 +13,7 @@ import {
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import { reportToRead, type ReportItem } from "@shared/reports.ts";
 import type { Stall } from "@shared/stall.ts";
 import { stateDisplay } from "./format.ts";
 import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
@@ -170,6 +171,24 @@ export type AttentionItem =
       runId: string;
       summary: EnsembleSummary;
       error: string;
+    }
+  | {
+      /**
+       * One agent's reports waiting to be read (`inbox` flag). Something to READ, never something
+       * owed: these rows count toward `toRead` and never toward `total`, and they claim no session,
+       * so a report can neither turn a session amber nor hide one from the backstop.
+       *
+       * Keyed by the report's author rather than its session: every run of one resident is one
+       * author, and a report outlives the session that posted it, so there may be no live session
+       * to name at all. The name is the one the report recorded when it was posted.
+       */
+      kind: "agent_reports";
+      /** `agent-reports:<authorKey>`. */
+      id: string;
+      authorKey: string;
+      authorName: string;
+      /** This author's reports waiting to be read, each chain at its first report's place. */
+      reports: ReportItem[];
     };
 
 /**
@@ -191,6 +210,7 @@ export const INBOX_SECTION_ORDER = [
   "session_blocked",
   "session_stuck",
   "parked_finalization",
+  "agent_reports",
 ] as const satisfies readonly AttentionItem["kind"][];
 
 // Every kind has a place: a kind missing from the order fails to compile here.
@@ -222,6 +242,12 @@ export interface AttentionFold {
    * operator did not choose to hide. The invariant holds for every row nobody dismissed.
    */
   total: number;
+  /**
+   * How many agent reports are waiting to be read: the top bar's `to read` figure. A separate
+   * figure from `total` on purpose - a report asks the operator to read something, not to
+   * answer it - so a report never adds to `total` and never claims a session.
+   */
+  toRead: number;
 }
 
 /**
@@ -280,6 +306,11 @@ export interface AttentionInput {
    */
   dismissed?: ReadonlyMap<string, string>;
   /**
+   * Agent reports the dashboard holds. Read and replaced ones are left out here, so a caller
+   * may pass every report it has. Optional, and absent means no Reports section.
+   */
+  reports?: readonly ReportItem[];
+  /**
    * The daemon's current stalls (`GET /api/away/stalls`), passed only while the `inbox` flag is
    * on. Absent, or with stall detection off, the fold draws no Stuck rows and is the fold every
    * caller that predates them already gets.
@@ -334,6 +365,9 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       return [{ itemId: item.id, occurrence: occurrenceOf(item.session.state, item.activity) }];
     case "parked_finalization":
       return [{ itemId: item.id, occurrence: occurrenceOf(item.error) }];
+    case "agent_reports":
+      // Mark read is a report row's dismissal; there is nothing to dismiss without reading.
+      return [];
     case "session_stuck":
       // The rule and its clock-free facts, never the sentence: the sentence carries the minutes,
       // so a dismissed row keyed on it would come back every minute. A stall from a daemon that
@@ -402,6 +436,8 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  *  7. **Stuck sessions** - the daemon's stall rules fired (`inbox` flag); derived before the
  *     backstop so a stuck session is not drawn twice.
  *  8. **Parked finalizations** - a stuck destructive step.
+ *  9. **Reports** - agent reports waiting to be read, grouped by author. Last, so the inbox's own
+ *     Snoozed heading always follows it, and counted in `toRead` rather than `total`.
  *
  * The five that predate pipelines keep their relative order exactly: the pipeline sections were
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
@@ -620,6 +656,25 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
+  // (8) Agent reports waiting to be read, one row per author. A report that replaced another keeps
+  // the place of the first report of its chain (`rootCreatedAt`), so an update does not jump the
+  // queue; authors are ordered by their oldest report, so the longest wait still leads.
+  const reportsByAuthor = new Map<string, ReportItem[]>();
+  for (const report of input.reports ?? []) {
+    if (!reportToRead(report)) continue;
+    const group = reportsByAuthor.get(report.author.key);
+    if (group) group.push(report);
+    else reportsByAuthor.set(report.author.key, [report]);
+  }
+  const byQueuePlace = (a: ReportItem, b: ReportItem) =>
+    a.rootCreatedAt - b.rootCreatedAt || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
+  for (const [authorKey, reports] of [...reportsByAuthor.entries()]
+    .map(([key, group]) => [key, [...group].sort(byQueuePlace)] as const)
+    .sort(([keyA, a], [keyB, b]) => byQueuePlace(a[0]!, b[0]!) || (keyA < keyB ? -1 : 1))) {
+    const newest = reports.reduce((latest, report) => (report.createdAt > latest.createdAt ? report : latest));
+    items.push({ kind: "agent_reports", id: `agent-reports:${authorKey}`, authorKey, authorName: newest.author.name, reports });
+  }
+
   // Every other dismissed row leaves LAST, after every section has claimed its sessions, for
   // the reason section (2) gives: a dismissed menu or Pipeline row filtered out any earlier
   // would leave its session unclaimed, and the backstop would draw it again as "Waiting on you".
@@ -630,12 +685,27 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const visible =
     dismissed.size === 0
       ? items
-      : items.filter((item) => item.kind === "session_reviews" || !isDismissed(item, dismissed));
-  const total = visible.reduce(
-    (sum, item) => sum + (item.kind === "session_reviews" ? item.reviews.length : 1),
-    0,
-  );
-  return { items: visible, total };
+      // Report rows are never dismissed: Mark read is how a report leaves, and their empty key
+      // list must never be read as "every key dismissed" by a later change to `isDismissed`.
+      : items.filter((item) => item.kind === "session_reviews" || item.kind === "agent_reports" || !isDismissed(item, dismissed));
+  let total = 0;
+  let toRead = 0;
+  for (const item of visible) {
+    if (item.kind === "agent_reports") toRead += item.reports.length;
+    else total += item.kind === "session_reviews" ? item.reviews.length : 1;
+  }
+  return { items: visible, total, toRead };
 }
 
 const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The fold while the operator's dismissals are unknown: still loading, or unreadable for as long
+ * as the read keeps failing. Every row that can be dismissed is held back, because drawing one
+ * over "nothing dismissed" would bring back rows the operator hid. A report row is never
+ * dismissed (Mark read is how it leaves), so reports fold exactly as they always do: the Reports
+ * section and the to read figure do not wait on a read they do not depend on.
+ */
+export function foldWhileDismissalsUnknown(reports?: readonly ReportItem[]): AttentionFold {
+  return foldAttention({ sessions: [], reviews: [], ensembles: [], ...(reports ? { reports } : {}) });
+}

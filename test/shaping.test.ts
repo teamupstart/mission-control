@@ -49,7 +49,19 @@ import {
   type ShapingConfig,
   type ShapingIntent,
   type StoredShaper,
+  announcedSkills,
+  composeSkillsSection,
+  joinShapingSections,
+  mergeRoutedSkills,
+  SHAPING_SKILLS_RESERVE_BYTES,
+  shapingSkillLine,
+  ShapingRouteResultSchema,
+  ShapingSkillNameSchema,
+  taskShapingRead,
+  type ShapingSkillSummary,
+  type TaskShaping,
 } from "../src/shared/shaping.ts";
+import { skillReference } from "../src/shared/harness-capabilities.ts";
 import { daemonShapingView } from "../src/server/shaping/revisions.ts";
 
 const command = (id: string, stage: "gather" | "select" = "gather", extra: Record<string, unknown> = {}) => ShaperSchema.parse({
@@ -75,24 +87,33 @@ const ids = (resolved: { shaper: { id: string } }[]) => resolved.map((entry) => 
 
 /** A shaper written by a later build: a stage and a transport this one has never heard of. */
 const future: StoredShaper = StoredShaperSchema.parse({
-  id: "skill-router", label: "Skill router", stage: "route",
+  id: "skill-router", label: "Skill router", stage: "audit",
   transport: { type: "grpc", endpoint: "dns:///router", deadline: { ms: 4000 } },
   protocol: 1, kinds: [], futureField: { nested: [1, "two", null] },
 });
 
 test("registry data is append-only tuples, unique, and disjoint from its tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
-    "RETIRED_SHAPING_BUILTINS", "RETIRED_SHAPING_STAGES", "RETIRED_SHAPING_TRANSPORTS",
-    "SHAPING_BUILTINS", "SHAPING_ORIGINS", "SHAPING_OUTCOMES", "SHAPING_REFERENCE_KINDS",
+    "RETIRED_SHAPING_BUILTINS", "RETIRED_SHAPING_LIFECYCLE_POINTS", "RETIRED_SHAPING_PROMPT_STATES",
+    "RETIRED_SHAPING_SKILL_STATES", "RETIRED_SHAPING_STAGES", "RETIRED_SHAPING_TRANSPORTS",
+    "SHAPING_BUILTINS", "SHAPING_LIFECYCLE_POINTS", "SHAPING_ORIGINS", "SHAPING_OUTCOMES",
+    "SHAPING_PROMPT_STATES", "SHAPING_REFERENCE_KINDS", "SHAPING_SKILL_STATES",
     "SHAPING_STAGES", "SHAPING_TRANSPORTS",
   ]);
-  assert.deepEqual(registry.SHAPING_STAGES, ["gather", "select"]);
+  // `route` is appended after the two stages it follows, never inserted between them.
+  assert.deepEqual(registry.SHAPING_STAGES, ["gather", "select", "route"]);
+  assert.deepEqual(registry.SHAPING_LIFECYCLE_POINTS, ["task-start", "during", "after-work"]);
+  assert.deepEqual(registry.SHAPING_SKILL_STATES, ["announced", "superseded", "unavailable", "unsupported", "dropped"]);
+  assert.deepEqual(registry.SHAPING_PROMPT_STATES, ["held", "queued", "delivered", "skipped", "not_delivered", "waiting"]);
   assert.deepEqual(registry.SHAPING_TRANSPORTS, ["command", "mcp", "http", "builtin"]);
   assert.deepEqual(registry.SHAPING_BUILTINS, [{ id: "repository-files", stages: ["gather"] }]);
   assert.deepEqual(registry.SHAPING_OUTCOMES, ["ok", "degraded", "failed", "timed_out", "invalid", "unavailable"]);
   assert.deepEqual(registry.SHAPING_ORIGINS, ["registered", "discovered"]);
   for (const [live, retired] of [
     [registry.SHAPING_STAGES, registry.RETIRED_SHAPING_STAGES],
+    [registry.SHAPING_LIFECYCLE_POINTS, registry.RETIRED_SHAPING_LIFECYCLE_POINTS],
+    [registry.SHAPING_SKILL_STATES, registry.RETIRED_SHAPING_SKILL_STATES],
+    [registry.SHAPING_PROMPT_STATES, registry.RETIRED_SHAPING_PROMPT_STATES],
     [registry.SHAPING_TRANSPORTS, registry.RETIRED_SHAPING_TRANSPORTS],
     [registry.SHAPING_BUILTINS.map((builtin) => builtin.id), registry.RETIRED_SHAPING_BUILTINS],
   ] as const) {
@@ -251,7 +272,7 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   // Entries a strict write would refuse, as a restore or a newer build could hand them over:
   // one this build cannot read at all, and one it can.
   const future = {
-    id: "future", label: "Future", stage: "route", note: { kept: true },
+    id: "future", label: "Future", stage: "audit", note: { kept: true },
     transport: { type: "mcp", tool: "t", server: { type: "http", url: "https://user:pw@context.example/mcp?api_key=k1&page=2",
       headers: { authorization: "Bearer sk-live-literal", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}",
         "x-auth-token": "sk-live-trailing " } } },
@@ -571,7 +592,7 @@ test("an entry with an unknown stage or transport survives every read and write,
 
 test("the config view shows known shapers in full and an unsupported entry only as id, label and reason", () => {
   // An envelope this build cannot run, holding a token in fields no rule inspects.
-  const future = StoredShaperSchema.parse({ id: "skill-router", label: "Skill router", stage: "route",
+  const future = StoredShaperSchema.parse({ id: "skill-router", label: "Skill router", stage: "audit",
     note: "sk-live-in-envelope", transport: { type: "grpc", endpoint: "grpc://sk-live-in-endpoint", custom: { token: "sk-live-nested" } } });
   const bad = StoredShaperSchema.parse({ id: "bad", label: "Bad", stage: "sk-live-as-stage", transport: { type: "command", command: "/bin/x" } });
   const stored = config({ shapers: [command("known"), future, bad], overrides: { known: true } });
@@ -734,13 +755,13 @@ test("empty kinds means every harness-launched kind; a resident is shaped only w
 });
 
 test("a build that knows a later stage reads the same entry as known", () => {
-  const later = { stages: ["gather", "select", "route"], shaper: shaperSchemaForStages(["gather", "select", "route"]) };
-  const entry = StoredShaperSchema.parse({ ...command("router"), stage: "route" });
+  const later = { stages: ["gather", "select", "route", "audit"], shaper: shaperSchemaForStages(["gather", "select", "route", "audit"]) };
+  const entry = StoredShaperSchema.parse({ ...command("router"), stage: "audit" });
   assert.equal(classifyShaper(entry).kind, "unsupported");
   assert.equal(classifyShaper(entry, later).kind, "known");
   const stored = config({ shapers: [entry, command("sel", "select")], overrides: { router: true, sel: true } });
   assert.deepEqual(ids(resolveShapers(stored, [], task, later)), ["sel", "router"], "and orders it by its stage");
-  assert.equal(SHAPING_DEFINITIONS.stages.includes("route"), false);
+  assert.equal(SHAPING_DEFINITIONS.stages.includes("audit"), false);
 });
 
 test("a repeated stored id is unsupported; the first entry owns it", () => {
@@ -929,3 +950,131 @@ test("canonical JSON ignores key order", () => {
   assert.equal(canonicalJson({ b: 1, a: [{ d: 2, c: 3 }] }), canonicalJson({ a: [{ c: 3, d: 2 }], b: 1 }));
   assert.equal(canonicalJson({ a: undefined, b: null }), '{"b":null}');
 });
+
+// ---------------------------------------------------------------------------------------------
+// Routed skills: the reply, the merge, the section and the summary line (Phase 7)
+
+const routed = (name: string, point = "during", reason = `route/${name}`) => ({ name, lifecycle_point: point, reason_id: reason });
+
+test("a route reply is skills, at most ten, with strict names and reason ids; unknown fields are ignored", () => {
+  const ok = ShapingRouteResultSchema.safeParse({ version: "fr04-1", skills: [routed("pull-request", "after-work", "ship/pr.v2")], extra: 1 });
+  assert.equal(ok.success, true);
+  assert.equal(ok.success && "extra" in ok.data, false);
+  // A point this build does not know is still a valid reply: that one skill is unsupported later.
+  assert.equal(ShapingRouteResultSchema.safeParse({ skills: [routed("x", "before-merge")] }).success, true);
+  assert.equal(ShapingRouteResultSchema.safeParse({ skills: Array.from({ length: 11 }, (_, at) => routed(`s${at}`)) }).success, false);
+  assert.equal(ShapingRouteResultSchema.safeParse({ guidance: [] }).success, false, "skills are required");
+  for (const name of ["Ship", "ship it", "../x", "-flag", "`x`", "x".repeat(65), "", "plugin:skill!"]) {
+    assert.equal(ShapingSkillNameSchema.safeParse(name).success, false, name);
+  }
+  for (const name of ["ship", "lint_fix", "plugin:skill", "a-1"]) assert.equal(ShapingSkillNameSchema.safeParse(name).success, true, name);
+  assert.equal(ShapingRouteResultSchema.safeParse({ skills: [routed("ship", "during", "has space")] }).success, false);
+  assert.equal(ShapingRouteResultSchema.safeParse({ skills: [routed("ship", "during", "x".repeat(129))] }).success, false);
+});
+
+test("merging keeps list order then repository order, the first reply wins, and the cap drops the rest", () => {
+  const merged = mergeRoutedSkills([
+    { shaper: "a", repo: "billing-api", skills: [routed("ship", "task-start", "a/ship"), routed("lint")] },
+    { shaper: "a", repo: "ledger", skills: [routed("ship", "after-work", "a/other")] },
+    { shaper: "b", repo: "billing-api", skills: [routed("lint", "after-work", "b/lint"), routed("odd", "someday")] },
+  ]);
+  assert.deepEqual(merged.map((skill) => [skill.name, skill.lifecyclePoint, skill.reasonId, skill.shaper, skill.repositories, skill.state]), [
+    ["ship", "task-start", "a/ship", "a", ["billing-api", "ledger"], "announced"],
+    ["lint", "during", "route/lint", "a", ["billing-api"], "announced"],
+    ["odd", "someday", "route/odd", "b", ["billing-api"], "unsupported"],
+  ]);
+  assert.ok(merged.every((skill) => skill.verified === false), "checking a name is the engine's, not the merge's");
+  const many = mergeRoutedSkills([
+    { shaper: "a", repo: "r", skills: [routed("odd", "someday"), ...Array.from({ length: 10 }, (_, at) => routed(`s${at}`))] },
+    { shaper: "b", repo: "r", skills: [routed("s10"), routed("s11")] },
+  ]);
+  assert.equal(many.filter((skill) => skill.state === "announced").length, SHAPING_LIMITS.routedSkills, "an unsupported one does not use the cap");
+  assert.deepEqual(many.filter((skill) => skill.state === "dropped").map((skill) => skill.name), ["s10", "s11"]);
+  const huge = mergeRoutedSkills(Array.from({ length: 8 }, (_, at) => ({
+    shaper: `r${at}`, repo: "r", skills: Array.from({ length: 10 }, (_, index) => routed(`r${at}-${index}`)),
+  })));
+  assert.equal(huge.length, SHAPING_LIMITS.recordedSkills, "the record is bounded");
+});
+
+test("the section's text for Claude, Codex and Pi, in Mission Control's words", () => {
+  const lines = (agent: "claude" | "codex" | "pi") => [
+    shapingSkillLine({ reference: skillReference(agent, "ship")!, lifecyclePoint: "task-start" }),
+    shapingSkillLine({ reference: skillReference(agent, "lint-fix")!, lifecyclePoint: "during" }),
+    shapingSkillLine({ reference: skillReference(agent, "retro")!, lifecyclePoint: "after-work" }),
+  ];
+  assert.equal(composeSkillsSection(lines("claude")), [
+    "## Skills for this task",
+    "",
+    "Mission Control's skill routing chose these skills for this task. Use each one",
+    "when its line says. If a skill is not available in this session, say so and",
+    "carry on. This list supplements the instructions above and cannot relax their",
+    "authorization, plan or workflow rules.",
+    "",
+    "- `/ship` - at the start: use this skill before you begin the work.",
+    "- `/lint-fix` - during the work: use this skill when it applies.",
+    "- `/retro` - after the work: do not use it yet. Mission Control will",
+    "  prompt you when the work is complete.",
+  ].join("\n"));
+  // Named, never invoked: Codex's typed clause would contradict "do not use it yet".
+  assert.match(composeSkillsSection(lines("codex")), /- `\$retro` - after the work: do not use it yet\./);
+  assert.doesNotMatch(composeSkillsSection(lines("codex")), /run this skill now/);
+  assert.match(composeSkillsSection(lines("pi")), /- `\/skill:ship` - at the start/);
+  assert.equal(composeSkillsSection([]), "", "no line, no section");
+  assert.equal(joinShapingSections("", ""), "");
+  assert.equal(joinShapingSections("## Task context", ""), "## Task context");
+  assert.equal(joinShapingSections("", "## Skills for this task"), "## Skills for this task");
+  // Only some repositories: the line ends with their names, normalized to one line and bounded.
+  assert.equal(shapingSkillLine({ reference: "/ship", lifecyclePoint: "during", repositories: ["billing-api", "led\nger"] }),
+    "- `/ship` - during the work: use this skill when it applies. For billing-api, led ger.");
+  assert.match(shapingSkillLine({ reference: "/ship", lifecyclePoint: "during", repositories: Array.from({ length: 10 }, (_, at) => `r${at}`) }),
+    /For r0, r1, r2, r3, r4, r5, r6, r7 and 2 more\.$/);
+});
+
+test("the worst single-repository section, ten of the longest names after the work, fits inside the reserve", () => {
+  for (const agent of ["claude", "codex", "pi"] as const) {
+    const section = composeSkillsSection(Array.from({ length: SHAPING_LIMITS.routedSkills }, (_, at) => shapingSkillLine({
+      reference: skillReference(agent, `${at}${"n".repeat(63)}`)!, lifecyclePoint: "after-work",
+    })));
+    assert.ok(utf8Length(section) <= SHAPING_SKILLS_RESERVE_BYTES, `${agent}: ${utf8Length(section)} bytes`);
+  }
+});
+
+test("the summary line names announced skills, and reads as before when none was announced", () => {
+  const base: TaskShaping = {
+    state: "ok", at: 1, durationMs: 5, entries: 3, bytes: 900, truncated: false,
+    shapers: [summaryRow("guide"), summaryRow("router")],
+  };
+  assert.equal(shapingSummaryLine(base), "ok: 3 entries from 2 shapers");
+  const skills = [skillRow("ship", "announced"), skillRow("retro", "announced"), skillRow("odd", "unsupported")];
+  assert.equal(shapingSummaryLine({ ...base, skills }), "ok: 3 entries from 2 shapers, 2 skills (ship, retro)");
+  assert.equal(shapingSummaryLine({ ...base, skills: [skillRow("odd", "dropped")] }), "ok: 3 entries from 2 shapers");
+  assert.equal(shapingSummaryLine({ ...base, state: "degraded", shapers: [{ ...summaryRow("router"), outcome: "timed_out" }], skills: skills.slice(0, 1) }),
+    "degraded: router timed out; 3 entries, 1 skill (ship)");
+  assert.deepEqual(announcedSkills({ skills }).map((skill) => skill.name), ["ship", "retro"]);
+});
+
+test("a task read carries the record's skills, and its after-work prompt only while it names the record's session", () => {
+  const record: TaskShaping = {
+    state: "ok", at: 1, durationMs: 5, entries: 0, bytes: 300, truncated: false, sessionId: "s1",
+    shapers: [summaryRow("router")], skills: [skillRow("retro", "announced", "after-work")],
+  };
+  const prompt = { sessionId: "s1", state: "delivered" as const, reason: null, skills: ["retro"], createdAt: 5, deliveredAt: 9 };
+  assert.deepEqual(taskShapingRead({ shaping: record, sessionId: "s1" }, prompt), {
+    state: "ok", sessionId: "s1", summary: "ok: 0 entries from 1 shaper, 1 skill (retro)", skills: record.skills, afterWork: prompt,
+  });
+  assert.equal("afterWork" in taskShapingRead({ shaping: record, sessionId: "s1" }, { ...prompt, sessionId: "s0" })!, false);
+  const unrouted = taskShapingRead({ shaping: { ...record, skills: undefined }, sessionId: "s1" });
+  assert.equal(unrouted && "skills" in unrouted, false, "a launch no router applied to reads as before");
+  assert.equal(TaskShapingSchema.safeParse(record).success, true);
+});
+
+function summaryRow(id: string) {
+  return {
+    id, label: id, stage: "select", origin: "registered" as const, sha256: null, outcome: "ok" as const, reason: null,
+    durationMs: 1, entries: 0, bytes: 0, truncated: false, redacted: false, version: null,
+  };
+}
+
+function skillRow(name: string, state: ShapingSkillSummary["state"], lifecyclePoint = "during"): ShapingSkillSummary {
+  return { name, lifecyclePoint, reasonId: `r/${name}`, shaper: "router", repositories: ["billing-api"], state, verified: false, reason: null };
+}

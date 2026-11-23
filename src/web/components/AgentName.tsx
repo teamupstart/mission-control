@@ -58,6 +58,8 @@ export function InboxActionButton({
   disabled = false,
   cardOpen = false,
   ariaLabel,
+  ariaExpanded,
+  ariaControls,
 }: {
   action: InboxActionId;
   /** The agent's display name, for the hint. */
@@ -69,6 +71,9 @@ export function InboxActionButton({
   disabled?: boolean;
   cardOpen?: boolean;
   ariaLabel?: string;
+  /** For a control that shows and hides something: whether it is shown now. */
+  ariaExpanded?: boolean;
+  ariaControls?: string;
 }): React.JSX.Element {
   const spec = inboxAction(action);
   return (
@@ -79,6 +84,8 @@ export function InboxActionButton({
           className={className}
           disabled={disabled}
           aria-label={ariaLabel}
+          aria-expanded={ariaExpanded}
+          aria-controls={ariaControls}
           data-inbox-action={spec.id}
           onClick={onClick}
         >

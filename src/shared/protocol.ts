@@ -32,7 +32,7 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
 } from "./task.ts";
-import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
+import { LaunchResidentSchema, NewResidentProfileSettingsSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
@@ -9832,7 +9832,7 @@ export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;
 
 /** `POST /api/residents/profiles`: revision 1 of a new profile. */
 export const CreateResidentProfileSchema = z
-  .object({ settings: ResidentProfileRevisionRequestSchema })
+  .object({ settings: NewResidentProfileSettingsSchema })
   .strict();
 export type CreateResidentProfile = z.infer<typeof CreateResidentProfileSchema>;
 

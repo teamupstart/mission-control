@@ -631,15 +631,12 @@ test("resident MCP pinning is recorded only where scripts/probe-resident-mcp.ts 
       sources: "user, local, project and plugin MCP servers and claude.ai connectors",
     },
   });
-  // Codex offers only the pinned set: lifting its overlay would load a trusted project's
-  // servers unverified, and it has no account connectors to import.
   assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, {
     mechanism: "codex-home-overlay",
     secrets: "scoped-launcher",
     allNativeSources: {
       mechanism: "codex-native-home",
       sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
-      previewFlag: "codex-resident-native-mcp",
     },
   });
   assert.equal(HARNESS_CAPABILITIES.pi.mcpSelection, null);

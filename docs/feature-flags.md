@@ -1,7 +1,7 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
-[Agent environment](configuration.md#agent-environment), **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Agent environment](configuration.md#agent-environment), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
@@ -41,11 +41,6 @@ searchable list; filter by name, description, keyword or id. Every click applies
 in every open window, with no Save button or restart. A refused write rolls back and shows an
 inline error. Preview features are off until enabled individually or through the master switch.
 With no preview declared the panel shows its empty state instead of a list.
-
-**Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
-Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing
-runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
-**Pinned at launch** when the preview is off.
 
 **Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
 a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
@@ -184,7 +179,6 @@ gates, not by resolving an unknown id as on.
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
-| `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |

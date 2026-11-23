@@ -27,16 +27,19 @@ over a longer call sign. A later mention alone (“Please ask Will”) is ignore
 descriptive only. A two-word name can also match, and a phonetic match such as “Steven” or
 “Steve’s” can address Steve. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
 A unique exact first word settles the address even when the message names another agent.
-A spelling near-miss is ignored even when several names are one edit away. A bare name picks an
-open unsure card’s candidate when it matches one; otherwise it leaves a `no-message` entry.
+A spelling near-miss is ignored even when several names are one edit away. A bare name selects
+a candidate when exactly one option across all open unsure cards matches. Multiple matches
+leave the cards open and record `ambiguous-pick` in Recently heard. A bare roster name with
+no matching option records `no-message`.
 Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
 two-word match. No model is called.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the running target receives the remaining text verbatim through the standard
-operator queue. “Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
-pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card. Saying a candidate’s name selects it and
-opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+operator queue. For example, `Will,"ship it"` queues `"ship it"` with both quotes.
+“Steve, stop” uses the session interrupt path. A bare “cancel” stops the newest
+pending voice action. An unsure card has no deadline. Opening a sixth unsure card cancels the oldest unsure card.
+Picking a candidate opens the ordinary cancel window. The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 
 `GET /api/voice/heard` returns `{ entries }` in newest-first order, up to 50 captures, including

@@ -164,6 +164,29 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   }
 });
 
+test("a spoken pick finds the only matching unsure card, even when it is older", async () => {
+  await say("Steven ask Will about the build", "older");
+  await say("Steven ask Bill about the release", "newer");
+  await say("Steve");
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["older", "unsure"], ["newer", "unsure"]]);
+  assert.equal((await readHeard())[0]?.rule, "ambiguous-pick");
+
+  await say("Will.");
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [
+    ["newer", "unsure"], ["older", "pending"],
+  ]);
+  assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+  assert.equal((await act("older", "send-now")).status, 200);
+  assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
+});
+
+test("a quote immediately after the address comma survives the preview and queued delivery", async () => {
+  await say('Will,"ship it"', "quote");
+  assert.equal(cards[0]?.parts[0]?.text, '"ship it"');
+  assert.equal((await act("quote", "send-now")).status, 200);
+  assert.equal(queued("Will").at(-1), '"ship it"');
+});
+
 test("ignored, pending and cancelled captures leave no transcript in the daemon state directory", async () => {
   const marker = randomUUID();
   await say("Morning " + marker);

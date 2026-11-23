@@ -26,7 +26,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { openDb } from "../src/server/db.ts";
 import { WorkflowStore } from "../src/server/workflows/store.ts";
 import { WorkflowRepositoryArtifactService } from "../src/server/workflows/repository-artifact/service.ts";
-import { MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
+import { descriptor, manifestSchema, MAX_CAPTURE_OBJECT_BYTES, RepositoryCaptureChanged } from "../src/server/workflows/repository-artifact/format.ts";
 import type { RepositoryMaterializationRequest } from "../src/server/workflows/persona-workload/contracts.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
 import { captureStableWorkflowContext } from "../src/server/workflows/context.ts";
@@ -882,6 +882,44 @@ for (const format of ["sha1", "sha256"]) {
   });
 }
 
+for (const parent of ["sha1", "sha256"]) {
+  test(`embedded repositories must have a gitlink representable in a ${parent} parent tree`, async (t) => {
+    const f = fixture(t, parent);
+    const initNested = (format: string) => {
+      f.git("init", "-q", "--object-format=" + format, "nested");
+      f.git("-C", "nested", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+        "commit", "-qm", "nested tip", "--allow-empty");
+      return f.git("-C", "nested", "rev-parse", "HEAD");
+    };
+    const incompatibleChild = initNested(parent === "sha1" ? "sha256" : "sha1");
+    assert.equal(f.git("ls-files", "--others", "--exclude-standard"), "nested/");
+    await assert.rejects(f.service.sampleBoundary(f.checkout, signal), { code: "artifact_unavailable" });
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.deepEqual(f.service.artifacts(), []);
+    assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+    rmSync(join(f.checkout, "nested"), { recursive: true });
+    const child = initNested(parent);
+    const snapshot = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    const lease = await f.service.materialize(f.request(snapshot), signal);
+    const entry = lease.descriptor.worktree.find(e => e.path === "nested");
+    assert.equal(entry?.kind, "submodule");
+    assert.equal(entry.blob, child);
+    const tree = Buffer.concat([Buffer.from("160000 nested\0"), Buffer.from(child, "hex")]);
+    assert.deepEqual(readFileSync(join(f.root, "digests", snapshot.digest, lease.descriptor.worktreeTree)),
+      Buffer.concat([Buffer.from(`tree ${tree.length}\0`), tree]));
+    assert.equal(existsSync(join(f.root, "digests", snapshot.digest, child)), false);
+    const legacy = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "digests", snapshot.digest, "manifest.json"), "utf8")));
+    const legacyLink = legacy.view.worktree.find(e => e.path === "nested");
+    assert.ok(legacyLink);
+    legacyLink.blob = incompatibleChild;
+    assert.throws(() => descriptor(legacy, snapshot.digest, "legacy"), { code: "artifact_unavailable" });
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
+
 test("raw path identity and gitlinks survive a round trip without following the submodule", async (t) => {
   const f = fixture(t);
   f.write("text", "version one");
@@ -1499,6 +1537,49 @@ test("unaddressable historical filename bytes retain their exact tree identity a
   assert.deepEqual(m.view.worktree, []);
   await f.service.release(s.submissionId);
   await f.service.reconcile();
+});
+
+test("base-only deletions stay in the base-to-HEAD diff and never appear as checkout status", async (t) => {
+  const f = fixture(t);
+  for (const path of ["removed", "recreated", "restaged"]) f.write(path, path);
+  f.git("add", ".");
+  f.git("commit", "-qm", "base");
+  const base = f.git("rev-parse", "HEAD");
+  f.git("rm", "-q", "removed", "recreated", "restaged");
+  f.git("commit", "-qm", "committed deletions");
+  assert.equal(f.git("status", "--porcelain"), "");
+  for (const clean of [true, false]) {
+    if (!clean) {
+      f.write("recreated", "new untracked file");
+      f.write("restaged", "new staged file");
+      f.git("add", "restaged");
+    }
+    const snapshot = await f.service.promote(await f.prepare(base), f.submission());
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    const request = f.request(snapshot);
+    const lease = await f.service.materialize(request, signal);
+    const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+      gitBinary: "git", workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {} });
+    const status = await reader.query("git_status", {});
+    assert.equal(status.status, "ok");
+    assert.deepEqual(status.items.map(e => [e.path, e.metadata?.classifications]),
+      clean ? [] : [["recreated", ["untracked"]], ["restaged", ["staged"]]]);
+    const diff = await reader.query("git_diff", { pair: "base_head", paths: ["removed"] });
+    assert.equal(diff.status, "ok");
+    assert.match(diff.items[0]?.text ?? "", /-removed/);
+    if (clean) {
+      const legacy = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "digests", snapshot.digest, "manifest.json"), "utf8")));
+      // Earlier manifests could contain a tombstone in the view, or just in the raw path table.
+      for (const entry of legacy.paths) entry.classifications.push("deleted");
+      legacy.view.worktree.push({ path: "removed", classifications: ["committed", "deleted"], kind: "file", binary: false, blob: null });
+      const view = descriptor(legacy, snapshot.digest, "legacy");
+      assert.deepEqual(view.worktree, []);
+      assert.deepEqual(view.statusDeletions ?? [], []);
+    }
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  }
 });
 
 test("status reports both sides of file and directory replacements without treating deletions as live files", async (t) => {

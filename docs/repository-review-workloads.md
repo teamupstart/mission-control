@@ -53,6 +53,8 @@ blob, which has zero payload bytes. The sensitive path still denies reads.
 
 Capture reads index entries and Git's nonignored untracked enumeration with optional locks
 disabled. It constructs the layer trees from file bytes, literal link targets and gitlinks.
+A checked-out nested repository supplies only its HEAD object ID. Capture fails if that ID
+uses a different hash width from the parent repository's tree format.
 Each regular worktree file and each Git object read for capture may be at most 64 MiB.
 The daemon checks the open file's size before allocating its read buffer and retries
 capture if the file grows or shrinks during the read. For Git objects, it requests the
@@ -62,7 +64,8 @@ An absent skip-worktree path takes its indexed mode and object ID in the worktre
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
-Status classifications come from comparing the layers. When a directory replaces a file
+Status compares HEAD, the index and the worktree. A deletion already committed between
+the selected base and HEAD appears in the base-to-HEAD diff. When a directory replaces a file
 or a file replaces a directory, the reader gets the missing deletion records from the
 verified path manifest. They appear in `git_status` alongside the replacement files and
 grant no content access. This also covers previously sealed v1 artifacts.

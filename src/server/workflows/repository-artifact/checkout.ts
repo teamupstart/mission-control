@@ -241,6 +241,8 @@ export async function workingFile(
           .toString()
           .trim(),
       );
+      if (id.length !== state.emptyBlob.length)
+        throw Object.assign(new Error("Nested Git object format differs from parent"), { code: "gitlink_format_mismatch" });
       return { entry: { mode: "160000", id } };
     }
     if (st.isSymbolicLink()) {

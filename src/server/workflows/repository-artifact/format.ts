@@ -67,16 +67,28 @@ export const manifestSchema = z.strictObject({
   objects: z.array(objectRecord),
 });
 export type Manifest = z.infer<typeof manifestSchema>;
+// Older v1 writers also marked base-only paths as deleted. Every real checkout
+// deletion differs from HEAD to index or from index to worktree.
+function checkoutDeletion(classes: readonly string[]) {
+  return classes.includes("deleted") && (classes.includes("staged") || classes.includes("unstaged"));
+}
 export function descriptor(manifest: Manifest, digest: string, objectView: string): RepositoryViewDescriptor {
-  const listed = new Set(manifest.view.worktree.map(entry => entry.path));
+  const { view } = manifest;
+  for (const layer of [view.worktree, view.index]) {
+    if (layer.some(e => e.kind === "submodule" && e.blob !== null && e.blob.length !== view.worktreeTree.length))
+      unavailable();
+  }
+  const worktree = view.worktree.filter(e => e.blob !== null || !e.classifications.includes("deleted") ||
+    checkoutDeletion(e.classifications));
+  const listed = new Set(worktree.map(entry => entry.path));
   const statusDeletions = [];
   for (const entry of manifest.paths) {
-    if (!entry.allowed || !entry.classifications.includes("deleted")) continue;
+    if (!entry.allowed || !checkoutDeletion(entry.classifications)) continue;
     const path = decodedPath(entry.bytes);
     if (path && approvedPath(path) && !listed.has(path))
       statusDeletions.push({ path, classifications: entry.classifications });
   }
-  return RepositoryViewDescriptorSchema.parse({ ...manifest.view, snapshotDigest: digest, objectView,
+  return RepositoryViewDescriptorSchema.parse({ ...view, worktree, snapshotDigest: digest, objectView,
     ...(statusDeletions.length ? { statusDeletions } : {}) });
 }
 

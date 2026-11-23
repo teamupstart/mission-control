@@ -253,14 +253,12 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
 
   try {
     let headLayer: Layer = new Map();
-    let baseLayer: Layer = new Map();
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;
       const revision = await commit(anchor);
       const { layer, treeIds } = await flatten(revision.record.tree);
       await include(revision, treeIds, layer);
       if (anchor === head) headLayer = layer;
-      if (anchor === base) baseLayer = layer;
     }
     const worktree = await scanWorking(git.path, state, signal);
     collect(index);
@@ -328,11 +326,11 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
         working = worktree.get(key);
       const classes: Classifications = [];
       const equal = (a: typeof working, b: typeof working) => a?.id === b?.id && a?.mode === b?.mode;
-      if (committed || baseLayer.has(key) || (!staged && !working)) classes.push("committed");
+      if (committed || (!staged && !working)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
       if (staged && !equal(staged, working)) classes.push("unstaged");
       if (working && !staged) classes.push(intent.has(key) ? "unstaged" : "untracked");
-      if (!working && (staged || committed || baseLayer.has(key))) classes.push("deleted");
+      if (!working && (staged || committed)) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
       const path = decodedPath(key);
       if (path && RepositoryPathSchema.safeParse(path).success) {

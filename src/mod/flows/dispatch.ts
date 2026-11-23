@@ -131,6 +131,8 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
     } catch {
       saved = false;
     }
+    // The read-back may have outlasted the session: it is waiting for nobody.
+    if (gone(session)) return ended();
     if (saved) {
       host.notice(DESCRIBE_NOTICE);
       return { outcome: "waiting", line: DESCRIBE_NOTICE };
@@ -207,6 +209,8 @@ export async function confirmLoop(
 ): Promise<FlowResult> {
   let summary = first;
   for (;;) {
+    // Nothing is shown to a session that has ended.
+    if (gone(session)) return ended();
     host.notice(summary.text);
     const options = intent === "backlog"
       ? [CONFIRM_BACKLOG, CONFIRM_START, CONFIRM_CHANGE, CONFIRM_CANCEL]
@@ -215,6 +219,8 @@ export async function confirmLoop(
     if (answer.kind !== "pick" || answer.label === CONFIRM_CANCEL.label) return cancel(host, session, summary.draftId);
     if (answer.label === CONFIRM_START.label) return file(host, session, summary, "start");
     if (answer.label === CONFIRM_BACKLOG.label) return file(host, session, summary, "backlog");
+    // The answer may have arrived after the session ended: no notice or dialog follows it.
+    if (gone(session)) return ended();
     const changed = await changeSomething(host, session, summary);
     if ("outcome" in changed) return changed;
     summary = changed;
@@ -406,6 +412,8 @@ export async function remindOrDropWaitingDraft(host: FlowHost, session: FlowSess
   await confirmDraft(host, session, draftId, "cancel");
   if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
   await host.paneState.set("draftId", null);
+  // Clearing the marker may have outlasted the session: nothing is said and nothing starts over.
+  if (gone(session)) return ended();
   host.notice(DROPPED_NOTICE);
   return null;
 }

@@ -981,3 +981,45 @@ test("a draft whose id could not be saved is not reported as waiting; the descri
     assert.notEqual(result.outcome, "waiting", failure);
   }
 });
+
+test("local steps after an await stop once the session has ended: Change something, the waiting read-back and a dropped draft", async () => {
+  // Change something chosen after the session ended: no "Current kind" notice, no Kind dialog.
+  let endedConfirm = false;
+  const change = world({
+    host: { answers: (q) => { if (q.header === "Confirm") { endedConfirm = true; return { kind: "pick", label: "Change something" }; } return { kind: "pick", label: q.options[0]!.label }; } },
+  });
+  const changed = await runDispatchCommand(change.fake.host, { ...SESSION, live: () => !endedConfirm }, "ship add retries");
+  assert.equal(changed.outcome, "cancelled");
+  assert.ok(change.fake.notices.every((n) => !n.startsWith("Current kind")));
+  assert.equal(change.fake.dialogs.filter((d) => d.header === "Kind").length, 0);
+
+  // The session ends during the waiting-draft read-back: the draft is not reported as waiting.
+  let endedRead = false;
+  const reading = world();
+  const realGet = reading.fake.host.paneState.get;
+  reading.fake.host.paneState.get = (async (key: "draftId") => {
+    const value = await realGet(key);
+    endedRead = true;
+    return value;
+  }) as typeof realGet;
+  const waiting = await runDispatchCommand(reading.fake.host, { ...SESSION, live: () => !endedRead }, "");
+  assert.equal(waiting.outcome, "cancelled");
+  assert.ok(reading.fake.notices.every((n) => n !== DESCRIBE_NOTICE));
+
+  // The session ends while a dropped draft's marker is cleared: no "Dropped" notice, nothing starts over.
+  let endedDrop = false;
+  const dropping = world();
+  const session = { ...SESSION, reminded: new Set<string>(), live: () => !endedDrop };
+  await runDispatchCommand(dropping.fake.host, session, "");
+  await runDispatchCommand(dropping.fake.host, session, "");
+  const realSet = dropping.fake.host.paneState.set;
+  dropping.fake.host.paneState.set = (async (key: "draftId", value: string | null) => {
+    await realSet(key, value);
+    if (value === null) endedDrop = true;
+  }) as typeof realSet;
+  const dialogsBefore = dropping.fake.dialogs.length;
+  const dropped = await runDispatchCommand(dropping.fake.host, session, "");
+  assert.equal(dropped.outcome, "cancelled");
+  assert.ok(dropping.fake.notices.every((n) => n !== "Dropped the draft that was waiting for its description."));
+  assert.equal(dropping.fake.dialogs.length, dialogsBefore);
+});

@@ -103,6 +103,19 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect(page.locator("main.board")).toBeVisible();
   const card = () => page.getByRole("group", { name: `Why ${session.name} stalled` });
 
+  // Mixed-version daemon: keep the reported reason and run link without assuming a parked step.
+  served = [{ sessionId: id, kind: "workflow-parked", forMs: 60_000,
+    reason: "Waiting on the review", workflowRunId: "legacy-run" }];
+  await expect(card()).toContainText("Waiting on the review", { timeout: 15_000 });
+  await expect(card().getByRole("button", { name: "Message…" })).toBeVisible();
+  await expect(card().getByRole("button", { name: "Open run" })).toBeVisible();
+
+  served = [parked(id, { status: "waiting_for_new_head" }, "parked-no-unpushed")];
+  await expect(card()).toContainText("a new commit pushed to this branch", { timeout: 15_000 });
+  await expect(card().getByRole("button", { name: "Continue" })).toHaveCount(0);
+  await expect(card().getByRole("button", { name: "Tell it to push" })).toHaveCount(0);
+  await expect(card().getByRole("button", { name: "Open run" })).toBeEnabled();
+
   // 1. A run waiting for a pushed head, with unpushed commits: Tell it to push. The fixed words
   //    reach the agent through the real outbox.
   served = [parked(id, { status: "waiting_for_new_head", unpushedCommits: 2 }, "parked-head")];

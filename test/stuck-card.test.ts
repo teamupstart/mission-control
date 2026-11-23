@@ -87,10 +87,10 @@ test("a parked run draws Resubmit only when it can be resubmitted, and push only
     actions(draw(stall(parked({ unpushedCommits: 3 })))),
     ["open-session", "dismiss", "continue", "open-run", "message"],
   );
-  // Waiting for a head with nothing unpushed: new work has to be made, so Continue again.
+  // Waiting for a head with nothing unpushed: the review needs a new remote head.
   assert.deepEqual(
     actions(draw(stall(parked({ status: "waiting_for_new_head" })))),
-    ["open-session", "dismiss", "continue", "open-run", "message"],
+    ["open-session", "dismiss", "open-run", "message"],
   );
 });
 
@@ -177,7 +177,7 @@ test("a parked run's step is decided once, from its status, source and commits",
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", resubmittable: true }), "resubmit");
   assert.equal(parkedStep({ ...base, status: "waiting_for_new_head", unpushedCommits: 2 }), "push");
   assert.equal(parkedStep({ ...base, status: "waiting_for_new_head", unpushedCommits: 2, externalSource: "ensemble" }), "push");
-  assert.equal(parkedStep({ ...base, status: "waiting_for_new_head" }), "next-turn");
+  assert.equal(parkedStep({ ...base, status: "waiting_for_new_head" }), "new-head");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", externalSource: "ensemble", unpushedCommits: 2 }), "source");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", unpushedCommits: 2 }), "next-turn");
 });

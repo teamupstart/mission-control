@@ -134,7 +134,7 @@ export function parkedMissingStep(facts: ParkedFacts): string {
     const unpushed = facts.unpushedCommits === 1 ? "1 commit" : `${facts.unpushedCommits} commits`;
     return facts.unpushedCommits > 0
       ? `a pushed head. ${unpushed} on this branch have not been pushed.`
-      : `a pushed head on this branch for ${facts.workflowName}.`;
+      : `a new commit pushed to this branch before ${facts.workflowName} can resume.`;
   }
   return facts.resubmittable
     ? `a resubmission to reopen ${facts.workflowName} round ${facts.round}.`
@@ -147,13 +147,14 @@ export function parkedMissingStep(facts: ParkedFacts): string {
  * - `resubmit`: a manual or Preview round that Resubmit reopens.
  * - `push`: a run waiting for a pushed head, with commits the remote has not seen. Only this
  *   status is moved by a push; a run waiting for the session is not, whatever is unpushed.
+ * - `new-head`: the run needs a new remote head and no unpushed commit was observed.
  * - `source`: a run an orchestrator started, waiting for the session. Only that source can
  *   submit it again, so nothing on the row moves it.
  * - `next-turn`: everything else, which the session's own next turn moves.
  */
-export function parkedStep(facts: ParkedFacts): "resubmit" | "push" | "source" | "next-turn" {
+export function parkedStep(facts: ParkedFacts): "resubmit" | "push" | "new-head" | "source" | "next-turn" {
   if (facts.resubmittable) return "resubmit";
-  if (facts.status === "waiting_for_new_head") return facts.unpushedCommits > 0 ? "push" : "next-turn";
+  if (facts.status === "waiting_for_new_head") return facts.unpushedCommits > 0 ? "push" : "new-head";
   if (facts.externalSource !== null) return "source";
   return "next-turn";
 }

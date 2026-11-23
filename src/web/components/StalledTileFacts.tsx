@@ -47,6 +47,9 @@ export function StalledTileFacts({
   const name = session.name || "this session";
   const messageable = canMessage(session) && session.state !== "exited";
   const disabled = busy !== null;
+  const runId = stall.kind === "workflow-parked"
+    ? (facts?.kind === "workflow-parked" ? facts.runId : stall.workflowRunId)
+    : undefined;
   const rows = stalledFactRows(session, stall);
 
   return (
@@ -65,7 +68,7 @@ export function StalledTileFacts({
         ))}
       </dl>
       <div className="stalled-actions">
-        {facts?.kind === "unfinished-work" && messageable && (
+        {stall.kind === "unfinished-work" && messageable && (
           <InboxActionButton
             action="nudge"
             name={name}
@@ -75,7 +78,7 @@ export function StalledTileFacts({
             onClick={fixed("nudge")}
           />
         )}
-        {facts?.kind === "unfinished-work" && facts.task && messageable && onMessage && (
+        {(!facts || (facts.kind === "unfinished-work" && facts.task)) && messageable && onMessage && (
           <Tooltip label="Open the session and focus its message box">
             <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
           </Tooltip>
@@ -124,12 +127,12 @@ export function StalledTileFacts({
             onClick={fixed("continue")}
           />
         )}
-        {facts?.kind === "workflow-parked" && onOpenRun && (
+        {runId && onOpenRun && (
           <InboxActionButton
             action="open-run"
             name={name}
             tooltip="Open this workflow run on the Runs page"
-            onClick={() => onOpenRun(facts.runId)}
+            onClick={() => onOpenRun(runId)}
           />
         )}
         {onDismiss && (

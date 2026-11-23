@@ -344,6 +344,9 @@ function noteAutomatedClaim(sessionId: string, key: string, landed: boolean): vo
     const i = claims.lastIndexOf(claim);
     if (i >= 0) claims.splice(i, 1);
     if (claims.length === 0 && automatedClaims.get(sessionId) === claims) automatedClaims.delete(sessionId);
+    // Every listener that did store it is told it is taken back, as a refused person's send is:
+    // a pending nudge kept for a delivery never typed would be matched by the session's real wake.
+    announceAutomated({ sessionId, at, key, released: true });
     throw new AutomatedAttributionError(sessionId, failure.error);
   }
 }

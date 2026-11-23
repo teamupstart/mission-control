@@ -773,9 +773,10 @@ test("a delivery listener that fails is logged with the session and delivery; a 
   const errors = t.mock.method(console, "error", () => {});
   const stop = onAutomatedDelivery(() => { throw new Error("listener down"); });
   const heard: string[] = [];
-  const stopNext = onAutomatedDelivery((delivery) => { heard.push(delivery.sessionId); });
+  const stopNext = onAutomatedDelivery((delivery) => { heard.push(`${delivery.sessionId}:${delivery.released ? "released" : "claimed"}`); });
   try {
-    // Not yet typed: refused, so nothing is sent with an attribution that was not stored.
+    // Not yet typed: refused, so nothing is sent with an attribution that was not stored, and a
+    // listener that did store it is told it is taken back.
     assert.throws(() => reserveInjection("sdk:listener-check", "Please wrap up and open the pull request.", "foreman"),
       AutomatedAttributionError);
     assert.equal(originOf("sdk:listener-check", "Please wrap up and open the pull request."), undefined);
@@ -787,7 +788,8 @@ test("a delivery listener that fails is logged with the session and delivery; a 
     stopNext();
     forgetInjections("sdk:listener-landed");
   }
-  assert.deepEqual(heard, ["sdk:listener-check", "sdk:listener-landed"], "one failing listener kept the next from hearing the delivery");
+  assert.deepEqual(heard, ["sdk:listener-check:claimed", "sdk:listener-check:released", "sdk:listener-landed:claimed"],
+    "a listener that stored the refused delivery was never told it was taken back");
   const logged = errors.mock.calls.map((call) => String(call.arguments[0]));
   assert.ok(logged.some((line) => line.includes("sdk:listener-check") && line.includes(injectionFingerprint("Please wrap up and open the pull request."))),
     "the failing listener left no log line naming the session and delivery");

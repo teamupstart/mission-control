@@ -24,6 +24,7 @@ export function mkReport(over: Partial<ReportItem> & { id: string }): ReportItem
     announcedAs: null,
     announcedAt: null,
     publishedArchiveKey: null,
+    countedInDigestAt: null,
     ...over,
   };
 }

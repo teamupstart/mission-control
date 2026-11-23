@@ -67,7 +67,13 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // Nested sub-cards, the recommended treatment, for an install that never chose.
   assert.equal(config.backgroundAgentsStyle, "nested");
   assert.equal(config.richText, true);
-  assert.deepEqual(config.alerts, { notifications: false, sound: true });
+  // Every "What notifies you" switch is on: what each kind of item did before they existed.
+  assert.deepEqual(config.alerts, {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  });
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
@@ -111,7 +117,13 @@ test("a written cache round-trips", () => {
     // Off its default, so it cannot round-trip by falling back.
     backgroundAgentsStyle: "chip",
     keybindings: { select: "shift+Tab" },
-    alerts: { notifications: true, sound: false },
+    // Every switch off its default, so none round-trips by falling back.
+    alerts: {
+      notifications: true,
+      sound: false,
+      notify: { blockingQuestions: false, filedQuestions: false, reports: false, stuck: false },
+      reportsInInbox: false,
+    },
     richText: false,
     keybindingHints: false,
     guidedDispatch: false,
@@ -159,7 +171,12 @@ test("a written cache round-trips", () => {
   assert.equal(config.taskKindCard, "off");
   assert.equal(config.backgroundAgentsStyle, "chip");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
-  assert.deepEqual(config.alerts, { notifications: true, sound: false });
+  assert.deepEqual(config.alerts, {
+    notifications: true,
+    sound: false,
+    notify: { blockingQuestions: false, filedQuestions: false, reports: false, stuck: false },
+    reportsInInbox: false,
+  });
   assert.equal(config.richText, false);
   assert.equal(config.keybindingHints, false);
   assert.equal(config.guidedDispatch, false);
@@ -351,7 +368,7 @@ test("dead fields from before away mode moved server-side are dropped", () => {
     JSON.stringify({ notifications: false, sound: true, afk: false, digestMinutes: 15 }),
   );
   const found = readLegacySettings();
-  assert.deepEqual(found?.alerts, { notifications: false, sound: true });
+  assert.deepEqual(found?.alerts, { ...UI_CONFIG_DEFAULTS.alerts, notifications: false, sound: true });
 });
 
 test("an unrecognised layout is not adopted as if it were real", () => {

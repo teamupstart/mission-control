@@ -170,7 +170,9 @@ folds them. See [Task shaping](task-shaping.md#settings).
 ## Agent reports
 
 `report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
-report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
+report is posted, first opened, marked read, or replaced; when its notification wording is
+stamped (`announcedAs`, which is what raises its notification); and when an Away return digest
+marks it counted (`countedInDigestAt`, so no window notifies about it afterwards). There is no remove frame: a report is
 never deleted and outlives the session that posted it, so a read or replaced report is upserted
 with its new state, and the dashboard drops it from its state on that frame
 (`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only

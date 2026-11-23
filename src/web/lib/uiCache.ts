@@ -185,6 +185,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,
       sound: raw?.alerts?.sound ?? UI_CONFIG_DEFAULTS.alerts.sound,
+      // A cache from before the "What notifies you" switches reads as every switch on.
+      notify: { ...UI_CONFIG_DEFAULTS.alerts.notify, ...raw?.alerts?.notify },
+      reportsInInbox: raw?.alerts?.reportsInInbox ?? UI_CONFIG_DEFAULTS.alerts.reportsInInbox,
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
     keybindingHints: raw?.keybindingHints ?? UI_CONFIG_DEFAULTS.keybindingHints,

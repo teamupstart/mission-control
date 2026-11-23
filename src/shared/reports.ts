@@ -36,9 +36,18 @@ export type ReportReadBy = (typeof REPORT_READ_BY)[number];
 export const REPORT_DOCUMENT_KINDS = ["html", "markdown"] as const;
 export type ReportDocumentKind = (typeof REPORT_DOCUMENT_KINDS)[number];
 
-/** How a report was announced once its session settled or kept working. Written by a later phase. */
+/**
+ * How a report was announced: `back` when its session stopped within the grace period after
+ * posting, `working` when the grace period ended with it still going. Stamped once by the daemon.
+ */
 export const REPORT_ANNOUNCEMENTS = ["back", "working"] as const;
 export type ReportAnnouncement = (typeof REPORT_ANNOUNCEMENTS)[number];
+
+/**
+ * How long after a post the daemon waits to see the session stop before announcing the report as
+ * still working. A post always happens mid-turn, so "back" can trail the post by up to this.
+ */
+export const REPORT_ANNOUNCE_GRACE_MS = 20_000;
 
 /**
  * Who posted a report, as it was known at post time, so the report can be named after its
@@ -82,6 +91,13 @@ export interface ReportItem {
   followUpTaskId: string | null;
   announcedAs: ReportAnnouncement | null;
   announcedAt: number | null;
+  /**
+   * When a return digest counted this report, or null. The digest already told the operator about
+   * it, so it raises no notification in any window afterwards: not when a stamp still pending
+   * lands, and not when a window that missed its stamp reconnects, reloads, or outlives a daemon
+   * restart.
+   */
+  countedInDigestAt: number | null;
   /** The scout archive key it was published under (a later phase writes it). */
   publishedArchiveKey: string | null;
 }

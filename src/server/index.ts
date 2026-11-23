@@ -713,6 +713,9 @@ const away = startAwayWatcher(registry, undefined, {
   unpushedObserver: createUnpushedObserver({
     checkoutFor: (run) => workflows.bindingCheckout(run.bindingId),
   }),
+  // Reports a return digest counted before they were announced stay quiet when they are.
+  // `reports` is constructed further down; this runs only when an away window closes.
+  reportsCountedInDigest: (ids) => reports.countedInDigest(ids),
 });
 const stopHeadlessPruner = startHeadlessPruner();
 // Check-domain crash recovery rides the native manager's cadence. It still runs when no
@@ -846,8 +849,8 @@ const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTur
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
 // Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
-// read to the registry now, so the first snapshot after a restart carries them. It subscribes to
-// no session event: a report outlives the session that posted it.
+// read to the registry now, so the first snapshot after a restart carries them. It reads session
+// events only to stamp how a new report is announced; a session leaving never clears a report.
 const reports = new ReportManager(registry);
 
 // Named rather than positional. Every service below reaches its route domain by field name,

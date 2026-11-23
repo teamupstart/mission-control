@@ -126,9 +126,11 @@ export const FEATURE_FLAGS = [
       "Agents can post reports for you to read: a Reports section in the attention inbox and a to read " +
       "figure in the top bar. Stalled sessions get a Stuck section in the inbox with the fix on each row. " +
       "One rule names an agent in alert titles, the attention inbox, the review modal and question cards: " +
-      "its resident name in its board colour, else its task title, else its session name.",
+      "its resident name in its board colour, else its task title, else its session name. The alerts " +
+      "popover gains What notifies you switches, and a report notifies you when its agent is back or " +
+      "still working.",
     stage: "preview",
-    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall"],
+    keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

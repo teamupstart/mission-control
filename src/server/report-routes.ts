@@ -138,6 +138,15 @@ export function registerReportRoutes(
     return c.json({ error: outcome.error, report: outcome.report, taskId: outcome.taskId }, outcome.status);
   });
 
+  // One report, read or not, and the latest of its chain when it was replaced: what a report
+  // notification opens when the dashboard no longer holds the report (already read, or replaced
+  // by one it never saw). Reading changes nothing, so it is not limited to the operator.
+  app.get("/api/reports/:id", gate, (c) => {
+    if (!reports) return unavailable(c);
+    const resolved = reports.resolve(c.req.param("id"));
+    return resolved ? c.json(resolved) : c.json({ error: "no such report" }, 404);
+  });
+
   // A session's whole history: every version, read or not. Answered for a session that has
   // already been evicted, because the session is a report's permanent home.
   app.get("/api/sessions/:id/reports", gate, (c) => {

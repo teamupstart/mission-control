@@ -8,6 +8,7 @@ import { INBOX_FLAG } from "@shared/inbox.ts";
 import { launchFailureOutcome } from "@shared/launch-failure.ts";
 import type { PostReportBody } from "@shared/protocol.ts";
 import {
+  REPORT_ANNOUNCE_GRACE_MS,
   REPORT_LIMITS,
   replyRefusal,
   replyTarget,
@@ -18,18 +19,20 @@ import {
   residentAuthorKey,
   sessionAuthorKey,
   type ReplyTarget,
+  type ReportAnnouncement,
   type ReportAuthor,
   type ReportDocumentKind,
   type ReportItem,
   type ReportReadBy,
 } from "@shared/reports.ts";
-import { sessionWorkspaceRoot } from "@shared/session.ts";
-import type { PendingTurn, Session, Task } from "@shared/types.ts";
+import { reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import type { PendingTurn, ServerEvent, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
 import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import type { Registry } from "./registry.ts";
 import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./session-files.ts";
+import { unref } from "./util/timers.ts";
 
 /**
  * Agent reports: what an agent posts with `post_report` for the operator to read.
@@ -37,13 +40,16 @@ import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./s
  * The one owner of the `reports` table. A report is deliberately not a review: it never enters
  * `reviews`, so it raises no `pendingReviews`, holds no completion, counts toward no question
  * limit, closes on no merge, and Foreman (which reads reviews and registered evidence) never sees
- * it. It is also deliberately not session-scoped state: this manager does NOT subscribe to
- * `session_remove`, because a report outlives the session that posted it. Everything a report
+ * it. It is also deliberately not session-scoped state: a session leaving never removes or
+ * clears a report, because a report outlives the session that posted it. Everything a report
  * needs to be drawn after its session is gone - the author's name, task, repository and resident
  * profile - is copied onto the row at post time.
  *
  * `markRead` is the one place a report becomes read. The one way back is a follow-up whose launch
- * failed with no session (`reconcileFollowUp`), so its Retry is offered again.
+ * failed with no session (`reconcileFollowUp`), so its Retry is offered again. `announce` is the
+ * one place a report is stamped `back` or `working`, and the stamp is why this manager watches
+ * session events: a post always happens mid-turn, so whether the agent then stopped is only known
+ * afterwards.
  */
 
 /** A refused post or operator action, with the HTTP status the route answers. */
@@ -116,6 +122,7 @@ interface Row {
   announced_as: string | null;
   announced_at: number | null;
   published_archive_key: string | null;
+  counted_in_digest_at: number | null;
 }
 
 const nullableNumber = (value: number | null): number | null => (value === null ? null : Number(value));
@@ -145,6 +152,7 @@ function fromRow(row: Row): ReportItem {
     announcedAs: row.announced_as as ReportItem["announcedAs"],
     announcedAt: nullableNumber(row.announced_at),
     publishedArchiveKey: row.published_archive_key,
+    countedInDigestAt: nullableNumber(row.counted_in_digest_at),
   };
 }
 
@@ -165,15 +173,47 @@ interface StagedDocument {
   bytes: Buffer;
 }
 
+/** The timer the announce grace period runs on, injectable so a test can own the clock. */
+export interface ReportTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const REAL_TIMERS: ReportTimers = {
+  set: (fn, ms) => unref(setTimeout(fn, ms)),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * A report waiting for its announce stamp. `working` is what the session was last seen doing:
+ * `true` once it has been seen working, `false` when it had not been seen working at post time
+ * (an uninstrumented session, whose state says nothing), and `null` for a report found unstamped
+ * at startup, whose session has not been seen at all yet.
+ */
+interface AnnounceWatch {
+  sessionId: string;
+  working: boolean | null;
+  timer: unknown;
+  /**
+   * The report's grace period has ended while its session had still not been seen since a
+   * restart. The session's first sighting then decides the wording at once.
+   */
+  deadlinePassed: boolean;
+}
+
+const isWorking = (session: Session): boolean => reportBucket(session) === "working";
+
 export interface ReportManagerOptions {
   /** The state home documents are copied under. Defaults to the daemon's. */
   stateDir?: string;
   now?: () => number;
+  timers?: ReportTimers;
 }
 
 export class ReportManager {
   private readonly stateDir: string;
   private readonly now: () => number;
+  private readonly timers: ReportTimers;
   private readonly stopFlags: () => void;
   private readonly stopTasks: () => void;
   /**
@@ -185,13 +225,28 @@ export class ReportManager {
   private readonly staleFailures = new Map<string, number>();
   /** The follow-up in flight for each report, so two calls for one report run one after the other. */
   private readonly followUps = new Map<string, Promise<FollowUpOutcome>>();
+  private readonly stopEvents: () => void;
+  /** Reports waiting for their announce stamp, by id. Bounded by posts in the last grace period. */
+  private readonly watches = new Map<string, AnnounceWatch>();
 
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
     this.now = options.now ?? Date.now;
+    this.timers = options.timers ?? REAL_TIMERS;
+    this.stopEvents = registry.subscribe((event) => this.observe(event));
     // Every report still waiting to be read is handed to the registry once, so the snapshot
-    // carries it from the first connect after a restart.
-    for (const report of this.listToRead()) this.registry.upsertReport(report);
+    // carries it from the first connect after a restart. One the daemon stopped before stamping
+    // is stamped from its session's state: sessions are re-adopted after startup, so that state
+    // is read when the session is first seen, or when the grace period ends. The grace period
+    // keeps its original deadline, 20 seconds after the post: a restart neither extends it nor
+    // restarts it.
+    for (const report of this.listToRead()) {
+      this.registry.upsertReport(report);
+      if (report.announcedAs === null) {
+        const remaining = Math.max(0, report.createdAt + REPORT_ANNOUNCE_GRACE_MS - this.now());
+        this.watch(report.id, report.sessionId, null, remaining);
+      }
+    }
     // The snapshot omits reports while the `inbox` flag is off, and the registry sends no report
     // event then. Turning the flag on resends what is waiting, so an open window fills its
     // Reports section and its to read figure without a reload.
@@ -221,10 +276,114 @@ export class ReportManager {
   stop(): void {
     this.stopFlags();
     this.stopTasks();
+    this.stopEvents();
+    for (const watch of this.watches.values()) this.timers.clear(watch.timer);
+    this.watches.clear();
+  }
+
+  /**
+   * A return digest has counted these reports. Each is marked in the table and every window is
+   * told, so no window raises a notification for it afterwards, whenever and however its stamp
+   * reaches that window. That includes a report stamped while you were away: a window that missed
+   * the stamp's event, because its stream was down, first sees it stamped in a reconnect snapshot,
+   * and the mark is what keeps that snapshot quiet. The first count's time is kept.
+   */
+  countedInDigest(ids: readonly string[]): void {
+    const mark = openDb().prepare(
+      "UPDATE reports SET counted_in_digest_at = ? WHERE id = ? AND counted_in_digest_at IS NULL",
+    );
+    const at = this.now();
+    for (const id of ids) {
+      if (mark.run(at, id).changes === 0) continue;
+      const report = getRow(id);
+      if (report) this.registry.upsertReport(report);
+    }
+  }
+
+  /** Wait for a report's session to stop, or for the grace period to end, then stamp it. */
+  private watch(id: string, sessionId: string, working: boolean | null, delayMs = REPORT_ANNOUNCE_GRACE_MS): void {
+    const timer = this.timers.set(() => this.graceEnded(id), delayMs);
+    this.watches.set(id, { sessionId, working, timer, deadlinePassed: false });
+  }
+
+  /**
+   * A session change, read against every report still waiting for its stamp. Leaving working is
+   * what "back" means, so a report is stamped `back` only once its session was seen working and
+   * then not, or once the session is gone. A session never seen working (an uninstrumented one)
+   * gives no such evidence, and its report is announced as still working when the grace ends.
+   */
+  private observe(event: ServerEvent): void {
+    if (this.watches.size === 0) return;
+    if (event.type === "session_remove") {
+      for (const [id, watch] of this.watches) if (watch.sessionId === event.id) this.announce(id, "back");
+      return;
+    }
+    if (event.type !== "session_upsert") return;
+    const working = isWorking(event.session);
+    for (const [id, watch] of this.watches) {
+      if (watch.sessionId !== event.session.id) continue;
+      // Unknown (found at startup) reads the state as it is now; otherwise only a change from
+      // working counts. First seen working after the deadline already passed, it kept going
+      // through the grace period.
+      if (!working && watch.working !== false) this.announce(id, "back");
+      else if (working && watch.working === null && watch.deadlinePassed) this.announce(id, "working");
+      else if (working) watch.working = true;
+    }
+  }
+
+  private graceEnded(id: string): void {
+    const watch = this.watches.get(id);
+    if (!watch) return;
+    const session = this.registry.getSession(watch.sessionId);
+    // Found at startup, and its session not re-adopted yet: absence says nothing so soon after a
+    // restart. Its first sighting decides the wording, and a session still unseen one grace
+    // period later is taken to be gone.
+    if (!session && watch.working === null && !watch.deadlinePassed) {
+      watch.deadlinePassed = true;
+      watch.timer = this.timers.set(() => this.graceEnded(id), REPORT_ANNOUNCE_GRACE_MS);
+      return;
+    }
+    const gone = !session || session.state === "exited";
+    // A report found at startup is stamped from the state its session has now; one watched since
+    // its post kept going through the whole grace period.
+    if (gone) this.announce(id, "back");
+    else if (watch.working === null) this.announce(id, isWorking(session) ? "working" : "back");
+    else this.announce(id, "working");
+  }
+
+  /**
+   * Stamp how a report is announced, once, and tell every window: the stamp is what raises the
+   * report's notification. A report read or replaced before its stamp is left unstamped, since
+   * there is nothing left to announce.
+   */
+  private announce(id: string, as: ReportAnnouncement): void {
+    const watch = this.watches.get(id);
+    if (watch) this.timers.clear(watch.timer);
+    this.watches.delete(id);
+    const changed = openDb().prepare(
+      `UPDATE reports SET announced_as = ?, announced_at = ?
+       WHERE id = ? AND announced_as IS NULL AND read_at IS NULL AND superseded_by IS NULL`,
+    ).run(as, this.now(), id).changes > 0;
+    const report = changed ? getRow(id) : null;
+    if (report) this.registry.upsertReport(report);
   }
 
   get(id: string): ReportItem | null {
     return getRow(id);
+  }
+
+  /**
+   * A report, and the latest report of its chain when it has been replaced, so a notification
+   * raised for an earlier version can open the one that took its place. Null for an unknown id.
+   */
+  resolve(id: string): { report: ReportItem; latest: ReportItem | null } | null {
+    const report = getRow(id);
+    if (!report) return null;
+    if (report.supersededBy === null) return { report, latest: null };
+    const row = openDb()
+      .prepare("SELECT * FROM reports WHERE root_id = ? AND superseded_by IS NULL ORDER BY seq DESC LIMIT 1")
+      .get(report.rootId) as Row | undefined;
+    return { report, latest: row ? fromRow(row) : null };
   }
 
   /** Every report waiting to be read, oldest first. */
@@ -315,6 +474,8 @@ export class ReportManager {
     const { created, superseded } = result;
     if (superseded) this.registry.upsertReport(superseded);
     this.registry.upsertReport(created);
+    const live = this.registry.getSession(session.id) ?? session;
+    this.watch(created.id, session.id, isWorking(live));
     return created;
   }
 

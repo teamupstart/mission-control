@@ -175,6 +175,10 @@ count toward no question limit, close on no merge, and Foreman never reads, answ
 With the flag off, `post_report` is refused, the inbox has no Reports section, the top bar has no
 **to read** figure, and stored reports are kept for when it is turned on again.
 
+A report also raises a notification, and **Agent reports are listed in the inbox** can take
+reports out of the inbox list and the **to read** figure; see
+[What notifies you](#what-notifies-you).
+
 ### Stuck rows
 
 With the **Reports and inbox upgrades** preview flag (`inbox`) on, every session the daemon's
@@ -325,6 +329,54 @@ idle, a task finishing) are detected but never notify; they're digest material. 
 fire on the *transition* into attention (once, not every tick) and de-dupe, so a
 waiting session pings you once. The chime is synthesized with the Web Audio API (no
 asset, no network).
+
+### What notifies you
+
+With the **Reports and inbox upgrades** flag (`inbox`) on, the alerts popover has a **What
+notifies you** group under **How you're reached**, with five switches, all on by default:
+
+| Switch | Off means |
+| --- | --- |
+| **Blocking questions notify** | A question the agent waits on inside the call raises no notification. |
+| **Questions filed while working notify** | A question filed with [Ask without stopping](sessions.md#asking-without-stopping) raises no notification. |
+| **Agent reports notify** | A report raises no notification. |
+| **Agent reports are listed in the inbox** | Reports leave the inbox's Reports section and the **to read** figure. They stay in each conversation and are not marked read, and a report notification still arrives. |
+| **Stuck sessions notify** | A [stuck session](#stuck-sessions) raises no notification. |
+
+A notify switch only stops the notification: the item is still in the inbox. Every other alert
+is unchanged, and with the flag off the group is hidden and the switches are not read.
+
+**A report notification** is named by the agent's display name and worded by what the agent did
+after posting. An agent calls `post_report` mid-turn, so the daemon waits up to 20 seconds: if
+the session is seen working and then stops in that time, or leaves, the notification reads
+**Steve's back: Build failure diagnosed**, and otherwise, when the time is up, **Steve posted a
+report: Build failure diagnosed**. A session that reports no working state at all, such as one
+without hooks, gives no evidence that it stopped: while it is still present when the time is up,
+its report takes the second wording, and if it leaves first, the first. After an ordinary post,
+"back" can therefore trail it by up to 20 seconds. A report read or replaced within that time
+raises nothing, and a session that stops without posting a report stays silent.
+A report the daemon had not yet worded when it stopped is worded from its session's state after a
+restart, against its original 20-second deadline: a restart neither extends nor restarts it. If
+that deadline has passed before the restarted daemon sees the session again, the wording waits
+for the session's first sighting, up to one more 20-second period, after which a session still
+unseen is taken to have left and the report is worded "back".
+
+**Clicking a report notification** opens the inbox at that report. The first row that matches
+decides:
+
+| At the time of the click | What opens |
+| --- | --- |
+| The **Reports and inbox upgrades** flag is off | Nothing: the click only focuses the window. |
+| The report was replaced | The latest report of its chain, then the rows below apply to it. The older version is not shown in the inbox. |
+| The Reports section lists the report | The inbox, with that report's row open. |
+| The inbox does not list it, for any reason: reports are unlisted, or it was already read | The inbox, with that one report drawn open above the sections under **Opened from a notification**. |
+| The report cannot be loaded | The inbox, with a line saying so. |
+
+The click records that the report was opened and never marks it read. The **Opened from a
+notification** band changes neither the Reports section nor the **to read** figure, offers
+**Mark read** while the report is unread, and is gone when the inbox closes. A report the
+dashboard no longer holds is read from `GET /api/reports/:id`, which returns the report and, when
+it was replaced, the latest report of its chain.
 
 ### Stuck sessions
 
@@ -500,7 +552,9 @@ question, still working** while the agent works past it, and **needs your answer
 stopped. No second alert fires when a working session later stops on it. Other
 reviews show their title rather than their raw diff or plan. Reconnect summaries retain
 that question or review detail. Opening the dashboard adopts existing questions silently. Reconnecting
-an already-open dashboard coalesces missed attention into one catch-up notification.
+an already-open dashboard coalesces missed attention into one catch-up notification. With the
+**Reports and inbox upgrades** flag on, a report missed while disconnected is the exception: it
+keeps its own notification, worded and opened like any report notification.
 The desktop window can be hidden, but quitting the app stops dashboard notification
 delivery. The daemon alone does not send desktop notifications.
 
@@ -525,8 +579,19 @@ Switch away mode on and the session detail expands to show how long you have bee
 unfolds a preview of what is waiting. That preview is a *look*: the real digest is
 written when you return, and reading it is what consumes it.
 
-While away, anything blocked on you still notifies immediately - everything else
-accumulates. When you come back, you get **one card** summarising the window: a couple
+While away, anything blocked on you still notifies immediately, unless you turned its switch off
+under [What notifies you](#what-notifies-you) - everything else accumulates. With the **Reports and inbox upgrades** flag on, agent reports wait too: they raise
+no notification while you are away, stay in the inbox, and the digest's rollup says how many are
+waiting and from whom ("4 reports waiting: Steve, Carol and 2 others"). It counts the reports
+waiting as you return: one posted just before you came back is included before its notification
+wording is settled, and one you read or that was replaced while you were away is not. A report
+the digest counted raises no notification afterwards, even when its wording settles after you are
+back, after a page reload, a reconnect or another away window, or after a daemon restart: the
+daemon stores on the report that a digest counted it. A report announced while a dashboard is still
+loading, before it knows whether you are away, waits for that answer: it notifies only if you are
+not. Turning the flag off while you are away takes reports out of the digest; everything else in it
+stays. Stuck sessions still break
+through unless **Stuck sessions notify** is off. When you come back, you get **one card** summarising the window: a couple
 of sentences written by Haiku over what actually happened, a deterministic rollup
 beneath it ("1 stuck · 3 finished"), and the per-event lines with what needs you
 first. Repeats coalesce, so a session that finished twice is one line with a count,

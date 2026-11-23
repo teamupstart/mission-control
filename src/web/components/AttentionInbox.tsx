@@ -92,6 +92,15 @@ export interface InboxReportControls extends ReportEntryControls {
   onFollowUp: (report: ReportItem, text: string) => Promise<string | null>;
 }
 
+/**
+ * A report opened from its notification that the inbox does not list (`inbox` flag): unlisted by
+ * the setting, already read, or from an author muted after the notification arrived. Drawn on its
+ * own above every section, outside the fold, so it moves no section and changes no figure.
+ */
+export type PinnedReport =
+  | { status: "loading" }
+  | { status: "ready"; report: ReportItem }
+  | { status: "failed" };
 
 export function AttentionInbox({
   fold,
@@ -107,6 +116,7 @@ export function AttentionInbox({
     window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
   },
   onReplyBox,
+  pinned = null,
 }: {
   fold: AttentionFold;
   /**
@@ -141,6 +151,8 @@ export function AttentionInbox({
   onOpenRun?: (runId: string) => void;
   /** A Stuck row's message box appearing or going, by session (the `onReplyBox` contract). */
   onReplyBox?: (sessionId: string, present: boolean) => void;
+  /** The report a notification opened that no section lists, drawn above them; null for none. */
+  pinned?: PinnedReport | null;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
   // A refused Mark read, by report, drawn under its card until it is tried again.
@@ -228,6 +240,27 @@ export function AttentionInbox({
         </Tooltip>
       </header>
       <div className="modal-body">
+        {reportsOn && pinned && (
+          <section className="inbox-entry inbox-pinned" aria-label="Opened from a notification">
+            <h4 className="inbox-section">Opened from a notification</h4>
+            {pinned.status === "ready" ? (
+              <ReportCard
+                report={pinned.report}
+                open={reports.openReportId === pinned.report.id}
+                target={reports.targetFor(pinned.report)}
+                onToggle={() => reports.onToggle(pinned.report)}
+                onMarkRead={() => markRead(pinned.report)}
+                onReply={(text) => reports.onReply(pinned.report, text)}
+                onFollowUp={(text) => reports.onFollowUp(pinned.report, text)}
+                error={readRefused.get(pinned.report.id) ?? null}
+              />
+            ) : (
+              <p className={`inbox-line${pinned.status === "failed" ? " inbox-error" : " dim"}`} role={pinned.status === "failed" ? "alert" : undefined}>
+                {pinned.status === "failed" ? "This report could not be loaded." : "Loading the report..."}
+              </p>
+            )}
+          </section>
+        )}
         {fold.items.length === 0 && (
           <p className="inbox-empty">
             {snoozed.length > 0

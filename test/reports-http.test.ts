@@ -192,6 +192,37 @@ test("with the inbox flag off every report route refuses with the feature named,
   assert.deepEqual((history.body.reports as ReportItem[]).map((r) => [r.id, r.readAt]), [[report.id, null]]);
 });
 
+test("GET /api/reports/:id answers a read report, and a replaced one with the latest of its chain", async () => {
+  const { registry, call, agent } = setup();
+  const { cwd } = liveSession(registry);
+  const post = async (body: Record<string, unknown>) =>
+    (await call("/mcp/reports", { env: {}, cwd, body: "b", ...body }, agent)).body.report as ReportItem;
+  const read = await post({ title: "Read already" });
+  await call(`/api/reports/${read.id}/read`, {});
+  const answered = await call(`/api/reports/${read.id}`);
+  assert.equal(answered.status, 200);
+  assert.equal((answered.body.report as ReportItem).readBy, "mark-read");
+  assert.equal(answered.body.latest, null);
+  // Replaced twice: the answer carries the chain's latest, not the middle version.
+  const v1 = await post({ title: "v1" });
+  const v2 = await post({ title: "v2", replaces: v1.id });
+  const v3 = await post({ title: "v3", replaces: v2.id });
+  const chained = await call(`/api/reports/${v1.id}`);
+  assert.equal((chained.body.report as ReportItem).id, v1.id);
+  assert.equal((chained.body.latest as ReportItem).id, v3.id);
+  assert.equal((await call("/api/reports/r-424242")).status, 404);
+  // Reading a report is not acting on it, so an agent's token may read it too.
+  assert.equal((await call(`/api/reports/${v1.id}`, undefined, agent)).status, 200);
+  setInbox(false);
+  try {
+    const refused = await call(`/api/reports/${v1.id}`);
+    assert.equal(refused.status, 404);
+    assert.equal(refused.body.feature, "inbox");
+  } finally {
+    setInbox(true);
+  }
+});
+
 test("an app built without the manager answers 503 rather than building a second owner", async () => {
   const { registry, call, agent } = setup(false);
   const { cwd } = liveSession(registry);

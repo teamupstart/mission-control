@@ -7,12 +7,17 @@ import {
   deliverable,
   detectAlerts,
   digestLine,
+  awaitsAwayState,
   hasReportable,
+  shouldDeliver,
   summarizeAlerts,
   withKnownStalls,
   type Alert,
   type AlertScope,
+  type NotifySwitches,
 } from "../src/shared/alerts.ts";
+import type { ReportItem } from "../src/shared/reports.ts";
+import { mkReport } from "./helpers/report-fixture.ts";
 import type { Stall } from "../src/shared/stall.ts";
 import { chimeGate } from "../src/web/lib/chime.ts";
 import type {
@@ -854,3 +859,185 @@ test("a stall's title names its agent by the same rule as the scope it came from
   assert.equal(off[0]?.title, "Watch lint looks stuck");
   assert.equal(on[0]?.title, "Linter watcher looks stuck");
 });
+
+// ---- "What notifies you" (`inbox` flag): notify classes, report alerts, delivery ----
+//
+// Each switch silences only its own kind of item, and only its notification. A report is raised
+// once, on its announce stamp, worded by it, and held while away. With the flag off (`notify`
+// null) delivery is exactly `deliverable`, so every alert that predates the switches is unchanged.
+
+test("the four kinds of item with a switch carry its class, and no other alert carries one", () => {
+  const blocking = detectAlerts(scope([mkSession({ id: "a" })]), scope([mkSession({ id: "a", pendingReviews: 1 })]));
+  assert.deepEqual(blocking.map((a) => [a.kind, a.notify]), [["review", "blocking-question"]]);
+  const filed = detectAlerts(scope([mkSession({ id: "a" })]), scope([mkSession({ id: "a", openQuestions: 1 })]));
+  assert.deepEqual(filed.map((a) => [a.kind, a.notify]), [["review", "filed-question"]]);
+  const stuck = detectAlerts(scope([mkSession({ id: "a" })]), scope([mkSession({ id: "a" })], [], [stall()]));
+  assert.deepEqual(stuck.map((a) => [a.kind, a.notify]), [["stuck", "stuck"]]);
+  const others = detectAlerts(
+    scope([mkSession({ id: "a", state: "working" })]),
+    scope([mkSession({ id: "a", state: "awaiting_input" })], [mkTask({ id: "t", status: "failed" })]),
+  );
+  assert.ok(others.length >= 2);
+  for (const a of others) assert.equal(a.notify, undefined, `${a.kind} has no switch`);
+});
+
+const reportsScope = (reports: ReportItem[] | undefined, extra: Partial<AlertScope> = {}): AlertScope => ({
+  ...scope([]),
+  ...(reports ? { reports } : {}),
+  ...extra,
+});
+const stamped = (as: "back" | "working", over: Partial<ReportItem> = {}) =>
+  mkReport({ id: "r-1", title: "Build failure diagnosed", body: "The cache key ignored the lockfile.", announcedAs: as, announcedAt: 5, author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" }, ...over });
+
+test("a report alerts once, on its stamp, worded by it and named by the name it stored", () => {
+  const posted = reportsScope([mkReport({ id: "r-1", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } })]);
+  // The post itself is not news: the agent is mid-turn, so the wording is not known yet.
+  assert.deepEqual(detectAlerts(reportsScope([]), posted), []);
+  const back = detectAlerts(posted, reportsScope([stamped("back")]));
+  assert.deepEqual(back.map((a) => ({ id: a.id, kind: a.kind, title: a.title, severity: a.severity, notify: a.notify, reportId: a.reportId })), [
+    { id: "report:r-1", kind: "report", title: "Steve's back: Build failure diagnosed", severity: "info", notify: "report", reportId: "r-1" },
+  ]);
+  assert.equal(back[0]!.body, "The cache key ignored the lockfile.");
+  assert.equal(back[0]!.agentName, "Steve");
+  const working = detectAlerts(posted, reportsScope([stamped("working")]));
+  assert.equal(working[0]!.title, "Steve posted a report: Build failure diagnosed");
+  // Once: the stamp persisting raises nothing more.
+  assert.deepEqual(detectAlerts(reportsScope([stamped("back")]), reportsScope([stamped("back")])), []);
+});
+
+test("a report read or replaced before its stamp, and a session stopping without one, raise nothing", () => {
+  const posted = reportsScope([mkReport({ id: "r-1" })]);
+  assert.deepEqual(detectAlerts(posted, reportsScope([stamped("back", { readAt: 4, readBy: "mark-read" })])), []);
+  assert.deepEqual(detectAlerts(posted, reportsScope([stamped("back", { supersededBy: "r-2" })])), []);
+  const stopped = detectAlerts(
+    { ...scope([mkSession({ id: "s1", state: "working" })]), reports: [] },
+    { ...scope([mkSession({ id: "s1", state: "idle" })]), reports: [] },
+  );
+  assert.deepEqual(stopped.filter((a) => a.kind === "report"), []);
+});
+
+test("reports a scope never read are not news: turning the flag on announces nothing waiting", () => {
+  // The flag going on hands the window every report already waiting, stamped long ago.
+  assert.deepEqual(detectAlerts(reportsScope(undefined), reportsScope([stamped("back")])), []);
+  // Without a read time, a stamped report the previous scope did not hold is never news.
+  assert.deepEqual(detectAlerts(reportsScope([]), reportsScope([stamped("back")])), []);
+  // With one, a report stamped well before it was already waiting when the flag went on.
+  assert.deepEqual(detectAlerts(
+    reportsScope(undefined, { takenAt: 60_000 }),
+    reportsScope([stamped("back", { createdAt: 5, announcedAt: 10_000 })], { takenAt: 61_000 }),
+  ), []);
+});
+
+test("two scopes can straddle a post and its stamp: a report newer than the last read is news", () => {
+  // The Away watcher reads on a timer, and the dashboard can receive a post and its stamp in one
+  // batch when the agent stops right after posting.
+  const report = stamped("back", { createdAt: 20_000, announcedAt: 21_000 });
+  assert.equal(detectAlerts(reportsScope([], { takenAt: 19_000 }), reportsScope([report], { takenAt: 25_000 })).length, 1);
+  // Stamped a moment before the previous scope was built, its event still in flight: still news.
+  assert.equal(detectAlerts(reportsScope([], { takenAt: 23_000 }), reportsScope([report], { takenAt: 25_000 })).length, 1);
+  // Stamped long before the last read, it was already waiting: its absence meant it was not listed.
+  assert.equal(detectAlerts(reportsScope([], { takenAt: 40_000 }), reportsScope([report], { takenAt: 41_000 })).length, 0);
+  // The flag went on between the two reads: the earlier one carried no reports at all, and still
+  // only the report posted since then is news.
+  const old = stamped("back", { id: "r-0", createdAt: 500, announcedAt: 600 });
+  assert.deepEqual(
+    detectAlerts(reportsScope(undefined, { takenAt: 19_000 }), reportsScope([old, report], { takenAt: 25_000 })).map((a) => a.reportId),
+    [report.id],
+  );
+});
+
+test("turning the flag on announces nothing already waiting, however recently it was stamped", () => {
+  // Stamped two seconds before the flag went on: within the in-flight allowance that applies
+  // while the flag is on, and still not news, because it was posted before the previous read.
+  const recent = stamped("back", { createdAt: 9_000, announcedAt: 18_000 });
+  assert.deepEqual(detectAlerts(reportsScope(undefined, { takenAt: 20_000 }), reportsScope([recent], { takenAt: 21_000 })), []);
+  // The same stamp while the flag was already on, and the report somehow unheld, is news.
+  assert.equal(detectAlerts(reportsScope([], { takenAt: 20_000 }), reportsScope([recent], { takenAt: 21_000 })).length, 1);
+  // A report posted after the flag-off read is the only kind a flag flip lets through.
+  const posted = stamped("back", { id: "r-9", createdAt: 20_500, announcedAt: 20_800 });
+  assert.deepEqual(
+    detectAlerts(reportsScope(undefined, { takenAt: 20_000 }), reportsScope([recent, posted], { takenAt: 21_000 })).map((a) => a.reportId),
+    ["r-9"],
+  );
+});
+
+test("shouldDeliver: with the flag off it is exactly deliverable, for every alert and in Away mode", () => {
+  const alerts: Alert[] = [
+    { id: "a", kind: "needs-input", title: "", body: "", sessionId: null, severity: "attention" },
+    { id: "b", kind: "idle", title: "", body: "", sessionId: null, severity: "info" },
+    { id: "c", kind: "review", title: "", body: "", sessionId: null, severity: "attention", notify: "blocking-question" },
+    { id: "d", kind: "stuck", title: "", body: "", sessionId: null, severity: "attention", notify: "stuck" },
+  ];
+  for (const a of alerts) {
+    for (const away of [false, true]) assert.equal(shouldDeliver(a, null, away), deliverable(a), `${a.kind} away=${away}`);
+  }
+});
+
+test("shouldDeliver: each switch stops only its own notification; reports are held while away and stuck breaks through", () => {
+  const ALL_ON: NotifySwitches = { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true };
+  const classed: Array<[Alert, keyof NotifySwitches]> = [
+    [{ id: "q", kind: "review", title: "", body: "", sessionId: null, severity: "attention", notify: "blocking-question" }, "blockingQuestions"],
+    [{ id: "f", kind: "review", title: "", body: "", sessionId: null, severity: "attention", notify: "filed-question" }, "filedQuestions"],
+    [reportAlertFixture(), "reports"],
+    [{ id: "s", kind: "stuck", title: "", body: "", sessionId: null, severity: "attention", notify: "stuck" }, "stuck"],
+  ];
+  const unclassed: Alert[] = [
+    { id: "n", kind: "needs-input", title: "", body: "", sessionId: null, severity: "attention" },
+    { id: "i", kind: "idle", title: "", body: "", sessionId: null, severity: "info" },
+    { id: "t", kind: "task-failed", title: "", body: "", sessionId: null, severity: "attention" },
+  ];
+  for (const away of [false, true]) {
+    for (const [alert, own] of classed) {
+      const expected = alert.kind === "report" ? !away : true;
+      assert.equal(shouldDeliver(alert, ALL_ON, away), expected, `${alert.notify} on, away=${away}`);
+      for (const [other] of classed) {
+        const off = { ...ALL_ON, [own]: false };
+        const want = other === alert ? false : other.kind === "report" ? !away : true;
+        assert.equal(shouldDeliver(other, off, away), want, `${own} off: ${other.notify}, away=${away}`);
+      }
+    }
+    // Unclassed alerts ignore every switch.
+    const allOff: NotifySwitches = { blockingQuestions: false, filedQuestions: false, reports: false, stuck: false };
+    for (const a of unclassed) assert.equal(shouldDeliver(a, allOff, away), deliverable(a), `${a.kind} away=${away}`);
+  }
+});
+
+test("a report a return digest already counted raises nothing when its stamp lands, in any window", () => {
+  const posted = reportsScope([mkReport({ id: "r-1" })], { takenAt: 1_000 });
+  // The ordinary stamp is news.
+  assert.equal(detectAlerts(posted, reportsScope([stamped("back")], { takenAt: 2_000 })).length, 1);
+  // A report its digest counted is stored with the mark: no alert, whether the window held it
+  // unstamped, has just reloaded (no prior report held), or is in a later away window.
+  const counted = stamped("back", { countedInDigestAt: 1_700, createdAt: 1_500, announcedAt: 1_900 });
+  assert.deepEqual(detectAlerts(posted, reportsScope([counted], { takenAt: 2_000 })), []);
+  assert.deepEqual(detectAlerts(reportsScope([], { takenAt: 1_000 }), reportsScope([counted], { takenAt: 2_000 })), []);
+  // A reconnect missed the stamp's event: the baseline from before the drop holds the report
+  // unstamped and unmarked, and the reconnect snapshot carries it stamped, with the stored mark.
+  const beforeDrop = reportsScope([mkReport({ id: "r-1", createdAt: 1_500 })], { takenAt: 1_600 });
+  assert.deepEqual(detectAlerts(beforeDrop, reportsScope([counted], { takenAt: 5_000 })), []);
+  // The same when the window never held the report: posted and stamped while its stream was down,
+  // then counted by the digest, the reconnect snapshot is the first it hears of it.
+  assert.deepEqual(detectAlerts(reportsScope([], { takenAt: 1_400 }), reportsScope([counted], { takenAt: 5_000 })), []);
+});
+
+test("awaitsAwayState: only a report alert, with the flag on, waits while Away mode is unknown", () => {
+  const ALL_ON: NotifySwitches = { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true };
+  const report = reportAlertFixture();
+  const others: Alert[] = [
+    { id: "n", kind: "needs-input", title: "", body: "", sessionId: null, severity: "attention" },
+    { id: "s", kind: "stuck", title: "", body: "", sessionId: null, severity: "attention", notify: "stuck" },
+    { id: "q", kind: "review", title: "", body: "", sessionId: null, severity: "attention", notify: "blocking-question" },
+  ];
+  assert.equal(awaitsAwayState(report, ALL_ON, null), true);
+  // Known either way: decided at once.
+  assert.equal(awaitsAwayState(report, ALL_ON, false), false);
+  assert.equal(awaitsAwayState(report, ALL_ON, true), false);
+  // The flag off: no report alerts exist, and nothing waits.
+  assert.equal(awaitsAwayState(report, null, null), false);
+  // Every alert that existed before is delivered as it always was, Away mode known or not.
+  for (const a of others) assert.equal(awaitsAwayState(a, ALL_ON, null), false, a.kind);
+});
+
+function reportAlertFixture(): Alert {
+  return detectAlerts(reportsScope([mkReport({ id: "r-1" })]), reportsScope([stamped("working")]))[0]!;
+}

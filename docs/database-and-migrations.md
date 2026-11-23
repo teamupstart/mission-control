@@ -30,9 +30,12 @@ number is handed out twice. Each row copies its author's display name, resident 
 repository at post time, so a report can be drawn after its session is gone; nothing prunes it on
 eviction. A replacement points at its chain's first report (`root_id`) and sets the replaced
 row's `superseded_by`. `read_at` and `read_by` are written once, by `ReportManager.markRead` in
-`src/server/reports.ts`, the table's only writer. `follow_up_task_id`, `announced_as`,
-`announced_at` and `published_archive_key` stay null until later phases write them. An attached
-document is copied to `<state home>/reports/<id>/`, outside the database.
+`src/server/reports.ts`, the table's only writer. `announced_as` (`back` or `working`) and
+`announced_at` are written once, when the report's notification wording is settled, and stay null
+on a report read or replaced before then. `counted_in_digest_at` (schema 48) records when an Away
+return digest counted the report, so it raises no notification afterwards. `follow_up_task_id` and
+`published_archive_key` stay null until later phases write them. An attached document is copied to
+`<state home>/reports/<id>/`, outside the database.
 
 `session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
 per note key, the same key that carries notes, goals, invites and standing instructions across

@@ -498,9 +498,12 @@ function clusterGroup(
   // That queue is kept as it is, never grouped by repository or clustered by run (see below).
   // A stall outranks the pin in Idle: a pinned resident with an idle stall sorts under the Stalled
   // rule like any other stalled session (see `orderSessions`). Removed from the pinned set here, so
-  // the rest of the partitioning treats it as the unpinned stalled session it is drawn as.
+  // the rest of the partitioning treats it as the unpinned stalled session it is drawn as - but only
+  // when it will reach the Stalled span. A session inside a declared wait keeps its wait, and the
+  // Stalled span never takes it, so unpinning it would only move it under the Awaiting rule: it
+  // would lose its pinned place without being drawn as stalled.
   const pinnedHere = group.tone === "idle" && stalled.size > 0 && pinned.size > 0
-    ? new Set([...pinned].filter((id) => !stalled.has(id)))
+    ? new Set([...pinned].filter((id) => !stalled.has(id) || awaiting.has(id)))
     : pinned;
   const pinnedPart = pinnedHere.size > 0 ? group.sessions.filter((s) => pinnedHere.has(s.id)) : [];
   // Pinned residents inside a wait are their own partition, ahead of the other pinned ones, so

@@ -955,6 +955,29 @@ test("a stall outranks a resident's pin: the stalled resident leaves the top for
   assert.deepEqual(idleHeadCounts(idle), { awaiting: 0, free: 2, stalled: 1, held: null });
 });
 
+test("a pinned resident inside a wait keeps its pinned place even with a stall: the pin yields only to Stalled", () => {
+  // The wait keeps the session out of the Stalled span, so dropping its pin would move it under
+  // the Awaiting rule and lose its pinned place without drawing it as stalled anywhere.
+  const waitingResident = awaiting("alpha-resident", 30 * 60_000);
+  const stalledResident = plain("bravo-resident", IDLE);
+  const free = plain("charlie", IDLE);
+  const waitingOther = awaiting("delta", 10 * 60_000);
+  const fleet = [waitingResident, stalledResident, free, waitingOther];
+  const stalled = new Map([waitingResident, stalledResident].map((s) => [s.id, stallFor(s, 25)]));
+  const ordered = orderSessions(
+    fleet, new Set(), false, undefined, undefined, new Set([waitingResident.id, stalledResident.id]), undefined,
+    awaitingSessionIds(fleet, true, AT), stalled,
+  );
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  const rows = fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : r.kind));
+  // The waiting resident leads as a pinned card above the Awaiting rule, as it would with no stall;
+  // the stalled resident without a wait leaves its pin for the Stalled section.
+  assert.deepEqual(rows, ["alpha-resident", "--awaiting:1", "delta", "--free:1", "charlie", "--stalled:1", "bravo-resident"]);
+  assert.deepEqual(idle.awaiting, { startIndex: 1, length: 1 });
+  assert.deepEqual([...stalledInOrder(ordered.groups)], [stalledResident.id]);
+  assert.deepEqual(idleHeadCounts(idle), { awaiting: 2, free: 1, stalled: 1, held: null });
+});
+
 test("with repository grouping on, the Stalled section stays a flat longest-first queue", () => {
   const alpha = inRepo("alpha", REPO_A, IDLE);
   const bravo = inRepo("bravo", REPO_B, IDLE);

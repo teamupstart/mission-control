@@ -210,7 +210,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   const action = await api<{ id: string }>(daemon, "/api/session-actions", {
     name: "Open the pull request",
     description: "Open the pull request for the reviewed work",
-    promptMarkdown: PROMPT,
+    promptMarkdown: detached ? `${PROMPT}\nE2E_HOLD_TURN_UNTIL_RELEASED\n` : PROMPT,
     requiredSkillId: null,
     completion: { kind: "pull_request" },
   });
@@ -261,6 +261,10 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   const runId = submitted.run.id;
 
   if (detached) {
+    // Keep the fake turn open while seeding sibling review state. Otherwise its result can
+    // race the fixture's SQLite writes and evict the session with SQLITE_BUSY on CI.
+    await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .find(session => session.id === sessionId)?.state, { timeout: 60_000 }).toBe("working");
     if (scenario === "missing_base" || scenario === "retry_adoption") {
       const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
       // Remove only base refs in this disposable fixture; HEAD remains a real detached commit.
@@ -283,6 +287,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       const stored = db.prepare("SELECT json_extract(context_json, '$.evidence.contentTreeOid') AS tree FROM workflow_submissions WHERE run_id = ?").get(runId);
       expect(stored?.tree).toBeNull();
     });
+    writeFileSync(join(daemon.recordDir, "e2e-release-held-turn"), "");
     await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
     if (scenario === "missing_base" || scenario === "retry_adoption" || scenario === "missing_tree" || scenario === "tree_retry_adoption" || scenario === "returned_to_base") {
       await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_proof");

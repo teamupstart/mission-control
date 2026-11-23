@@ -32,8 +32,10 @@ export interface SessionActionAdapterContext {
   anchorTranscriptBytes: number | null;
   deliveredAt: number;
   pickedUpAt: number;
-  /** First settled observation in the current proof-read retry window, otherwise this pass. */
+  /** This pass's settled observation, shared by every adapter. */
   settledAt: number;
+  /** Pull Request only: the first settled observation in its current no-change proof retry. */
+  proofRetryStartedAt?: number;
   now: number;
   /**
    * The bound checkout's own facts, or null when they could not be read this pass.
@@ -406,7 +408,7 @@ function unprovenPullRequest(context: SessionActionAdapterContext): SessionActio
     ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null);
   // Every failed no-change proof gets time for adoption to arrive after the agent settles,
   // including a checkout returned to main. The manager preserves the first such sweep.
-  if (problem && context.now - context.settledAt < 60_000) {
+  if (problem && context.now - (context.proofRetryStartedAt ?? context.now) < 60_000) {
     return { kind: "waiting", reason: "awaiting_proof" };
   }
   return problem

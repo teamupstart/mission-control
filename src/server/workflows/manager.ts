@@ -6252,7 +6252,7 @@ export class WorkflowManager {
     };
     if (!state.anchor) {
       this.setSessionActionWait(attempt.id, "awaiting_pickup", { anchor }, now);
-      state = { ...state, anchor };
+      state = { ...state, wait: "awaiting_pickup", anchor };
     }
 
     if (binding.state !== "active" || !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey)) {
@@ -6282,6 +6282,7 @@ export class WorkflowManager {
     }
     if (state.pickedUpAt === null) {
       this.setSessionActionWait(attempt.id, "working", { pickedUpAt }, now);
+      state = { ...state, wait: "working", pickedUpAt };
     }
     // A session parked on a question reads as idle and is the last thing that should be
     // treated as a finished turn - it has not started, it is stuck on a human.
@@ -6326,19 +6327,33 @@ export class WorkflowManager {
         unchangedRepositoryProblem = error instanceof Error ? error.message : "Repository publication proof could not be read.";
       }
     }
-    // Keep consecutive proof-read failures bounded without treating a transient first miss
-    // as a hard failure. Existing persisted state also preserves this window across restart.
-    const proofRetryStartedAt = state.wait === "awaiting_proof" ? state.settledAt ?? now : now;
+    const adoptedPullRequests = await this.adoptedPullRequestsForAction(
+      anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now,
+    );
+    // Git reads may outlive an entire active turn or another proof observation. Only the
+    // still-current observation may advance the action, especially to a terminal block.
+    const current = this.resolveSessionAction(attempt.id);
+    const currentSession = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    if (!current || current.binding.state !== "active" || current.binding.sessionId !== binding.sessionId
+      || JSON.stringify(current.state) !== JSON.stringify(state)
+      || !currentSession || currentSession.lastActivity !== session.lastActivity
+      || currentSession.state !== session.state || noteKeyFor(currentSession) !== anchor.noteKey) return;
+    // Only Pull Request owns a bounded no-change proof retry. Other adapters retain the
+    // current settled observation; the existing durable wait preserves this window on restart.
+    const proofRetryStartedAt = snapshot.completion.kind === "pull_request"
+      ? state.wait === "awaiting_proof" ? state.settledAt ?? now : now
+      : undefined;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
       anchorTranscriptBytes: anchor.transcriptBytes,
       deliveredAt: anchor.deliveredAt,
       pickedUpAt,
-      settledAt: proofRetryStartedAt,
+      settledAt: now,
+      proofRetryStartedAt,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt, repository, acceptedContentTreeOid !== null, now),
+      adoptedPullRequests,
       capturedHeadOid,
       acceptedContentTreeOid,
       unchangedRepository,
@@ -6350,7 +6365,7 @@ export class WorkflowManager {
     }
     if (decision.kind === "waiting") {
       this.setSessionActionWait(attempt.id, decision.reason, {
-        pickedUpAt, settledAt: decision.reason === "awaiting_proof" ? proofRetryStartedAt : now,
+        pickedUpAt, settledAt: decision.reason === "awaiting_proof" ? proofRetryStartedAt ?? now : now,
       }, now);
       return;
     }

@@ -57,6 +57,7 @@ const decide = (
     deliveredAt: 10,
     pickedUpAt: 2,
     settledAt: 3,
+    proofRetryStartedAt: 3,
     now: 5_000,
     repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD, headCommittedAt: 4_000 },
     adoptedPullRequests: adopted,
@@ -753,7 +754,7 @@ for (const [label, patch] of [
   ["default base", { unchangedRepositoryProblem: "The default base could not be resolved." }],
 ] satisfies Array<[string, Partial<SessionActionAdapterContext>]>) {
   test(`transient ${label} proof retries before a bounded recoverable block`, () => {
-    const context = { ...patch, settledAt: 5_000 };
+    const context = { ...patch, proofRetryStartedAt: 5_000 };
     for (const now of [5_000, 64_999]) {
       assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
       assert.equal(decide([pr()], { ...context, now }).kind, "complete", "late adoption wins during retry");
@@ -816,7 +817,7 @@ for (const mismatch of ["accepted tree", "captured HEAD"]) test(`clean checkout 
   const context = {
     unchangedRepository: { headOid: HEAD, treeOid: TREE, baseOid: HEAD, baseRef: "origin/main" },
     ...(mismatch === "accepted tree" ? { acceptedContentTreeOid: OTHER_HEAD } : { capturedHeadOid: OTHER_HEAD }),
-    settledAt: 5_000,
+    proofRetryStartedAt: 5_000,
   };
   for (const now of [5_000, 64_999]) {
     assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_proof" });
@@ -837,4 +838,10 @@ for (const branch of [null, BRANCH]) test(`known changed work without accepted t
     assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
   }
   assert.equal(decide([pr()], { ...context, now: 125_000 }).kind, "complete");
+});
+
+test("pull-request proof retry uses its own timestamp rather than the current settled observation", () => {
+  const decision = decide([], { unchangedRepositoryProblem: "Git timed out",
+    settledAt: 65_000, now: 65_000, proofRetryStartedAt: 5_000 });
+  assert.equal(decision.kind, "blocked");
 });

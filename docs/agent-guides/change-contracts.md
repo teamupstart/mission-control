@@ -896,6 +896,9 @@ A SessionAction is a durable side effect, not an evaluator:
   records even a short turn between sweeps without replacing the delivery anchor or first
   pickup timestamp. Adoption can still complete the action during that window. Both completion and blocking re-offer
   queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
+  An observation discards its Git reads if the action or session changed while it awaited them.
+  The adapter's shared `settledAt` remains the current observation; only Pull Request reads
+  `proofRetryStartedAt` for the persisted retry window.
   A missing continuation publication tree or HEAD is `capture_failed`, not evidence of changed content.
   Known changed work, including commits on a detached HEAD, waits for PR adoption even when
   the accepted content tree is missing. No timeout or agent assertion is treated as proof of publication.

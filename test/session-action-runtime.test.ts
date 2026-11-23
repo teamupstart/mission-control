@@ -148,6 +148,7 @@ interface HarnessOptions {
   pullRequest?: boolean;
   unchangedRepository?: boolean;
   unchangedRepositoryProblem?: string;
+  readUnchangedRepository?: WorkflowManagerOptions["readUnchangedRepository"];
   realLedger?: boolean;
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
   readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
@@ -227,11 +228,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         sha256: createHash("sha256").update("report").digest("hex"),
       }] : [],
     }) } : {}),
-    readUnchangedRepository: async (_root, headOid) => {
+    readUnchangedRepository: options.readUnchangedRepository ?? (async (_root, headOid) => {
       if (options.unchangedRepositoryProblem) throw new Error(options.unchangedRepositoryProblem);
       return options.unchangedRepository
         ? { headOid, baseOid: headOid, baseRef: "origin/main", treeOid: contentTree.oid } : null;
-    },
+    }),
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -2817,4 +2818,46 @@ for (const publication of ["none", "adopted", "candidate"]) test(`Inspector comp
     assert.equal(h.store.listEvents(runId).some(e => e.kind === "inspector_gate_entered"), publication !== "none");
     assert.equal(h.store.listSubmissions(runId).length, 2);
   } finally { await h.stop(); }
+});
+
+for (const retryAge of [null, 5_000, 60_000]) test(`activity during proof read discards a stale sweep: retry age ${retryAge}`, async (t) => {
+  let hold: { started: () => void; released: Promise<void> } | null = null;
+  let release: (() => void) | undefined;
+  let pending: Promise<void> | undefined;
+  const h = await harness(`concurrent-proof-${retryAge}`, { pullRequest: true, resumptionSettleMs: 0,
+    readUnchangedRepository: async () => {
+      if (hold) { hold.started(); await hold.released; }
+      throw new Error("Git timed out");
+    } });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    let clock = Date.now() + 1_000;
+    t.mock.method(Date, "now", () => clock++);
+    h.runActionTurn();
+    const first = clock;
+    if (retryAge !== null) await h.manager.sweepSessionActions(first);
+    const attemptId = waitingAttempt(h, runId)!.id;
+    let started!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    hold = { started, released: new Promise<void>(resolve => { release = resolve; }) };
+    clock = first + (retryAge ?? 0);
+    pending = h.manager.sweepSessionActions(clock);
+    await reading;
+    h.runActionTurn(); // This whole turn occurs while the earlier observation is awaiting Git.
+    const restarted = clock;
+    release!();
+    await pending;
+    const state = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    assert.equal(state.wait, "working", "stale proof must not overwrite newer lifecycle state");
+    assert.equal(state.settledAt, null);
+    hold = null;
+    await h.manager.sweepSessionActions(restarted);
+    const retry = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(retry.wait, "awaiting_proof");
+    assert.equal(retry.settledAt, restarted);
+    await h.manager.sweepSessionActions(restarted + 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+  } finally { release?.(); await pending; await h.stop(); }
 });

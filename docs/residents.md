@@ -247,6 +247,10 @@ and count.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.
+- **Filter.** Fleet's search box matches words across each live card's name, chip, status,
+  loop details, latest message, pending questions, controls and inline action alerts. Compressed
+  cards are still searchable by their full content. The live count and the Profiles list remain
+  available while you search.
 - **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
   in the color of the Board's **Working** column; while it needs you, in the color of **Needs
   you**. Both colors come from the current skin, so they match that skin's columns. Otherwise

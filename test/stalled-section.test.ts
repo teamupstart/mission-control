@@ -148,3 +148,17 @@ test("new session activity retires a cached legacy occurrence until a fresh poll
   assert.deepEqual(currentStalls(fresh, [advanced]), fresh);
   assert.notEqual(fresh[0]!.fingerprint, cached[0]!.fingerprint);
 });
+
+test("board and inbox honor the old reason hash only for a fingerprintless daemon response", () => {
+  const session = idleSession("s-parked");
+  const legacy = { ...PARKED, fingerprint: undefined, reason: "Previous review" };
+  const current = { ...legacy, fingerprint: "daemon-episode" };
+  const dismissed = new Map([["stuck:s-parked", "f782ee25"]]);
+  for (const [raw, visible] of [[legacy, false], [current, true]] as const) {
+    const stalls = captureStalls([raw], [session]);
+    assert.equal(stalledSessions(stalls, true, dismissed).has(session.id), visible);
+    const fold = foldAttention({ sessions: [session], reviews: [], ensembles: [], stalls, dismissed });
+    assert.equal(fold.items.some(item => item.kind === "session_stuck"), visible);
+    assert.notEqual(stallDismissalKey(session.id, stalls[0]!).occurrence, "f782ee25");
+  }
+});

@@ -103,6 +103,15 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect(page.locator("main.board")).toBeVisible();
   const card = () => page.getByRole("group", { name: `Why ${session.name} stalled` });
 
+  // A previous client persisted the hash of the kind and exact reason for a legacy daemon.
+  served = [{ sessionId: id, kind: "workflow-parked", forMs: 60_000,
+    reason: "Previous review", workflowRunId: "previous-run" }];
+  await expect(card()).toContainText("Previous review", { timeout: 15_000 });
+  await api(daemon, "/api/attention/dismissals", {
+    items: [{ itemId: `stuck:${id}`, occurrence: "f782ee25", basis: 0 }],
+  });
+  await expect(card()).toHaveCount(0);
+
   // Mixed-version daemon: keep the reported reason and run link without assuming a parked step.
   served = [{ sessionId: id, kind: "workflow-parked", forMs: 60_000,
     reason: "Waiting on the review", workflowRunId: "legacy-run" }];

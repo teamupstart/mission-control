@@ -15,6 +15,7 @@ import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { reportToRead, type ReportItem } from "@shared/reports.ts";
 import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import type { ObservedStall } from "./stalls.ts";
 import { stateDisplay } from "./format.ts";
 import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
@@ -401,6 +402,17 @@ export function stallDismissalKey(
   return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? legacyStallFingerprint(stall)) };
 }
 
+/** Read pre-upgrade reason hashes only for stalls that arrived without a daemon fingerprint.
+ * New writes always use the stable occurrence from stallDismissalKey. */
+export function isStallDismissed(stall: ObservedStall, dismissed: ReadonlyMap<string, string> | null): boolean {
+  if (!dismissed?.size) return false;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  const stored = dismissed.get(key.itemId);
+  return stored === key.occurrence || (
+    (!stall.fingerprint || stall.legacy === true) && stored === occurrenceOf(stall.kind, stall.reason)
+  );
+}
+
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
 function reviewDismissalId(reviewId: string): string {
   return `review:${reviewId}`;
@@ -439,6 +451,7 @@ function occurrenceOf(...parts: (string | null | undefined)[]): string {
 }
 
 function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>): boolean {
+  if (item.kind === "session_stuck") return isStallDismissed(item.stall, dismissed);
   const keys = attentionDismissalKeys(item);
   return keys.length > 0 && keys.every((key) => dismissed.get(key.itemId) === key.occurrence);
 }

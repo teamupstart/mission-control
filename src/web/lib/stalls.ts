@@ -7,7 +7,7 @@ import { fetchAwayStalls } from "./api.ts";
 const POLL_MS = 5000;
 
 /** Shared empty array, so "no stalls" is one stable reference across renders. */
-type ObservedStall = Stall & { legacy?: true };
+export type ObservedStall = Stall & { legacy?: true };
 const NONE: ObservedStall[] = [];
 
 /** Bind an older daemon's response to the session episode observed when its poll started. */

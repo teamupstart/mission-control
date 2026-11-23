@@ -1,7 +1,7 @@
 import type { Session } from "@shared/types.ts";
 import { parkedMissingStep } from "./stall-actions.ts";
 import { isIdleStall, type Stall } from "@shared/stall.ts";
-import { stallDismissalKey } from "./attention.ts";
+import { isStallDismissed } from "./attention.ts";
 
 /**
  * Idle's Stalled section (`idle-stalled` flag): which sessions it draws, and which stalls the
@@ -37,8 +37,7 @@ export function stalledSessions(
   const out = new Map<string, Stall>();
   for (const stall of stalls) {
     if (!isIdleStall(stall)) continue;
-    const key = stallDismissalKey(stall.sessionId, stall);
-    if (dismissed?.get(key.itemId) === key.occurrence) continue;
+    if (isStallDismissed(stall, dismissed)) continue;
     out.set(stall.sessionId, stall);
   }
   return out.size > 0 ? out : NO_STALLED_SESSIONS;

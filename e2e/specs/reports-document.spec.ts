@@ -103,7 +103,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   unlinkSync(file);
   expect(posted.document).toEqual({ name: "diagnosis.html", kind: "html" });
 
-  // Nothing is archived by posting: the Scouts page does not list it.
   await page.getByRole("button", { name: /^Scouts/ }).click();
   const scouts = page.getByRole("complementary", { name: "Scout archives" });
   await expect(scouts).toBeVisible();
@@ -111,7 +110,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await capture(page, "00-scouts-before-publish", page);
   await page.getByRole("button", { name: /^Fleet/ }).click();
 
-  // Open report shows the stored document in the reader.
   let inbox = await openInbox(page);
   let card = inbox.getByRole("article", { name: "Report: Build failure diagnosed" });
   await card.getByRole("button", { name: "Build failure diagnosed" }).click();
@@ -128,12 +126,10 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await reader.getByRole("button", { name: "Close" }).click();
   await expect(reader).toBeHidden();
 
-  // Opening the document recorded the open and left the report to read.
   await expect.poll(async () => (await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`))
     .reports.find((r) => r.id === posted.id)?.openedAt ?? null, { timeout: 20_000 }).not.toBeNull();
   await expect(toRead(page)).toHaveCount(1);
 
-  // Publish as scout: the card says Published and offers Open archive. Still to read.
   inbox = await openInbox(page);
   card = inbox.getByRole("article", { name: "Report: Build failure diagnosed" });
   await card.getByRole("button", { name: "Publish as scout" }).click();
@@ -146,7 +142,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   expect(stored.publishedArchiveKey).not.toBeNull();
   expect(stored.readAt).toBeNull();
 
-  // Open archive reaches it on the Scouts page.
   await card.getByRole("button", { name: "Open archive" }).click();
   await expect(inbox).toBeHidden();
   // An archive key is two UUIDs joined by `~`: nothing in it needs escaping in a pattern.
@@ -158,8 +153,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await capture(page, "04-scouts-after-publish", page);
   await page.getByRole("button", { name: /^Fleet/ }).click();
 
-  // Deleting that archive takes the report back to unpublished: the card offers Publish as scout
-  // again instead of an Open archive that leads nowhere, and the report is still to read.
   await api(daemon, `/api/archives/${stored.publishedArchiveKey!}`, { confirmArchiveKey: stored.publishedArchiveKey! }, "DELETE");
   inbox = await openInbox(page);
   card = inbox.getByRole("article", { name: "Report: Build failure diagnosed" });
@@ -173,8 +166,8 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await capture(card, "04b-card-after-archive-deleted", page);
 
   // Published again, then its bundle removed from disk without the delete route - the state an
-  // interrupted delete leaves. The daemon reconciles the report when the library changes, so the
-  // card offers Publish as scout again without a restart.
+  // interrupted delete leaves. The library reconciler prunes it and hands that key to the report,
+  // so the card offers Publish as scout again without a restart.
   await card.getByRole("button", { name: "Publish as scout" }).click();
   await expect(card.getByRole("status").filter({ hasText: "Published" })).toBeVisible({ timeout: 30_000 });
   const [producerId, archiveId] = stored.publishedArchiveKey!.split("~");
@@ -187,8 +180,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await page.keyboard.press("Escape");
   await expect(inbox).toBeHidden();
 
-  // A Markdown document: the reader draws it with the dashboard's Markdown renderer, and the
-  // built daemon renders it to the static page it archives.
   writeFileSync(join(session.cwd!, "notes.md"), "# Release notes\n\n| step | result |\n| --- | --- |\n| build | fixed |\n");
   const notes = await report(daemon, session.cwd!, { title: "Release notes drafted", body: "Markdown attached.", file: "notes.md" });
   unlinkSync(join(session.cwd!, "notes.md"));
@@ -219,8 +210,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   const notesPage = await fetch(`${daemon.baseURL}/api/archives/${notesKey}/artifacts/${notesArchive.artifacts[0]!.id}`);
   expect(await notesPage.text()).toContain("<table>");
 
-  // A stored copy that has gone missing from the state folder: the reader says so, in the
-  // daemon's own words, rather than drawing an empty frame.
   writeFileSync(join(session.cwd!, "gone.html"), "<html><body><p>Soon gone</p></body></html>");
   const gone = await report(daemon, session.cwd!, { title: "Copy removed", body: "Its stored copy goes missing.", file: "gone.html" });
   const storedCopy = join(daemon.home, "reports", gone.id, "gone.html");
@@ -239,7 +228,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await page.keyboard.press("Escape");
   await expect(goneReader).toBeHidden();
 
-  // A document the archive's checker refuses explains itself on the card and publishes nothing.
   writeFileSync(join(session.cwd!, "live.html"), "<html><body><p>Live page</p><script>fetch('/api/sessions')</script></body></html>");
   const refused = await report(daemon, session.cwd!, { title: "Live dashboard", body: "Has a script.", file: "live.html" });
   inbox = await openInbox(page);
@@ -255,7 +243,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
     .reports.find((r) => r.id === refused.id)!;
   expect(after.publishedArchiveKey).toBeNull();
 
-  // A page with more than one problem lists every one the checker named, not only the first.
   writeFileSync(join(session.cwd!, "tracking.html"),
     "<html><body><p>Tracking</p><script>fetch('/api/sessions')</script><img src=\"https://tracker.example/p.png\"></body></html>");
   const twoProblems = await report(daemon, session.cwd!, { title: "Tracking dashboard", body: "Script and a remote image.", file: "tracking.html" });
@@ -274,7 +261,6 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await page.keyboard.press("Escape");
   await expect(inbox).toBeHidden();
 
-  // Open report from the report's entry in its session's conversation reads the same stored copy.
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = page.locator(".console-detail");
   const entry = detail.getByRole("note", { name: "Report: Build failure diagnosed" });

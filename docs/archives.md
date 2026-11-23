@@ -417,8 +417,10 @@ archive.
   fetches. A refused page is answered with every problem named, shown on the card, and nothing
   is written.
 - **One archive per report.** The archive id is derived from this machine's producer id, the
-  report's id and when it was posted. Pressing again, or after a lost response or a restart,
-  re-verifies and returns the archive already there, and the report records its key once.
+  report's id and when it was posted. Pressing again on a report that records its key checks
+  only that the bundle is still present and returns it. When the key was lost (a lost response,
+  or a restart before the key was written), the press verifies the bundle already at that id in
+  full and reuses it only if it holds the same page. Either way the report records its key once.
   A report's recorded key is checked against the library at four moments, and cleared only
   when its bundle is absent, so the report can be published again under the same key:
 

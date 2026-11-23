@@ -408,8 +408,7 @@ function unprovenPullRequest(context: SessionActionAdapterContext): SessionActio
     return { kind: "waiting", reason: "awaiting_proof" };
   }
   const problem = missingAcceptedTree ?? readProblem
-    ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null)
-    ?? (!context.repository?.branch ? "The checkout is detached and no unchanged-repository proof was established." : null);
+    ?? (context.unchangedRepository ? "The clean checkout does not match the accepted or captured content." : null);
   return problem
     ? { kind: "blocked", code: "expectation_unmet",
       detail: `${problem} No pull request was adopted. Restore the missing proof or publish the work, then resubmit with fresh evidence.` }

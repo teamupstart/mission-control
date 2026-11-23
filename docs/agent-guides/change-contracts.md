@@ -892,7 +892,7 @@ A SessionAction is a durable side effect, not an evaluator:
   complete the action during that window. Both completion and blocking re-offer
   queued sibling packets after the durable transition; unknown proof must not hold the turn indefinitely.
   A missing continuation publication tree is `capture_failed`, not evidence of changed content.
-  Known changed work on a branch can still wait for PR adoption. No timeout or agent assertion
+  Known changed work, including commits on a detached HEAD, waits for PR adoption. No timeout or agent assertion
   is treated as proof of publication.
 - New publication requires a durable adoption in Mission Control's ledger. Repository,
   branch, head and content comparisons are advisory for a newly opened PR; differences are

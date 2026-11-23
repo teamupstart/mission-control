@@ -785,3 +785,12 @@ test("no-change capture reports an unreadable publication tree as capture failur
   assert.match(result.detail, /publication tree could not be read/);
   assert.doesNotMatch(result.detail, /repository changed/);
 });
+
+test("known changed work on detached HEAD waits for a late adoption, beyond the proof-read retry window", () => {
+  const context = { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 1 },
+    unchangedRepository: null };
+  for (const now of [5_000, 120_000]) {
+    assert.deepEqual(decide([], { ...context, now }), { kind: "waiting", reason: "awaiting_pull_request" });
+  }
+  assert.equal(decide([pr()], context).kind, "complete", "a detached publication is adopted after the turn settles");
+});

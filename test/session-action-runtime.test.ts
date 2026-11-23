@@ -2692,3 +2692,23 @@ test("proof retry starts on a new failure, resets on recovery, and allows a dela
     assert.equal(h.injected.length, 1, "retry must never repeat the action instruction");
   } finally { await h.stop(); }
 });
+
+test("known changed detached work completes after adoption arrives on a later sweep", async () => {
+  const h = await harness("detached-changed-pr", { pullRequest: true });
+  try {
+    h.repository.branch = null;
+    h.head.sha = "detached-ahead";
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+    h.runActionTurn();
+    const now = SETTLED();
+    await h.manager.sweepSessionActions(now);
+    await h.manager.sweepSessionActions(now + 120_000);
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(now + 120_001);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "late detached adoption did not complete");
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+  } finally { await h.stop(); }
+});

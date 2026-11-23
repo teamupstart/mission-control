@@ -178,7 +178,7 @@ async function queueSiblingFeedback(daemon: DaemonHandle, runId: string): Promis
   return peer.id;
 }
 
-for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption"]) test(scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
+for (const scenario of ["unobserved", "merged", "operator", "no_change", "missing_base", "missing_tree", "retry_adoption", "detached_ahead"]) test(scenario === "detached_ahead" ? "a detached checkout with commits ahead waits for late PR adoption" : scenario === "retry_adoption" ? "a delayed PR adoption completes during a transient proof-read retry" : scenario.startsWith("missing_") ? `${scenario} proof blocks with a recovery action and releases sibling feedback` : scenario === "no_change" ? "an unchanged detached repository completes without a PR and explains why in Runs" : scenario === "merged"
   ? "an earlier merged PR completes the action and names the publication in Runs"
   : scenario === "operator" ? "Fleet and Runs identify the operator when an action needs an answer"
   : "a durably adopted pull request completes before provider metadata arrives", async ({
@@ -189,7 +189,14 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   const alreadyMerged = scenario === "merged";
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const sessionId = await dispatch(dashboard, daemon, scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption");
+  const detached = scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption" || scenario === "detached_ahead";
+  const sessionId = await dispatch(dashboard, daemon, detached);
+  if (scenario === "detached_ahead") {
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
+    execFileSync("git", ["-C", session.cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "Detached work to publish"]);
+    expect(execFileSync("git", ["-C", session.cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim()).toBe("HEAD");
+    expect(execFileSync("git", ["-C", session.cwd, "rev-list", "--count", "origin/main..HEAD"], { encoding: "utf8" }).trim()).toBe("1");
+  }
 
   // A `pull_request` action - the completion this build now proves, and the one whose graph
   // this spec's ancestor pinned as unpublishable.
@@ -245,7 +252,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
   );
   const runId = submitted.run.id;
 
-  if (scenario === "no_change" || scenario.startsWith("missing_") || scenario === "retry_adoption") {
+  if (detached) {
     if (scenario === "missing_base" || scenario === "retry_adoption") {
       const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions")).find(s => s.id === sessionId)!;
       // Remove only base refs in this disposable fixture; HEAD remains a real detached commit.
@@ -267,7 +274,11 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
     if (scenario === "missing_base" || scenario === "retry_adoption") {
       await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_proof");
     }
-    if (scenario === "retry_adoption") {
+    if (scenario === "retry_adoption" || scenario === "detached_ahead") {
+      if (scenario === "detached_ahead") {
+        await expect.poll(() => actionWait(daemon, runId), { timeout: 30_000 }).toBe("awaiting_pull_request");
+        await expect(dashboard.locator("article.wf-run-action")).toContainText("Awaiting PR");
+      }
       await announcePullRequest(daemon, sessionId, "https://github.com/owner/repo/pull/77");
       await expect.poll(async () =>
         (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
@@ -275,7 +286,7 @@ for (const scenario of ["unobserved", "merged", "operator", "no_change", "missin
       await expect.poll(async () => (await api<{ deliveries: Array<{ state: string }> }>(daemon,
         `/api/workflow-runs/${siblingId}`)).deliveries[0]?.state).toBe("delivered");
       await expect(dashboard.locator("article.wf-run-action")).toContainText("PR opened with warning");
-      await shoot(dashboard, "19-proof-retry-adopted");
+      await shoot(dashboard, scenario === "detached_ahead" ? "21-detached-ahead-adopted" : "19-proof-retry-adopted");
       return;
     }
     try {

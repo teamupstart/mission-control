@@ -441,7 +441,9 @@ archive.
   keeps its report's key: the card stays **Published** and the Scouts page shows the archive
   as unreadable. It is never rewritten. Delete it from the Scouts page to publish the report
   again. A press that finds such a bundle at its key with no key recorded refuses with that
-  instruction and writes nothing.
+  instruction and writes nothing. A library that cannot be read right now (a permission error,
+  or a volume briefly unmounted) is not an absence either: every key is kept, and a Publish
+  press answers with the error instead of publishing again.
 
 ## Cleanup asks first
 

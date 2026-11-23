@@ -857,11 +857,19 @@ export class ArchiveManager {
    * against, at startup, on a Publish press, after a DELETE and for a pass's pruned keys. A key
    * is cleared only when its bundle is absent; a bundle that is present but no longer verifies
    * keeps its key and shows as unreadable on the Scouts page, where it can be deleted.
+   *
+   * Answers false only for a real absence (`ENOENT`/`ENOTDIR`, from the library root or the
+   * bundle). Any other error - permission, descriptor exhaustion, a volume briefly unmounted -
+   * is thrown, so a library that cannot be read right now is never taken for one whose bundles
+   * are gone.
    */
   async archivePresent(key: string): Promise<boolean> {
     const identity = parseArchiveKey(key);
     if (!identity) return false;
-    const root = await realpath(this.libraryPath).catch(() => null);
+    const root = await realpath(this.libraryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+      throw error;
+    });
     if (!root) return false;
     return (await statRealDirectory(archiveDir(root, identity.producerId, identity.archiveId))) !== null;
   }
@@ -966,8 +974,11 @@ export class ArchiveManager {
         };
         return { ok: true, manifest };
       });
+      // The checker already passed the page above, so a failure here is the library's own:
+      // staging, writing, renaming or the post-write verification. A 500, never the 422 a
+      // checker refusal gets, so the operator does not go looking for a fault in the document.
       if (!outcome.ok) {
-        return { ok: false as const, status: outcome.conflict ? 409 as const : 422 as const, problems: outcome.problems };
+        return { ok: false as const, status: outcome.conflict ? 409 as const : 500 as const, problems: outcome.problems };
       }
       this.notifyPublished(outcome.identity.producerId, outcome.identity.archiveId);
       return { ok: true as const, key, replayed: false };

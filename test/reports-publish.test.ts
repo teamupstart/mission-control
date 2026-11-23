@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -563,6 +563,71 @@ test("publishing while the archive manager is shutting down is refused with 503,
   assert.deepEqual(bundles(), [], "no archive is written");
   assert.equal(reports.get(report.id)?.publishedArchiveKey, null, "the report stays unpublished");
   assert.equal(reports.get(report.id)?.readAt, null);
+});
+
+// chmod cannot lock root out, so the unreadable-library cases only mean something for a user.
+const asRoot = process.getuid?.() === 0;
+
+test("archivePresent is false only for a real absence, and throws when the library cannot be read", { skip: asRoot }, async () => {
+  const lockedParent = join(home, `locked-${Date.now()}`);
+  const root = join(lockedParent, "library");
+  mkdirSync(root, { recursive: true });
+  const archives = new ArchiveManager({
+    root, legacyRoots: [], store: new ArchiveStore(openDb()),
+    producer: { id: PRODUCER, label: null }, intervalMs: null, watch: false,
+  });
+  after(() => archives.stop());
+  const key = `${PRODUCER}~${reportArchiveId(PRODUCER, "r-1", 1)}`;
+  assert.equal(await archives.archivePresent(key), false, "no bundle at that key: absent");
+  rmSync(root, { recursive: true, force: true });
+  assert.equal(await archives.archivePresent(key), false, "no library root at all: absent");
+  mkdirSync(root, { recursive: true });
+  chmodSync(lockedParent, 0o000);
+  try {
+    await assert.rejects(archives.archivePresent(key), /EACCES/, "an unreadable library root is not an absence");
+  } finally {
+    chmodSync(lockedParent, 0o700);
+  }
+});
+
+test("an unreadable library keeps every recorded key: the startup check skips it and a press answers 500", { skip: asRoot }, async () => {
+  const { post, publish, reports, archives, root } = setup();
+  const report = await post("locked.html", STATIC_HTML, "Library locked");
+  const key = (await publish(report.id)).body.archiveKey!;
+  chmodSync(root, 0o000);
+  try {
+    await assert.rejects(archives.archivePresent(key), /EACCES/);
+    const cleared = await reports.reconcilePublishedArchives((k) => archives.archivePresent(k));
+    assert.ok(!cleared.includes(report.id), "a key that cannot be checked is not cleared");
+    const pressed = await publish(report.id);
+    assert.equal(pressed.status, 500, JSON.stringify(pressed.body));
+    assert.match(pressed.body.problems![0]!, /could not check whether archive .* is still in the library: .*EACCES/);
+    assert.equal(reports.get(report.id)?.publishedArchiveKey, key, "the key is kept");
+  } finally {
+    chmodSync(root, 0o700);
+  }
+  assert.equal(await archives.archivePresent(key), true, "and the bundle was there all along");
+});
+
+test("a filesystem failure while publishing answers 500, never the 422 of a checker refusal", async () => {
+  let failRename = false;
+  const { post, publish, reports, bundles } = setup({
+    rename: async (from, to) => {
+      if (failRename) throw Object.assign(new Error("ENOSPC: no space left on device, rename"), { code: "ENOSPC" });
+      await renamePath(from, to);
+    },
+  });
+  const report = await post("full-disk.html", STATIC_HTML, "Disk full");
+  failRename = true;
+  const failed = await publish(report.id);
+  assert.equal(failed.status, 500, JSON.stringify(failed.body));
+  assert.match(failed.body.problems!.join(" "), /ENOSPC/);
+  assert.deepEqual(bundles(), []);
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+
+  // The same report publishes once the disk recovers: nothing about the failure stuck.
+  failRename = false;
+  assert.equal((await publish(report.id)).status, 200);
 });
 
 test("a report with no document is not publishable", async () => {

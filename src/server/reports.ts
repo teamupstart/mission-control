@@ -658,7 +658,16 @@ export class ReportManager {
     for (const { id, archiveKey } of rows) {
       const gone = await this.inPublicationQueue(id, async () => {
         if (getRow(id)?.publishedArchiveKey !== archiveKey) return false;
-        if (await exists(archiveKey)) return false;
+        // A check that fails (the library unreadable right now) is not an absence: that key is
+        // left alone and the next check decides.
+        let present: boolean;
+        try {
+          present = await exists(archiveKey);
+        } catch (error) {
+          console.warn(`[reports] could not check archive ${archiveKey} for ${id}; its key is kept:`, error);
+          return false;
+        }
+        if (present) return false;
         const changed = openDb()
           .prepare("UPDATE reports SET published_archive_key = NULL WHERE id = ? AND published_archive_key = ?")
           .run(id, archiveKey).changes > 0;
@@ -678,7 +687,15 @@ export class ReportManager {
     if (!report) return refuse(404, ["no such report"], null);
     if (!report.document) return refuse(409, ["This report has no attached document, so there is nothing to publish."], report);
     if (report.publishedArchiveKey) {
-      if (await port.exists(report.publishedArchiveKey)) {
+      let present: boolean;
+      try {
+        present = await port.exists(report.publishedArchiveKey);
+      } catch (error) {
+        // Cannot tell whether the archive is there: keep the key and say so, never republish.
+        const why = error instanceof Error ? error.message : String(error);
+        return refuse(500, [`could not check whether archive ${report.publishedArchiveKey} is still in the library: ${why}`], report);
+      }
+      if (present) {
         return { ok: true, report, archiveKey: report.publishedArchiveKey, replayed: true };
       }
       // The archive it recorded is gone (deleted from disk, or by a route this manager did not

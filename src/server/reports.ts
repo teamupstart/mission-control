@@ -349,8 +349,17 @@ export class ReportManager {
     }
     if (event.type !== "session_upsert") return;
     const working = isWorking(event.session);
+    const confirmed = event.session.stateConfirmed;
     for (const [id, watch] of this.watches) {
       if (watch.sessionId !== event.session.id) continue;
+      // Found at startup and first seen with an unconfirmed state (uninstrumented, or re-adopted
+      // before a hook confirmed it): idle then says nothing about stopping, so it is the same
+      // no-evidence case as a post whose session was never seen working.
+      if (watch.working === null && !confirmed) {
+        if (watch.deadlinePassed) this.announce(id, "working");
+        else watch.working = false;
+        continue;
+      }
       // Unknown (found at startup) reads the state as it is now; otherwise only a change from
       // working counts. First seen working after the deadline already passed, it kept going
       // through the grace period.
@@ -376,7 +385,8 @@ export class ReportManager {
     // A report found at startup is stamped from the state its session has now; one watched since
     // its post kept going through the whole grace period.
     if (gone) this.announce(id, "back");
-    else if (watch.working === null) this.announce(id, isWorking(session) ? "working" : "back");
+    // An unconfirmed state is no evidence the session stopped.
+    else if (watch.working === null) this.announce(id, isWorking(session) || !session.stateConfirmed ? "working" : "back");
     else this.announce(id, "working");
   }
 

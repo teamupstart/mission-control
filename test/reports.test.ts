@@ -575,6 +575,39 @@ test("a report the daemon stopped before stamping is stamped from its session's 
   assert.equal(after.reports.get(unseenReport.id)?.announcedAs, "back", "its session never came back");
 });
 
+test("after a restart an unconfirmed session's idle state is no evidence it stopped: posted a report, unless it leaves", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const quiet = working("s-restart-unconfirmed");
+  const late = working("s-restart-unconfirmed-late");
+  const gone = working("s-restart-unconfirmed-gone");
+  for (const session of [quiet, late, gone]) before.set(session);
+  const quietReport = await before.reports.post(quiet, { title: "Quiet", body: "b" });
+  const goneReport = await before.reports.post(gone, { title: "Gone", body: "b" });
+  clock.now = 2_000;
+  before.reports.stop();
+
+  // Restarted within the grace period: re-adopted idle, before any hook confirms its state.
+  const after = announcer(clock);
+  after.set({ ...quiet, state: "idle", stateConfirmed: false });
+  after.set({ ...gone, state: "idle", stateConfirmed: false });
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, null, "an unconfirmed idle sighting stamps nothing");
+  after.remove(gone.id);
+  assert.equal(after.reports.get(goneReport.id)?.announcedAs, "back", "leaving is evidence");
+  after.fireSetSoFar();
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, "working");
+  after.reports.stop();
+
+  // Restarted after the deadline, first sighting unconfirmed: announced as still working at once.
+  const lateReport = await after.reports.post(late, { title: "Late", body: "b" });
+  after.reports.stop();
+  clock.now = 60_000;
+  const later = announcer(clock);
+  later.fireSetSoFar(); // the deadline passed with the session not yet re-adopted
+  later.set({ ...late, state: "idle", stateConfirmed: false });
+  assert.equal(later.reports.get(lateReport.id)?.announcedAs, "working");
+});
+
 test("after a restart the grace period keeps its original deadline: still working at it is working", async () => {
   // The reviewer's sequence: posted while working, the daemon restarts 19 s later, the agent is
   // still working when the original 20 s deadline passes, and stops 6 s after that.

@@ -198,6 +198,22 @@ test("a report is answered from its card: a reply reaches the agent, and a follo
   // The follow-up session is on the rail; the report's entry belongs to the session that posted it.
   await expect(page.getByRole("navigation", { name: "Sessions" }).getByText("Follow up: Flaky test traced").first()).toBeVisible({ timeout: 30_000 });
   await capture(page, "05-follow-up-task-running", page);
+
+  // The operator cancels that follow-up task. It answers nothing now, so the report is back in to
+  // read, and its card offers the instructions box for a new follow-up (no Retry: there is no
+  // task left to retry).
+  await api(daemon, `/api/tasks/${followUpTask.id}/cancel`, {});
+  await expect(toRead(page).locator(".pulse-n")).toHaveText("1", { timeout: 30_000 });
+  await expect.poll(async () => (await history(daemon, session.id)).find((r) => r.id === second.id)?.followUpTaskId ?? null,
+    { timeout: 30_000 }).toBeNull();
+  inbox = await openInbox(page);
+  card = inbox.getByRole("article", { name: "Report: Flaky test traced" });
+  await card.getByRole("button", { name: "Flaky test traced" }).click();
+  await expect(card.getByRole("textbox", { name: "Instructions for the follow-up task" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Start a follow-up task" })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
 });
 
 test("a refused reply stays on its card with the draft, and a follow-up whose dispatch is held is retried on the same task", async ({ dashboard: page, daemon }) => {

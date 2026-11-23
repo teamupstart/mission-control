@@ -97,7 +97,9 @@ boundary also changes the stable capture fingerprint.
 Each tree walk can expand up to 200,000 entries and 64 MiB of raw path names. A
 streamed index and untracked listing enforces the same limits before opening working
 files. The listing counts implicit directories, sensitive names and unaddressable names.
-A subtree mounted at two paths contributes both sets of names. Across history the same
+A subtree mounted at two paths contributes both sets of names. When another revision
+reuses a subtree at the same path, its cached descendant count and path bytes still
+count toward that revision's limits. Across history the same
 limits apply to newly retained leaf paths and tree locations. Editing a known file
 can reuse its path. An oversized HEAD or selected base fails capture. An oversized
 historical revision ends the retained prefix before any of its new paths are published.

@@ -1498,6 +1498,34 @@ for (const limit of [{ entries: 4, pathBytes: 100 }, { entries: 100, pathBytes: 
   });
 }
 
+for (const limit of [{ entries: 5, pathBytes: 100 }, { entries: 100, pathBytes: 33 }]) {
+  test(`cached subtrees count toward each revision's ${limit.entries === 5 ? "entry" : "path-byte"} limit`, async (t) => {
+    const f = fixture(t);
+    const { write, commit } = objects(f.checkout);
+    const blob = write("blob", Buffer.from("data"));
+    const file = (name: string) => Buffer.concat([Buffer.from("100644 " + name + "\0"), Buffer.from(blob, "hex")]);
+    const shared = write("tree", Buffer.concat([file("a"), file("b")]));
+    const directory = (name: string, id: string) => Buffer.concat([Buffer.from("40000 " + name + "\0"), Buffer.from(id, "hex")]);
+    const tree = (...entries: Buffer[]) => write("tree", Buffer.concat(entries));
+    const dir = directory("dir", shared);
+    const pkg = directory("pkg", tree(dir, file("x")));
+    const oldestTree = tree(pkg, file("y"));
+    const omitted = commit(oldestTree, [], "above limit");
+    const accepted = commit(tree(pkg), [omitted], "exact limit");
+    const head = commit(tree(directory("pkg", tree(dir))), [accepted], "shared directory");
+    f.git("update-ref", "HEAD", head);
+    const pending = join(f.root, "walk");
+    mkdirSync(pending, { recursive: true });
+    await seal({ checkout: f.checkout, sourceBase: null }, pending, signal, limit);
+    const artifact = join(pending, "artifact");
+    const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")));
+    assert.deepEqual(manifest.view.retainedRevisions.map(r => r.id), [head, accepted]);
+    assert.deepEqual(manifest.view.frontier, [{ revision: accepted, omittedParents: [omitted] }]);
+    assert.deepEqual(manifest.paths.map(p => Buffer.from(p.bytes, "hex").toString()), ["pkg/dir/a", "pkg/dir/b", "pkg/x"]);
+    for (const id of [omitted, oldestTree]) assert.equal(existsSync(join(artifact, id)), false);
+  });
+}
+
 test("tree expansion bounds cumulative historical paths while allowing edits to an already retained path", async (t) => {
   const f = fixture(t);
   const { write, commit } = objects(f.checkout);

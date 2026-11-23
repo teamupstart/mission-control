@@ -5,7 +5,7 @@ import { constants, type Stats } from "node:fs";
 import { open, realpath, lstat, readlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { checkoutGit, checkoutRecords } from "./git.ts";
-import { chargePath, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
+import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import { decodedPath, MAX_CAPTURE_OBJECT_BYTES, oid, readExactFile, RepositoryCaptureChanged, unavailable } from "./format.ts";
 import { approvedPath } from "@shared/repository-policy.ts";
 
@@ -72,13 +72,13 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   const paths = new Set<string>();
   const directories = new Set<string>();
   function collectPath(raw: Buffer) {
-    if (!chargePath(budget, raw.length)) expansionExceeded();
+    if (!chargePaths(budget, raw.length)) expansionExceeded();
     // Each implicit directory becomes a node when the worktree and index trees
     // are built. All ancestors above a known prefix have already been charged.
     for (let end = raw.lastIndexOf(47); end > 0; end = raw.lastIndexOf(47, end - 1)) {
       const prefix = raw.toString("hex", 0, end);
       if (directories.has(prefix)) break;
-      if (!chargePath(budget, end)) expansionExceeded();
+      if (!chargePaths(budget, end)) expansionExceeded();
       directories.add(prefix);
     }
     const key = validPath(raw);

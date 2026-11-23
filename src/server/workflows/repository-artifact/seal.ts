@@ -17,7 +17,7 @@ import {
 } from "./checkout.ts";
 import { checkoutGit, openObjectReader } from "./git.ts";
 import { RepositoryArtifactStorage } from "./storage.ts";
-import { chargePath, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
+import { chargePaths, expansionBudget, expansionExceeded, type PathBudget } from "./path-budget.ts";
 import {
   decodedPath,
   descriptor,
@@ -179,7 +179,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       const name = data.subarray(space + 1, nul);
       if (name.includes(47)) unavailable();
       const pathBytes = prefix.length + name.length;
-      if (!chargePath(budget, pathBytes)) return null;
+      if (!chargePaths(budget, pathBytes)) return null;
       const path = Buffer.concat([prefix, name]);
       const key = validPath(path);
       const child = data.toString("hex", nul + 1, end);
@@ -187,7 +187,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (mode === "40000") directories.push({ id: child, prefix: Buffer.concat([path, Buffer.from("/")]) });
       else {
         if (!/^(100644|100755|120000|160000)$/.test(mode) || layer.has(key)) unavailable();
-        if (incremental && !capturedPaths.has(key) && !chargePath(historyExpansion, pathBytes)) return null;
+        if (incremental && !capturedPaths.has(key) && !chargePaths(historyExpansion, pathBytes)) return null;
         layer.set(key, { mode, id: child });
       }
       pos = end;
@@ -206,7 +206,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     return true;
   }
 
-  const includedTrees = new Set<string>();
+  const treeCosts = new Map<string, PathBudget>();
   async function flatten(tree: string, incremental = false) {
     const budget = expansionBudget(limits);
     const layer: Layer = new Map();
@@ -214,18 +214,20 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     async function visit(id: string, prefix: Buffer): Promise<boolean> {
       signal.throwIfAborted();
       const location = id + ":" + prefix.toString("hex");
-      if (incremental && includedTrees.has(location)) return true;
-      if (incremental && prefix.length && !chargePath(historyExpansion, prefix.length - 1)) return false;
+      const cached = treeCosts.get(location);
+      if (incremental && cached) return chargePaths(budget, cached.pathBytes, cached.entries);
+      if (incremental && prefix.length && !chargePaths(historyExpansion, prefix.length - 1)) return false;
       if (incremental && !treeIds.has(id) && !await fitsHistoryMetadata(id, "tree")) return false;
-      // Traversal stops altogether at the first overflow, so rejected subtrees cannot
-      // influence the selection of any later revision.
-      includedTrees.add(location);
+      // The parent already charged this directory entry. Cache the full cost of
+      // its descendants, including any descendants served from this cache.
+      const before = { ...budget };
       treeIds.add(id);
       const directories = await scanTree(id, prefix, layer, budget, incremental);
       if (!directories) return false;
       for (const directory of directories) {
         if (!await visit(directory.id, directory.prefix)) return false;
       }
+      treeCosts.set(location, { entries: before.entries - budget.entries, pathBytes: before.pathBytes - budget.pathBytes });
       return true;
     }
     const complete = await visit(tree, Buffer.alloc(0));

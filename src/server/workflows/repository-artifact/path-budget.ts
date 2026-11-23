@@ -10,9 +10,9 @@ export function expansionBudget(limits: Partial<PathBudget> = {}): PathBudget {
   };
 }
 
-export function chargePath(budget: PathBudget, pathBytes: number) {
-  if (budget.entries >= 1 && budget.pathBytes >= pathBytes) {
-    budget.entries--;
+export function chargePaths(budget: PathBudget, pathBytes: number, entries = 1) {
+  if (budget.entries >= entries && budget.pathBytes >= pathBytes) {
+    budget.entries -= entries;
     budget.pathBytes -= pathBytes;
     return true;
   }

@@ -185,10 +185,12 @@ names phase fills it. It is not a `LINE_INPUT_EVENTS` member. See [Voice address
 ## Agent reports
 
 `report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
-report is posted, first opened, marked read, or replaced. There is no remove frame: a report is
-never deleted and outlives the session that posted it, so a read or replaced report is upserted
-with its new state, and the dashboard drops it from its state on that frame
-(`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+report is posted, first opened, marked read, or replaced; when its notification wording is
+stamped (`announcedAs`, which is what raises its notification); and when an Away return digest
+marks it counted (`countedInDigestAt`, so no window notifies about it afterwards). There is no
+remove frame: a report is never deleted and outlives the session that posted it, so a read or
+replaced report is upserted with its new state, and the dashboard drops it from its state on that
+frame (`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
 the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
 replaced report with its `supersededBy` set and then its successor.
 

@@ -317,7 +317,9 @@ let db: DatabaseSync | undefined;
 //     a current shaping record carries too (`TaskShaping.deliveryId`). Backfilled once: a record
 //     naming the task's bound session shares a fresh id with its row, so what readers showed
 //     still shows; every other record gains an id no binding carries, so it stays hidden.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 48;
+// 49: `reports.counted_in_digest_at`, when a return digest counted a report (agent reports
+//     phase 6). Nullable, no backfill: no digest counted a report before it existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 49;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -5162,6 +5164,10 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
     CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
   `);
+  // Schema 49: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
+  addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

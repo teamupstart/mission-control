@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ServerEvent } from "../src/shared/types.ts";
+import type { ServerEvent, Session } from "../src/shared/types.ts";
+import type { ReportItem } from "../src/shared/reports.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -63,17 +64,33 @@ test("a database from before reports gains the empty table on open, at the curre
   raw.close();
   const upgraded = db.openDb();
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 46);
+  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 49);
   const columns = (upgraded.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>).map((c) => c.name);
   for (const column of [
     "id", "session_id", "task_id", "repository", "author_key", "author_name", "author_resident_profile_id",
     "title", "body", "url", "document_name", "document_kind", "root_id", "version", "superseded_by",
     "created_at", "root_created_at", "opened_at", "read_at", "read_by", "follow_up_task_id",
-    "announced_as", "announced_at", "published_archive_key",
+    "announced_as", "announced_at", "published_archive_key", "counted_in_digest_at",
   ]) assert.ok(columns.includes(column), `reports.${column}`);
   assert.equal((upgraded.prepare("SELECT COUNT(*) AS n FROM reports").get() as { n: number }).n, 0);
   db.closeDb();
   db.openDb();
+});
+
+test("a schema 47 database, from before the digest mark, gains counted_in_digest_at on open with its rows intact", () => {
+  db.openDb().prepare(
+    `INSERT INTO reports (id, session_id, author_key, author_name, title, body, root_id, version, created_at, root_created_at)
+     VALUES ('r-mig', 's-mig', 'session:s-mig', 'Mig', 'Kept', 'b', 'r-mig', 1, 5, 5)`,
+  ).run();
+  db.closeDb();
+  const raw = new DatabaseSync(join(home, "harness.db"));
+  raw.exec("ALTER TABLE reports DROP COLUMN counted_in_digest_at; PRAGMA user_version = 47;");
+  raw.close();
+  const upgraded = db.openDb();
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
+  const row = upgraded.prepare("SELECT title, counted_in_digest_at FROM reports WHERE id = 'r-mig'").get() as { title: string; counted_in_digest_at: number | null };
+  assert.deepEqual({ ...row }, { title: "Kept", counted_in_digest_at: null });
+  upgraded.prepare("DELETE FROM reports WHERE id = 'r-mig'").run();
 });
 
 test("a post stores the report with its author, task and repository, and tells every window", async () => {
@@ -401,6 +418,476 @@ test("while the inbox flag is off no window is told about a report, and turning 
   } finally {
     flags.applyFeatureFlagIntent({ kind: "flag", id: "inbox", enabled: true });
   }
+});
+
+// ---- The announce stamp ----
+//
+// A post always happens mid-turn, so whether the agent then stopped is only known afterwards. The
+// report is stamped `back` if its session leaves working within the grace period, else `working`
+// when the period ends, and one found unstamped at startup is stamped from its session's state.
+// Each stamp is one `report_upsert`, which is what raises the report's notification.
+
+/** A registry stand-in whose sessions and session events the test drives by hand. */
+function fakeRegistry() {
+  const listeners = new Set<(event: ServerEvent) => void>();
+  const sessions = new Map<string, Session>();
+  const upserted: ReportItem[] = [];
+  const emit = (event: ServerEvent) => { for (const fn of listeners) fn(event); };
+  const registry = {
+    subscribe(fn: (event: ServerEvent) => void) { listeners.add(fn); return () => listeners.delete(fn); },
+    getSession: (id: string) => sessions.get(id),
+    upsertReport: (report: ReportItem) => { upserted.push(report); },
+    reportsToRead: () => [],
+    listResidentRuns: () => [],
+  } as unknown as InstanceType<typeof Registry>;
+  return {
+    registry,
+    upserted,
+    set(session: Session) { sessions.set(session.id, session); emit({ type: "session_upsert", session }); },
+    remove(id: string) { sessions.delete(id); emit({ type: "session_remove", id }); },
+  };
+}
+
+/** Timers the test fires by hand, recording the delay each was set for. */
+function fakeTimers() {
+  const pending = new Map<number, { fn: () => void; ms: number }>();
+  let next = 0;
+  return {
+    timers: {
+      set: (fn: () => void, ms: number) => { pending.set(++next, { fn, ms }); return next; },
+      clear: (handle: unknown) => { pending.delete(handle as number); },
+    },
+    delays: () => [...pending.values()].map((timer) => timer.ms),
+    // Deleting the entry being visited is safe while iterating a Map.
+    fireAll() { for (const [id, timer] of pending) { pending.delete(id); timer.fn(); } },
+    /** Fire only the timers set so far; one a callback sets is left for the next call. */
+    fireSetSoFar() {
+      for (const [id, timer] of new Map(pending)) { pending.delete(id); timer.fn(); }
+    },
+  };
+}
+
+const working = (id: string, over: Partial<Session> = {}) =>
+  mkSession({ id, state: "working", stateConfirmed: true, cwd: checkout(), ...over });
+
+function announcer(clock: { now: number }) {
+  const fake = fakeRegistry();
+  const time = fakeTimers();
+  const reports = new ReportManager(fake.registry, { now: () => clock.now, timers: time.timers });
+  after(() => reports.stop());
+  const stamps = (id: string) => fake.upserted.filter((r) => r.id === id).map((r) => [r.announcedAs, r.announcedAt]);
+  return { ...fake, ...time, reports, stamps };
+}
+
+test("a report whose session stops within the grace period is stamped back, once", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-back");
+  a.set(session);
+  const report = await a.reports.post(session, { title: "Done", body: "Read this." });
+  assert.deepEqual(a.delays().slice(-1), [20_000], "the grace period is twenty seconds");
+  assert.deepEqual(a.stamps(report.id), [[null, null]], "posting announces nothing yet");
+  // Still working: nothing. Then it stops.
+  clock.now = 3_000;
+  a.set({ ...session, activity: "Bash" });
+  assert.deepEqual(a.stamps(report.id), [[null, null]]);
+  clock.now = 6_000;
+  a.set({ ...session, state: "idle" });
+  assert.deepEqual(a.stamps(report.id), [[null, null], ["back", 6_000]]);
+  assert.equal(a.reports.get(report.id)?.announcedAs, "back");
+  // The stamp is final: the grace period ending, or the session working again, changes nothing.
+  a.fireAll();
+  a.set(session);
+  a.set({ ...session, state: "idle" });
+  assert.equal(a.stamps(report.id).length, 2);
+});
+
+test("a stamp whose write fails is kept and written again, from a sighting or from the grace period", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_busy BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'database is locked'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_busy;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const stops = working("s-stamp-busy-back");
+  const keeps = working("s-stamp-busy-working");
+  a.set(stops);
+  a.set(keeps);
+  const back = await a.reports.post(stops, { title: "Stopped", body: "b" });
+  const kept = await a.reports.post(keeps, { title: "Kept going", body: "b" });
+  busy(true);
+  // The session stops while the database is busy: nothing escapes into the registry's loop, and
+  // the report is not stamped yet.
+  clock.now = 3_000;
+  assert.doesNotThrow(() => a.set({ ...stops, state: "idle" }));
+  assert.equal(a.reports.get(back.id)?.announcedAs, null);
+  assert.ok(a.delays().includes(5_000), "the stamp is written again shortly");
+  // The wording is decided: working again before the retry does not change it.
+  a.set(stops);
+  // The other's grace period ends while still busy: its timer does not throw either, and retries.
+  clock.now = 21_000;
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.equal(a.reports.get(kept.id)?.announcedAs, null);
+  // Still busy at the first retry: tried again, still not dropped.
+  assert.doesNotThrow(() => a.fireSetSoFar());
+  assert.deepEqual([a.reports.get(back.id)?.announcedAs, a.reports.get(kept.id)?.announcedAs], [null, null]);
+  busy(false);
+  clock.now = 31_000;
+  a.fireSetSoFar();
+  assert.deepEqual(a.stamps(back.id).at(-1), ["back", 31_000]);
+  assert.deepEqual(a.stamps(kept.id).at(-1), ["working", 31_000]);
+  assert.deepEqual(a.delays(), [], "both watches are done");
+});
+
+test("a stamp whose write keeps failing backs off and is given up with one last log", async (t) => {
+  const { openDb } = await import("../src/server/db.ts");
+  const logged = t.mock.method(console, "error", () => undefined);
+  const busy = (on: boolean) => openDb().exec(on
+    ? "CREATE TEMP TRIGGER report_stamp_stuck BEFORE UPDATE OF announced_as ON reports BEGIN SELECT RAISE(ABORT, 'attempt to write a readonly database'); END;"
+    : "DROP TRIGGER IF EXISTS temp.report_stamp_stuck;");
+  t.after(() => busy(false));
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-stamp-stuck");
+  a.set(session);
+  const report = await a.reports.post(session, { title: "Never stamped", body: "b" });
+  busy(true);
+  a.set({ ...session, state: "idle" });
+  // Each failure waits longer, up to a minute, then the stamp is given up: no retry left.
+  const waits: number[] = [];
+  for (let i = 0; i < 10 && a.delays().length > 0; i++) {
+    waits.push(...a.delays());
+    a.fireSetSoFar();
+  }
+  assert.deepEqual(waits, [5_000, 10_000, 20_000, 40_000, 60_000]);
+  assert.deepEqual(a.delays(), [], "the watch is gone");
+  assert.equal(logged.mock.callCount(), 6, "one line per failed write, the last saying it gave up");
+  assert.match(String(logged.mock.calls.at(-1)?.arguments[0]), /giving up/);
+  // Given up for good: the database recovering later stamps nothing, and the report still waits
+  // to be read.
+  busy(false);
+  a.set(session);
+  a.set({ ...session, state: "idle" });
+  assert.equal(a.reports.get(report.id)?.announcedAs, null);
+  assert.equal(a.reports.get(report.id)?.readAt, null);
+});
+
+test("a report whose session keeps working through the grace period is stamped working", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-busy");
+  a.set(session);
+  const report = await a.reports.post(session, { title: "Halfway", body: "Still going." });
+  clock.now = 21_000;
+  a.fireAll();
+  assert.deepEqual(a.stamps(report.id), [[null, null], ["working", 21_000]]);
+  // Stopping afterwards does not restamp it.
+  a.set({ ...session, state: "idle" });
+  assert.equal(a.reports.get(report.id)?.announcedAs, "working");
+});
+
+test("a session that leaves after posting is back; one never seen working is announced as still working", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const gone = working("s-gone");
+  a.set(gone);
+  const left = await a.reports.post(gone, { title: "Bye", body: "b" });
+  a.remove("s-gone");
+  assert.equal(a.reports.get(left.id)?.announcedAs, "back");
+  // An uninstrumented session reads idle whatever it does, which is no evidence it stopped.
+  const quiet = working("s-quiet", { state: "idle", stateConfirmed: false });
+  a.set(quiet);
+  const unproven = await a.reports.post(quiet, { title: "Hm", body: "b" });
+  a.set({ ...quiet, activity: "still typing" });
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, null);
+  a.fireAll();
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
+});
+
+test("a report posted while its session's state says it is not working, but says something, is read as a restart is", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Blocked on you when it posts (a question open, confirmed), then still not working: it stopped.
+  const asking = working("s-post-blocked", { state: "awaiting_review", pendingReviews: 1 });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Blocked", body: "b" });
+  a.set({ ...asking, state: "idle", pendingReviews: 0 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Confirmed idle when it posts (a hook already said the turn ended), then idle again: back.
+  const done = working("s-post-confirmed-idle", { state: "idle" });
+  a.set(done);
+  const posted = await a.reports.post(done, { title: "Done", body: "b" });
+  a.set({ ...done, activity: "idle" });
+  assert.equal(a.reports.get(posted.id)?.announcedAs, "back");
+  // Confirmed idle at the post, then working: it kept going, and the grace period decides.
+  const busy = working("s-post-idle-then-busy", { state: "idle" });
+  a.set(busy);
+  const kept = await a.reports.post(busy, { title: "Kept going", body: "b" });
+  a.set({ ...busy, state: "working" });
+  a.fireAll();
+  assert.equal(a.reports.get(kept.id)?.announcedAs, "working");
+});
+
+test("a report read or replaced before its stamp is never stamped", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const session = working("s-early");
+  a.set(session);
+  const read = await a.reports.post(session, { title: "Quick", body: "b" });
+  a.reports.markRead(read.id, "mark-read");
+  const first = await a.reports.post(session, { title: "Draft", body: "b" });
+  const second = await a.reports.post(session, { title: "Final", body: "b", replaces: first.id });
+  a.set({ ...session, state: "idle" });
+  a.fireAll();
+  assert.equal(a.reports.get(read.id)?.announcedAs, null);
+  assert.equal(a.reports.get(first.id)?.announcedAs, null);
+  assert.equal(a.reports.get(second.id)?.announcedAs, "back");
+});
+
+test("a report the daemon stopped before stamping is stamped from its session's state after a restart", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const idle = working("s-restart-idle");
+  const busy = working("s-restart-busy");
+  const unseen = working("s-restart-unseen");
+  for (const session of [idle, busy, unseen]) before.set(session);
+  const idleReport = await before.reports.post(idle, { title: "One", body: "b" });
+  const busyReport = await before.reports.post(busy, { title: "Two", body: "b" });
+  const unseenReport = await before.reports.post(unseen, { title: "Three", body: "b" });
+  before.reports.stop();
+
+  // The restarted daemon re-adopts sessions after the manager starts.
+  clock.now = 30_000;
+  const after = announcer(clock);
+  for (const r of [idleReport, busyReport, unseenReport]) assert.equal(after.reports.get(r.id)?.announcedAs, null);
+  after.set({ ...idle, state: "idle" });
+  assert.equal(after.reports.get(idleReport.id)?.announcedAs, "back", "first seen stopped");
+  after.set(busy);
+  assert.equal(after.reports.get(busyReport.id)?.announcedAs, null, "first seen working: wait");
+  after.fireAll();
+  assert.equal(after.reports.get(busyReport.id)?.announcedAs, "working", "still working when the grace ended");
+  assert.equal(after.reports.get(unseenReport.id)?.announcedAs, "back", "its session never came back");
+});
+
+test("after a restart an unconfirmed session's idle state is no evidence it stopped: posted a report, unless it leaves", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const quiet = working("s-restart-unconfirmed");
+  const late = working("s-restart-unconfirmed-late");
+  const gone = working("s-restart-unconfirmed-gone");
+  for (const session of [quiet, late, gone]) before.set(session);
+  const quietReport = await before.reports.post(quiet, { title: "Quiet", body: "b" });
+  const goneReport = await before.reports.post(gone, { title: "Gone", body: "b" });
+  clock.now = 2_000;
+  before.reports.stop();
+
+  // Restarted within the grace period: re-adopted idle, before any hook confirms its state.
+  const after = announcer(clock);
+  after.set({ ...quiet, state: "idle", stateConfirmed: false });
+  after.set({ ...gone, state: "idle", stateConfirmed: false });
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, null, "an unconfirmed idle sighting stamps nothing");
+  after.remove(gone.id);
+  assert.equal(after.reports.get(goneReport.id)?.announcedAs, "back", "leaving is evidence");
+  after.fireSetSoFar();
+  assert.equal(after.reports.get(quietReport.id)?.announcedAs, "working");
+  after.reports.stop();
+
+  // Restarted after the deadline, first sighting unconfirmed: announced as still working at once.
+  const lateReport = await after.reports.post(late, { title: "Late", body: "b" });
+  after.reports.stop();
+  clock.now = 30_000;
+  const later = announcer(clock);
+  later.fireSetSoFar(); // the deadline passed with the session not yet re-adopted
+  later.set({ ...late, state: "idle", stateConfirmed: false });
+  assert.equal(later.reports.get(lateReport.id)?.announcedAs, "working");
+});
+
+test("a restart recovers only reports it interrupted: an older unstamped report is never stamped, and raises nothing", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-backlog");
+  before.set(session);
+  const old = await before.reports.post(session, { title: "From before stamping existed", body: "b" });
+  before.reports.stop();
+
+  // Long after its deadline: a backlog report, as every report from before this build is.
+  clock.now = 1_000 + 3 * 20_000;
+  const after = announcer(clock);
+  after.set({ ...session, state: "idle" }); // re-adopted idle and confirmed
+  after.fireAll();
+  assert.equal(after.reports.get(old.id)?.announcedAs, null, "left unstamped");
+  assert.ok(after.upserted.filter((r) => r.id === old.id).every((r) => r.announcedAs === null), "no stamp event, so no notification");
+  after.remove(session.id);
+  assert.equal(after.reports.get(old.id)?.announcedAs, null);
+});
+
+test("a report posted with an unconfirmed state reads back once its session says it stopped", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  // Uninstrumented at the post, then blocked on you (a question open): it stopped.
+  const asking = working("s-unconfirmed-then-blocked", { state: "idle", stateConfirmed: false });
+  a.set(asking);
+  const asked = await a.reports.post(asking, { title: "Asking", body: "b" });
+  a.set({ ...asking, pendingReviews: 1 });
+  assert.equal(a.reports.get(asked.id)?.announcedAs, "back");
+  // Unconfirmed at the post, then a hook confirms the turn ended: it stopped.
+  const ended = working("s-unconfirmed-then-confirmed", { state: "idle", stateConfirmed: false });
+  a.set(ended);
+  const done = await a.reports.post(ended, { title: "Done", body: "b" });
+  a.set({ ...ended, stateConfirmed: true });
+  assert.equal(a.reports.get(done.id)?.announcedAs, "back");
+  // Still saying nothing: no stamp until the grace ends, and then still working.
+  const quiet = working("s-unconfirmed-still-quiet", { state: "idle", stateConfirmed: false });
+  a.set(quiet);
+  const unproven = await a.reports.post(quiet, { title: "Hm", body: "b" });
+  a.set({ ...quiet, activity: "still typing" });
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, null);
+  a.fireAll();
+  assert.equal(a.reports.get(unproven.id)?.announcedAs, "working");
+});
+
+test("after a restart an unconfirmed session blocked on you is evidence it stopped: back", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const asking = working("s-restart-blocked");
+  const late = working("s-restart-blocked-late");
+  before.set(asking);
+  before.set(late);
+  const askingReport = await before.reports.post(asking, { title: "Asking", body: "b" });
+  const lateReport = await before.reports.post(late, { title: "Late", body: "b" });
+  before.reports.stop();
+
+  clock.now = 2_000;
+  const after = announcer(clock);
+  // Re-adopted unconfirmed, but with a question open: blocked on you, so stopped.
+  after.set({ ...asking, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(askingReport.id)?.announcedAs, "back");
+  // The same for a second session first seen blocked on you.
+  after.set({ ...late, state: "idle", stateConfirmed: false, pendingReviews: 1 });
+  assert.equal(after.reports.get(lateReport.id)?.announcedAs, "back");
+});
+
+test("after a restart the grace period keeps its original deadline: still working at it is working", async () => {
+  // The reviewer's sequence: posted while working, the daemon restarts 19 s later, the agent is
+  // still working when the original 20 s deadline passes, and stops 6 s after that.
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-deadline");
+  before.set(session);
+  const report = await before.reports.post(session, { title: "Profiling", body: "b" });
+  before.reports.stop();
+
+  clock.now = 20_000;
+  const after = announcer(clock);
+  assert.ok(after.delays().includes(1_000), "only the remaining second is waited, not a fresh 20 s");
+  after.set(session); // re-adopted, still working
+  clock.now = 21_000;
+  after.fireSetSoFar(); // the original deadline
+  assert.equal(after.reports.get(report.id)?.announcedAs, "working");
+  clock.now = 26_000;
+  after.set({ ...session, state: "idle" });
+  assert.equal(after.reports.get(report.id)?.announcedAs, "working", "stopping after the deadline changes nothing");
+});
+
+test("after a restart past the deadline, the session's first sighting decides, and an unseen one is gone", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const late = working("s-late-seen");
+  const lost = working("s-never-seen");
+  before.set(late);
+  before.set(lost);
+  const lateReport = await before.reports.post(late, { title: "Late", body: "b" });
+  const lostReport = await before.reports.post(lost, { title: "Lost", body: "b" });
+  before.reports.stop();
+
+  clock.now = 30_000;
+  const after = announcer(clock);
+  after.fireSetSoFar(); // both deadlines have passed; neither session has been re-adopted yet
+  assert.equal(after.reports.get(lateReport.id)?.announcedAs, null, "absence right after a restart says nothing");
+  assert.equal(after.reports.get(lostReport.id)?.announcedAs, null);
+  after.set(late); // first seen working, past its deadline
+  assert.equal(after.reports.get(lateReport.id)?.announcedAs, "working");
+  after.fireSetSoFar(); // one more grace period and the other session never came back
+  assert.equal(after.reports.get(lostReport.id)?.announcedAs, "back");
+});
+
+test("every report a return digest counted is marked in the table, stamped or not, once", async () => {
+  const clock = { now: 1_000 };
+  const a = announcer(clock);
+  const counted = working("s-digest-counted");
+  const plain = working("s-digest-plain");
+  a.set(counted);
+  a.set(plain);
+  const countedReport = await a.reports.post(counted, { title: "Counted", body: "b" });
+  const plainReport = await a.reports.post(plain, { title: "Plain", body: "b" });
+  // Already stamped while away: marked too, so a window that missed the stamp's event and
+  // reconnects later is kept quiet.
+  a.set({ ...plain, state: "idle" });
+  clock.now = 4_000;
+  a.reports.countedInDigest([countedReport.id, plainReport.id, "r-999999"]);
+  assert.equal(a.reports.get(countedReport.id)?.countedInDigestAt, 4_000);
+  assert.deepEqual([a.reports.get(plainReport.id)?.announcedAs, a.reports.get(plainReport.id)?.countedInDigestAt], ["back", 4_000]);
+  assert.equal(a.upserted.filter((r) => r.id === plainReport.id).at(-1)?.countedInDigestAt, 4_000);
+  // Every window is told at once, so even one that misses the later stamp event holds the mark.
+  assert.deepEqual(a.upserted.filter((r) => r.id === countedReport.id).at(-1)?.countedInDigestAt, 4_000);
+  // The stamp keeps it, and a second count changes nothing.
+  a.set({ ...counted, state: "idle" });
+  assert.deepEqual([a.reports.get(countedReport.id)?.announcedAs, a.reports.get(countedReport.id)?.countedInDigestAt], ["back", 4_000]);
+  clock.now = 9_000;
+  a.reports.countedInDigest([countedReport.id]);
+  assert.equal(a.reports.get(countedReport.id)?.countedInDigestAt, 4_000);
+});
+
+test("a claimed digest's mark survives a daemon restart before the stamp lands", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-digest-restart");
+  before.set(session);
+  const report = await before.reports.post(session, { title: "Counted, then restarted", body: "b" });
+  clock.now = 3_000;
+  before.reports.countedInDigest([report.id]);
+  clock.now = 5_000;
+  before.reports.digestClaimed(); // a dashboard read the digest
+  before.reports.stop(); // the daemon stops before the stamp
+
+  clock.now = 10_000;
+  const after = announcer(clock);
+  after.set({ ...session, state: "idle" }); // re-adopted, stopped: stamped back
+  const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
+  assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", 3_000]]);
+  // The dashboard's alert rule reads the mark and stays quiet.
+  const { detectAlerts } = await import("../src/shared/alerts.ts");
+  const scope = (reports: ReportItem[]) => ({ sessions: [], tasks: [], reports, takenAt: clock.now });
+  assert.deepEqual(detectAlerts(scope([{ ...stamped[0]!, announcedAs: null, announcedAt: null }]), scope(stamped)), []);
+});
+
+test("a digest lost to a restart before any dashboard claimed it takes its marks with it", async () => {
+  const clock = { now: 1_000 };
+  const before = announcer(clock);
+  const session = working("s-digest-unclaimed");
+  before.set(session);
+  const report = await before.reports.post(session, { title: "Counted, never shown", body: "b" });
+  clock.now = 3_000;
+  before.reports.countedInDigest([report.id]);
+  // Every window is told at once, from memory: the closed window's digest is waiting to be read.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
+  before.reports.stop(); // the daemon stops before any dashboard claims the digest
+
+  clock.now = 10_000;
+  const after = announcer(clock);
+  // The digest is gone, so nothing keeps the report quiet as if one had shown it.
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
+  // The marks were the old run's own: starting another manager erased nothing of the first one's.
+  // What the new run lacks is only what was never written to the table.
+  assert.equal(before.reports.get(report.id)?.countedInDigestAt, 3_000);
+  after.set({ ...session, state: "idle" });
+  const stamped = after.upserted.filter((r) => r.id === report.id && r.announcedAs !== null);
+  assert.deepEqual(stamped.map((r) => [r.announcedAs, r.countedInDigestAt]), [["back", null]]);
+  // A claim in the new run has no marks of the old one to keep.
+  after.reports.digestClaimed();
+  assert.equal(after.reports.get(report.id)?.countedInDigestAt, null);
 });
 
 function mkDiscovered(id: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession {

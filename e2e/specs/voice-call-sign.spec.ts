@@ -188,6 +188,44 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await shoot(inbox, "07-voice-off-names-task-title");
 });
 
+test("a warned call sign is dispatched as typed: the task keeps it and the roster lists it with its warnings", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await turnVoiceOn(daemon);
+  const dialog = await openDispatch(page, daemon, "Check the build");
+  const advanced = advancedOf(dialog);
+  if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
+
+  // "Will" draws two warnings, and the dispatch goes ahead with it unchanged.
+  await callSignOf(dialog).fill("Will");
+  await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "2");
+  await expect(dialog.locator(".voice-meter-bad")).toHaveText("Everyday word");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  const posted = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/tasks");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  const created = await posted;
+  expect(created.ok(), await created.text()).toBe(true);
+  expect(JSON.parse(created.request().postData() ?? "{}").callSign, "the warned name is sent as typed").toBe("Will");
+  const task = (await created.json()) as Task;
+  expect(task.callSign, "and saved as typed").toBe("Will");
+  await expect(dialog).toBeHidden();
+
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  expect(session.task?.callSign).toBe("Will");
+
+  // The roster lists Will, running, with both warnings in its check.
+  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
+  const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Will", exact: true }) });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole("cell")).toHaveText([session.task!.title, "Session", "Will", "Running", /Everyday word · Very short/]);
+  await shoot(page.getByRole("tabpanel", { name: "Voice" }), "08-roster-warned-will");
+});
+
 test("a shelved task's call sign survives a restart, reads back in the editor, and the roster leaves it out until it launches", async ({ dashboard: page, daemon }) => {
   await page.setViewportSize({ width: 1280, height: 1200 });
   await turnVoiceOn(daemon);

@@ -69,8 +69,8 @@ test("an upgraded database gains the column and the table, and an old row reads 
 });
 
 test("a schema 41 database upgrades with the column and the table, and a second open changes nothing", () => {
-  // 42 added the column and the table; a later step (43, the after-work prompts) builds on it.
-  assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 42);
+  // What 42 adds: the column and the table. The current version itself is pinned exactly by the
+  // newest migration's test (43, the after-work prompts, in shaping-after-work.test.ts).
   db.upsertTask(mkTask({ id: "before-39", status: "backlog" }));
   db.closeDb();
   const old = new DatabaseSync(dbPath);

@@ -343,7 +343,7 @@ test.describe("handed over to a running agent", () => {
       const second = (await shaping()).summary;
       expect(second.sessionId).toBe(sessionId);
       expect(second.at).toBeGreaterThan(first.at);
-      expect.soft((await shaping()).afterWork, "the earlier launch's prompt is not this launch's record").toBeNull();
+      expect((await shaping()).afterWork, "the earlier launch's prompt is not this launch's record").toBeNull();
 
       // Its own after-work prompt, after its own turn one, and recorded as its own.
       await idleSession(daemon, sessionId);

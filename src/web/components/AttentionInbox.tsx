@@ -23,7 +23,7 @@ import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
 import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
-import type { ReportEntryControls, ReportPublishRefusal } from "../lib/sessionReports.ts";
+import type { ReportEntryControls, ReportPublishState } from "../lib/sessionReports.ts";
 import {
   PausedResidentsContext,
   QUESTION_ACTION_COPY,
@@ -88,8 +88,10 @@ export interface InboxReportControls extends ReportEntryControls {
   onReply: (report: ReportItem, text: string) => Promise<string | null>;
   /** Start, or retry, its follow-up task. Resolves to why it failed, or null. */
   onFollowUp: (report: ReportItem, text: string) => Promise<string | null>;
-  /** Publish its attached document as a scout archive. Resolves to why it was refused, or null. */
-  onPublish: (report: ReportItem) => Promise<ReportPublishRefusal | null>;
+  /** Publish its attached document as a scout archive. The outcome lands in `publishStateFor`. */
+  onPublish: (report: ReportItem) => void;
+  /** Its Publish as scout state: in flight, and why the last attempt published nothing. */
+  publishStateFor: (report: ReportItem) => ReportPublishState;
   /** Go to its published archive. */
   onOpenArchive: (report: ReportItem) => void;
 }
@@ -598,6 +600,7 @@ function InboxItem({
               onFollowUp={(text) => reports.onFollowUp(report, text)}
               onOpenDocument={() => reports.onOpenDocument(report)}
               onPublish={() => reports.onPublish(report)}
+              publishState={reports.publishStateFor(report)}
               onOpenArchive={() => reports.onOpenArchive(report)}
               error={readRefused.get(report.id) ?? null}
             />

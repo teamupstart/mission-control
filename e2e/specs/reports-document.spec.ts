@@ -282,6 +282,24 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
     "the https: scheme is not allowed in an archived report",
   ]);
   await capture(card, "08-card-refused-two-problems", page);
+  // The refusal is the dashboard's, not the card's: it survives collapsing the card and closing
+  // the inbox, until the next attempt.
+  const bothProblems = [
+    "<script> is not allowed in an archived report",
+    "the https: scheme is not allowed in an archived report",
+  ];
+  await card.getByRole("button", { name: "Tracking dashboard" }).click();
+  await expect(card.getByRole("alert")).toHaveCount(0);
+  await card.getByRole("button", { name: "Tracking dashboard" }).click();
+  await expect(card.getByRole("alert").getByRole("listitem")).toHaveText(bothProblems);
+  await page.keyboard.press("Escape");
+  await expect(inbox).toBeHidden();
+  inbox = await openInbox(page);
+  card = inbox.getByRole("article", { name: "Report: Tracking dashboard" });
+  if (!(await card.getByRole("button", { name: "Open report" }).isVisible())) {
+    await card.getByRole("button", { name: "Tracking dashboard" }).click();
+  }
+  await expect(card.getByRole("alert").getByRole("listitem")).toHaveText(bothProblems);
   expect((await api<{ reports: ReportItem[] }>(daemon, `/api/sessions/${session.id}/reports`))
     .reports.find((r) => r.id === twoProblems.id)!.publishedArchiveKey).toBeNull();
   await page.keyboard.press("Escape");

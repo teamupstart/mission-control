@@ -47,6 +47,7 @@ import type {
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { ReportDocumentReader } from "./components/ReportDocumentReader.tsx";
+import type { ReportPublishState } from "./lib/sessionReports.ts";
 import { AttentionInbox, type InboxReportControls } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
@@ -478,6 +479,10 @@ export function App(): React.JSX.Element {
   const reportOpenPosted = useRef(new Set<string>());
   // The report whose attached document the reader is showing, if any.
   const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
+  // Publish as scout's state per report id. Held here, not in the card, so a refusal or a request
+  // still in flight survives the card being collapsed or the inbox being closed, until the next
+  // attempt starts.
+  const [publishStates, setPublishStates] = useState<ReadonlyMap<string, ReportPublishState>>(new Map());
   const reportControls = useMemo<InboxReportControls>(() => {
     // Record the first time the operator opened a report, whichever way they opened it.
     const postOpened = (report: AgentReport) => {
@@ -500,16 +505,24 @@ export function App(): React.JSX.Element {
       postOpened(report);
     },
     // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
-    onPublish: async (report) => {
-      const result = await api.publishReport(report.id);
-      if (result.ok) return null;
-      const error = result.error ?? "Could not publish the report";
-      return {
-        error,
-        problems: result.problems?.length ? result.problems : [error],
-        failed: result.status === undefined || result.status >= 500,
-      };
+    onPublish: (report) => {
+      const set = (state: ReportPublishState) =>
+        setPublishStates((current) => new Map(current).set(report.id, state));
+      set({ busy: true, refusal: null });
+      void api.publishReport(report.id).then((result) => {
+        if (result.ok) return set({ busy: false, refusal: null });
+        const error = result.error ?? "Could not publish the report";
+        set({
+          busy: false,
+          refusal: {
+            error,
+            problems: result.problems?.length ? result.problems : [error],
+            failed: result.status === undefined || result.status >= 500,
+          },
+        });
+      });
     },
+    publishStateFor: (report) => publishStates.get(report.id) ?? { busy: false, refusal: null },
     onOpenArchive: (report) => {
       if (!report.publishedArchiveKey) return;
       setInboxOpen(false);
@@ -537,7 +550,7 @@ export function App(): React.JSX.Element {
       return null;
     },
     };
-  }, [openReportId, sessions, residentRuns, navigate]);
+  }, [openReportId, sessions, residentRuns, navigate, publishStates]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It

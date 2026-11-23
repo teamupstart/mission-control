@@ -18,6 +18,17 @@ export interface ReportEntryControls {
   onOpenDocument: (report: ReportItem) => void;
 }
 
+/**
+ * One report's Publish as scout state, kept by the dashboard rather than the card so it survives
+ * the card being collapsed or the inbox being closed while the request is in flight.
+ */
+export interface ReportPublishState {
+  /** A publish request for this report is in flight. */
+  busy: boolean;
+  /** Why the last attempt published nothing, until the next attempt starts. */
+  refusal: ReportPublishRefusal | null;
+}
+
 /** Why Publish as scout published nothing: the first reason, and every problem the archive named. */
 export interface ReportPublishRefusal {
   error: string;

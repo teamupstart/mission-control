@@ -394,3 +394,21 @@ test("a conversation entry offers Open report for a report with a document, and 
   assert.match(withDocument, /data-inbox-action="open-report"[^>]*>Open report<\/button>/);
   assert.doesNotMatch(withDocument, /data-inbox-action="publish-scout"/);
 });
+
+test("a report card draws Publish as scout's state from the dashboard, so a refusal or a request in flight survives a remount", async () => {
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const { mkReport, reportCardProps } = await import("./helpers/report-fixture.ts");
+  const report = mkReport({ id: "r-9", document: { name: "live.html", kind: "html" } });
+  const draw = (publishState: import("../src/web/lib/sessionReports.ts").ReportPublishState) =>
+    renderToStaticMarkup(createElement(ReportCard, { report, open: true, ...reportCardProps(), publishState, now: 1 }));
+
+  // A fresh mount handed a stored refusal shows it: nothing about it lived in the card.
+  const refused = draw({ busy: false, refusal: { error: "a", problems: ["<script> is not allowed in an archived report", "the https: scheme is not allowed in an archived report"], failed: false } });
+  assert.match(refused, /Not published\. The archive refused this document:/);
+  assert.match(refused, /<li>&lt;script&gt; is not allowed in an archived report<\/li>/);
+  assert.match(refused, /<li>the https: scheme is not allowed in an archived report<\/li>/);
+
+  // A request still in flight keeps the button disabled on a fresh mount, so it cannot be sent twice.
+  assert.match(draw({ busy: true, refusal: null }), /<button[^>]*disabled=""[^>]*data-inbox-action="publish-scout"/);
+  assert.doesNotMatch(draw({ busy: false, refusal: null }), /role="alert"/);
+});

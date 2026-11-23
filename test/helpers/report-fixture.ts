@@ -47,7 +47,8 @@ export function mkReportControls(openReportId: string | null = null, target: Rep
       onReply: async (report: ReportItem) => { calls.replied.push(report.id); return null; },
       onFollowUp: async (report: ReportItem) => { calls.followedUp.push(report.id); return null; },
       onOpenDocument: (report: ReportItem) => { calls.openedDocument.push(report.id); },
-      onPublish: async (report: ReportItem) => { calls.published.push(report.id); return null; },
+      onPublish: (report: ReportItem) => { calls.published.push(report.id); },
+      publishStateFor: (_report: ReportItem) => ({ busy: false, refusal: null }),
       onOpenArchive: (report: ReportItem) => { calls.openedArchive.push(report.id); },
     },
   };
@@ -62,7 +63,7 @@ export function reportCardProps(target: ReplyTarget = { kind: "live", sessionId:
     onReply: async () => null,
     onFollowUp: async () => null,
     onOpenDocument: () => undefined,
-    onPublish: async () => null,
+    onPublish: () => undefined,
     onOpenArchive: () => undefined,
   };
 }

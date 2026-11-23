@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
-import type { ReportPublishRefusal } from "../lib/sessionReports.ts";
+import type { ReportPublishState } from "../lib/sessionReports.ts";
 import { relativeTime } from "../lib/format.ts";
 import { InboxActionButton } from "./AgentName.tsx";
 import { PlanView } from "./PlanView.tsx";
@@ -32,6 +32,9 @@ import { Tooltip } from "./Tooltip.tsx";
  * Opening a report does NOT mark it read; Mark read, a reply, or a dispatched follow-up does.
  * Neither Open report nor Publish as scout marks it read either.
  */
+/** No request in flight and no refusal: what a card shows before its first press. */
+const IDLE_PUBLISH: ReportPublishState = { busy: false, refusal: null };
+
 export function ReportCard({
   report,
   open,
@@ -42,6 +45,7 @@ export function ReportCard({
   onFollowUp,
   onOpenDocument,
   onPublish,
+  publishState = IDLE_PUBLISH,
   onOpenArchive,
   error = null,
   now,
@@ -58,8 +62,13 @@ export function ReportCard({
   onFollowUp: (text: string) => Promise<string | null>;
   /** Open the attached document's stored copy in the reader. */
   onOpenDocument: () => void;
-  /** Publish the attached document as a scout archive. Resolves to why it was refused, or null. */
-  onPublish: () => Promise<ReportPublishRefusal | null>;
+  /** Publish the attached document as a scout archive. Its outcome comes back in `publishState`. */
+  onPublish: () => void;
+  /**
+   * Publish as scout's state for this report, kept by the dashboard so a refusal or an in-flight
+   * request survives the card being collapsed or the inbox being closed.
+   */
+  publishState?: ReportPublishState;
   /** Go to the published archive on the Scouts page. */
   onOpenArchive: () => void;
   /** Why the last Mark read was refused, drawn beneath the card until it is tried again. */
@@ -104,6 +113,7 @@ export function ReportCard({
               report={report}
               onOpenDocument={onOpenDocument}
               onPublish={onPublish}
+              publishState={publishState}
               onOpenArchive={onOpenArchive}
             />
           )}
@@ -263,16 +273,17 @@ function ReportDocumentControls({
   report,
   onOpenDocument,
   onPublish,
+  publishState,
   onOpenArchive,
 }: {
   report: ReportItem;
   onOpenDocument: () => void;
-  onPublish: () => Promise<ReportPublishRefusal | null>;
+  onPublish: () => void;
+  publishState: ReportPublishState;
   onOpenArchive: () => void;
 }): React.JSX.Element {
   const name = report.author.name;
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<ReportPublishRefusal | null>(null);
+  const { busy, refusal } = publishState;
   const published = report.publishedArchiveKey !== null;
   return (
     <div className="agent-report-document">
@@ -305,14 +316,7 @@ function ReportDocumentControls({
             tooltip="Save the attached document to the scout archive. Nothing is archived until you press this, and it does not mark the report read"
             disabled={busy}
             cardOpen
-            onClick={() => {
-              setBusy(true);
-              setRefusal(null);
-              void onPublish().then((result) => {
-                setBusy(false);
-                setRefusal(result);
-              });
-            }}
+            onClick={onPublish}
           />
         )}
       </div>

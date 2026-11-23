@@ -3468,3 +3468,33 @@ test("an ownership read that fails only at the delivery guard still gets the tur
     manager.stop();
   }
 });
+
+test("the outbox records an after-work prompt delivered when it retires the turn, with no listener involved", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retired";
+  registry.registerSdkSession({ id, agent: "claude", name: "retired", cwd: "/repo/retired", agentSessionId: "conversation:retired" });
+  const taskId = "task-retired";
+  const sent: string[] = [];
+  // No after-work prompter is wired here: only the outbox's own retire can settle the row.
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.ok(getTaskSkillPrompt(taskId, id)?.deliveredAt);
+  manager.stop();
+});

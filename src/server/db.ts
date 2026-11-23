@@ -53,7 +53,7 @@ import {
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
-import { MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
+import { AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -14904,6 +14904,34 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
       .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
       .run(id, revision).changes === 1
   );
+}
+
+/**
+ * Retire a claimed turn whose bytes the agent took, and, for an after-work skills turn, settle
+ * its prompt row `delivered` in the same transaction. The delivery and its record therefore
+ * commit together or not at all: a confirmed delivery can never leave the row `queued`, which
+ * nothing at startup would revisit. A row a session-end notice moved to `not_delivered` first is
+ * settled too, since delivery is the fact. Returns whether the turn was retired.
+ */
+export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number): boolean {
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT retire_delivered_turn" : "BEGIN IMMEDIATE");
+  try {
+    const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
+      .run(id, revision).changes === 1;
+    if (retired && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?
+                   WHERE turn_id = ? AND state IN ('queued', 'not_delivered')`).run(deliveredAt, id);
+    }
+    d.exec(nested ? "RELEASE retire_delivered_turn" : "COMMIT");
+    return retired;
+  } catch (error) {
+    if (d.isTransaction) {
+      d.exec(nested ? "ROLLBACK TO retire_delivered_turn; RELEASE retire_delivered_turn" : "ROLLBACK");
+    }
+    throw error;
+  }
 }
 
 export function resolveUncertainPendingTurn(id: string, revision: number): boolean {

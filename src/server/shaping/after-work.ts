@@ -73,7 +73,7 @@ export interface AfterWorkSkillsDeps {
 
 /** What one call came to, for a caller's log and for tests. */
 export type AfterWorkOutcome =
-  | { kind: "none"; why: "disabled" | "no_record" | "already" | "no_after_work_skills" }
+  | { kind: "none"; why: "disabled" | "no_record" | "already" | "no_after_work_skills" | "retrying" }
   | { kind: ShapingPromptState; reason?: string };
 
 /**
@@ -145,9 +145,9 @@ export function wireAfterWorkSkills(
   return () => { offRecorded(); offAnswered(); };
 }
 
-/** The first and the longest wait before a failed held release is tried again. */
-const HELD_RETRY_BASE_MS = 1_000;
-const HELD_RETRY_MAX_MS = 5 * 60_000;
+/** The first and the longest wait before a failed prompt or held release is tried again. */
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 5 * 60_000;
 
 export class AfterWorkSkills {
   private readonly deps: Required<Omit<AfterWorkSkillsDeps, "catalogCommand" | "catalogId">>
@@ -159,8 +159,17 @@ export class AfterWorkSkills {
   private readonly heldCheck = new Set<string>();
   /** The session each task's shaping record last named, so a resume's move is seen once. */
   private readonly shapingSessions = new Map<string, string>();
-  /** Sessions whose held release failed: the next try's cancel and how many tries have failed. */
-  private readonly heldRetries = new Map<string, { cancel: () => void; failures: number }>();
+  /**
+   * Work that failed and is tried again on a timer, keyed `held:<session>` (a release) or
+   * `prompt:<session>` (a first prompt): the next try's cancel and how many tries have failed.
+   */
+  private readonly retries = new Map<string, { cancel: () => void; failures: number }>();
+  /**
+   * Sessions whose first prompt failed before it wrote a row, with whether it was to be held.
+   * A wrap-up answered meanwhile clears `hold`: the wrap-up has reached the session, which is
+   * all holding was for, and a row held after the answer would never be released.
+   */
+  private readonly owedPrompts = new Map<string, { hold: boolean }>();
   private retrying = false;
 
   constructor(deps: AfterWorkSkillsDeps) {
@@ -259,8 +268,9 @@ export class AfterWorkSkills {
 
   stop(): void {
     for (const off of this.unsubscribe.splice(0)) off();
-    for (const retry of this.heldRetries.values()) retry.cancel();
-    this.heldRetries.clear();
+    for (const retry of this.retries.values()) retry.cancel();
+    this.retries.clear();
+    this.owedPrompts.clear();
   }
 
   /**
@@ -268,11 +278,23 @@ export class AfterWorkSkills {
    * the row is written held and nothing is queued until `release`. Never throws.
    */
   prompt(sessionId: string, options: { hold?: boolean } = {}): AfterWorkOutcome {
+    // A retry keeps the hold its first call asked for, unless an answer cleared it since.
+    const owed = this.owedPrompts.get(sessionId);
+    const hold = owed ? owed.hold : options.hold === true;
     try {
-      return this.promptOnce(sessionId, options.hold === true);
+      const outcome = this.promptOnce(sessionId, hold);
+      this.owedPrompts.delete(sessionId);
+      this.clearRetry(`prompt:${sessionId}`);
+      return outcome;
     } catch (error) {
+      // Nothing was written, and the caller - a submission's activation, a claim - may not
+      // come again: the prompt stays owed and is tried again until it writes its row.
       console.warn(`[shaping] could not prompt session ${sessionId}'s after-work skills:`, error);
-      return { kind: "none", why: "no_record" };
+      this.owedPrompts.set(sessionId, { hold });
+      this.retryLater(`prompt:${sessionId}`, () => {
+        if (this.owedPrompts.has(sessionId)) this.prompt(sessionId);
+      });
+      return { kind: "none", why: "retrying" };
     }
   }
 
@@ -281,10 +303,11 @@ export class AfterWorkSkills {
    * card, or skipped - so a held prompt may follow it now. An unanswered card never calls this.
    */
   release(sessionId: string): void {
+    const owed = this.owedPrompts.get(sessionId);
+    if (owed) owed.hold = false;
     try {
       this.resume(sessionId, "held");
-      this.heldRetries.get(sessionId)?.cancel();
-      this.heldRetries.delete(sessionId);
+      this.clearRetry(`held:${sessionId}`);
     } catch (error) {
       console.warn(`[shaping] could not release session ${sessionId}'s after-work skills:`, error);
       this.retryHeldLater(sessionId);
@@ -293,22 +316,37 @@ export class AfterWorkSkills {
 
   /**
    * A release that failed stays owed: the answer's marker is durable, so the session is kept for
-   * the held check - its next update, or a flag turned on again - and tried again on a timer that
-   * backs off from 1 second to 5 minutes, so a session that stays quiet is still released.
+   * the held check - its next update, or a flag turned on again - and tried again on the retry
+   * timer, so a session that stays quiet is still released.
    */
   private retryHeldLater(sessionId: string): void {
     if (!this.unsubscribe.length) return;
     this.heldCheck.add(sessionId);
-    const prior = this.heldRetries.get(sessionId);
+    this.retryLater(`held:${sessionId}`, () => {
+      if (this.heldCheck.has(sessionId)) this.checkHeld(sessionId);
+    });
+  }
+
+  /**
+   * Run `run` again after a wait that backs off from 1 second to 5 minutes with each failure of
+   * `key`. Only the latest timer for a key runs. A stopped prompter schedules nothing.
+   */
+  private retryLater(key: string, run: () => void): void {
+    if (!this.unsubscribe.length) return;
+    const prior = this.retries.get(key);
     prior?.cancel();
     const failures = (prior?.failures ?? 0) + 1;
-    const delay = Math.min(HELD_RETRY_MAX_MS, HELD_RETRY_BASE_MS * 2 ** (failures - 1));
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (failures - 1));
     const cancel = this.deps.schedule(() => {
-      const current = this.heldRetries.get(sessionId);
-      if (current?.cancel !== cancel) return;
-      if (this.heldCheck.has(sessionId)) this.checkHeld(sessionId);
+      if (this.retries.get(key)?.cancel !== cancel) return;
+      run();
     }, delay);
-    this.heldRetries.set(sessionId, { cancel, failures });
+    this.retries.set(key, { cancel, failures });
+  }
+
+  private clearRetry(key: string): void {
+    this.retries.get(key)?.cancel();
+    this.retries.delete(key);
   }
 
   /**
@@ -475,8 +513,9 @@ export class AfterWorkSkills {
   }
 
   private sessionEnded(sessionId: string): void {
-    this.heldRetries.get(sessionId)?.cancel();
-    this.heldRetries.delete(sessionId);
+    this.clearRetry(`held:${sessionId}`);
+    this.clearRetry(`prompt:${sessionId}`);
+    this.owedPrompts.delete(sessionId);
     this.heldCheck.delete(sessionId);
     try {
       for (const row of listOpenTaskSkillPrompts(sessionId)) {

@@ -783,3 +783,98 @@ test("a pending held retry is cancelled when its session ends or the prompter st
   prompts.stop();
   assert.equal(scheduled[1]!.cancelled, true, "and stopping cancels the rest");
 });
+
+test("a first prompt that fails before it writes its row stays owed and is written by a retry", () => {
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const { registry, queued, prompts } = setup({ scheduled });
+  const taskId = nextTask();
+  registry.launch(taskId, "s-prompt-retry");
+  const getSession = registry.getSession.bind(registry);
+  let failures = 1;
+  registry.getSession = (id: string) => {
+    if (failures > 0) { failures -= 1; throw new Error("transient read failure"); }
+    return getSession(id);
+  };
+  // The submission's activation meets a transient failure, and is not called again.
+  assert.deepEqual(prompts.prompt("s-prompt-retry"), { kind: "none", why: "retrying" });
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-prompt-retry"), null, "nothing was written");
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0]!.ms, 1_000);
+  // The retry writes the row and queues the prompt, once.
+  scheduled[0]!.fn();
+  assert.equal(queued.length, 1);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-prompt-retry")?.state, "queued");
+  scheduled[0]!.fn();
+  assert.equal(queued.length, 1, "a stale timer queues nothing more");
+  prompts.stop();
+});
+
+test("a held first prompt whose wrap-up is answered before its retry is queued, not held where nothing would release it", () => {
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const { registry, queued, prompts } = setup({ scheduled });
+  const taskId = nextTask();
+  registry.launch(taskId, "s-hold-retry");
+  const getSession = registry.getSession.bind(registry);
+  let failures = 1;
+  registry.getSession = (id: string) => {
+    if (failures > 0) { failures -= 1; throw new Error("transient read failure"); }
+    return getSession(id);
+  };
+  assert.deepEqual(prompts.prompt("s-hold-retry", { hold: true }), { kind: "none", why: "retrying" });
+  // Foreman's wrap-up is answered while the prompt is still owed: there is no held row to mark.
+  prompts.recordAnswered("s-hold-retry");
+  prompts.release("s-hold-retry");
+  assert.equal(queued.length, 0);
+  scheduled[0]!.fn();
+  assert.equal(queued.length, 1, "the wrap-up has reached the session, so the retry queues it");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-hold-retry")?.state, "queued");
+  prompts.stop();
+});
+
+test("an owed first prompt is forgotten when its session ends or the prompter stops", () => {
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const { registry, queued, prompts } = setup({ scheduled });
+  for (const id of ["s-owed-ends", "s-owed-stops"]) registry.launch(nextTask(), id);
+  const getSession = registry.getSession.bind(registry);
+  let failing = true;
+  registry.getSession = (id: string) => {
+    if (failing) throw new Error("transient read failure");
+    return getSession(id);
+  };
+  prompts.prompt("s-owed-ends");
+  prompts.prompt("s-owed-stops");
+  failing = false;
+  registry.emit("event", { type: "session_remove", id: "s-owed-ends" });
+  assert.equal(scheduled[0]!.cancelled, true);
+  assert.equal(scheduled[1]!.cancelled, false);
+  prompts.stop();
+  assert.equal(scheduled[1]!.cancelled, true);
+  scheduled[0]!.fn();
+  scheduled[1]!.fn();
+  assert.equal(queued.length, 0);
+});
+
+test("retiring a delivered after-work turn settles its row in the same transaction, and a settle that fails retires nothing", () => {
+  const d = db.openDb();
+  const taskId = nextTask();
+  const turnId = `shaping-after-work:${taskId}:s-retire:1`;
+  db.queueTaskSkillPromptTurn({ taskId, sessionId: "s-retire", noteKey: "note:s-retire", turnId, text: "/wrap-notes", skills: ["wrap-notes"], from: null, now: 1 });
+  const claim = () => {
+    d.prepare(`UPDATE pending_turns SET state = 'sending', claimed_at = 2 WHERE id = ?`).run(turnId);
+    return (d.prepare(`SELECT revision FROM pending_turns WHERE id = ?`).get(turnId) as { revision: number }).revision;
+  };
+  // The prompt row cannot be written: the retire is rolled back with it, and it throws.
+  d.exec(`CREATE TEMP TRIGGER refuse_prompt_settle BEFORE UPDATE ON task_skill_prompts BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+  const revision = claim();
+  assert.throws(() => db.retireDeliveredPendingTurn(turnId, revision, 50), /disk I\/O error/);
+  assert.equal((d.prepare(`SELECT state FROM pending_turns WHERE id = ?`).get(turnId) as { state: string } | undefined)?.state, "sending",
+    "the claimed turn is still there, so the delivery is not recorded without its prompt row");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-retire")?.state, "queued");
+  d.exec(`DROP TRIGGER refuse_prompt_settle`);
+  // With the write possible again, the delivery and its record commit together.
+  assert.equal(db.retireDeliveredPendingTurn(turnId, revision, 60), true);
+  assert.equal(d.prepare(`SELECT 1 FROM pending_turns WHERE id = ?`).get(turnId), undefined);
+  const row = db.getTaskSkillPrompt(taskId, "s-retire");
+  assert.equal(row?.state, "delivered");
+  assert.equal(row?.deliveredAt, 60);
+});

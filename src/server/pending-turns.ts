@@ -20,6 +20,7 @@ import {
   MESSAGE_ANSWER_TURN_PREFIX,
   afterWorkTurnOwed,
   deleteClaimedPendingTurn,
+  retireDeliveredPendingTurn,
   dropQueuedAfterWorkTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -1189,7 +1190,8 @@ export class PendingTurnManager {
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
         }
-        deleteClaimedPendingTurn(turn.id, turn.revision);
+        // Retired with its after-work prompt row, if it has one, in one transaction.
+        retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1601,7 +1603,8 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    deleteClaimedPendingTurn(turn.id, turn.revision);
+    // Retired with its after-work prompt row, if it has one, in one transaction.
+    retireDeliveredPendingTurn(turn.id, turn.revision, this.deps.now());
     this.journalDelivered(sessionId, turn);
     this.registry.refreshPendingTurns(turn.noteKey);
   }

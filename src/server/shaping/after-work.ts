@@ -325,11 +325,15 @@ export class AfterWorkSkills {
    * the row is written held and nothing is queued until `release`. Never throws.
    */
   prompt(sessionId: string, options: { hold?: boolean; notAfter?: number } = {}): AfterWorkOutcome {
-    // A retry keeps the hold its first call asked for, unless an answer cleared it since, and
-    // the launch bound it was owed for.
-    const owed = this.owedPrompts.get(sessionId);
-    const hold = owed ? owed.hold : options.hold === true;
-    const notAfter = owed ? owed.notAfter : options.notAfter ?? null;
+    // A fresh call - an activation, a claim, a recovery - is decided by its own hold and bound,
+    // never by an earlier call's owed entry: a newer launch's own prompt must not be refused
+    // under an older launch's bound. It settles that entry either way, since the record it
+    // reads is the current one.
+    return this.attemptPrompt(sessionId, options.hold === true, options.notAfter ?? null);
+  }
+
+  /** One attempt to write and queue the prompt. A failure keeps it owed, with its hold and bound. */
+  private attemptPrompt(sessionId: string, hold: boolean, notAfter: number | null): AfterWorkOutcome {
     try {
       const outcome = this.promptOnce(sessionId, hold, notAfter);
       this.owedPrompts.delete(sessionId);
@@ -342,8 +346,11 @@ export class AfterWorkSkills {
       // call (or, recovered at start, after the submission it was owed for).
       console.warn(`[shaping] could not prompt session ${sessionId}'s after-work skills:`, error);
       this.owedPrompts.set(sessionId, { hold, notAfter: notAfter ?? this.deps.now() });
+      // The timer's retry is the one caller that keeps the owed entry's hold - which an answered
+      // wrap-up may have cleared since - and its bound.
       this.retryLater(`prompt:${sessionId}`, () => {
-        if (this.owedPrompts.has(sessionId)) this.prompt(sessionId);
+        const owed = this.owedPrompts.get(sessionId);
+        if (owed) this.attemptPrompt(sessionId, owed.hold, owed.notAfter);
       });
       return { kind: "none", why: "retrying" };
     }

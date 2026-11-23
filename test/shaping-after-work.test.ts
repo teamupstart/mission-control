@@ -957,3 +957,30 @@ test("a retried first prompt never prompts a launch written after it was owed, w
     prompts.stop();
   }
 });
+
+test("a fresh prompt for a newer launch is decided by its own bound, never by an older launch's owed entry", () => {
+  for (const fresh of [{ label: "an activation", options: {} }, { label: "a recovery", options: { notAfter: Number.MAX_SAFE_INTEGER } }]) {
+    const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+    const { registry, queued, prompts } = setup({ scheduled });
+    const sessionId = `s-fresh-${fresh.label.split(" ")[1]}`;
+    const taskId = nextTask();
+    registry.launch(taskId, sessionId);
+    // The older launch's prompt fails and stays owed, bounded by its own call.
+    const getSession = registry.getSession.bind(registry);
+    let failures = 1;
+    registry.getSession = (id: string) => {
+      if (failures > 0) { failures -= 1; throw new Error("transient read failure"); }
+      return getSession(id);
+    };
+    assert.deepEqual(prompts.prompt(sessionId), { kind: "none", why: "retrying" });
+    // The task is launched again into the session, and the newer launch's own call arrives.
+    registry.launch(taskId, sessionId, { ...record(sessionId), at: Number.MAX_SAFE_INTEGER - 1 });
+    assert.equal(prompts.prompt(sessionId, fresh.options).kind, "queued", `${fresh.label} prompts the newer launch`);
+    assert.equal(queued.length, 1);
+    assert.equal(db.getTaskSkillPrompt(taskId, sessionId)?.state, "queued");
+    // The older launch's retry is settled with it: nothing further is sent.
+    scheduled[0]!.fn();
+    assert.equal(queued.length, 1);
+    prompts.stop();
+  }
+});

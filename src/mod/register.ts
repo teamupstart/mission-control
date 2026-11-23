@@ -51,7 +51,9 @@ export function register(on: EngineOn, _options: unknown): void {
     wipeGlance($, view);
     // A draft left waiting for its description belongs to the session that made it: the next
     // session's text must start a new brief, not describe an orphaned draft.
-    await queuedStateSet($, pane, "draftId", null);
+    // Guarded like every other shared write: if a newer start or end took over while this one waited
+    // its turn, the clear is not this session's to make.
+    await queuedStateSet($, pane, "draftId", null, () => mine === generation);
     if (mine !== generation) return next(e);
     const host = await createHost($, view, { pane, mine, current: () => generation });
     const sessionId = await $.session.id();
@@ -87,12 +89,15 @@ export function register(on: EngineOn, _options: unknown): void {
 
   on("session.end", async ($, e, next) => {
     generation += 1;
+    // This end's own number: a start or end that follows takes over the draft marker, and this clear
+    // then stands down instead of erasing a draft the replacement session just made.
+    const mine = generation;
     core?.stop();
     core = null;
     flowSession = null;
     flowHost = null;
     wipeGlance($, view);
-    await queuedStateSet($, pane, "draftId", null);
+    await queuedStateSet($, pane, "draftId", null, () => mine === generation);
     return next(e);
   });
 

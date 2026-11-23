@@ -33,7 +33,7 @@ function world(on, { flag, minModApi = 1 }) {
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
-  on('state.set', async (_, e) => { if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
+  on('state.set', async (_, e) => { (seen.setKeys ??= []).push(e.key); if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
   on('ui.open', async (_, e) => { if (seen.failOpen) throw new Error('the engine refused the open'); seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
@@ -533,4 +533,24 @@ test('a session that ends while its pane open waits for the previous close never
   release()
   await new Promise((resolve) => setTimeout(resolve, 200))
   expect(seen.opened).toEqual(['mission'])
+})
+
+test('a session end whose draftId clear is overtaken by a replacement start does not clear the replacement\'s draft marker', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  let release
+  // An earlier shared write is held in flight, so the clears below wait their turn behind it.
+  seen.holdSet = new Promise((resolve) => { release = resolve })
+  seen.holdSetKey = 'paneTab'
+  await $.command.run(COMMAND('mc-1'))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  seen.setKeys = []
+  const ending = $.session.end({ reason: 'other', sessionId: 's1' })
+  const starting = $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  release()
+  await Promise.all([ending, starting])
+  // Only the replacement's own start cleared the marker; the end that it overtook stood down.
+  expect(seen.setKeys.filter((k) => k === 'draftId').length).toBe(1)
 })

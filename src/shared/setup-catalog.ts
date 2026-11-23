@@ -642,6 +642,15 @@ export const SETUP_FLAG_INPUTS: readonly FeatureFlagId[] = [...new Set<FeatureFl
 ])];
 
 /**
+ * The resolved state of `SETUP_FLAG_INPUTS` as one string, one character per flag. The daemon
+ * stamps each reading with the key it read under (`SetupChecksView.flagsKey`) and the dashboard
+ * computes the live key the same way, so a reading taken under other flags can be recognized.
+ */
+export function setupFlagsKey(flagOn: (flag: FeatureFlagId) => boolean): string {
+  return SETUP_FLAG_INPUTS.map((flag) => (flagOn(flag) ? "1" : "0")).join("");
+}
+
+/**
  * The order rows render in: id order, except that a row naming `after` moves to directly
  * beneath that row. Persisted ids stay where they are; only the panel's reading order moves.
  */
@@ -732,6 +741,12 @@ export interface SetupChecksView {
    * as pre-shortened evidence, so a row can still show the absolute path on hover.
    */
   home: string;
+  /**
+   * The flags this reading was taken under (`setupFlagsKey`). The dashboard re-reads when the
+   * live flags differ, including a switch made between this read and its first snapshot.
+   * Absent from an older daemon.
+   */
+  flagsKey?: string;
 }
 
 /**

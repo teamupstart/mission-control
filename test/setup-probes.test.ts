@@ -14,6 +14,7 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupFlagsKey,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView, setupProbeResult, voicePreviewsStatus } from "../src/server/setup/index.ts";
@@ -729,6 +730,9 @@ test("voice-previews names which flags are on and off, and its Fix turns on exac
 test("the Voice family is probed and listed only while the voice flag is on", async () => {
   const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" }));
   assert.equal(off.rows.some((row) => row.family === "voice"), false);
+  // Each reading names the flags it was taken under, in the dashboard's own key format.
+  assert.equal(off.flagsKey, setupFlagsKey((id) => id !== "voice"));
+  assert.equal(off.flagsKey, "0111");
   const on = await setupChecksView(deps({ flagEnabled: (id) => id === "voice" }));
   const row = on.rows.find((candidate) => candidate.family === "voice");
   assert.deepEqual(row?.rowId, { source: "dependency", id: "voice-previews" });

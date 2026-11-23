@@ -22,6 +22,7 @@ import {
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   setupFamilyFlagOn,
+  setupFlagsKey,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
   type SetupDependencyId,
@@ -775,5 +776,6 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
+    flagsKey: setupFlagsKey(flagEnabled),
   };
 }

@@ -2,7 +2,7 @@
 // listener's hello and the shell report under the token, the snapshot field and `voice_state`
 // frames, and every route answering 404 with the flag off.
 import assert from "node:assert/strict";
-import { after, beforeEach, test } from "node:test";
+import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -200,6 +200,27 @@ test("a hello makes voice listen, mute mutes it, and every change reaches the ev
   await json("/api/voice/mute", "POST", { muted: false });
   assert.equal(frames.at(-1)?.mode, "listening");
   assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
+});
+
+test("a window that connects after a lapse but before its timer fires still sees the listener come back", async () => {
+  // Mocked time: the hello's lapse passes while its timer has not fired, which is the window a
+  // late timer leaves on a busy daemon.
+  mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  try {
+    voiceStateStore.reset();
+    await hello();
+    // The store's own reading: a frame may not be sent, if the last test already left `listening`.
+    assert.equal(voiceStateStore.state().mode, "listening");
+    mock.timers.setTime(1_000_000 + 30_001);
+    const snapshot = registry.snapshot().voice;
+    assert.equal(snapshot?.mode, "unavailable", "the snapshot is computed now, so the lapse already shows");
+    assert.equal(frames.at(-1)?.mode, "unavailable", "and it is published, so lastVoice matches what was handed out");
+    await hello();
+    assert.equal(frames.at(-1)?.mode, "listening", "the returning listener reaches the window that connected in between");
+  } finally {
+    voiceStateStore.reset();
+    mock.timers.reset();
+  }
 });
 
 test("a hello with an unknown major version is refused with 409 and the state says why", async () => {

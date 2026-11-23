@@ -31,12 +31,30 @@ export async function readSetupChecks(
 }
 
 /**
+ * Whether a Setup reading must be read again for the live flags, and the key that is now settled.
+ *
+ * `readWith` is the key the daemon stamped on the reading; an older daemon sends none, and then
+ * the first key seen is taken as the one it read under, so only a later change re-reads. A key is
+ * asked for once: a reading that still disagrees (a window whose own flags are stale) is not read
+ * again until the live key moves.
+ */
+export function setupFlagsRefresh(
+  settled: string | null,
+  live: string,
+  readWith: string | undefined,
+): { settled: string; refresh: boolean } {
+  if ((readWith ?? settled ?? live) === live) return { settled: live, refresh: false };
+  if (settled === live) return { settled, refresh: false };
+  return { settled: live, refresh: true };
+}
+
+/**
  * Mount-time and operator-requested reads only. Machine setup has no polling side effects.
  *
- * `flagsKey` names the resolved state of the preview flags Setup reads (`SETUP_FLAG_INPUTS`),
- * or null before the first snapshot. A change after that first answer re-reads the machine, so
- * a family that follows a flag appears with its rows, and a row about flags reads the switch
- * just made. Null-to-first-answer is not a change: the mount-time read already saw those flags.
+ * `flagsKey` is the live state of the preview flags Setup reads (`setupFlagsKey`), or null before
+ * the first snapshot. When a reading was taken under other flags it is read again, once per live
+ * key (`setupFlagsRefresh`), so a family that follows a flag appears with its rows and a row about
+ * flags reads the switch just made - including a switch between the mount read and the snapshot.
  */
 export function useSetupChecks(enabled: boolean, flagsKey: string | null = null): SetupChecksState {
   const [view, setView] = useState<SetupChecksSnapshot | null>(null);
@@ -74,12 +92,12 @@ export function useSetupChecks(enabled: boolean, flagsKey: string | null = null)
     return null;
   }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
-  const seenFlags = useRef<string | null>(null);
+  const settledFlags = useRef<string | null>(null);
   useEffect(() => {
-    if (flagsKey === null) return;
-    const before = seenFlags.current;
-    seenFlags.current = flagsKey;
-    if (before !== null && before !== flagsKey && enabled) void refresh();
-  }, [flagsKey, enabled, refresh]);
+    if (!enabled || flagsKey === null || view === null || loading) return;
+    const next = setupFlagsRefresh(settledFlags.current, flagsKey, view.flagsKey);
+    settledFlags.current = next.settled;
+    if (next.refresh) void refresh();
+  }, [flagsKey, enabled, view, loading, refresh]);
   return { view, loading, error, refresh, dismissBanner };
 }

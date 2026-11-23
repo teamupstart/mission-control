@@ -1506,7 +1506,7 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(featureEnabled(VOICE_FLAG) ? { voice: voiceStateStore.state() } : {}),
+      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1649,6 +1649,19 @@ export class Registry extends EventEmitter {
     if (key === this.lastVoice) return;
     this.lastVoice = key;
     this.emitEvent({ type: "voice_state", state });
+  }
+
+  /**
+   * The voice state a connecting window is handed, published first when it differs from the last
+   * frame. A lapse is published by a timer, and a snapshot taken after the lapse but before that
+   * timer fires computes the lapsed state already; without this the next frame, a fresh hello's
+   * `listening`, would match the stale `lastVoice` and be dropped, leaving that window on
+   * `unavailable`. Publishing keeps every follower and `lastVoice` on the state just handed out.
+   */
+  private voiceStateForSnapshot(): VoiceState {
+    const state = voiceStateStore.state();
+    this.emitVoiceState(state);
+    return state;
   }
 
   /**

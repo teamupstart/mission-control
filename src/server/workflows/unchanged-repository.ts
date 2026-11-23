@@ -18,6 +18,10 @@ export async function readUnchangedRepository(root: string, headOid: string): Pr
   const git = (args: string[]) => run("git", ["-C", root, ...args], {
     timeoutMs: 15_000, env: isolatedGitEnvironment(),
   });
+  // Dirty work needs publication even when the default base cannot be resolved.
+  const status = await git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]);
+  if (status.code !== 0) throw new Error("The checkout's staged, unstaged and untracked status could not be read.");
+  if (status.stdout.trim()) return null;
   const baseRef = await sourceRef(root);
   if (!baseRef) throw new Error("The repository's default base could not be resolved.");
   if (!FULL_SHA.test(headOid)) throw new Error("The checkout HEAD could not be verified.");
@@ -28,9 +32,6 @@ export async function readUnchangedRepository(root: string, headOid: string): Pr
   const ancestor = await git(["merge-base", "--is-ancestor", headOid, baseOid]);
   if (ancestor.code === 1) return null;
   if (ancestor.code !== 0) throw new Error("The checkout ancestry relative to the default base could not be verified.");
-  const status = await git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]);
-  if (status.code !== 0) throw new Error("The checkout's staged, unstaged and untracked status could not be read.");
-  if (status.stdout.trim()) return null;
   const current = await git(["rev-parse", "--verify", "HEAD"]);
   if (current.code !== 0) throw new Error("The checkout HEAD could not be read.");
   if (current.stdout.trim() !== headOid) throw new Error("The checkout HEAD changed while reading publication proof.");

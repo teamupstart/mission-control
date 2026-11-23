@@ -50,9 +50,29 @@ test("dirty, staged, untracked, ahead, missing base and stale head never prove n
   assert.equal(await readUnchangedRepository(root, git(root, "rev-parse", "HEAD")), null);
   git(root, "update-ref", "-d", "refs/remotes/origin/main");
   git(root, "branch", "-D", "main");
+  git(root, "restore", "work.txt");
   await assert.rejects(readUnchangedRepository(root, git(root, "rev-parse", "HEAD")), /default base/);
-  await assert.rejects(readUnchangedRepository(join(home, "absent"), head), /default base/);
+  await assert.rejects(readUnchangedRepository(join(home, "absent"), head), /status could not be read/);
 });
+
+for (const change of ["unstaged", "staged", "untracked"] as const) {
+  test(`${change} work is positively changed even without a resolvable default base`, async () => {
+    const root = repo(`missing-base-${change}`);
+    writeFileSync(join(root, "tracked.txt"), "base");
+    git(root, "add", "tracked.txt");
+    git(root, "commit", "-q", "-m", "tracked base");
+    git(root, "update-ref", "-d", "refs/remotes/origin/main");
+    git(root, "branch", "-D", "main");
+    const head = git(root, "rev-parse", "HEAD");
+    // The same clean checkout cannot supply no-change proof without its base.
+    await assert.rejects(readUnchangedRepository(root, head), /default base/);
+    writeFileSync(join(root, change === "untracked" ? "new.txt" : "tracked.txt"), "changed");
+    if (change === "staged") git(root, "add", "tracked.txt");
+    assert.equal(await readUnchangedRepository(root, head), null);
+    git(root, "switch", "-q", "-c", "feature");
+    assert.equal(await readUnchangedRepository(root, head), null);
+  });
+}
 
 
 test("an empty commit ahead is still work to publish", async () => {

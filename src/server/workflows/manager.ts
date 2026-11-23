@@ -6338,6 +6338,11 @@ export class WorkflowManager {
       || JSON.stringify(current.state) !== JSON.stringify(state)
       || !currentSession || currentSession.lastActivity !== session.lastActivity
       || currentSession.state !== session.state || noteKeyFor(currentSession) !== anchor.noteKey) return;
+    // Discovery dialogs and pending reviews can change without lifecycle activity.
+    if (reportBucket(currentSession, this.registry.snapshot().sessions) === "needs-you") {
+      this.setSessionActionWait(attempt.id, "needs_operator", { pickedUpAt }, now);
+      return;
+    }
     // Only Pull Request owns a bounded no-change proof retry. Other adapters retain the
     // current settled observation; the existing durable wait preserves this window on restart.
     const proofRetryStartedAt = snapshot.completion.kind === "pull_request"

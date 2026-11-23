@@ -2861,3 +2861,58 @@ for (const retryAge of [null, 5_000, 60_000]) test(`activity during proof read d
     assert.equal(h.store.getRun(runId)?.status, "blocked");
   } finally { release?.(); await pending; await h.stop(); }
 });
+
+for (const prompt of ["pane", "review"] as const) for (const outcome of ["complete", "block"] as const) {
+  test(`${prompt} prompt during proof read prevents ${outcome} until the operator answers`, async () => {
+    let hold: { started: () => void; released: Promise<void> } | null = null;
+    let release: (() => void) | undefined;
+    let pending: Promise<void> | undefined;
+    const h = await harness(`proof-prompt-${prompt}-${outcome}`, { pullRequest: true,
+      readUnchangedRepository: async () => {
+        if (hold) { hold.started(); await hold.released; }
+        if (outcome === "block") throw new Error("Git timed out");
+        return null;
+      } });
+    const setPrompt = (open: boolean) => {
+      if (prompt === "pane") {
+        h.registry.applyDiscovery([{ ...discovered(h.sessionId), paneDialog: open ? {
+          prompt: "Continue?", options: [{ number: 1, label: "Yes" }], highlighted: 1,
+        } : null }]);
+      } else {
+        h.registry.upsertReview({ id: `question-${h.sessionId}`, sessionId: h.sessionId,
+          kind: "input", title: "Continue?", body: "Continue?", status: open ? "pending" : "answered",
+          response: open ? null : "Yes", createdAt: 1, resolvedAt: open ? null : 2 });
+      }
+    };
+    try {
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "action not sent");
+      h.runActionTurn();
+      const first = SETTLED();
+      if (outcome === "block") await h.manager.sweepSessionActions(first);
+      else h.adoptPr();
+      const attemptId = waitingAttempt(h, runId)!.id;
+      const before = h.registry.getSession(h.sessionId)!;
+      let started!: () => void;
+      const reading = new Promise<void>(resolve => { started = resolve; });
+      hold = { started, released: new Promise<void>(resolve => { release = resolve; }) };
+      pending = h.manager.sweepSessionActions(first + 60_000);
+      await reading;
+      setPrompt(true);
+      const asking = h.registry.getSession(h.sessionId)!;
+      assert.equal(asking.state, before.state);
+      assert.equal(asking.lastActivity, before.lastActivity, "operator gates can change without lifecycle activity");
+      release!();
+      await pending;
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+      assert.equal(h.store.sessionActionState(h.store.getAttempt(attemptId)!)?.wait, "needs_operator");
+      assert.equal(h.store.listSubmissions(runId).length, 1, "no continuation can capture through the operator gate");
+      hold = null;
+      setPrompt(false);
+      h.adoptPr();
+      await h.manager.sweepSessionActions(first + 60_001);
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "answering the prompt should allow publication to complete");
+      assert.equal(h.injected.length, 1);
+    } finally { release?.(); await pending; await h.stop(); }
+  });
+}

@@ -81,6 +81,7 @@ test("Agent Shepherd ships as a launchable built-in whose whole role is its docu
   );
   assert.equal(shepherd.settings.authority.controlOtherSessions, true);
   assert.equal(shepherd.settings.loop.spendCapUsd, 40);
+  assert.equal(shepherd.settings.mcp.nativeSources, "pinned", "upgrades preserve the shipped profile’s server set");
   assert.equal(settings("Custom resident").loop.spendCapUsd, 20, "ordinary profiles keep the general default");
   assert.equal(manager().settingsProblem(shepherd.settings), null, "the shipped settings are launchable");
 });

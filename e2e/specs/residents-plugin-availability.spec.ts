@@ -52,10 +52,7 @@ for (const optOut of [false, true]) {
       await editor.getByLabel("Profile instructions").fill("Probe the local duplicate plugin fixture.");
       await editor.getByLabel("Default repository").fill(daemon.repo);
       await page.keyboard.press("Escape");
-      await editor.getByRole("radio", { name: "All native sources (not pinned)" }).click();
-      const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
-      await expectContentClearsBorder(confirm);
-      await confirm.getByRole("button", { name: "Import all sources" }).click();
+      await expect(editor.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
       const checkbox = editor.getByRole("checkbox", { name: "Disable claude.ai connectors" });
       await expect(checkbox).not.toBeChecked();
       if (optOut) await checkbox.check();
